@@ -187,8 +187,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 return Err(fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Unauthorized, "summary fork scope lacks original publication authority"));
             }
         } else { self.require("fork:publish", VolumeOperation::Read)?; }
-        if parent.authority() != &self.parent
-            || prepared.parent() != &self.parent
+        if parent.authority() != self.verifier.audience()
+            || prepared.parent() != self.verifier.audience()
             || prepared.parent_revision() != parent.revision()
             || parent.conversation().and_then(|state| state.agent) != self.scope.agent()
             || prepared.through_sequence()
@@ -196,7 +196,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                     .conversation()
                     .and_then(|state| state.messages().last())
                     .map_or(0, |message| message.sequence)
-            || journal.canonical_authority() != Some(&self.parent)
+            || journal.canonical_authority() != Some(self.verifier.audience())
             || child_private.provider() != &self.host.provider
             || child_private.class() != VolumeClass::AgentPrivate
             || !matches!(child_private.owner(), VolumeOwner::Agent(_))

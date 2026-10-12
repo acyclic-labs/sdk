@@ -1,81 +1,4 @@
-//! Host notifications of changes made to a native source directory outside
-//! every view of it.
-//!
-//! A view remembers what it read from a source: resolved names, absences,
-//! attributes, listings, and the kernel caches built from them. The source
-//! changes outside the view, so each remembered fact holds only until the
-//! host reports a change to what it depends on. One watch per source root
-//! turns the host's own notifications into exactly those reports: a name
-//! rebound (created, removed, or renamed), which covers everything reached
-//! through it; an entry altered in place (its content or attributes), which
-//! covers the entry and the listing that shows it; and, where the host can
-//! still identify it, the node, which covers every other name bound to it.
-//!
-//! # Backends
-//!
-//! - Linux: one inotify instance, with a watch on every directory the
-//!   source reads before it reads it (see [`NativeSourceWatch::admit`]).
-//!   The kernel queues each event before the system call that caused it
-//!   returns.
-//! - macOS: one `FSEvents` stream over the root. Its reports arrive shortly
-//!   after each change but in no order a fence could rely on, so a fence
-//!   there reports everything instead (see the backend's docs).
-//! - Windows: `ReadDirectoryChangesExW` over the whole root, which the file
-//!   system reports into before the operation that caused it completes.
-//!
-//! A root whose changes do not all pass through this kernel (a network or
-//! user-space file system) has no watch: every view of it reads it afresh.
-//!
-//! # Exactness
-//!
-//! A fact is read after the view samples its ledger stamp, and is reused
-//! only while nothing it depends on recorded a later position. A reported
-//! change is recorded after the host made it. So a read that races an
-//! unreported change either read the source before the change, and its fact
-//! is invalidated once the report is recorded, or read it after, and its
-//! fact is already current. What a lookup may still return is the answer
-//! from before a change whose report has not been recorded yet: the change
-//! takes effect in the view when its report is recorded rather than when
-//! the host operation returned. Between processes that do not otherwise
-//! communicate, that is indistinguishable from the change completing a
-//! little later, which is how every native file system orders concurrent
-//! operations. A process that learns of a change by another channel (a
-//! build step waiting for a writer to exit) and must see it through the
-//! mount calls [`NativeSourceWatch::fence`] first, which the mount's
-//! revalidation does: once it returns, every change that completed before
-//! it was called has been recorded, exactly on Linux and Windows and, on
-//! macOS, by recording that anything may have changed. Hosts report a file's content and size
-//! at different points: Linux at every write, macOS and Windows once the
-//! writer closes (or flushes) the file, which is NFS close-to-open
-//! consistency.
-//!
-//! # What no host reports
-//!
-//! Every host reports a change under the name it was made through, and only
-//! beneath the watched root (on Linux, beneath the directories watched). So
-//! a file with another name outside the root, written through that name,
-//! changes unreported. A view therefore never relies on reports for a node
-//! the source says has more than one name: it reads such a node afresh on
-//! every use, and drivers cache nothing of it. What remains unreported are
-//! the changes to a node with one name when it was read: a name added to it
-//! outside the root, and writes through that name; and, on Windows, whose
-//! listings do not count names, writes through any name outside the root.
-//! Writes through a shared memory mapping raise no report of their own and
-//! are reported when the writer closes the file, which is NFS close-to-open
-//! consistency.
-//!
-//! Where the host names only the path it changed (Linux and macOS), the
-//! node is the one the path binds when the report is handled: a change
-//! through one hard link reaches every name of the node, but removing one
-//! of several links leaves the others' link count as the view last read it
-//! until something reports a change to them.
-//!
-//! A host that loses notifications says so (a queue overflow, dropped
-//! events, a lost buffer); the watch then reports that everything may have
-//! changed, which invalidates every remembered fact. A host that stops
-//! reporting altogether (a replaced root, an exhausted watch limit) makes
-//! the watch inexact for good: it reports everything once more and the view
-//! reads the source afresh from then on.
+//! Native source change notifications.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -92,11 +15,11 @@ mod fsevents;
 mod inotify;
 
 #[cfg(windows)]
-use directory_changes::PlatformWatch;
+pub(crate) use directory_changes::NativeSourceWatch;
 #[cfg(target_os = "macos")]
-use fsevents::PlatformWatch;
+pub(crate) use fsevents::NativeSourceWatch;
 #[cfg(target_os = "linux")]
-use inotify::PlatformWatch;
+pub(crate) use inotify::NativeSourceWatch;
 
 /// Known SDK control storage: Arc's two counters, alignment, and Rust payload.
 pub(super) const fn arc_control_bytes<T>() -> u64 {
@@ -421,21 +344,6 @@ impl Delivery {
         }
     }
 
-    fn new_measured(sink: Arc<dyn HostChangeSink>, work: &crate::demand::DemandWork) -> Self {
-        Self {
-            sink,
-            exact: AtomicBool::new(true),
-            budget: work.budget,
-            cancellation: work.cancellation().clone(),
-            failure: std::sync::Mutex::new(None),
-            startup_failure: std::sync::Mutex::new(std::sync::Weak::new()),
-            #[cfg(target_os = "linux")]
-            events: None,
-            ownership: SourcePayloadOwnership::default(),
-            original: None,
-        }
-    }
-
     fn new_with_work<W: SourceDemandReadWork>(
         sink: Arc<dyn HostChangeSink>, work: &mut W,
     ) -> Result<Self, DemandError> {
@@ -498,8 +406,8 @@ impl Delivery {
         let Some(birth) = &self.original else { return false; };
         let Some(current) = work.native_source_work() else { return false; };
         let current = current.original_demand_work();
-        Arc::ptr_eq(birth.meter(), current.meter())
-            && match (birth.resource_allowance(), current.resource_allowance()) {
+        Arc::ptr_eq(&birth.state, &current.state)
+            && match (birth.resource.as_ref(), current.resource.as_ref()) {
                 (None, None) => true,
                 (Some(birth), Some(current)) => Arc::ptr_eq(birth, current),
                 _ => false,
@@ -599,11 +507,6 @@ impl Delivery {
     }
 }
 
-/// The live watch of one native source root.
-pub(crate) struct NativeSourceWatch {
-    platform: PlatformWatch,
-}
-
 /// An original startup failure retaining its actual native owner.
 pub struct SourceWatchStartupFailure {
     cause: std::sync::OnceLock<DemandError>,
@@ -653,10 +556,10 @@ impl std::error::Error for SourceWatchStartupFailure {
 }
 
 impl SourceWatchStartupFailure {
-    fn retain_failed_platform(self: &Arc<Self>, error: DemandError, platform: PlatformWatch) -> DemandError {
+    fn retain_failed_platform(self: &Arc<Self>, error: DemandError, platform: NativeSourceWatch) -> DemandError {
         platform.delivery().exact.store(false, Ordering::Release);
         assert!(self.cause.set(error).is_ok(), "one startup control retains one actual native owner");
-        let watch = NativeSourceWatch { platform };
+        let watch = platform;
         self.stopped.store(watch.is_stopped(), Ordering::Release);
         self.owned_bytes.store(watch.logical_owned_bytes(), Ordering::Release);
         *self.watch.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watch);
@@ -725,34 +628,27 @@ impl SourceWatchStartupFailure {
 }
 
 impl NativeSourceWatch {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
+        &self, timeout: std::time::Duration, work: &mut W,
+    ) -> Result<bool, DemandError> {
+        work.check()?;
+        self.delivery().take_failure(work)?;
+        self.fence_events_with_work(timeout, work)
+    }
+
     /// Starts reporting changes beneath `root`, whose held directory is `directory`, to `sink`.
     pub(crate) fn start(
         directory: &crate::native_host::HostRoot,
         sink: Arc<dyn HostChangeSink>,
     ) -> std::io::Result<Self> {
         let cancellation = crate::cancellation::CancellationToken::new();
-        Self::start_measured(directory, sink, &mut crate::demand::DemandWork::new(
+        Self::start_with_work(directory, sink, &mut crate::demand::DemandWork::new(
             crate::performance::WorkBudget::UNBOUNDED, &cancellation,
         )).map_err(|error| match error {
             crate::demand::DemandError::Io(error) => error,
             error => std::io::Error::other(error),
         })
-    }
-
-    /// Starts the ordinary NativeWatch root service.
-    #[cfg(windows)]
-    pub(crate) fn start_held_with_sink(
-        directory: &crate::native_host::HostRoot, sink: Arc<dyn HostChangeSink>,
-        complete: bool, recursive: bool, budget: crate::performance::WorkBudget,
-        cancellation: &crate::cancellation::CancellationToken,
-    ) -> std::io::Result<Self> {
-        let callback = crate::demand::DemandWork::new(budget, cancellation);
-        let delivery = Arc::new(Delivery::new_measured(sink, &callback));
-        let ordinary = crate::cancellation::CancellationToken::new();
-        let mut bootstrap = crate::demand::DemandWork::new(crate::performance::WorkBudget::UNBOUNDED, &ordinary);
-        PlatformWatch::start_held_root_with_work(directory, delivery, complete, recursive, &mut bootstrap)
-            .map(|platform| Self { platform })
-            .map_err(|error| std::io::Error::other(error.to_string()))
     }
 
     #[cfg(windows)]
@@ -765,18 +661,9 @@ impl NativeSourceWatch {
         work.allocate(bytes)?;
         let delivery = Arc::new(delivery);
         delivery.ownership.retain(bytes, work)?;
-        let result = PlatformWatch::start_held_root_with_work(directory, delivery, complete, recursive, work)
-            .map(|platform| Self { platform });
+        let result = Self::start_held_root_with_work(directory, delivery, complete, recursive, work);
         if !work.is_native_original() { work.release(bytes)?; }
         result
-    }
-
-    pub(crate) fn start_measured(
-        directory: &crate::native_host::HostRoot,
-        sink: Arc<dyn HostChangeSink>,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<Self, crate::demand::DemandError> {
-        Self::start_with_work(directory, sink, work)
     }
 
     pub(crate) fn start_with_work<W: SourceDemandReadWork>(
@@ -803,31 +690,16 @@ impl NativeSourceWatch {
         let failure = if commit_output {
             Some(delivery.prepare_failure(work)?)
         } else { None };
-        let result = PlatformWatch::start_with_work(directory, delivery, work).and_then(|platform| {
+        let result = Self::start_driver(directory, delivery, work).and_then(|platform| {
             if let Some(failure) = failure {
                 if let Err(error) = work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::ReturnedItems, 1, 1)) {
                     return Err(failure.retain_failed_platform(error, platform));
                 }
             }
-            Ok(Self { platform })
+            Ok(platform)
         });
         if !work.is_native_original() { work.release(bytes)?; }
         result
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn start_with_events(
-        directory: &crate::native_host::HostRoot,
-        sink: Arc<dyn HostChangeSink>,
-        events: Arc<dyn NativeEventSink>,
-        budget: crate::performance::WorkBudget,
-        cancellation: &crate::cancellation::CancellationToken,
-    ) -> std::io::Result<Self> {
-        let mut delivery = Delivery::new_measured(
-            sink, &crate::demand::DemandWork::new(budget, cancellation),
-        );
-        delivery.events = Some(events);
-        Ok(Self { platform: PlatformWatch::start(directory, Arc::new(delivery))? })
     }
 
     #[cfg(target_os = "linux")]
@@ -841,49 +713,9 @@ impl NativeSourceWatch {
         work.allocate(bytes)?;
         let delivery = Arc::new(delivery);
         delivery.ownership.retain(bytes, work)?;
-        let result = PlatformWatch::start_with_work(directory, delivery, work)
-            .map(|platform| Self { platform });
+        let result = Self::start_driver(directory, delivery, work);
         if !work.is_native_original() { work.release(bytes)?; }
         result
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn unadmit_measured(
-        &self, directory: &std::path::Path, work: &mut crate::demand::DemandWork,
-    ) -> Result<(), crate::demand::DemandError> {
-        self.unadmit_with_work(directory, work)
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn unadmit_with_work<W: crate::demand::SourceDemandReadWork>(
-        &self, directory: &std::path::Path, work: &mut W,
-    ) -> Result<(), crate::demand::DemandError> {
-        self.platform.unadmit_with_work(directory, work)
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn fence_events_measured(
-        &self, timeout: std::time::Duration, work: &mut crate::demand::DemandWork,
-    ) -> Result<bool, crate::demand::DemandError> {
-        self.fence_events_with_work(timeout, work)
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn fence_events_with_work<W: SourceDemandReadWork>(
-        &self, timeout: std::time::Duration, work: &mut W,
-    ) -> Result<bool, DemandError> {
-        self.fence_with_work(timeout, work)
-    }
-
-    /// Starts the existing Windows driver over one already validated held directory.
-    #[cfg(windows)]
-    pub(crate) fn start_directory_measured(
-        directory: &cap_std::fs::Dir,
-        sink: Arc<dyn HostChangeSink>,
-        complete: bool,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<Self, crate::demand::DemandError> {
-        Self::start_directory_with_work(directory, sink, complete, work)
     }
 
     #[cfg(windows)]
@@ -895,44 +727,20 @@ impl NativeSourceWatch {
         work.allocate(bytes)?;
         let delivery = Arc::new(delivery);
         delivery.ownership.retain(bytes, work)?;
-        let result = PlatformWatch::start_directory_with_work(directory, delivery, complete, work)
-            .map(|platform| Self { platform });
+        let result = Self::start_directory_driver(directory, delivery, complete, work);
         if !work.is_native_original() { work.release(bytes)?; }
         result
     }
 
     #[cfg(windows)]
     pub(crate) fn owned_bytes(&self) -> u64 {
-        self.platform.logical_owned_bytes()
+        self.platform_owned_bytes()
             + arc_control_bytes::<Delivery>()
     }
 
-    /// Admits native shutdown before mutating the original owner, then waits for actual quiescence.
-    pub(crate) fn stop_measured(
-        &self, work: &mut crate::demand::DemandWork,
-    ) -> Result<(), crate::demand::DemandError> {
-        self.stop_with_work(work)
-    }
-
-    pub(crate) fn stop_with_work<W: crate::demand::SourceDemandReadWork>(
-        &self, work: &mut W,
-    ) -> Result<(), crate::demand::DemandError> {
-        self.platform.stop_with_work(work)
-    }
-
-    /// Uses the platform's existing original birth cleanup and native stop suffix.
-    pub(crate) fn stop_with_cleanup_wait(&self, wait: &crate::CancellationToken) -> Result<(), DemandError> {
-        self.platform.stop_with_cleanup_wait(wait)
-    }
-
-    /// Consumes only this watch's genuine original birth-paid stop custody.
-    pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
-        self.platform.stop_accepted_cleanup()
-    }
-
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
-        let delivery = self.platform.delivery();
-        let bytes = self.platform.logical_owned_bytes()
+        let delivery = self.delivery();
+        let bytes = self.platform_owned_bytes()
             + arc_control_bytes::<Delivery>()
             + delivery.sink.logical_owned_bytes();
         #[cfg(target_os = "linux")]
@@ -940,71 +748,20 @@ impl NativeSourceWatch {
         bytes
     }
 
-    /// True only after actual native quiescence and resource retirement.
-    pub(crate) fn is_stopped(&self) -> bool {
-        self.platform.is_stopped()
-    }
-
-    #[cfg(windows)]
-    pub(crate) fn fence_for(&self, timeout: std::time::Duration) -> std::io::Result<()> {
-        self.platform.fence_for(timeout)
-    }
-
-    /// Watches the root-relative directory `directory`, and every directory on the way to it, before the source reads beneath it.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn admit(&self, directory: &std::path::Path) -> bool {
-        self.platform.admit(directory)
-    }
-
-    /// Admits each Linux prefix with cancellation, native-call and allocation admission before the corresponding work.
-    pub(crate) fn admit_measured(
-        &self,
-        directory: &std::path::Path,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<bool, crate::demand::DemandError> {
-        self.admit_with_work(directory, work)
-    }
-
+    #[cfg(not(target_os = "linux"))]
     pub(crate) fn admit_with_work<W: crate::demand::SourceDemandReadWork>(
         &self,
         directory: &std::path::Path,
         work: &mut W,
     ) -> Result<bool, crate::demand::DemandError> {
-        #[cfg(target_os = "linux")]
-        return self.platform.admit_with_work(directory, work);
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = directory;
-            work.check()?;
-            Ok(false)
-        }
-    }
-
-    /// Returns once every change that completed before the call has been delivered.
-    pub(crate) fn fence(&self) -> std::io::Result<()> {
-        self.platform.fence()
-    }
-
-    pub(crate) fn fence_measured(
-        &self, timeout: std::time::Duration, work: &mut crate::demand::DemandWork,
-    ) -> Result<bool, crate::demand::DemandError> {
-        self.fence_with_work(timeout, work)
-    }
-
-    pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
-        &self, timeout: std::time::Duration, work: &mut W,
-    ) -> Result<bool, DemandError> {
+        let _ = directory;
         work.check()?;
-        self.platform.delivery().take_failure(work)?;
-        #[cfg(target_os = "linux")]
-        { self.platform.fence_events_with_work(timeout, work) }
-        #[cfg(not(target_os = "linux"))]
-        { self.platform.fence_with_work(timeout, work) }
+        Ok(false)
     }
 
     /// Whether every change still reaches the sink.
     pub(crate) fn is_exact(&self) -> bool {
-        self.platform.delivery().is_exact()
+        self.delivery().is_exact()
     }
 }
 
@@ -1030,11 +787,11 @@ fn measured_admission_on_recursive_hosts_does_not_spend_work() -> Result<(), Box
     )?;
     let cancellation = crate::cancellation::CancellationToken::new();
     let mut uncancelled = crate::demand::DemandWork::new(crate::WorkBudget::default(), &cancellation);
-    assert!(!watch.admit_measured(std::path::Path::new("not/read"), &mut uncancelled)?);
+    assert!(!watch.admit_with_work(std::path::Path::new("not/read"), &mut uncancelled)?);
     assert_eq!(uncancelled.work, crate::WorkCounters::default());
     cancellation.cancel();
     let mut work = crate::demand::DemandWork::new(crate::WorkBudget::default(), &cancellation);
-    assert!(matches!(watch.admit_measured(std::path::Path::new("not/read"), &mut work),
+    assert!(matches!(watch.admit_with_work(std::path::Path::new("not/read"), &mut work),
         Err(crate::demand::DemandError::Cancelled)));
     assert_eq!(work.work, crate::WorkCounters::default());
     Ok(())

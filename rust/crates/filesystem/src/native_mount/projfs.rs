@@ -8,8 +8,7 @@
 
 use super::provider_stack;
 use super::{
-    DIRECTORY_PAGE_SIZE, MountContentPin, MountFilesystem, MountLookup,
-    MountNode, MountNodeKind, MountPath, MountSourceError, NativeMountError, NativeMountRequest,
+    DIRECTORY_PAGE_SIZE, MountContentPin, MountFilesystem, MountLookup, MountNodeKind, MountPath, MountSourceError, NativeMountError, NativeMountRequest,
     ViewObserver, ViewOrigin, ViewStamp,
 };
 use crate::FileId;
@@ -927,8 +926,6 @@ impl Eq for Owned {}
 #[derive(Clone, PartialEq, Eq)]
 enum Placed {
     Nothing,
-    /// Written with nothing the projection owns in it: a link placeholder, which `ProjFS` manages, or an ordinary directory.
-    Unowned,
     Owned(Owned),
     Retry,
 }
@@ -937,7 +934,7 @@ impl Placed {
     fn owned(&self) -> Option<Owned> {
         match self {
             Self::Owned(owned) => Some(owned.clone()),
-            Self::Nothing | Self::Unowned | Self::Retry => None,
+            Self::Nothing | Self::Retry => None,
         }
     }
 }
@@ -3059,7 +3056,7 @@ fn write_directly(
 struct StagingDirectoryCustody {
     // Field order keeps original credit live through this handle's real close.
     directory: Option<cap_std::fs::Dir>,
-    name: NativeOwned<Vec<u16>>,
+    _name: NativeOwned<Vec<u16>>,
     identity: Option<crate::NativeRootIdentity>,
     cleanup: crate::materializer::NativeWorkReservation,
     temporary_close: crate::materializer::NativeWorkReservation,
@@ -3147,7 +3144,7 @@ fn with_staging_directory<T>(
                 .map_err(detach_work_error)?,
         );
         // Publish the real capability before any fallible identity admission.
-        *owned = Some(StagingDirectoryCustody { directory: Some(directory), name, identity: None, cleanup, temporary_close, original_close });
+        *owned = Some(StagingDirectoryCustody { directory: Some(directory), _name: name, identity: None, cleanup, temporary_close, original_close });
     }
     let stage = owned.as_mut().expect("created or retained staging custody");
     let directory = stage.directory.as_ref().ok_or(NativeMountError::Lifecycle("staging namespace data is physically closed"))?;
@@ -3401,7 +3398,7 @@ fn replace_ordinary(
             owned: Some(owned), facts: Some(entry.facts), basis,
         }),
         Placed::Retry => Replaced::Busy,
-        Placed::Nothing | Placed::Unowned => Replaced::Released,
+        Placed::Nothing => Replaced::Released,
     })
 }
 
@@ -3571,11 +3568,11 @@ pub(super) struct ProjFsNamespaceQualification {
 pub(super) struct ProjFsNamespaceOutcome {
     capture_failure: Option<NativeMountError>,
     cleanup_failure: Option<NativeMountError>,
-    written: MemoMap<MountPath, WrittenEntry>,
-    pending: MemoMap<MountPath, WrittenEntry>,
+    _written: MemoMap<MountPath, WrittenEntry>,
+    _pending: MemoMap<MountPath, WrittenEntry>,
     qualification: Option<ProjFsNamespaceQualification>,
-    stage: Option<StagingDirectoryCustody>,
-    captures: Option<Arc<NativeOwned<Mutex<PostOperationFailures>>>>,
+    _stage: Option<StagingDirectoryCustody>,
+    _captures: Option<Arc<NativeOwned<Mutex<PostOperationFailures>>>>,
     continuation_ready: bool,
 }
 
@@ -3590,11 +3587,11 @@ impl ProjFsNamespaceOutcome {
         }
     }
     pub(super) fn pending_capture_count(&self) -> usize {
-        self.captures.as_ref().map_or(0, |queue|
+        self._captures.as_ref().map_or(0, |queue|
             lock_recover(queue).pending_captures.entries.items.len())
     }
     pub(super) fn first_cleanup_residue(&self) -> Option<(i32, u32)> {
-        self.written.iter().chain(self.pending.iter()).find_map(|(_, written)| {
+        self._written.iter().chain(self._pending.iter()).find_map(|(_, written)| {
             let Some(Owned::Link(owner)) = written.owned.as_ref() else { return None; };
             lock_recover(&owner.namespace_residue).as_ref().map(|residue|
                 (residue.hresult.0, residue.update_causes.0 as u32))
@@ -4092,10 +4089,10 @@ impl ProjFsSession {
                 matches!(written.owned.as_ref(), Some(Owned::Link(owner))
                     if lock_recover(&owner.namespace_residue).is_some()));
         Some(ProjFsNamespaceOutcome {
-            written: std::mem::take(&mut state.written),
-            pending: std::mem::take(&mut state.pending),
+            _written: std::mem::take(&mut state.written),
+            _pending: std::mem::take(&mut state.pending),
             qualification,
-            stage, captures, capture_failure, cleanup_failure,
+            _stage: stage, _captures: captures, capture_failure, cleanup_failure,
             continuation_ready,
         })
     }
@@ -5104,7 +5101,7 @@ fn with_mount_wide_path_on_meter<T>(
     let mut units = path.components().len().saturating_sub(1);
     for component in path.components() {
         meter.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        crate::kernel::types::utf16le_units(component).ok_or(crate::DemandError::InvalidRequest)?;
+        let _ = crate::kernel::types::utf16le_units(component).ok_or(crate::DemandError::InvalidRequest)?;
         units = units.checked_add(component.len() / 2).ok_or(crate::WorkError::Overflow)?;
     }
     let bytes = (units as u64).checked_mul(2).ok_or(crate::WorkError::Overflow)?;
@@ -6902,15 +6899,15 @@ mod tests {
         assert!(session.test_runtime().is_none());
         assert_eq!(std::fs::read(stage.join("preserved.txt"))?, b"namespace-data");
         let mut outcome = session.take_namespace_outcome().expect("the same funded original metadata carrier");
-        let original = outcome.stage.as_ref().expect("original held-stage metadata, not an ambient replacement");
+        let original = outcome._stage.as_ref().expect("original held-stage metadata, not an ambient replacement");
         assert!(original.directory.is_none(), "physical success requires the actual original directory handle to close");
         assert_eq!(original.identity, identity);
-        assert!(!original.name.data.as_slice().is_empty());
+        assert!(!original._name.data.as_slice().is_empty());
         let (primary, secondary) = outcome.take_capture_failures().expect("actual namespace-only refusal");
         assert_eq!(super::native_mount_error_code(&primary), Some(super::HR_DIRECTORY_NOT_EMPTY));
         assert!(secondary.is_none(), "no authored capture failure was invented");
         assert!(outcome.take_capture_failures().is_none(), "original causes move once without copying");
-        assert!(outcome.stage.as_ref().expect("DATA metadata remains").directory.is_none());
+        assert!(outcome._stage.as_ref().expect("DATA metadata remains").directory.is_none());
         Ok(())
     }
 
@@ -6969,7 +6966,7 @@ mod tests {
         let outcome = session.take_namespace_outcome().expect("original namespace data moves without a new map");
         assert!(outcome.capture_failure().is_some());
         assert_eq!(outcome.pending_capture_count(), 1);
-        let queue = outcome.captures.as_ref().expect("the same original funded queue survives");
+        let queue = outcome._captures.as_ref().expect("the same original funded queue survives");
         assert_eq!(capture_serial_fixture(queue, &path), serial);
         Ok(())
     }

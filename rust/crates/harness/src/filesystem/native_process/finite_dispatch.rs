@@ -75,7 +75,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         &self, dispatch: &EffectDispatch, work: &NativeMaterializationWork,
     ) -> Result<()> {
         check(work)?;
-        self.owner.verify_with_native_work(false, work).await?;
+        self.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         let mut io = crate::store::history::native_work_io(work)?;
         let cursor = self.history.pin(0,
             Some(&mut io)).await?;
@@ -112,14 +112,12 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                 self.authority.approvals.verify_with_native_work(
                     self.approval, self.command, *approval_digest, work)?.await?;
                 for mapping in &request.view.volumes {
-                    self.owner.require_volume_grant_with_native_work(&mapping.volume,
-                        crate::conversation::VolumeOperation::Read, work)?;
+                    self.owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
                     if mapping.writable {
-                        self.owner.require_volume_grant_with_native_work(&mapping.volume,
-                            crate::conversation::VolumeOperation::Write, work)?;
+                        self.owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
                     }
                 }
-                self.owner.verify_with_native_work(false, work).await?;
+                self.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             }
         check(work)
     }

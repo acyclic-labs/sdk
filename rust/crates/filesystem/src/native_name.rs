@@ -153,17 +153,6 @@ pub(crate) fn host_name_bytes_measured(
     })
 }
 
-#[cfg(windows)]
-pub(crate) fn host_wide_name_bytes_measured(
-    name: &[u16], profile: FilesystemProfile, maximum_bytes: u32, work: &mut DemandWork,
-) -> Result<(NameEncoding, Vec<u8>), DemandError> {
-    work.check()?;
-    let (allocations, work, budget, cancellation) = work.allocation_parts();
-    host_wide_name_bytes_with_accounting(name, profile, maximum_bytes, &mut NameWork::<DemandWork>::Owned {
-        allocations, work, budget, cancellation,
-    })
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn host_name_bytes_with_native_work(
     name: &OsStr, profile: FilesystemProfile, maximum_bytes: u32,

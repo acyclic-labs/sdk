@@ -1,4 +1,5 @@
 use super::*;
+use crate::v1::tests::get;
 
 #[test]
 fn native_composite_controls_retire_after_the_last_physical_alias()
@@ -43,7 +44,7 @@ async fn native_journal_control_denial_keeps_original_cause_and_unpoisoned_tail(
     assert_eq!(observed.memory.load(SeqCst), 0);
     assert_eq!(fs::read(path)?, durable);
     journal.check()?;
-    assert_eq!(core.get(get("retained"), 6).await?.into_body(), OwnedBytes::from_static(b"before"));
+    assert_eq!(core.get(get(bucket(), "retained"), 6).await?.into_body(), OwnedBytes::from_static(b"before"));
     Ok(())
 }
 
@@ -126,7 +127,7 @@ fn dropping_the_last_owner_unlocks_an_inherited_file_description()
     Ok(())
 }
 
-fn bucket() -> Option<wire::BucketRef> {
+pub(super) fn bucket() -> Option<wire::BucketRef> {
     Some(wire::BucketRef {
         name: "recovery".into(),
     })
@@ -138,13 +139,6 @@ pub(super) fn put(key: &str) -> wire::PutObjectHeader {
         mutation: Some(wire::MutationIdentity {
             idempotency_key: key.into(),
         }),
-        ..Default::default()
-    }
-}
-pub(super) fn get(key: &str) -> wire::GetObjectRequest {
-    wire::GetObjectRequest {
-        bucket: bucket(),
-        object_key: key.into(),
         ..Default::default()
     }
 }
@@ -164,7 +158,7 @@ pub(super) async fn seeded(root: &Path) -> Result<MemoryObjects, Box<dyn std::er
 }
 async fn assert_poisoned(core: &MemoryObjects) {
     assert_eq!(
-        core.get(get("retained"), 6).await.err().map(|e| e.code),
+        core.get(get(bucket(), "retained"), 6).await.err().map(|e| e.code),
         Some(Unavailable)
     );
     assert_eq!(
@@ -219,11 +213,11 @@ async fn incomplete_final_frames_repair_without_publishing_a_mutation()
         let core = reopen(root.path())?;
         assert_eq!(fs::read(&path)?, before);
         assert_eq!(
-            core.get(get("retained"), 6).await?.into_body(),
+            core.get(get(bucket(), "retained"), 6).await?.into_body(),
             OwnedBytes::from_static(b"before")
         );
         assert_eq!(
-            core.get(get("interrupted"), 5).await.err().map(|e| e.code),
+            core.get(get(bucket(), "interrupted"), 5).await.err().map(|e| e.code),
             Some(NotFound)
         );
         core.put(put("interrupted"), OwnedBytes::from_static(b"after"))
@@ -369,7 +363,7 @@ async fn multipart_recovery_preserves_parts_composite_ranges_and_completion_retr
                 end: Some(5 * 1024 * 1024 + 1),
             })),
         }),
-        ..get("multipart")
+        ..get(bucket(), "multipart")
     };
     assert_eq!(core.get(range, 4).await?.into_body(), OwnedBytes::from_static(b"aaen"));
     core.delete(wire::DeleteObjectRequest {
@@ -382,7 +376,7 @@ async fn multipart_recovery_preserves_parts_composite_ranges_and_completion_retr
     let core = reopen(root.path())?;
     assert_eq!(core.complete_multipart(query).await?, receipt);
     assert_eq!(
-        core.get(get("multipart"), 10).await.err().map(|e| e.code),
+        core.get(get(bucket(), "multipart"), 10).await.err().map(|e| e.code),
         Some(NotFound)
     );
     Ok(())
@@ -426,7 +420,7 @@ async fn logical_quota_failure_does_not_persist_a_body_or_retry_receipt()
     .await?;
     core.put(put("new"), OwnedBytes::from_static(b"ab")).await?;
     assert_eq!(
-        core.get(get("new"), 2).await?.into_body(),
+        core.get(get(bucket(), "new"), 2).await?.into_body(),
         OwnedBytes::from_static(b"ab")
     );
     Ok(())
@@ -459,11 +453,11 @@ async fn uncertain_batch_item_prevents_later_exact_retries_in_the_same_admission
     drop(core);
     let core = reopen(root.path())?;
     assert_eq!(
-        core.get(get("retained"), 6).await?.into_body(),
+        core.get(get(bucket(), "retained"), 6).await?.into_body(),
         OwnedBytes::from_static(b"before")
     );
     assert_eq!(
-        core.get(get("later"), 5).await.err().map(|e| e.code),
+        core.get(get(bucket(), "later"), 5).await.err().map(|e| e.code),
         Some(NotFound)
     );
     Ok(())
@@ -496,7 +490,7 @@ async fn checkpoint_interruption_recovers_old_or_new_state_without_losing_receip
         drop(core);
         let core = reopen(root.path())?;
         assert_eq!(
-            core.get(get("retained"), 5).await?.into_body(),
+            core.get(get(bucket(), "retained"), 5).await?.into_body(),
             OwnedBytes::from_static(b"after")
         );
         assert_eq!(
@@ -508,7 +502,7 @@ async fn checkpoint_interruption_recovers_old_or_new_state_without_losing_receip
         core.put(put("next"), OwnedBytes::from_static(b"next")).await?;
         drop(core);
         assert_eq!(
-            reopen(root.path())?.get(get("next"), 4).await?.into_body(),
+            reopen(root.path())?.get(get(bucket(), "next"), 4).await?.into_body(),
             OwnedBytes::from_static(b"next")
         );
     }
@@ -776,7 +770,7 @@ async fn store_spans_omit_customer_names()
     let root = tempfile::tempdir()?;
     let core = seeded(root.path()).await?;
     assert_eq!(
-        core.get(get("missing"), 1).await.err().map(|e| e.code),
+        core.get(get(bucket(), "missing"), 1).await.err().map(|e| e.code),
         Some(NotFound)
     );
     core.collect_local_garbage(10)?;

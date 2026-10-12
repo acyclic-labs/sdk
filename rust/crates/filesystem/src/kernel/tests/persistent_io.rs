@@ -1,5 +1,6 @@
 use crate::async_storage::AsyncObjectStore;
 use super::*;
+use crate::kernel::allocation::KernelAccounting;
 use crate::foundation::FileId;
 use crate::kernel::tree_mutation::TreeFormat;
 use crate::kernel::{
@@ -73,15 +74,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
 
     let mut first_allocations = AllocationLedger::default();
     let mut first_work = WorkCounters::default();
-    let first = (read_page::<_, TreeFormat>(
-        &store,
-        page,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut first_allocations,
-        &mut first_work,
-    )).await?;
+    let first = (read_page_with_accounting::<_, TreeFormat>(&store, page, DecodeLimits::default(), &mut KernelAccounting::borrowed_standalone(&mut first_allocations, &mut first_work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await.map(|(page, _)| page)?;
     assert!(matches!(first.page, PageLease::Shared { .. }));
     assert_eq!(first.logical_bytes, 0);
     assert_eq!(first_allocations.live_bytes(), 0);
@@ -89,15 +82,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
 
     let mut warm_allocations = AllocationLedger::default();
     let mut warm_work = WorkCounters::default();
-    let warm = (read_page::<_, TreeFormat>(
-        &store,
-        page,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut warm_allocations,
-        &mut warm_work,
-    )).await?;
+    let warm = (read_page_with_accounting::<_, TreeFormat>(&store, page, DecodeLimits::default(), &mut KernelAccounting::borrowed_standalone(&mut warm_allocations, &mut warm_work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await.map(|(page, _)| page)?;
     assert!(matches!(warm.page, PageLease::Shared { .. }));
     assert_eq!(warm_work.page_reads, 1);
     assert_eq!(warm_work.backend_read_operations, 0);
@@ -154,18 +139,10 @@ async fn decoded_cache_rejection_releases_owned_page_allocation() -> Result<(), 
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let failure = (read_page::<_, TreeFormat>(
-        &store,
-        page,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-        &mut allocations,
-        &mut work,
-    )).await
+    let failure = (read_page_with_accounting::<_, TreeFormat>(&store, page, DecodeLimits::default(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &CancellationToken::new()), &CancellationToken::new(), None)).await.map(|(page, _)| page)
     .err()
     .ok_or("decoded-cache rejection unexpectedly succeeded")?;
-    assert!(matches!(failure, Error::Storage(ObjectStoreError::Corrupt)));
+    assert!(matches!(failure, crate::FsError::Object(ObjectStoreError::Corrupt)));
     assert_eq!(allocations.live_bytes(), 0);
     assert_eq!(work.backend_read_operations, 1);
     Ok(())
@@ -191,44 +168,22 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
 
     let mut seed_allocations = AllocationLedger::default();
     let mut seed_work = WorkCounters::default();
-    let seed = (read_page::<_, TreeFormat>(
-        &store,
-        first,
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut seed_allocations,
-        &mut seed_work,
-    )).await?;
+    let seed = (read_page_with_accounting::<_, TreeFormat>(&store, first, limits, &mut KernelAccounting::borrowed_standalone(&mut seed_allocations, &mut seed_work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await.map(|(page, _)| page)?;
     assert!(matches!(seed.page, PageLease::Shared { .. }));
     assert_eq!(seed_allocations.live_bytes(), 0);
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut batch = (read_pages::<_, TreeFormat, _>(
-        &store,
-        [first, second, first].into_iter(),
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )).await?;
+    let mut batch = (read_pages_with_accounting::<_, TreeFormat, _>(&store, [first, second, first].into_iter(), limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await?;
     assert_eq!(work.page_reads, 3);
     assert_eq!(work.backend_read_operations, 1);
     let mut names = Vec::new();
     for _ in 0..3 {
-        let page = batch.next(
-            limits,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            &mut allocations,
-            &mut work,
-        )?;
+        let page = batch.next_with_accounting(limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation).map(|(page, _)| page)?;
         assert!(matches!(page.page, PageLease::Shared { .. }));
         names.push(only_page_name(&page)?);
     }
-    batch.finish(&mut allocations)?;
+    batch.finish_with_accounting(&mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation)?;
     assert_eq!(
         names,
         [b"first".to_vec(), b"second".to_vec(), b"first".to_vec()]
@@ -239,31 +194,17 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
 
     let mut warm_allocations = AllocationLedger::default();
     let mut warm_work = WorkCounters::default();
-    let mut warm = (read_pages::<_, TreeFormat, _>(
-        &store,
-        [first, second, first].into_iter(),
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut warm_allocations,
-        &mut warm_work,
-    )).await?;
+    let mut warm = (read_pages_with_accounting::<_, TreeFormat, _>(&store, [first, second, first].into_iter(), limits, &mut KernelAccounting::borrowed_standalone(&mut warm_allocations, &mut warm_work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await?;
     assert_eq!(warm_work.backend_read_operations, 0);
     assert_eq!(warm_work.object_bytes_read, 0);
     for _ in 0..3 {
         assert!(matches!(
-            warm.next(
-                limits,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-                &mut warm_allocations,
-                &mut warm_work,
-            )?
+            warm.next_with_accounting(limits, &mut KernelAccounting::borrowed_standalone(&mut warm_allocations, &mut warm_work, WorkBudget::UNBOUNDED, &cancellation), &cancellation).map(|(page, _)| page)?
             .page,
             PageLease::Shared { .. }
         ));
     }
-    warm.finish(&mut warm_allocations)?;
+    warm.finish_with_accounting(&mut KernelAccounting::borrowed_standalone(&mut warm_allocations, &mut warm_work, WorkBudget::UNBOUNDED, &cancellation), &cancellation)?;
     assert_eq!(warm_allocations.live_bytes(), 0);
     assert_eq!(store.stats()?.decoded_hits, 5);
     Ok(())
@@ -289,18 +230,10 @@ async fn post_read_budget_failure_releases_every_decoded_allocation()
     let mut budget = WorkBudget::UNBOUNDED;
     budget.bytes_copied = 0;
     let cancellation = CancellationToken::new();
-    let result = (read_page::<_, TreeFormat>(
-        &store,
-        object,
-        DecodeLimits::default(),
-        budget,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )).await;
+    let result = (read_page_with_accounting::<_, TreeFormat>(&store, object, DecodeLimits::default(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, budget, &cancellation), &cancellation, None)).await.map(|(page, _)| page);
     assert!(matches!(
         result,
-        Err(Error::Work(WorkError::BudgetExceeded {
+        Err(crate::FsError::Work(WorkError::BudgetExceeded {
             counter: "bytes_copied",
             ..
         }))
@@ -317,15 +250,7 @@ async fn single_page_read_authenticates_decode_and_releases_backend_ownership()
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
     let cancellation = CancellationToken::new();
-    let owned = (read_page::<_, TreeFormat>(
-        &store,
-        object,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )).await?;
+    let owned = (read_page_with_accounting::<_, TreeFormat>(&store, object, DecodeLimits::default(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await.map(|(page, _)| page)?;
     assert!(matches!(owned.page, PageLease::Owned(Page::Leaf(_))));
     assert!(owned.logical_bytes > 0);
     assert_eq!(allocations.live_bytes(), owned.logical_bytes);
@@ -342,18 +267,10 @@ async fn single_page_read_authenticates_decode_and_releases_backend_ownership()
     AsyncObjectStore::put(&store, malformed_id, malformed, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let mut allocations = AllocationLedger::default();
     let mut malformed_work = WorkCounters::default();
-    let failure = (read_page::<_, TreeFormat>(
-        &store,
-        malformed_id,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut malformed_work,
-    )).await
+    let failure = (read_page_with_accounting::<_, TreeFormat>(&store, malformed_id, DecodeLimits::default(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut malformed_work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await.map(|(page, _)| page)
     .err()
     .ok_or("malformed page decoded")?;
-    assert!(matches!(failure, Error::Decode(_)));
+    assert!(matches!(failure, crate::FsError::Decode(_)));
     assert_eq!(allocations.live_bytes(), 0);
     assert_eq!(malformed_work.page_reads, 1);
     assert_eq!(malformed_work.backend_read_operations, 1);
@@ -382,18 +299,10 @@ async fn shape_valid_malformed_tree_page_releases_decoded_allocation()
         WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let failure = (read_page::<_, TreeFormat>(
-        &store,
-        object,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-        &mut allocations,
-        &mut work,
-    )).await
+    let failure = (read_page_with_accounting::<_, TreeFormat>(&store, object, DecodeLimits::default(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &CancellationToken::new()), &CancellationToken::new(), None)).await.map(|(page, _)| page)
     .err()
     .ok_or("shape-valid malformed tree page unexpectedly decoded")?;
-    assert!(matches!(failure, Error::Decode(_)));
+    assert!(matches!(failure, crate::FsError::Decode(_)));
     assert_eq!(allocations.live_bytes(), 0);
     assert_eq!(work.backend_read_operations, 1);
     Ok(())
@@ -410,77 +319,39 @@ async fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut batch = (read_pages::<_, TreeFormat, _>(
-        &store,
-        [first, second].into_iter(),
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )).await?;
+    let mut batch = (read_pages_with_accounting::<_, TreeFormat, _>(&store, [first, second].into_iter(), limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await?;
     assert!(allocations.live_bytes() > 0);
     assert_eq!(work.page_reads, 2);
-    let page = batch.next(
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )?;
+    let page = batch.next_with_accounting(limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation).map(|(page, _)| page)?;
     assert!(matches!(page.page, PageLease::Owned(Page::Leaf(_))));
     allocations.release(page.logical_bytes)?;
     cancellation.cancel();
-    let failure = batch
-        .next(
-            limits,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            &mut allocations,
-            &mut work,
-        )
+    let failure = batch.next_with_accounting(limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation).map(|(page, _)| page)
         .err()
         .ok_or("cancelled batch continued")?;
     assert!(matches!(
         failure,
-        Error::Storage(ObjectStoreError::Cancelled)
+        crate::FsError::Cancelled(_)
     ));
     assert_eq!(allocations.live_bytes(), 0);
 
     let cancellation = CancellationToken::new();
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let batch = (read_pages::<_, TreeFormat, _>(
-        &store,
-        [first, second].into_iter(),
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )).await?;
-    let failure = batch
-        .finish(&mut allocations)
+    let batch = (read_pages_with_accounting::<_, TreeFormat, _>(&store, [first, second].into_iter(), limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await?;
+    let failure = batch.finish_with_accounting(&mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation)
         .err()
         .ok_or("unfinished batch was accepted")?;
     assert!(matches!(
         failure,
-        Error::Storage(ObjectStoreError::Rejected(_))
+        crate::FsError::Object(ObjectStoreError::Rejected(_))
     ));
     assert_eq!(allocations.live_bytes(), 0);
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let batch = (read_pages::<_, TreeFormat, _>(
-        &store,
-        [first, second].into_iter(),
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )).await?;
-    batch.discard(&mut allocations)?;
+    let batch = (read_pages_with_accounting::<_, TreeFormat, _>(&store, [first, second].into_iter(), limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await?;
+    batch.discard_with_accounting(&mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation)?;
     assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }
@@ -492,40 +363,24 @@ async fn invalid_and_precancelled_batches_do_no_backend_work() -> Result<(), Box
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
     let cancellation = CancellationToken::new();
-    let empty = (read_pages::<_, TreeFormat, _>(
-        &store,
-        std::iter::empty(),
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )).await
+    let empty = (read_pages_with_accounting::<_, TreeFormat, _>(&store, std::iter::empty(), DecodeLimits::default(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await
     .err()
     .ok_or("empty batch succeeded")?;
     assert!(matches!(
         empty,
-        Error::Storage(ObjectStoreError::Rejected(_))
+        crate::FsError::Object(ObjectStoreError::Rejected(_))
     ));
     assert_eq!(work, WorkCounters::default());
     assert_eq!(allocations.live_bytes(), 0);
 
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let cancelled = (read_pages::<_, TreeFormat, _>(
-        &store,
-        [object].into_iter(),
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )).await
+    let cancelled = (read_pages_with_accounting::<_, TreeFormat, _>(&store, [object].into_iter(), DecodeLimits::default(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await
     .err()
     .ok_or("cancelled batch succeeded")?;
     assert!(matches!(
         cancelled,
-        Error::Storage(ObjectStoreError::Cancelled)
+        crate::FsError::Cancelled(_)
     ));
     assert_eq!(work, WorkCounters::default());
     assert_eq!(allocations.live_bytes(), 0);
@@ -543,54 +398,20 @@ async fn fully_consumed_batches_finish_and_reject_reads_past_the_exact_result()
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut batch = (read_pages::<_, TreeFormat, _>(
-        &store,
-        [first, second].into_iter(),
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )).await?;
+    let mut batch = (read_pages_with_accounting::<_, TreeFormat, _>(&store, [first, second].into_iter(), limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await?;
     for _ in 0..2 {
-        let page = batch.next(
-            limits,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            &mut allocations,
-            &mut work,
-        )?;
+        let page = batch.next_with_accounting(limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation).map(|(page, _)| page)?;
         allocations.release(page.logical_bytes)?;
     }
-    batch.finish(&mut allocations)?;
+    batch.finish_with_accounting(&mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation)?;
     assert_eq!(allocations.live_bytes(), 0);
 
-    let mut batch = (read_pages::<_, TreeFormat, _>(
-        &store,
-        [first].into_iter(),
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )).await?;
-    let page = batch.next(
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )?;
+    let mut batch = (read_pages_with_accounting::<_, TreeFormat, _>(&store, [first].into_iter(), limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await?;
+    let page = batch.next_with_accounting(limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation).map(|(page, _)| page)?;
     allocations.release(page.logical_bytes)?;
     assert!(matches!(
-        batch.next(
-            limits,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            &mut allocations,
-            &mut work,
-        ),
-        Err(Error::Storage(ObjectStoreError::Rejected(_)))
+        batch.next_with_accounting(limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation).map(|(page, _)| page),
+        Err(crate::FsError::Object(ObjectStoreError::Rejected(_)))
     ));
     assert_eq!(allocations.live_bytes(), 0);
     Ok(())
@@ -611,32 +432,12 @@ async fn late_batch_decode_failure_releases_every_pending_allocation()
     let cancellation = CancellationToken::new();
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut batch = (read_pages::<_, TreeFormat, _>(
-        &store,
-        [first, second].into_iter(),
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )).await?;
-    let page = batch.next(
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut allocations,
-        &mut work,
-    )?;
+    let mut batch = (read_pages_with_accounting::<_, TreeFormat, _>(&store, [first, second].into_iter(), limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await?;
+    let page = batch.next_with_accounting(limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation).map(|(page, _)| page)?;
     allocations.release(page.logical_bytes)?;
     assert!(matches!(
-        batch.next(
-            limits,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            &mut allocations,
-            &mut work,
-        ),
-        Err(Error::Decode(_))
+        batch.next_with_accounting(limits, &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), &cancellation).map(|(page, _)| page),
+        Err(crate::FsError::Decode(_))
     ));
     assert_eq!(allocations.live_bytes(), 0);
     Ok(())

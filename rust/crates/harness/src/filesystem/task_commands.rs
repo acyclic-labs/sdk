@@ -1,4 +1,5 @@
 //! Stock workflow command dispatch through existing journaled executors.
+use crate::runtime::TaskSpawner as _;
 
 use super::{FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress, task_runtime::WorkerContext};
 use crate::runtime::TaskStateProvider;
@@ -517,7 +518,7 @@ where
         let _guard = super::default_tools::InvocationCancellation(cancellation.clone());
         let owner = self.runtime.task_host().journal_owner(task, fence.clone()).await?
             .with_invocation_cancellation(&cancellation);
-        let preparation = Arc::new(owner).resource_preparation(request).await?;
+        let preparation = Arc::new(owner).resource_preparation(request, &mut None).await?;
         let fork: crate::fork::ForkRequest = serde_json::from_value(preparation.request().payload.clone())
             .map_err(|cause| Error::Invalid(format!("invalid exact fork request: {cause}")))?;
         let preparer = if let Some(preparer) = &self.fork_preparer {
@@ -611,7 +612,7 @@ where
             let work = io.original_native_work().ok_or_else(|| boundary(
                 Some(io), ErrorCode::Unsupported, "native prepared admission requires original work"))?;
             if reconciliation_only {
-                let retained = crate::runtime::DurableTaskHost::reconcile_admission_with_native_work(
+                let retained = crate::runtime::TaskSpawner::reconcile_admission_with_native_work(
                     self.runtime.task_host().as_ref(), request.admission.operation_id, work,
                 )?.await?;
                 io.absorb_native_custody(retained.1)?;
@@ -625,7 +626,7 @@ where
                     Some(io), ErrorCode::Invalid, "prepared admission custody overflows"))?;
             let admission = (request.admission, io.take_native_custody(bytes)?);
             let fence = super::task_runtime::observed::clone_fence_with_custody(fence, io)?;
-            let result = crate::runtime::DurableTaskHost::admit_owned_with_native_work(
+            let result = crate::runtime::TaskSpawner::admit_owned_with_native_work(
                 self.runtime.task_host().as_ref(), admission, fence, work,
             )?.await?;
             io.absorb_native_custody(result.1)?;
@@ -818,7 +819,7 @@ where
                     task, context.scope(), work,
                 )?;
                 if reconciliation_only {
-                    let (retained, retained_custody) = crate::runtime::DurableTaskHost::reconcile_admission_with_native_work(
+                    let (retained, retained_custody) = crate::runtime::TaskSpawner::reconcile_admission_with_native_work(
                         self.runtime.task_host().as_ref(), operation, work,
                     )?.await?;
                     io.absorb_native_custody(retained_custody)?;
@@ -828,7 +829,7 @@ where
                     return mail::reconciled(Some(io));
                 }
                 let paid_fence = super::task_runtime::observed::clone_fence_with_custody(fence, io)?;
-                let (result, custody) = crate::runtime::DurableTaskHost::admit_owned_with_native_work(
+                let (result, custody) = crate::runtime::TaskSpawner::admit_owned_with_native_work(
                     self.runtime.task_host().as_ref(), admission, paid_fence, work,
                 )?.await?;
                 io.absorb_native_custody(custody)?;
@@ -946,7 +947,7 @@ where
                     let item = self.committed_mail_input(task, fence, turn, receive, &context, None).await?;
                     let copy_operation = crate::durable_host::received_copy_operation(task, receive, None)?;
                     let copy_path = format!("mailbox/{receive}/parcel");
-                    let copy = match context.observe_staged_file_once(copy_operation).await? {
+                    let copy = match context.observe_staged_file_once(copy_operation, None).await? {
                         Some(file) => file,
                         None if reconciliation_only => return Err(boundary(io, ErrorCode::Storage,
                             "started steered model has no retained receiver parcel")),
@@ -1118,14 +1119,14 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
                 let work = io.original_native_work().expect("native tool has its original work");
-                let runner = DurableToolRunner::new_with_native_work(self.runtime.tool_registry(), journal, work)?.with_limits(limits)?;
+                let runner = DurableToolRunner::new(self.runtime.tool_registry(), journal, Some(work))?.with_limits(limits)?;
                 let (outcome, custody) = if reconciliation_only {
                     runner.reconcile_with_native_context(task, operation, definition, &invocation.arguments, &context, work)?.await?
                 } else { runner.run_with_native_context(task, operation, definition, &invocation.arguments, &context, work)?.await? };
                 io.absorb_native_custody(custody)?;
                 break 'outcome outcome;
             }
-            let runner = DurableToolRunner::new(self.runtime.tool_registry().clone(), journal).with_limits(limits)?;
+            let runner = DurableToolRunner::new(self.runtime.tool_registry(), journal, None)?.with_limits(limits)?;
             break 'outcome runner.run_with_context(task, operation, definition.clone(), invocation.arguments, context).await?;
         };
         match outcome {

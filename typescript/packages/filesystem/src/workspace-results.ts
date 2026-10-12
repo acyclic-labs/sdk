@@ -48,7 +48,7 @@ export function parseMergePreparation(
 
 interface RawResult {
   readonly status: string;
-  readonly generationId: Uint8Array | undefined;
+  readonly generationId?: Uint8Array | undefined;
   readonly conflicts: readonly unknown[];
   readonly truncated: boolean;
 }
