@@ -1548,22 +1548,22 @@ fn hash_unicode_fold<I: Iterator<Item = char> + Clone>(
         decompose_canonical(scalar, |scalar| decomposed.0.push((canonical_combining_class(scalar), scalar)));
     }
     for index in 1..decomposed.0.len() {
-        let value = *decomposed.0.get(index).ok_or(super::MountSourceError::Stale)?;
+        let value = decomposed.0[index];
         if value.0 == 0 { continue; }
         let mut position = index;
         while position > 0 {
             record_items(work, 1)?;
-            let prior = *decomposed.0.get(position - 1).ok_or(super::MountSourceError::Stale)?;
+            let prior = decomposed.0[position - 1];
             if prior.0 <= value.0 { break; }
             work.charge(crate::WorkCounters {
                 bytes_copied: std::mem::size_of::<(u8, char)>() as u64,
                 ..crate::WorkCounters::UNCHARGED
             })?;
-            *decomposed.0.get_mut(position).ok_or(super::MountSourceError::Stale)? = prior;
+            decomposed.0[position] = prior;
             position -= 1;
         }
         if position != index {
-            *decomposed.0.get_mut(position).ok_or(super::MountSourceError::Stale)? = value;
+            decomposed.0[position] = value;
         }
     }
     let mut written = 0;
@@ -1571,23 +1571,23 @@ fn hash_unicode_fold<I: Iterator<Item = char> + Clone>(
     let mut last_class = 0;
     for read in 0..decomposed.0.len() {
         record_items(work, 1)?;
-        let value = *decomposed.0.get(read).ok_or(super::MountSourceError::Stale)?;
+        let value = decomposed.0[read];
         if let Some(starter) = starter {
             if last_class == 0 || last_class < value.0 {
-                let prior = decomposed.0.get(starter).ok_or(super::MountSourceError::Stale)?.1;
+                let prior = decomposed.0[starter].1;
                 if let Some(composed) = compose(prior, value.1) {
-                    decomposed.0.get_mut(starter).ok_or(super::MountSourceError::Stale)?.1 = composed;
+                    decomposed.0[starter].1 = composed;
                     continue;
                 }
             }
         }
         if value.0 == 0 { starter = Some(written); }
         last_class = value.0;
-        *decomposed.0.get_mut(written).ok_or(super::MountSourceError::Stale)? = value;
+        decomposed.0[written] = value;
         written += 1;
     }
     let mut encoded = [0_u8; 4];
-    for (_, scalar) in decomposed.0.get(..written).ok_or(super::MountSourceError::Stale)? {
+    for (_, scalar) in &decomposed.0[..written] {
         for folded in scalar.to_uppercase().flat_map(char::to_lowercase) {
             record_items(work, 1)?;
             hasher.write(folded.encode_utf8(&mut encoded).as_bytes());
@@ -1603,16 +1603,14 @@ fn hash_ascii_fold(bytes: impl Iterator<Item = u8>, hasher: &mut DefaultHasher) 
     let mut buffer = [0_u8; 64];
     let mut filled = 0;
     for byte in bytes {
-        if let Some(slot) = buffer.get_mut(filled) {
-            *slot = byte.to_ascii_lowercase();
-            filled += 1;
-        }
+        buffer[filled] = byte.to_ascii_lowercase();
+        filled += 1;
         if filled == buffer.len() {
             hasher.write(&buffer);
             filled = 0;
         }
     }
-    hasher.write(buffer.get(..filled).unwrap_or_default());
+    hasher.write(&buffer[..filled]);
 }
 
 fn key_of(value: &impl Hash) -> u64 {

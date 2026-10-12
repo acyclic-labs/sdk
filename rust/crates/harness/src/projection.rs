@@ -265,25 +265,21 @@ impl SelectedModelContext {
 
 
 /// Projects a selection from the explicitly pinned conversation revision.
-#[allow(clippy::too_many_arguments,
-    reason = "the original revision selection ABI adds only its original optional preparation IO")]
 pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
     conversation: &ConversationState,
     conversation_revision: u64,
     selection: ModelContextSelection,
     resolver: &R,
-    maximum_messages: usize,
-    maximum_attachments: usize,
-    maximum_render_bytes: u64,
+    limits: Limits,
     maximum_projected_attachments: usize,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<SelectedModelContext> {
     crate::executor::with_history_io(io, |work| validate_model_context_selection(conversation, &selection, conversation_revision, work))?;
-    if maximum_messages == 0
-        || maximum_render_bytes == 0
-        || maximum_render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+    if limits.context_messages == 0
+        || limits.render_bytes == 0
+        || limits.render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
         || maximum_projected_attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
-        || selection.message_ids.len() > maximum_messages
+        || selection.message_ids.len() > limits.context_messages
     {
         return Err(projection_invalid(io, "selected message count exceeds projection limit"));
     }
@@ -295,7 +291,7 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             .ok_or_else(|| projection_invalid(io, "selected conversation message is missing"))?;
         if message.kind == MessageKind::ToolCall {
             let invocation: ProjectedToolInvocation =
-                read_projected_invocation(resolver, &message.content, maximum_render_bytes, io).await?;
+                read_projected_invocation(resolver, &message.content, limits.render_bytes, io).await?;
             validate_projection_tool_identity(&invocation.call_id, &invocation.name, io)?;
             if message.tool_call_id.as_deref() != Some(invocation.call_id.as_str()) {
                 return Err(projection_invalid(io, "tool call artifact identity does not match its record"));
@@ -335,11 +331,11 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
                 return Err(projection_invalid(io, "selected tool result lacks its call"));
             }
             let _attachments_hold;
-            let (attachments, hold) = resolve_projection_attachments(message, resolver, maximum_attachments, io).await?;
+            let (attachments, hold) = resolve_projection_attachments(message, resolver, limits.attachments, io).await?;
             _attachments_hold = hold;
             let projection = projection_result_attachment(attachments.as_ref(), io)?;
             let value =
-                read_projected_tool_result(resolver, &projection.file, maximum_render_bytes, io).await?;
+                read_projected_tool_result(resolver, &projection.file, limits.render_bytes, io).await?;
             let call_id = crate::executor::stock_string_copy(call_id, io)?;
             let name = crate::executor::stock_string_copy(name, io)?;
             messages.push(ModelMessage {
@@ -369,16 +365,16 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             }
         };
         let primary_policy = match message.content.descriptor().media_type() {
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => projection_native_image(maximum_render_bytes, io)?,
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => projection_native_image(limits.render_bytes, io)?,
             kind if kind.starts_with("text/")
-                && message.content.descriptor().byte_length() <= maximum_render_bytes =>
+                && message.content.descriptor().byte_length() <= limits.render_bytes =>
             {
                 FileProjectionPolicy::BoundedFull
             }
             _ => FileProjectionPolicy::Reference,
         };
         let attachments_hold;
-        let (attachments, hold) = resolve_projection_attachments(message, resolver, maximum_attachments, io).await?;
+        let (attachments, hold) = resolve_projection_attachments(message, resolver, limits.attachments, io).await?;
         attachments_hold = hold;
         let projected_count = attachments.len().min(maximum_projected_attachments);
         let omitted_count = attachments.len() - projected_count;
@@ -388,7 +384,7 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             file: crate::model::clone_file(&message.content, io)?,
             policy: primary_policy,
         });
-        append_projected_attachments(attachments, attachments_hold, projected_count, &mut parts, maximum_render_bytes, io)?;
+        append_projected_attachments(attachments, attachments_hold, projected_count, &mut parts, limits.render_bytes, io)?;
         if omitted_count > 0 {
             let text = projection_omission_text(omitted_count, io)?;
             parts.push(ModelContentPart::Text { text });
@@ -1083,9 +1079,7 @@ mod tests {
                 (&conversation).logical_revision(),
                 selection.clone(),
                 &resolver,
-                256,
-                1,
-                128 * 1024,
+                crate::conversation::Limits { context_messages: 256, attachments: 1, render_bytes: 128 * 1024, ..Default::default() },
                 1,
                 None,
             )
@@ -1099,9 +1093,7 @@ mod tests {
                 (&conversation).logical_revision(),
                 selection.clone(),
                 &resolver,
-                256,
-                2,
-                128 * 1024,
+                crate::conversation::Limits { context_messages: 256, attachments: 2, render_bytes: 128 * 1024, ..Default::default() },
                 2,
                 None,
             )
@@ -1118,7 +1110,7 @@ mod tests {
         conversation.append(message, &mut None)?;
         let resolver = Resolver { bytes, ..Resolver::default() };
         let projected =
-            select_model_context(&conversation, (&conversation).logical_revision(), selection, &resolver, 256, 2, 128 * 1024, 2, None).await?;
+            select_model_context(&conversation, (&conversation).logical_revision(), selection, &resolver, crate::conversation::Limits { context_messages: 256, attachments: 2, render_bytes: 128 * 1024, ..Default::default() }, 2, None).await?;
         assert_eq!(projected.messages.len(), 1);
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
         Ok(())
