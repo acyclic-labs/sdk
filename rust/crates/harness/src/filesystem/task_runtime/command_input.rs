@@ -82,7 +82,7 @@ impl CommandDispatch {
         #[cfg(not(target_arch = "wasm32"))]
         if let Self::Ready { custody: Some(guard), .. } = self {
             let io = super::super::fork_preparer::bounded_io::PreparationIo::from_native_work(guard.work())?;
-            let bytes = io.encode_json(&envelope, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
+            let bytes = io.encode(&envelope, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
             let within = bytes.len() as u64 <= maximum_bytes;
             drop(bytes);
             return Ok(within);

@@ -1,11 +1,11 @@
 //! Pi controls borrow the original task mailbox, never a service-local inbox.
 use super::{pi_owner::PiOwnerConfig, pi_root_provider::{
-    stage_pi_input_with_native_work, guarded_pi_decode, guarded_pi_value}};
+    stage_pi_input, guarded_pi_decode, guarded_pi_value}};
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, LocalAuthorityBackend, LocalObjectBackend,
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters};
 use acyclic_harness::{Error, OperationId, Outcome, Result, TaskId,
     durable_host::TaskJournalOwner,
-    filesystem::{FilesystemHost, FilesystemTaskRuntime, TaskCommandProgress, MailSendTaskCommand, MAIL_SEND_TASK_COMMAND_KIND},
+    filesystem::{FilesystemHost, FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress, MailSendTaskCommand, MAIL_SEND_TASK_COMMAND_KIND},
     runtime::TaskContext, scheduler::{InboxItem, LeaseFence}, workflow::WorkflowCommand};
 use acyclic_stream::StreamProvider;
 use serde::{Deserialize, Serialize};
@@ -17,8 +17,7 @@ pub(crate) const MAXIMUM_PI_MAIL_BYTES: u64 = 65_536;
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PiMailKind { Message, Steer }
 
-/// First-party immutable payload. Sender identity is the actual fenced mailbox
-/// publisher, not a field supplied by Pi or the root service.
+/// First-party immutable payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiMailEnvelope {
@@ -28,7 +27,6 @@ pub(crate) struct PiMailEnvelope {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PiMailPayload { sender: TaskId, envelope: PiMailEnvelope }
-
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,13 +52,6 @@ fn native_error(cause: NativeTreeMaterializationError) -> Error {
     Error::NativeWork { cause, custody: None }
 }
 
-// Field order keeps the genuine producer claim alive while its value is
-// destroyed, including early errors and cancellation of an async helper.
-struct NativeOwned<T> { value: T, custody: NativeAllocation }
-fn owned<T>((value, custody): (T, NativeAllocation)) -> NativeOwned<T> {
-    NativeOwned { value, custody }
-}
-
 async fn authenticate<P: StreamProvider>(
     context: &TaskContext, owner: &TaskJournalOwner<P>, work: &NativeMaterializationWork,
 ) -> Result<TaskId> {
@@ -80,9 +71,7 @@ fn validate_envelope(envelope: &PiMailEnvelope) -> Result<()> {
     Ok(())
 }
 
-/// Parent supplies its retained graph check. This stages only immutable inputs
-/// with protected original-owner authority; it does not send as that root.
-/// The returned command MUST be executed by caller's original workflow/lease.
+/// Parent supplies its retained graph check.
 #[allow(clippy::too_many_arguments, reason = "explicit original task and protected immutable input owner")]
 pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) -> Result<()>>(
     context: &TaskContext, owner: &TaskJournalOwner<P>, protected: &PiOwnerConfig,
@@ -92,13 +81,12 @@ pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) ->
 ) -> Result<(WorkflowCommand, NativeAllocation)> {
     let caller = authenticate(context, owner, work).await?;
     authorize(caller, recipient)?;
-    let command = owned(stage_send(protected, filesystem, operation, caller, recipient, envelope, work).await?);
+    let command = stage_send(protected, filesystem, operation, caller, recipient, envelope, work).await?;
     owner.verify_with_native_work(false, work).await?;
-    Ok((command.value, command.custody))
+    Ok((command.0, command.1))
 }
 
-/// Trusted actor input staging for a passive root. No mail is dispatched here;
-/// the resulting command still needs its original task's fresh execution owner.
+/// Trusted actor input staging for a passive root.
 #[allow(clippy::too_many_arguments, reason = "original protected actor and exact immutable sender/recipient input")]
 pub(crate) async fn stage_send(
     protected: &PiOwnerConfig,
@@ -108,51 +96,50 @@ pub(crate) async fn stage_send(
 ) -> Result<(WorkflowCommand, NativeAllocation)> {
     validate_envelope(&envelope)?;
     let stored = PiMailPayload { sender: caller, envelope };
-    let staged = owned(stage_pi_input_with_native_work(
-        protected, filesystem, operation, "mail-envelope", &stored, work).await?);
-    let payload = MailSendTaskCommand { recipient, payload: staged.value };
-    let mut command = owned(stage_pi_input_with_native_work(
-        protected, filesystem, operation, "mail-send", &payload, work).await?);
+    let staged = stage_pi_input(
+        protected, filesystem, operation, "mail-envelope", &stored, work).await?;
+    let payload = MailSendTaskCommand { recipient, payload: staged.0 };
+    let mut command = stage_pi_input(
+        protected, filesystem, operation, "mail-send", &payload, work).await?;
     drop(payload);
-    drop(staged.custody);
+    drop(staged.1);
     let kind_length = MAIL_SEND_TASK_COMMAND_KIND.len() as u64;
     work.charge(WorkCounters { bytes_copied: kind_length, allocation_operations: 1, ..Default::default() })
         .map_err(native_error)?;
     let mut kind_custody = work.retain_owned(kind_length).map_err(native_error)?;
     let kind = MAIL_SEND_TASK_COMMAND_KIND.to_owned();
-    if let Err(cause) = command.custody.absorb(&mut kind_custody) {
+    if let Err(cause) = command.1.absorb(&mut kind_custody) {
         drop(kind);
-        drop(command.value);
+        drop(command.0);
         drop(kind_custody);
-        return Err(Error::NativeWork { cause, custody: Some(command.custody) });
+        return Err(Error::NativeWork { cause, custody: Some(command.1) });
     }
-    Ok((WorkflowCommand { operation_id: operation, kind, payload: command.value }, command.custody))
+    Ok((WorkflowCommand { operation_id: operation, kind, payload: command.0 }, command.1))
 }
 
-/// A normal control command; the hosting root must resume its original passive
-/// checkpoint before executing it. Children use their native process lease.
+/// A normal control command; the hosting root must resume its original passive checkpoint before executing it.
 pub(crate) async fn execute_send<P, A, O>(runtime: &FilesystemTaskRuntime<P, A, O>,
-    context: TaskContext, owner: &TaskJournalOwner<P>, fence: LeaseFence, command: WorkflowCommand,
+    context: std::sync::Arc<acyclic_harness::NativeTaskContext>, owner: &TaskJournalOwner<P>, fence: LeaseFence, command: WorkflowCommand,
     work: &NativeMaterializationWork,
 ) -> Result<TaskCommandProgress>
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
-    authenticate(&context, owner, work).await?;
+    authenticate(context.context(), owner, work).await?;
     if command.kind != MAIL_SEND_TASK_COMMAND_KIND {
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
             reason: "Pi send requires original stock mail command" });
     }
-    let bytes = owned(context.read_file_with_native_work(&command.payload, work).await?);
-    let payload = owned(decode::<MailSendTaskCommand>(&bytes.value, work)?);
+    let bytes = context.context().read_file_with_native_work(&command.payload, work).await?;
+    let payload = decode::<MailSendTaskCommand>(bytes.as_ref(), work)?;
     drop(bytes);
-    if payload.value.payload.descriptor().byte_length() > MAXIMUM_PI_MAIL_BYTES {
+    if payload.0.payload.descriptor().byte_length() > MAXIMUM_PI_MAIL_BYTES {
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
             reason: "Pi send payload exceeds original bounded envelope" });
     }
-    let value = owned(guarded_pi_value(&payload.value, MAXIMUM_PI_MAIL_BYTES * 8, work)?);
+    let value = guarded_pi_value(&payload.0, MAXIMUM_PI_MAIL_BYTES * 8, work)?;
     drop(payload);
     let commands = runtime.commands();
-    let result = commands.execute_with_native_work(context, fence, command, value.value, work)?.await;
-    drop(value.custody);
+    let result = commands.execute_with_native_work(context, fence, command, value.0, work)?.await;
+    drop(value.1);
     result
 }
 
@@ -164,23 +151,14 @@ const MAIL_DIAGNOSTIC_LABEL_BYTES: u64 =
         "recipient", "payload",
     ]);
 
-trait NativeMailboxDto: serde::de::DeserializeOwned {}
-impl NativeMailboxDto for PiMailEnvelope {}
-impl NativeMailboxDto for PiMailPayload {}
-impl NativeMailboxDto for MailSendTaskCommand {}
-
-fn decode<T: NativeMailboxDto>(
+fn decode<T: serde::de::DeserializeOwned>(
     bytes: &[u8], work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
-    // These concrete DTOs contain only fixed metadata, Strings and FileRefs.
-    // The SDK's issued source-shape bound covers their dynamic slots and
-    // strings; this witness adds the concrete inline envelope before serde.
     guarded_pi_decode(bytes, MAXIMUM_PI_MAIL_BYTES, std::mem::size_of::<T>() as u64,
         acyclic_harness::JsonValueSchema::None, MAIL_DIAGNOSTIC_LABEL_BYTES, work)
 }
 
 /// Passive polling acquires no reservation and charges no workflow task steps.
-/// The service supplies its authenticated retained caller binding, never tool JSON.
 pub(crate) async fn receive<P, A, O>(runtime: &FilesystemTaskRuntime<P, A, O>,
     caller: &super::PiTaskBinding, after: u64, maximum: u32, work: &NativeMaterializationWork,
 ) -> Result<(Option<PiMailboxReceive>, NativeAllocation)>
@@ -189,8 +167,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi receive selects exactly one item" }); }
     let next = after.checked_add(1).ok_or(Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi mailbox sequence overflows" })?;
-    let mut items = owned(runtime.task_host().inbox_with_native_work(caller.task_id, after, 1, work).await?);
-    let Some(item) = items.value.pop() else { return Ok((None, items.custody)); };
+    let mut items = runtime.task_host().inbox_with_native_work(caller.task_id, after, 1, work).await?;
+    let Some(item) = items.0.pop() else { return Ok((None, items.1)); };
     if item.task_id != caller.task_id || item.sequence != next {
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
             reason: "Pi passive receive selected a different sequence" });
@@ -199,22 +177,20 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
             reason: "Pi mailbox payload exceeds bounded decode" });
     }
-    let bytes = owned(runtime.task_host()
-        .read_recipient_file_with_native_work(caller.task_id, &item.payload, work).await?);
-    let mut payload = owned(decode::<PiMailPayload>(&bytes.value, work)?);
+    let bytes = runtime.task_host()
+        .read_recipient_file_with_native_work(caller.task_id, &item.payload, work).await?;
+    let mut payload = decode::<PiMailPayload>(&bytes.0, work)?;
     drop(bytes);
-    if let Err(cause) = items.custody.absorb(&mut payload.custody) {
+    if let Err(cause) = items.1.absorb(&mut payload.1) {
         drop(payload);
         drop(item);
-        drop(items.value);
-        return Err(Error::NativeWork { cause, custody: Some(items.custody) });
+        drop(items.0);
+        return Err(Error::NativeWork { cause, custody: Some(items.1) });
     }
-    Ok((Some(PiMailboxReceive { item, sender: payload.value.sender, envelope: payload.value.envelope }), items.custody))
+    Ok((Some(PiMailboxReceive { item, sender: payload.0.sender, envelope: payload.0.envelope }), items.1))
 }
 
-
 /// Passive wait uses only the original admitted task and bounded own inbox.
-/// No process future or execution lease is created by a wait/poll request.
 pub(crate) async fn wait<P, A, O, F>(runtime: &FilesystemTaskRuntime<P, A, O>,
     caller: &super::PiTaskBinding, requested: TaskId, after: u64, authorize: F,
     work: &NativeMaterializationWork,
@@ -222,18 +198,18 @@ pub(crate) async fn wait<P, A, O, F>(runtime: &FilesystemTaskRuntime<P, A, O>,
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
       F: FnOnce(TaskId, TaskId) -> Result<()> {
     authorize(caller.task_id, requested)?;
-    let mut mail = owned(receive(runtime, caller, after, 1, work).await?);
-    let mut outcome = owned(runtime.task_host().outcome_with_native_work(requested, work).await?);
-    let state = match &outcome.value {
+    let mut mail = receive(runtime, caller, after, 1, work).await?;
+    let mut outcome = runtime.task_host().outcome_with_native_work(requested, work).await?;
+    let state = match &outcome.0 {
         None | Some(Outcome::Indeterminate { .. }) => PiWaitState::Pending,
         Some(_) => PiWaitState::Completed,
     };
-    if let Err(cause) = mail.custody.absorb(&mut outcome.custody) {
+    if let Err(cause) = mail.1.absorb(&mut outcome.1) {
         drop(outcome);
-        drop(mail.value);
-        return Err(Error::NativeWork { cause, custody: Some(mail.custody) });
+        drop(mail.0);
+        return Err(Error::NativeWork { cause, custody: Some(mail.1) });
     }
-    Ok((PiWaitObservation { task: requested, state, outcome: outcome.value, mail: mail.value }, mail.custody))
+    Ok((PiWaitObservation { task: requested, state, outcome: outcome.0, mail: mail.0 }, mail.1))
 }
 
 #[cfg(test)]

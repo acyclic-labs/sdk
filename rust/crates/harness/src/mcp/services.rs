@@ -17,35 +17,22 @@ pub fn validate_params(
         "resources/list" | "resources/templates/list" | "prompts/list" | "tools/list" => Dto::PaginatedParams,
         "resources/read" => Dto::ReadResourceParams,
         "prompts/get" => Dto::GetPromptParams,
+        "tools/call" => {
+            for key in ["task", "requestState", "inputResponses", "request_state", "input_responses"] {
+                checkpoint(work, 1, 0)?;
+                if params.get(key).is_some() {
+                    return Err(protocol_error(work, true, "MCP stdio continuation needs its own authority owner"));
+                }
+            }
+            Dto::CallToolParams
+        },
         _ => return Err(protocol_error(work, true, "MCP service method not selected")),
     };
     check_dto(dto, params, work)
 }
 
-pub(super) fn validate_stdio_params(
-    method: &str, params: &Value, work: NativeWork<'_>,
-) -> Result<()> {
-    if method != "tools/call" { return validate_params(method, params, work); }
-    checkpoint(work, 1, 0)?;
-    if !params.is_object() {
-        return Err(protocol_error(work, false, "MCP service parameters must be an object"));
-    }
-    // Match the existing one-shot continuation policy, including explicit null and alternate spellings.
-    for key in ["task", "requestState", "inputResponses", "request_state", "input_responses"] {
-        checkpoint(work, 1, 0)?;
-        if params.get(key).is_some() {
-            return Err(protocol_error(work, true, "MCP stdio continuation needs its own authority owner"));
-        }
-    }
-    check_dto(Dto::CallToolParams, params, work)
-}
-
 /// Validates protocol results using the maintained protocol library.
-pub fn validate_result(method: &str, value: Value) -> Result<Value> {
-    validate_result_with_native_work(method, value, None)
-}
-
-pub(super) fn validate_result_with_native_work(
+pub fn validate_result(
     method: &str, value: Value, work: NativeWork<'_>,
 ) -> Result<Value> {
     let dto = match method {
@@ -83,14 +70,9 @@ impl HttpMcpTransport {
     pub async fn get_prompt(&self, operation: OperationId, name: &str, arguments: std::collections::BTreeMap<String, String>) -> Result<rmcp::model::GetPromptResult> {
         self.service(operation, "prompts/get", json!({"name":name,"arguments":arguments})).await
     }
-    /// Validated service operation with opt-in callbacks under this exact task.
-    pub async fn service_with_context(&self, context: crate::runtime::ToolContext, method: &str, params: Value) -> Result<Value> {
-        validate_params(method, &params, None)?;
-        validate_result(method, self.rpc_with_context(context, method, params).await?)
-    }
     async fn service<T: DeserializeOwned>(&self, operation: OperationId, method: &str, params: Value) -> Result<T> {
         validate_params(method, &params, None)?;
-        serde_json::from_value(validate_result(method, self.rpc(operation, method, params).await?)?)
+        serde_json::from_value(validate_result(method, self.rpc(operation, method, params).await?, None)?)
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 }
@@ -115,17 +97,17 @@ mod tests {
     #[test]
     fn five_services_validate_maintained_dtos_without_projecting_authority() {
         for (method, valid, invalid) in service_cases() {
-            assert_eq!(validate_result(method, valid.clone()).expect("closed valid DTO"), valid);
-            assert!(validate_result(method, invalid).is_err(), "{method}");
+            assert_eq!(validate_result(method, valid.clone(), None).expect("closed valid DTO"), valid);
+            assert!(validate_result(method, invalid, None).is_err(), "{method}");
         }
-        assert!(validate_result("sampling/createMessage", json!({})).is_err());
-        assert!(validate_stdio_params("resources/read", &json!({"uri":9}), None).is_err());
-        assert!(validate_stdio_params("prompts/get", &json!({"name":"exact","arguments":{"input":9}}), None).is_err());
-        assert!(validate_stdio_params("tools/call", &json!({"name":"exact","arguments":{}}), None).is_ok());
+        assert!(validate_result("sampling/createMessage", json!({}), None).is_err());
+        assert!(validate_params("resources/read", &json!({"uri":9}), None).is_err());
+        assert!(validate_params("prompts/get", &json!({"name":"exact","arguments":{"input":9}}), None).is_err());
+        assert!(validate_params("tools/call", &json!({"name":"exact","arguments":{}}), None).is_ok());
         for key in ["task", "requestState", "inputResponses", "request_state", "input_responses"] {
             let mut params = json!({"name":"exact","arguments":{}});
             params.as_object_mut().expect("params").insert(key.into(), Value::Null);
-            assert!(matches!(validate_stdio_params("tools/call", &params, None), Err(Error::Unsupported(_))));
+            assert!(matches!(validate_params("tools/call", &params, None), Err(Error::Unsupported(_))));
         }
     }
 
@@ -139,16 +121,16 @@ mod tests {
         let baseline = work.live_allocation_bytes();
         let before = work.receipt();
         for (method, valid, invalid) in service_cases() {
-            validate_result_with_native_work(method, valid, Some(&work)).expect("bounded closed DTO");
+            validate_result(method, valid, Some(&work)).expect("bounded closed DTO");
             assert_eq!(work.live_allocation_bytes(), baseline);
-            let error = validate_result_with_native_work(method, invalid, Some(&work)).expect_err("malformed result");
+            let error = validate_result(method, invalid, Some(&work)).expect_err("malformed result");
             assert!(matches!(&error, Error::NativeDecode { custody: Some(_), .. }));
             assert!(work.live_allocation_bytes() > baseline);
             drop(error);
             assert_eq!(work.live_allocation_bytes(), baseline);
         }
-        validate_result_with_native_work("tools/list", json!({"tools":[]}), Some(&work)).expect("tool discovery");
-        validate_result_with_native_work("tools/call", json!({
+        validate_result("tools/list", json!({"tools":[]}), Some(&work)).expect("tool discovery");
+        validate_result("tools/call", json!({
             "content":[{"type":"image","data":"AAEC","mimeType":"image/png"}],
             "structuredContent":null
         }), Some(&work)).expect("binary and present null tool result");
@@ -156,7 +138,7 @@ mod tests {
         assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
         assert!(work.receipt().items_examined > before.items_examined);
         work.cancellation().cancel();
-        assert!(matches!(validate_stdio_params("tools/list", &json!({}), Some(&work)),
+        assert!(matches!(validate_params("tools/list", &json!({}), Some(&work)),
             Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     }
 }

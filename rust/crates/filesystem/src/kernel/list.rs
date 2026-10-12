@@ -128,7 +128,7 @@ pub(crate) fn list_tree_entries_async_with_accounting<'a, 'accounting, S: AsyncO
     store: &'a S, root: ObjectId, after: Option<&'a LogicalName>, maximum_entries: u32,
     limits: DecodeLimits, accounting: &'a mut super::allocation::KernelAccounting<'accounting>,
     cancellation: CancellationToken, data_custody: Option<&'a super::ProofDataCustody>,
-) -> impl std::future::Future<Output = Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError>> + crate::async_storage::StorageFuture + 'a + use<'a, 'accounting, S> {
+) -> impl std::future::Future<Output = Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError>> + acyclic_stream::ProviderTask + 'a + use<'a, 'accounting, S> {
     async move {
         persistent_pagination::paginate_async_with_accounting::<S, TreeFormat>(
             store, root, after, maximum_entries, limits, accounting, &cancellation, data_custody,

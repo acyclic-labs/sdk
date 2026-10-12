@@ -384,8 +384,7 @@ where
         let mut acknowledged = None;
         // This is the final SDK operation. Its own ACK slot survives errors
         // after a real DATA CAS; absent metadata remains unconfirmed.
-        self.source.sync_async_with_permit_qualified_native_work_guarded_with_ack(
-            permit, work, cancellation, context, &mut acknowledged, before_publication,
+        self.source.sync_async_with_permit_carrier_guarded_context_with_ack(permit, false, &mut super::adapter::NativeDemandCarrier::Native(work), &mut super::view_ledger::ViewLedgerAdmission::default(), cancellation, &mut { before_publication }, Some(context), &mut acknowledged,
         ).await.map_err(|(cause, accounting_failure)| NativeMountPublicationFailure {
             cause, accounting_failure, source_acknowledged: acknowledged.is_some(), publication: acknowledged,
         })
@@ -398,7 +397,7 @@ where
         &self,
         wait: &crate::CancellationToken,
     ) -> Result<NativeMountDrainProof, MountLifecycleError> {
-        self.source.cancel_with_cleanup_wait(wait)?;
+        self.source.cancel_cleanup(Some(wait))?;
         if !self.source.capture_retired() {
             return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
         }
@@ -609,7 +608,7 @@ where
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async()
+            .sync_async(crate::PublicationPermit::Unrestricted)
             .await
             .map_err(MountLifecycleError::Source)?;
         Ok(())
@@ -622,7 +621,7 @@ where
     ) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async_with_permit(permit)
+            .sync_async(permit)
             .await
             .map_err(MountLifecycleError::Source)
     }
@@ -1023,7 +1022,7 @@ where
                     session.revalidate_with_meter(native_work)?;
                 }
             }
-            self.source.selected_import_snapshot_with_meter(operation, native_work, cancellation)
+            self.source.selected_import_snapshot(operation, native_work, cancellation)
                 .await.map_err(NativeMountError::from)
         }.await;
         if result.is_err() { self.retain_failed_session(); }
@@ -1135,11 +1134,11 @@ where
             with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))
                 .map_err(|cause| (cause, None))?;
             if qualify_readonly {
-                let snapshot = self.source.publication_snapshot_with_native_work(native_work, cancellation)
+                let snapshot = self.source.publication_snapshot(super::adapter::NativeDemandCarrier::Native(native_work), cancellation)
                     .await.map_err(|(cause, accounting)| (MountLifecycleError::Source(cause), accounting))?;
                 Ok(MountedSnapshotCapture::Qualified(snapshot))
             } else {
-                self.source.snapshot_with_native_work(native_work, cancellation)
+                self.source.snapshot(super::adapter::NativeDemandCarrier::Native(native_work), cancellation)
                     .await.map(MountedSnapshotCapture::Original)
                     .map_err(|cause| (MountLifecycleError::Source(cause), None))
             }
@@ -1157,7 +1156,7 @@ where
         frozen: crate::LazySnapshotRef,
         native_work: &super::NativeMountMeterWork,
     ) -> Result<(), MountLifecycleError> {
-        self.source.validate_snapshot_with_native_work(
+        self.source.lazy.validate_snapshot_with_native_work(
             frozen, &native_work.native_materialization_work(),
         ).await.map_err(MountLifecycleError::Lazy)
     }
@@ -1172,8 +1171,8 @@ where
         path: &str,
         native_work: &super::NativeMountMeterWork,
     ) -> Result<(crate::LazyLookup, crate::NativeAllocation), MountLifecycleError> {
-        self.source.lookup_at_snapshot_with_work(
-            frozen, path, &native_work.native_materialization_work(),
+        self.source.lazy.lookup_at_snapshot_with_work(
+            frozen, path, &native_work.native_materialization_work(), native_work.native_materialization_work().cancellation(),
         ).await.map_err(MountLifecycleError::from)
     }
 
@@ -1660,7 +1659,7 @@ where
         async {
             let original = native_work.native_materialization_work();
             super::adapter::validate_native_source_io_binding(&original, native_original)?;
-            let destination = original.copy_path(destination)
+            let destination = original.path(destination, None)
                 .map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
             let destination_custody = destination.1;
             let destination = destination.0;
@@ -1688,13 +1687,13 @@ where
                 }
             };
             let root_text = root_text.0;
-            let session_destination = original.copy_path(&destination)
+            let session_destination = original.path(&destination, None)
                 .map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
             let lazy = self.clone().into_arc_with_native_work(&original)
                 .map_err(MountLifecycleError::Lazy)?;
             // Admit the actual existing payload slot before starting its watch.
             let mut source_allocation = original.claim_allocation(
-                std::mem::size_of::<LazyMountSource<A, O, D, S>>() as u64, 1,
+                std::mem::size_of::<LazyMountSource<A, O, D, S>>() as u64, 1, crate::WorkCounters::UNCHARGED,
             ).map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
             let mut source = Arc::<LazyMountSource<A, O, D, S>>::new_uninit();
             // The real error-owner slot must exist before its source starts a
@@ -1751,7 +1750,7 @@ fn prepare_root_identity_with_work(
     work: &super::NativeMountMeterWork, expected_identity: Option<NativeRootIdentity>,
 ) -> Result<NativeRootIdentity, MountLifecycleError> {
     let original = work.native_materialization_work();
-    let root = crate::native_host::HostRoot::open_materialization_measured(source_root, &original)?;
+    let root = crate::native_host::HostRoot::open_with_work(source_root, &mut &original)?;
     if expected_identity.is_some_and(|expected| expected != root.identity()) {
         return Err(MountLifecycleError::Source(MountSourceError::Stale));
     }
@@ -1815,7 +1814,7 @@ where
         } else {
             CheckoutMode::read_only_pinned()
         };
-        let mut checkout = self.engine_checkout(GenerationSelector::Head, mode).await?;
+        let mut checkout = self.checkout(GenerationSelector::Head, mode, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let config = checkout.volume_config();
         let root = customer_path(&options.subdirectory, config)?;
         let selected = checkout
@@ -2045,7 +2044,7 @@ where
                     checkout.into_unpublishable_capture_candidate()
                 };
                 let config = checkout.volume_config();
-                let root = original.with_owned_allocations(
+                let root = original.allocations(
                     |allocations, work, budget, cancellation| {
                         crate::workspace::customer_path_measured(
                             &mount.subdirectory, config, allocations, work, budget, cancellation,
@@ -2068,8 +2067,8 @@ where
                         super::MaterializeMode::ReconstructibleView, meter,
                     ).await.map_err(MountLifecycleError::Materialize)?;
                 }
-                let mut source_root = original.copy_path(&options.destination)?;
-                let mut selected_root = original.with_owned_allocations(
+                let mut source_root = original.path(&options.destination, None)?;
+                let mut selected_root = original.allocations(
                     |allocations, work, budget, cancellation| {
                         preparation_selected_root_measured(
                             &root.0, allocations, work, budget, cancellation,
@@ -2220,7 +2219,7 @@ mod tests {
         assert!(matches!(lazy.lookup("/selected").await?, LazyLookup::Authored { .. }));
         assert!(matches!(lazy.lookup("/selected/cold.txt").await?, LazyLookup::Source(_)));
         assert!(matches!(lazy.lookup("/unselected/cold.txt").await?, LazyLookup::Source(_)));
-        let pinned = lazy.workspace().head().await?.id();
+        let pinned = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         let denied_budget = crate::WorkBudget {
             backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED
         };
@@ -2230,7 +2229,7 @@ mod tests {
         ).await.is_err());
         denied.receipt().verify(denied_budget)?;
         assert_eq!(denied.receipt().backend_read_operations, 0);
-        assert_eq!(lazy.workspace().head().await?.id(), pinned);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned);
         let job = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
         assert!(!job.shares_ledger(&work));
@@ -2257,14 +2256,14 @@ mod tests {
             )))
         ));
         assert_eq!(work.receipt(), before_binding);
-        assert_eq!(lazy.workspace().head().await?.id(), pinned);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned);
         assert_eq!(std::fs::read_dir(rejected_root.path())?.count(), 0);
         let ordinary_job = job.with_source_io_lease(ordinary_source.native_source_io_lease()?)?;
         assert!(ordinary_job.shares_ledger(&job));
         assert!(ordinary_job.shares_resource_allowance(&job));
         assert!(!ordinary_job.shares_ledger(&work));
         drop(ordinary_job);
-        ordinary_source.cancel_with_cleanup_wait(&crate::CancellationToken::new())?;
+        ordinary_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
         let (native_source, _, _, _) = lazy.prepare_authored_mount_source(
             &options, Some(pinned), None, &work.native_mount_work(), &cancellation, Some(&work),
         ).await?;
@@ -2278,7 +2277,7 @@ mod tests {
         assert!(native_job.shares_ledger(&work));
         assert!(native_job.shares_resource_allowance(&work));
         drop(native_job);
-        native_source.cancel_with_cleanup_wait(&crate::CancellationToken::new())?;
+        native_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
         assert!(ordinary_source.capture_retired());
         assert!(native_source.capture_retired());
         work.receipt().verify(budget)?;
@@ -2304,7 +2303,7 @@ mod tests {
             &fs, "measured-native-customer", demand, MemoryLazyWorkspaceStore::default(),
         ).await?;
         lazy.workspace().write_text("/authored.txt", "authored").await?;
-        let generation = lazy.workspace().head().await?.id();
+        let generation = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         let cancellation = crate::CancellationToken::new();
         let options = MountOptions::read_write().publication(MountPublication::Manual);
         let denied = lazy.mount_measured(
@@ -2313,7 +2312,7 @@ mod tests {
         denied.1.verify(crate::WorkBudget::default())?;
         assert_eq!(denied.1, crate::WorkCounters::UNCHARGED);
         assert!(matches!(denied.0, MountLifecycleError::Native(NativeMountError::Work(_))));
-        assert_eq!(lazy.workspace().head().await?.id(), generation);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), generation);
         assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
         let path_budget = crate::WorkBudget { bytes_copied: 0, ..crate::WorkBudget::UNBOUNDED };
         let path_work = customer_native_work(path_budget, &cancellation).map_err(|(error, _)| error)?;
@@ -2324,7 +2323,7 @@ mod tests {
         assert!(matches!(denied_path, MountLifecycleError::Native(NativeMountError::Materialization(_))));
         assert_eq!(path_work.receipt(), before_path_copy);
         path_work.receipt().verify(path_budget)?;
-        assert_eq!(lazy.workspace().head().await?.id(), generation);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), generation);
         assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
         let startup = lazy.mount_measured(
             "relative-invalid-mount", options.clone(), crate::WorkBudget::UNBOUNDED, &cancellation,
@@ -2411,7 +2410,7 @@ mod tests {
         assert!(mount.validate_snapshot_with_work(before.value, &denied_query.native_mount_work()).await.is_err());
         assert_eq!(denied_query.receipt(), denied_query_prefix);
         mount.validate_snapshot_with_work(before.value, &query_native).await?;
-        assert_eq!(lazy.workspace().head().await?.id(), generation);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), generation);
         let identity = mount.native_root_identity().ok_or("mounted driver lost its original root witness")?;
         let io_work = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
@@ -2428,7 +2427,7 @@ mod tests {
                 let mounted = &mount;
                 async move {
                     let scope = scope.map_err(MountLifecycleError::Native)?;
-                    let result = work.read_working_file_guarded::<MountLifecycleError, _, _>(
+                    let result = work.read_working_file::<MountLifecycleError, _, _>(
                         mounted.path(), identity, Path::new("source.txt"), 32,
                         || std::future::ready(Ok(())),
                     ).await;
@@ -2452,7 +2451,7 @@ mod tests {
         assert!(guarded.0.accounting_failure.is_none());
         assert!(guarded.0.publication.is_none());
         assert!(guarded.1.items_examined > 0);
-        assert_eq!(lazy.workspace().head().await?.id(), generation);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), generation);
         assert!(mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation).await.is_err());
         let original = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
@@ -2488,8 +2487,8 @@ mod tests {
         })?;
         assert_eq!(source_ack, Some(qualified_ack));
         assert!(qualified_ack.operation().is_some());
-        let acknowledged = mount.source.snapshot_with_native_work(
-            &publication_native, &publication_cancellation,
+        let acknowledged = mount.source.snapshot(
+            super::super::adapter::NativeDemandCarrier::Native(&publication_native), &publication_cancellation,
         ).await?;
         assert_eq!(
             qualified_ack.snapshot().lazy_snapshot_with_native_work(&publication_work, &publication_cancellation)?,
@@ -2530,19 +2529,19 @@ mod tests {
         ).await?.value;
         let actual = mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
             .await.map_err(|(error, _)| error)?;
-        let imported_head = lazy.workspace().head().await?.id();
+        let imported_head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         let pending = mount.selected_import_snapshot_measured(
             operation, crate::WorkBudget::UNBOUNDED, &cancellation,
         ).await.map_err(|(error, _)| error)?;
         assert!(pending.value.is_none());
-        assert_eq!(lazy.workspace().head().await?.id(), imported_head);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), imported_head);
         let denied_import = mount.import_selected_measured_guarded(
             actual.value, plan, operation,
             PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &cancellation,
             |_original| std::future::ready(Err::<(), _>(MountLifecycleError::Source(MountSourceError::Stale))),
         ).await.err().ok_or("selected import bypassed its original owner guard")?;
         assert_ne!(denied_import.1, crate::WorkCounters::UNCHARGED);
-        assert_eq!(lazy.workspace().head().await?.id(), imported_head);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), imported_head);
         let selected_work = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
         let (plan, plan_custody) = child.prepare_selected_import_with_native_work(
@@ -2559,7 +2558,7 @@ mod tests {
         );
         drop(unpolled);
         assert_eq!(selected_work.receipt(), before_unpolled);
-        assert_eq!(lazy.workspace().head().await?.id(), imported_head);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), imported_head);
         let (plan, plan_custody) = child.prepare_selected_import_with_native_work(
             child_snapshot, std::slice::from_ref(&imported_path), &selected_work,
         ).await.map_err(|(error, _)| error)?;
@@ -2576,7 +2575,7 @@ mod tests {
             )))
         ));
         assert_eq!(foreign_work.receipt(), before_foreign_import);
-        assert_eq!(lazy.workspace().head().await?.id(), imported_head);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), imported_head);
         let (plan, plan_custody) = child.prepare_selected_import_with_native_work(
             child_snapshot, std::slice::from_ref(&imported_path), &selected_work,
         ).await.map_err(|(error, _)| error)?;
@@ -2586,7 +2585,7 @@ mod tests {
             |_original| std::future::ready(Ok::<(), MountLifecycleError>(())),
         ).await?;
         selected_work.receipt().verify(crate::WorkBudget::UNBOUNDED)?;
-        assert_eq!(imported.authored_generation, lazy.workspace().head().await?.id());
+        assert_eq!(imported.authored_generation, lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
         let completed = mount.selected_import_snapshot_measured(
             operation, crate::WorkBudget::UNBOUNDED, &cancellation,
         ).await.map_err(|(error, _)| error)?;
@@ -2658,11 +2657,11 @@ mod tests {
         acyclic_native_runtime::initialize_native_io_services()?;
         crate::initialize_native_mount_services()?;
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("native-carrier-admission").await?;
-        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        let workspace = fs.create_workspace("native-carrier-admission", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.create_directory("/selected-é").await?;
-        transaction.commit().await?;
-        let generation = workspace.head().await?;
+        transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let directory = tempfile::tempdir()?;
         let options = crate::MaterializeOptions::native(directory.path());
         let mount = MountOptions::read_only().subdirectory("/selected-é");
@@ -2742,11 +2741,11 @@ mod tests {
         acyclic_native_runtime::initialize_native_io_services()?;
         crate::initialize_native_mount_services()?;
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("pinned-native-view").await?;
+        let workspace = fs.create_workspace("pinned-native-view", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/file.txt", "original").await?;
-        let admitted = workspace.head().await?;
+        let admitted = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/file.txt", "concurrent").await?;
-        let concurrent = workspace.head().await?.id();
+        let concurrent = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         let source_root = tempfile::tempdir()?;
         let source = admitted
             .prepare_native_working_set(
@@ -2803,7 +2802,7 @@ mod tests {
         );
         std::fs::write(source_root.path().join("file.txt"), "source mutation")?;
         assert!(source.verify_unchanged().await.is_err());
-        assert_eq!(workspace.head().await?.id(), concurrent);
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), concurrent);
 
         let destination_root = tempfile::tempdir()?;
         let write = MountOptions::read_write().publication(MountPublication::Manual);
@@ -2822,9 +2821,7 @@ mod tests {
             MountLifecycleError::Workspace(WorkspaceError::StaleGeneration)
         ));
         assert!(rejected.1.backend_read_operations > 0);
-        let destination = workspace
-            .head()
-            .await?
+        let destination = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .prepare_native_working_set(
                 &write,
                 &crate::MaterializeOptions::native(destination_root.path()),
@@ -2879,7 +2876,7 @@ mod tests {
             MemoryLazyWorkspaceStore::default(),
         )
         .await?;
-        let before_invalid = lazy.workspace().head().await?.id();
+        let before_invalid = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         assert!(matches!(
             lazy.prepare_native_working_set(
                 "/hot",
@@ -2891,7 +2888,7 @@ mod tests {
             .await.map_err(|(error, _)| error),
             Err(MountLifecycleError::NativePolicy("native working-set root must be absolute"))
         ));
-        assert_eq!(lazy.workspace().head().await?.id(), before_invalid);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), before_invalid);
         let mut working_set = lazy
             .prepare_native_working_set(
                 "/hot",
@@ -2911,7 +2908,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(lazy.workspace().head().await?.id(), generation);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), generation);
         working_set.capture_budget = crate::WorkBudget::UNBOUNDED;
         let name = if cfg!(windows) {
             "file.txt"
@@ -2921,16 +2918,14 @@ mod tests {
         } else {
             b"file.txt".to_vec()
         };
-        let unchanged_head = lazy.workspace().head().await?.id();
+        let unchanged_head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         working_set
             .sync_with_permit(PublicationPermit::Unrestricted)
             .await?;
-        assert_eq!(lazy.workspace().head().await?.id(), unchanged_head);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), unchanged_head);
         #[cfg(unix)]
         let canonical_before = lazy
-            .workspace()
-            .head()
-            .await?
+            .workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .stat("/hot/file.txt")
             .await?
             .metadata;
@@ -2943,9 +2938,7 @@ mod tests {
                 .sync_with_permit(PublicationPermit::Unrestricted)
                 .await?;
             let canonical_after = lazy
-                .workspace()
-                .head()
-                .await?
+                .workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
                 .stat("/hot/file.txt")
                 .await?
                 .metadata;
@@ -2962,16 +2955,14 @@ mod tests {
                 .sync_with_permit(PublicationPermit::Unrestricted)
                 .await?;
             let canonical = lazy
-                .workspace()
-                .head()
-                .await?
+                .workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
                 .stat("/hot/file.txt")
                 .await?
                 .metadata;
             assert_eq!(canonical.accessed_ns, Some(1_700_000_000_000_000_000));
         }
         std::fs::write(working.join("hot/file.txt"), b"native-edit")?;
-        let before_guard = lazy.workspace().head().await?.id();
+        let before_guard = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         let denied_publication = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
         let denied = working_set.sync_with_permit_with_work(
@@ -2988,7 +2979,7 @@ mod tests {
         )));
         assert!(denied_publication.receipt().items_examined > 0);
         denied_publication.receipt().verify(crate::WorkBudget::UNBOUNDED)?;
-        assert_eq!(lazy.workspace().head().await?.id(), before_guard);
+        assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), before_guard);
         working_set
             .capture_host_paths(&[MountPath::root().child(name)])
             .await?;
@@ -3007,7 +2998,7 @@ mod tests {
         assert!(!published.snapshot().is_lazy());
         assert_eq!(published.snapshot().workspace_id(), working_set.workspace.id());
         assert_eq!(published.snapshot().volume_config(), working_set.workspace.volume_config());
-        assert_eq!(published.snapshot().generation(), working_set.workspace.head().await?.id());
+        assert_eq!(published.snapshot().generation(), working_set.workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
         assert!(publication.receipt().items_examined > 0);
         assert_eq!(
             lazy.workspace().read("/hot/file.txt", 32).await?.as_ref(),
@@ -3089,7 +3080,7 @@ mod tests {
                 WorkspaceError::StaleGeneration
             ))
         ));
-        assert_ne!(lazy.workspace().head().await?.id(), generation);
+        assert_ne!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), generation);
         let latest_view = tempfile::tempdir()?;
         let ready = lazy
             .prepare_native_working_set(

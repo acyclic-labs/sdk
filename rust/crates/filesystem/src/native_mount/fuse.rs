@@ -459,7 +459,7 @@ fn fuse_source_chunk(bytes: &[u8], work: &super::NativeMountMeterWork)
             NativeMountError::from(original.runtime_error(error))
         }
         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-        | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+        => {
             unreachable!("guarded vector conversion only fails original admission")
         }
     })?;

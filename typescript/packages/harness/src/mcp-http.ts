@@ -2,25 +2,20 @@
 import type { McpBrowserHttpProvider, McpBrowserResponseHead }
   from "../generated/wasm/acyclic_harness_wasm.js";
 
-/** Creates an inert provider. An embedding host supplies its selected fetch
- * capability; credentials are omitted unless that host explicitly wraps it.
- * The owning Harness journal must admit each operation before invoking it. */
+/** Supplies host-selected HTTP I/O for journal-admitted MCP operations. */
 export function createBrowserMcpHttpProvider(fetcher: typeof fetch = globalThis.fetch,
   signal?: AbortSignal): McpBrowserHttpProvider {
   return (_operation, request) => {
     const controller = new AbortController();
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let pending = false;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = () => { clearTimeout(timer); signal?.removeEventListener("abort", cancel); };
     const cancel = () => {
-      cancelled = true;
       finish();
       controller.abort();
       if (!pending) reader?.releaseLock();
     };
-    timer = setTimeout(cancel, request.timeout_ms);
+    const timer = setTimeout(cancel, request.timeout_ms);
     signal?.addEventListener("abort", cancel, { once: true });
     if (signal?.aborted) cancel();
     const response = Promise.resolve().then(() => {
@@ -49,7 +44,7 @@ export function createBrowserMcpHttpProvider(fetcher: typeof fetch = globalThis.
           return result.value;
         } finally {
           pending = false;
-          if (cancelled) reader?.releaseLock();
+          if (controller.signal.aborted) reader?.releaseLock();
         }
       },
       cancel,
