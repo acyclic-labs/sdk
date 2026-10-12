@@ -1,13 +1,9 @@
 use super::*;
 
-impl<A, O, D, S> LazyWorkspace<A, O, D, S>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-    D: DemandSource + 'static,
-    S: LazyWorkspaceStore,
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
+    LazyWorkspace<A, O, D, S>
 {
-    /// Creates or recovers the original workspace creation and its sparse binding.
+    /// Creates or recovers the original SDK workspace and root binding.
     pub async fn attach(
         fs: &Fs<A, O>,
         name: &str,
@@ -15,110 +11,84 @@ where
         store: S,
         config: VolumeConfig,
         operation: crate::OperationId,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, crate::Generation<A, O>), LazyWorkspaceError> {
-        accounting.check()?;
-        let reference = source.reference();
-        let cancellation = cancellation(accounting);
-        let generation = 'accounted: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                break 'accounted fs
-                    .create_workspace_with_operation::<_, crate::NativeAuthorityGuard<
-                        fn(
-                            &crate::NativeMaterializationWork,
-                        )
-                            -> std::future::Ready<Result<(), WorkspaceError>>,
-                    >, WorkspaceError>(
-                        name, config, operation, original, cancellation, None
-                    )
-                    .await
-                    .map_err(LazyWorkspaceError::from)?;
-            }
-            accept_receipt(
-                fs.create_workspace_with_operation::<_, &mut fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>, WorkspaceError>(
-                    name,
-                    config,
-                    operation,
-                    accounting.remaining()?,
-                    cancellation,
-                    None,
-                )
-                .await,
-                accounting,
-            )?
-        };
-        let workspace = generation.workspace().clone();
-        let lazy = Self::bind(workspace, source, store, accounting).await?;
-        let state = lazy
-            .store
-            .load_lazy_workspace(lazy.workspace.id(), accounting)
+        let original = source.reference();
+        let generation = accounted!(ctx, |work, cancel| fs
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                name, config, operation, work, cancel, None
+            ))?;
+        let lazy = Self::bind(generation.workspace().clone(), source, store, ctx).await?;
+        lazy.state(ctx)
             .await?
-            .ok_or(LazyWorkspaceError::NotFound)?;
-        state.validate_root_binding(lazy.workspace.id(), reference)?;
-        if lazy.source.reference() != reference {
+            .validate_root_binding(lazy.workspace.id(), original)?;
+        if lazy.source.reference() != original {
             return Err(LazyWorkspaceError::StaleSource);
         }
         Ok((lazy, generation))
     }
 
-    /// Opens a sparse binding, creating its empty indexes when absent.
+    /// Binds an existing workspace when its original attach was not durable.
     pub async fn bind(
         workspace: Workspace<A, O>,
         source: Arc<D>,
         store: S,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<Self, LazyWorkspaceError> {
         let reference = source.reference();
         if store
-            .load_lazy_workspace(workspace.id(), accounting)
+            .load_lazy_workspace(workspace.id(), ctx)
             .await?
             .is_none()
         {
-            let (overlay, shadows) = Self::empty_roots(&store, accounting).await?;
-            let state = LazyWorkspaceState::new(workspace.id(), reference, overlay, shadows);
+            let (overlay, shadows) = Self::empty_roots(&store, ctx).await?;
             if !store
-                .compare_and_swap_lazy_workspace(workspace.id(), 0, state, accounting)
+                .compare_and_swap_lazy_workspace(
+                    workspace.id(),
+                    0,
+                    LazyWorkspaceState::new(workspace.id(), reference, overlay, shadows),
+                    ctx,
+                )
                 .await?
             {
-                let state = store
-                    .load_lazy_workspace(workspace.id(), accounting)
+                store
+                    .load_lazy_workspace(workspace.id(), ctx)
                     .await?
-                    .ok_or(LazyWorkspaceError::Concurrent)?;
-                state.validate_root_binding(workspace.id(), reference)?;
+                    .ok_or(LazyWorkspaceError::Concurrent)?
+                    .validate_root_binding(workspace.id(), reference)?;
             }
         }
-        Self::open(workspace, source, store, accounting).await
+        Self::open(workspace, source, store, ctx).await
     }
 
     pub(super) async fn empty_roots(
         store: &S,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyOverlayId, LazyShadowId), LazyWorkspaceError> {
-        let overlay = LazyOverlay::default();
-        let overlay_id = LazyOverlayId(hash_lazy_value(&overlay, accounting)?);
-        let allocation = accounting.claim_owned(0, 0)?;
+        let overlay = LazyOverlay::Empty;
+        let overlay_id = LazyOverlayId(hash_lazy_value(&overlay, ctx)?);
+        let guard = ctx.claim_owned(0, 0)?;
         store
-            .put_lazy_overlay(overlay_id, (overlay, allocation), accounting)
+            .put_lazy_overlay(overlay_id, (overlay, guard), ctx)
             .await?;
-        let shadow = LazyShadow::default();
-        let shadow_id = LazyShadowId(hash_lazy_value(&shadow, accounting)?);
-        let allocation = accounting.claim_owned(0, 0)?;
+        let shadows = LazyShadow::Empty;
+        let shadow_id = LazyShadowId(hash_lazy_value(&shadows, ctx)?);
+        let guard = ctx.claim_owned(0, 0)?;
         store
-            .put_lazy_shadow(shadow_id, (shadow, allocation), accounting)
+            .put_lazy_shadow(shadow_id, (shadows, guard), ctx)
             .await?;
         Ok((overlay_id, shadow_id))
     }
 
-    /// Reopens an existing sparse binding without demanding source paths.
+    /// Reopens a durable binding without enumerating its source.
     pub async fn open(
         workspace: Workspace<A, O>,
         source: Arc<D>,
         store: S,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<Self, LazyWorkspaceError> {
         let state = store
-            .load_lazy_workspace(workspace.id(), accounting)
+            .load_lazy_workspace(workspace.id(), ctx)
             .await?
             .ok_or(LazyWorkspaceError::NotFound)?;
         if state.schema_version != LAZY_STATE_SCHEMA
@@ -128,16 +98,20 @@ where
             return Err(LazyWorkspaceError::StaleSource);
         }
         state.require_ready_fork()?;
-        let overlay = store
-            .load_lazy_overlay(state.overlay, accounting)
-            .await?
-            .ok_or(LazyWorkspaceError::NotFound)?;
-        retire_node(overlay, accounting)?;
-        let shadows = store
-            .load_lazy_shadow(state.shadows, accounting)
-            .await?
-            .ok_or(LazyWorkspaceError::NotFound)?;
-        retire_node(shadows, accounting)?;
+        retire_node(
+            store
+                .load_lazy_overlay(state.overlay, ctx)
+                .await?
+                .ok_or(LazyWorkspaceError::NotFound)?,
+            ctx,
+        )?;
+        retire_node(
+            store
+                .load_lazy_shadow(state.shadows, ctx)
+                .await?
+                .ok_or(LazyWorkspaceError::NotFound)?,
+            ctx,
+        )?;
         let lazy = Self {
             workspace,
             source,
@@ -145,118 +119,76 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             allocation: None,
         };
-        lazy.recover_pending_remove(accounting).await?;
-        lazy.rebind_source(accounting).await?;
+        lazy.recover_pending_remove(ctx).await?;
+        lazy.state(ctx).await?;
         Ok(lazy)
     }
 
-    /// Authored SDK workspace used by merge, lineage, and publication primitives.
-    #[must_use]
+    /// Authored SDK workspace supplying publication and lineage.
     pub const fn workspace(&self) -> &Workspace<A, O> {
         &self.workspace
     }
 
-    /// Reopens another workspace bound to the same source capability.
+    /// Reopens a related workspace over the same source capability.
     pub async fn open_related(
         &self,
         workspace: Workspace<A, O>,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<Self, LazyWorkspaceError>
-    where
-        S: Clone,
-    {
-        Self::open(
-            workspace,
-            Arc::clone(&self.source),
-            self.store.clone(),
-            accounting,
-        )
-        .await
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Self, LazyWorkspaceError> {
+        Self::open(workspace, Arc::clone(&self.source), self.store.clone(), ctx).await
     }
 
     #[cfg(feature = "native-mount")]
     pub(crate) fn watch_source(
         &self,
         sink: Arc<dyn crate::demand::SourceChangeSink>,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<Box<dyn crate::demand::SourceWatch>>, LazyWorkspaceError> {
-        let cancellation = cancellation(accounting);
+        let cancel = cancellation(ctx);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            return self
-                .source
-                .watch(sink, original, cancellation)
-                .map_err(Into::into);
+        if let Some(work) = ctx.native_work() {
+            return self.source.watch(sink, work, cancel).map_err(Into::into);
         }
-        let result = self
-            .source
-            .watch(sink, accounting.remaining()?, cancellation);
-        accept_receipt(result, accounting)
+        let result = self.source.watch(sink, ctx.remaining()?, cancel);
+        accept_receipt(result, ctx)
     }
 
     pub(crate) fn source_reference(&self) -> SourceReference {
         self.source.reference()
     }
 
-    /// Captures the ordinary logical cut without enumeration.
+    /// Captures an ordinary complete cut without enumeration.
     pub async fn snapshot(
         &self,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
-        let state = self.state(accounting).await?;
-        let generation = self.head(accounting).await?;
-        accounting.charge(WorkCounters {
+        let state = self.state(ctx).await?;
+        let head = self.head(ctx).await?;
+        ctx.charge(WorkCounters {
             bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
             ..WorkCounters::UNCHARGED
         })?;
         Ok(LazySnapshotRef::new(
             self.workspace.id(),
-            generation.id(),
+            head.id(),
             state.source,
             state.overlay,
             state.shadows,
         ))
     }
 
-    /// Loads a ready binding, following an advanced shared source epoch.
+    /// Loads the ready binding, following a shared source's newer epoch.
     pub async fn state(
         &self,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
-        let state = self
-            .store
-            .load_lazy_workspace(self.workspace.id(), accounting)
-            .await?
-            .ok_or(LazyWorkspaceError::NotFound)?;
-        if state.schema_version != LAZY_STATE_SCHEMA || state.workspace_id != self.workspace.id() {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
-        state.require_ready_fork()?;
-        if state.pending_remove.is_some() {
-            return Err(LazyWorkspaceError::Concurrent);
-        }
-        let live = self.source.reference();
-        if state.source == live {
-            return Ok(state);
-        }
-        if state.source.identity != live.identity || state.source.epoch > live.epoch {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
-        self.rebind_source(accounting).await
-    }
-
-    /// Advances the binding to its shared source's current epoch.
-    pub async fn rebind_source(
-        &self,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
-        let source = self.source.reference();
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self
                 .store
-                .load_lazy_workspace(self.workspace.id(), accounting)
+                .load_lazy_workspace(self.workspace.id(), ctx)
                 .await?
                 .ok_or(LazyWorkspaceError::NotFound)?;
+            let source = self.source.reference();
             if state.schema_version != LAZY_STATE_SCHEMA
                 || state.workspace_id != self.workspace.id()
                 || state.source.identity != source.identity
@@ -279,12 +211,7 @@ where
             };
             if self
                 .store
-                .compare_and_swap_lazy_workspace(
-                    self.workspace.id(),
-                    revision,
-                    next.clone(),
-                    accounting,
-                )
+                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next.clone(), ctx)
                 .await?
             {
                 return Ok(next);
@@ -295,12 +222,12 @@ where
 
     pub(super) async fn recover_pending_remove(
         &self,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self
                 .store
-                .load_lazy_workspace(self.workspace.id(), accounting)
+                .load_lazy_workspace(self.workspace.id(), ctx)
                 .await?
                 .ok_or(LazyWorkspaceError::NotFound)?;
             if state.schema_version != LAZY_STATE_SCHEMA
@@ -316,7 +243,7 @@ where
                 PendingLazyRemoveKind::SourceOnly => true,
                 PendingLazyRemoveKind::Authored { idempotency_key }
                 | PendingLazyRemoveKind::Mounted { idempotency_key } => self
-                    .operation_generation(idempotency_key, accounting)
+                    .operation_generation(idempotency_key, ctx)
                     .await?
                     .is_some(),
             };
@@ -340,12 +267,7 @@ where
             };
             if self
                 .store
-                .compare_and_swap_lazy_workspace(
-                    self.workspace.id(),
-                    state.revision,
-                    next,
-                    accounting,
-                )
+                .compare_and_swap_lazy_workspace(self.workspace.id(), state.revision, next, ctx)
                 .await?
             {
                 return Ok(());
@@ -358,145 +280,102 @@ where
         &self,
         source: SourceReference,
         path: &str,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<SourceNode>, LazyWorkspaceError> {
-        let namespace = self.namespace_path(path, accounting)?;
-        let cancellation = cancellation(accounting);
-        let result = 'accounted: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                break 'accounted self
-                    .source
-                    .lookup(source, &namespace.value, original, cancellation)
-                    .await
-                    .map_err(LazyWorkspaceError::from);
-            }
-            let receipt = self
-                .source
-                .lookup(
-                    source,
-                    &namespace.value,
-                    accounting.remaining()?,
-                    cancellation,
-                )
-                .await;
-            accept_receipt(receipt, accounting)
-        };
-        namespace.retire(accounting)?;
+        let path = self.namespace_path(path, ctx)?;
+        let result = accounted!(ctx, |work, cancel| self.source.lookup(
+            source,
+            &path.value,
+            work,
+            cancel
+        ));
+        path.retire(ctx)?;
         result
     }
 
     pub(super) async fn head(
         &self,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        let cancellation = cancellation(accounting);
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            return self
-                .workspace
-                .head(original, cancellation)
-                .await
-                .map_err(Into::into);
-        }
-        let receipt = self
-            .workspace
-            .head(accounting.remaining()?, cancellation)
-            .await;
-        accept_receipt(receipt, accounting)
+        let checkout = self
+            .checkout(crate::model::GenerationSelector::Head, ctx)
+            .await?;
+        let id = checkout.value.generation_id();
+        checkout.retire(ctx)?;
+        Ok(crate::Generation {
+            workspace: self.workspace.clone(),
+            id,
+            publication_closure: None,
+        })
     }
 
     pub(crate) async fn operation_generation(
         &self,
-        operation: IdempotencyKey,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        key: IdempotencyKey,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<crate::GenerationId>, LazyWorkspaceError> {
-        let cancellation = cancellation(accounting);
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            return self
-                .workspace
-                .operation_generation(operation, original, cancellation)
-                .await
-                .map(|generation| generation.map(|generation| generation.id()))
-                .map_err(Into::into);
-        }
-        let receipt = self
+        let original = self
             .workspace
-            .operation_generation(operation, accounting.remaining()?, cancellation)
-            .await;
-        accept_receipt(receipt, accounting)
-            .map(|generation| generation.map(|generation| generation.id()))
+            .volume
+            .fs
+            .workspace_operation_generation(
+                &self.workspace.volume,
+                key.operation_id(),
+                ctx,
+                cancellation(ctx),
+            )
+            .await?;
+        Ok(original.0.as_ref().map(|(id, _)| *id))
     }
+
     pub(crate) async fn checkout(
         &self,
         selector: crate::model::GenerationSelector,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<crate::kernel::Owned<crate::Checkout<A, O>>, LazyWorkspaceError> {
-        let cancellation = cancellation(accounting);
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Owned<crate::Checkout<A, O>>, LazyWorkspaceError> {
+        let value = self
+            .workspace
+            .checkout_accounted(
+                selector,
+                crate::model::CheckoutMode::read_only_pinned(),
+                ctx,
+                cancellation(ctx),
+            )
+            .await?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let value = self
-                .workspace
-                .volume
-                .checkout(
-                    selector,
-                    crate::model::CheckoutMode::read_only_pinned(),
-                    original,
-                    cancellation,
-                )
-                .await?;
-            return Ok(crate::kernel::Owned::new(
-                value,
-                accounting.claim_owned(0, 0)?,
-                0,
-            ));
+        if ctx.native_work().is_some() {
+            return Ok(Owned::new(value, ctx.claim_owned(0, 0)?, 0));
         }
-        let value = accept_receipt(
-            self.workspace
-                .volume
-                .checkout(
-                    selector,
-                    crate::model::CheckoutMode::read_only_pinned(),
-                    accounting.remaining()?,
-                    cancellation,
-                )
-                .await,
-            accounting,
-        )?;
         let bytes = value.logical_owned_bytes();
-        let (mut allocation, admitted) = accounting.record_actual_owned(bytes)?;
+        let (guard, admitted) = ctx.record_actual_owned(bytes)?;
+        let owned = Owned::new(value, guard, bytes);
         if let Err(error) = admitted {
-            drop(value);
-            accounting.release_owned(&mut allocation, bytes)?;
+            owned.retire(ctx)?;
             return Err(error.into());
         }
-        Ok(crate::kernel::Owned::new(value, allocation, bytes))
+        Ok(owned)
     }
 
-    /// Validates the cut's identity without rebinding an unresolved source.
+    /// Validates a cut's identity without changing the source view.
     pub fn validate_snapshot(
         &self,
-        snapshot: LazySnapshotRef,
-        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        cut: LazySnapshotRef,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        accounting.check()?;
-        if snapshot.workspace_id != self.workspace.id()
-            || snapshot.source.identity != self.source.reference().identity
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
-        accounting.charge(WorkCounters {
+        ctx.charge(WorkCounters {
             bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
             ..WorkCounters::UNCHARGED
         })?;
-        if LazySnapshotRef::new(
-            snapshot.workspace_id,
-            snapshot.authored_generation,
-            snapshot.source,
-            snapshot.overlay,
-            snapshot.shadows,
-        ) != snapshot
+        if cut.workspace_id != self.workspace.id()
+            || cut.source.identity != self.source.reference().identity
+            || cut
+                != LazySnapshotRef::new(
+                    cut.workspace_id,
+                    cut.authored_generation,
+                    cut.source,
+                    cut.overlay,
+                    cut.shadows,
+                )
         {
             return Err(LazyWorkspaceError::StaleSource);
         }

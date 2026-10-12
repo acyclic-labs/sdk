@@ -1,74 +1,80 @@
 use super::*;
-use crate::kernel::KernelAccounting;
 
-/// Path facts without fetching content.
+/// Facts already established by the caller's authored checkout or source page.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct InspectBasis<'a> {
+    pub(crate) state: Option<&'a LazyWorkspaceState>,
+    pub(crate) authored_absent: bool,
+    pub(crate) listed: Option<SourceNode>,
+    pub(crate) retain_pinned_observation: bool,
+    pub(crate) unobserved: bool,
+}
+
+/// Scalar path classification without fetching content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LazyStat {
     /// Observed kind.
     pub kind: SourceNodeKind,
-    /// Logical length when known.
+    /// Logical length when meaningful.
     pub logical_bytes: Option<u64>,
-    /// Whether authenticated authored data supplies the object.
+    /// Whether authored data supplies the identity.
     pub authored: bool,
 }
 
-/// A no-follow authored or source fact.
+/// No-follow path facts from authored data or an exact source observation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LazyLookup {
-    /// An authored namespace binding.
+    /// Authenticated authored binding.
     Authored {
         /// Exact binding path.
         path: String,
         /// Authenticated scalar facts.
         stat: WorkspaceStat,
     },
-    /// Authored data for a source identity, including unresolved aliases.
+    /// Latest authored data shared by unresolved aliases.
     Shadow {
-        /// Immutable authored record.
+        /// Immutable file record.
         record: FileRecord,
         /// Authenticated scalar metadata.
         metadata: crate::WorkspaceMetadata,
-        /// Source alias count.
+        /// Source-native alias count.
         source_link_count: u64,
     },
-    /// Pinned no-follow source fact.
+    /// Exact source fact including its pinned epoch.
     Source {
-        /// Exact observed source reference.
+        /// Observed source cut.
         source: SourceReference,
-        /// Exact observed node/version.
+        /// Immutable node/version.
         node: SourceNode,
     },
 }
 
 impl LazyLookup {
-    /// Retained SDK heap backing.
+    /// Retained heap backing.
     pub fn logical_owned_bytes(&self) -> u64 {
         match self {
             Self::Authored { path, .. } => path.capacity() as u64,
             _ => 0,
         }
     }
-    /// Scalar classification without marking promotion as modification.
+    /// Scalar classification.
     pub fn stat(&self) -> LazyStat {
-        match self {
-            Self::Authored { stat, .. } => LazyStat {
-                kind: source_kind(stat.kind),
-                logical_bytes: stat.logical_bytes,
-                authored: true,
-            },
-            Self::Shadow { record, .. } => LazyStat {
-                kind: source_kind(record.kind),
-                logical_bytes: record_logical_bytes(*record),
-                authored: true,
-            },
-            Self::Source { node, .. } => LazyStat {
-                kind: node.kind,
-                logical_bytes: node.logical_bytes,
-                authored: false,
-            },
+        let (kind, logical_bytes, authored) = match self {
+            Self::Authored { stat, .. } => (source_kind(stat.kind), stat.logical_bytes, true),
+            Self::Shadow { record, .. } => (
+                source_kind(record.kind),
+                record_logical_bytes(*record),
+                true,
+            ),
+            Self::Source { node, .. } => (node.kind, node.logical_bytes, false),
+        };
+        LazyStat {
+            kind,
+            logical_bytes,
+            authored,
         }
     }
-    /// Scalar cross-profile metadata.
+    /// Scalar metadata without following symbolic links.
     pub fn metadata(&self) -> crate::WorkspaceMetadata {
         match self {
             Self::Authored { stat, .. } => stat.metadata,
@@ -80,45 +86,42 @@ impl LazyLookup {
     }
 }
 
-#[derive(Clone, Copy, Default)]
-pub(crate) struct InspectBasis<'a> {
-    pub(crate) state: Option<&'a LazyWorkspaceState>,
-    pub(crate) authored_absent: bool,
-    pub(crate) listed: Option<SourceNode>,
-    pub(crate) retain_pinned_observation: bool,
-    pub(crate) unobserved: bool,
-}
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
-    /// Resolves and records a first source observation.
+    /// Resolves a path and retains its first source observation.
     pub async fn lookup(
         &self,
         path: &str,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(LazyLookup, crate::kernel::allocation::KernelOwnedAllocation), LazyWorkspaceError>
-    {
-        let lookup = self.inspect(path, accounting).await?;
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(LazyLookup, KernelOwnedAllocation), LazyWorkspaceError> {
+        let lookup = self.inspect(path, ctx).await?;
         if let LazyLookup::Source { source, node } = lookup.0 {
-            let state = self.state(accounting).await?;
             let change = LazyOverlayChange::Observe { source, node };
-            if self.overlay_fact(state.overlay, path, accounting).await? != Some(change.clone()) {
-                self.append_overlay(path, change, accounting).await?;
+            let recorded = async {
+                let state = self.state(ctx).await?;
+                if self.overlay_fact(state.overlay, path, ctx).await? != Some(change.clone()) {
+                    self.append_overlay(path, change, ctx).await?;
+                }
+                Ok::<_, LazyWorkspaceError>(())
+            }
+            .await;
+            if let Err(error) = recorded {
+                self.retire_lookup(lookup, ctx)?;
+                return Err(error);
             }
         }
         Ok(lookup)
     }
 
-    /// Inspects transiently, leaving the observation index unchanged.
+    /// Inspects transiently without changing source observations.
     pub async fn inspect(
         &self,
         path: &str,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(LazyLookup, crate::kernel::allocation::KernelOwnedAllocation), LazyWorkspaceError>
-    {
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(LazyLookup, KernelOwnedAllocation), LazyWorkspaceError> {
         let mut checkout = self
-            .checkout(crate::model::GenerationSelector::Head, accounting)
+            .checkout(crate::model::GenerationSelector::Head, ctx)
             .await?;
         let result = self
             .inspect_unauthored(
@@ -126,67 +129,55 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 path,
                 None,
                 InspectBasis::default(),
-                accounting,
+                ctx,
             )
             .await;
-        checkout.retire(accounting)?;
-        let (lookup, _, allocation) = result?;
-        Ok((lookup.ok_or(LazyWorkspaceError::NotFound)?, allocation))
+        checkout.retire(ctx)?;
+        let (lookup, _, guard) = result?;
+        Ok((lookup.ok_or(LazyWorkspaceError::NotFound)?, guard))
     }
 
-    /// Resolves an immutable cut, including known absence and actual source participation.
+    /// Resolves a frozen cut, returning known absence and actual source participation.
     pub async fn lookup_at_snapshot(
         &self,
-        snapshot: LazySnapshotRef,
+        cut: LazySnapshotRef,
         path: &str,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<
-        (
-            Option<LazyLookup>,
-            bool,
-            crate::kernel::allocation::KernelOwnedAllocation,
-        ),
-        LazyWorkspaceError,
-    > {
-        self.validate_snapshot(snapshot, accounting)?;
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(Option<LazyLookup>, bool, KernelOwnedAllocation), LazyWorkspaceError> {
+        self.validate_snapshot(cut, ctx)?;
         let mut checkout = self
             .checkout(
-                crate::model::GenerationSelector::Exact(snapshot.authored_generation),
-                accounting,
+                crate::model::GenerationSelector::Exact(cut.authored_generation),
+                ctx,
             )
             .await?;
-        let state = LazyWorkspaceState::new(
-            snapshot.workspace_id,
-            snapshot.source,
-            snapshot.overlay,
-            snapshot.shadows,
-        );
+        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
         let result = self
             .inspect_unauthored(
                 &mut checkout.value,
                 path,
-                Some(snapshot),
+                Some(cut),
                 InspectBasis {
                     state: Some(&state),
                     retain_pinned_observation: true,
                     ..InspectBasis::default()
                 },
-                accounting,
+                ctx,
             )
             .await;
-        checkout.retire(accounting)?;
+        checkout.retire(ctx)?;
         result
     }
 
-    /// Classifies one demanding lookup.
+    /// Classifies a demanding lookup.
     pub async fn stat(
         &self,
         path: &str,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyStat, LazyWorkspaceError> {
-        let lookup = self.lookup(path, accounting).await?;
+        let lookup = self.lookup(path, ctx).await?;
         let stat = lookup.0.stat();
-        self.retire_lookup(lookup, accounting)?;
+        self.retire_lookup(lookup, ctx)?;
         Ok(stat)
     }
 
@@ -194,32 +185,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         &self,
         checkout: &mut crate::Checkout<A, O>,
         path: &str,
-        snapshot: Option<LazySnapshotRef>,
+        frozen: Option<LazySnapshotRef>,
         basis: InspectBasis<'_>,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<
-        (
-            Option<LazyLookup>,
-            bool,
-            crate::kernel::allocation::KernelOwnedAllocation,
-        ),
-        LazyWorkspaceError,
-    > {
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(Option<LazyLookup>, bool, KernelOwnedAllocation), LazyWorkspaceError> {
         PortablePath::validate(path, self.workspace.limits())
             .map_err(crate::kernel::NamespacePathError::Path)?;
-        let cancellation = cancellation(accounting);
         if !basis.authored_absent {
-            let namespace = self.namespace_path(path, accounting)?;
-            let authored = checkout
+            let namespace = self.namespace_path(path, ctx)?;
+            let result = checkout
                 .lookup_no_follow_with_metadata_with_accounting(
                     &namespace.value,
-                    accounting,
-                    cancellation,
+                    ctx,
+                    cancellation(ctx),
                 )
                 .await;
-            namespace.retire(accounting)?;
-            if let Some(authored) = authored? {
-                let path = self.canonical_path(path, accounting)?;
+            namespace.retire(ctx)?;
+            if let Some(authored) = result? {
+                let path = self.canonical_path(path, ctx)?;
                 return Ok((
                     Some(LazyLookup::Authored {
                         path: path.value,
@@ -231,60 +214,48 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             }
         }
         let loaded;
-        let state = if let Some(state) = basis.state {
-            state
-        } else {
-            loaded = self.state(accounting).await?;
-            &loaded
+        let state = match basis.state {
+            Some(state) => state,
+            None => {
+                loaded = self.state(ctx).await?;
+                &loaded
+            }
         };
-        if self.tombstoned(state.overlay, path, accounting).await? {
-            return Ok((None, false, accounting.claim_owned(0, 0)?));
+        if self.tombstoned(state.overlay, path, ctx).await? {
+            return Ok((None, false, ctx.claim_owned(0, 0)?));
         }
-        let observed = if basis.unobserved {
+        let fact = if basis.unobserved {
             None
         } else {
-            self.overlay_fact(state.overlay, path, accounting).await?
+            self.overlay_fact(state.overlay, path, ctx).await?
         };
-        let mut used = false;
-        let (source, node) = match observed {
+        let (source, node, used) = match fact {
             Some(LazyOverlayChange::Observe { source, node })
                 if basis.retain_pinned_observation || source == state.source =>
             {
-                (source, Some(node))
+                (source, Some(node), false)
             }
-            _ => {
-                if let Some(node) = basis.listed {
-                    (state.source, Some(node))
-                } else {
-                    if snapshot.is_some() && state.source != self.source.reference() {
+            _ => match basis.listed {
+                Some(node) => (state.source, Some(node), false),
+                None => {
+                    if frozen.is_some() && state.source != self.source.reference() {
                         return Err(LazyWorkspaceError::StaleSource);
                     }
-                    used = true;
                     (
                         state.source,
-                        self.source_lookup(state.source, path, accounting).await?,
+                        self.source_lookup(state.source, path, ctx).await?,
+                        true,
                     )
                 }
-            }
+            },
         };
         let Some(node) = node else {
-            return Ok((None, used, accounting.claim_owned(0, 0)?));
+            return Ok((None, used, ctx.claim_owned(0, 0)?));
         };
         if node.kind != SourceNodeKind::Directory && node.link_count != Some(1) {
-            let id = self.source_file_id(&node.file_identity, accounting)?;
-            let record = 'accounted: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = accounting.native_work() {
-                    break 'accounted checkout
-                        .read_file_record_by_id(id, original, cancellation)
-                        .await
-                        .map_err(LazyWorkspaceError::from);
-                }
-                let receipt = checkout
-                    .read_file_record_by_id(id, accounting.remaining()?, cancellation)
-                    .await;
-                accept_receipt(receipt, accounting)
-            };
+            let id = self.source_file_id(&node.file_identity, ctx)?;
+            let record = accounted!(ctx, |work, cancel| checkout
+                .read_file_record_by_id(id, work, cancel));
             let shadow = match record {
                 Ok(record) => Some((
                     record,
@@ -292,14 +263,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         checkout
                             .read_metadata_by_id_with_accounting(
                                 record.file_id,
-                                accounting,
-                                cancellation,
+                                ctx,
+                                cancellation(ctx),
                             )
                             .await?,
                     ),
                 )),
                 Err(LazyWorkspaceError::Filesystem(crate::FsError::NotFound)) => {
-                    self.shadow_record(state.shadows, id, accounting).await?
+                    self.shadow_record(state.shadows, id, ctx).await?
                 }
                 Err(error) => return Err(error),
             };
@@ -311,56 +282,55 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         source_link_count: node.link_count.unwrap_or(1),
                     }),
                     used,
-                    accounting.claim_owned(0, 0)?,
+                    ctx.claim_owned(0, 0)?,
                 ));
             }
         }
         Ok((
             Some(LazyLookup::Source { source, node }),
             used,
-            accounting.claim_owned(0, 0)?,
+            ctx.claim_owned(0, 0)?,
         ))
     }
 
-    /// Stable SDK identity of an unresolved source node.
+    /// Stable SDK identity shared by all aliases of the source node.
     pub fn source_file_id(
         &self,
         identity: &[u8; 32],
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<FileId, LazyWorkspaceError> {
         let domain = b"acyclic-fs-lazy-source-file-id-v1\0";
-        accounting.charge(WorkCounters {
+        ctx.charge(WorkCounters {
             bytes_hashed: domain.len() as u64 + 48,
             ..WorkCounters::UNCHARGED
         })?;
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(domain);
-        hasher.update(&self.source.reference().identity);
-        hasher.update(identity);
-        let digest = hasher.finalize();
+        let mut hash = blake3::Hasher::new();
+        hash.update(domain);
+        hash.update(&self.source.reference().identity);
+        hash.update(identity);
         let mut bytes = [0; 16];
-        bytes.copy_from_slice(&digest.as_bytes()[..16]);
+        bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
         Ok(FileId::from_bytes(bytes))
     }
 
-    /// Resolves the original directory identity after shallow promotion.
+    /// Preserves a shallowly promoted directory's original source identity.
     pub async fn stable_file_id_for_lookup(
         &self,
         path: &str,
         lookup: &LazyLookup,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<FileId, LazyWorkspaceError> {
         match lookup {
-            LazyLookup::Source { node, .. } => self.source_file_id(&node.file_identity, accounting),
+            LazyLookup::Source { node, .. } => self.source_file_id(&node.file_identity, ctx),
             LazyLookup::Shadow { record, .. } => Ok(record.file_id),
             LazyLookup::Authored { stat, .. } => {
                 if stat.kind == FileKind::Directory {
-                    let state = self.state(accounting).await?;
+                    let state = self.state(ctx).await?;
                     if let Some(LazyOverlayChange::Observe { node, .. }) =
-                        self.overlay_fact(state.overlay, path, accounting).await?
+                        self.overlay_fact(state.overlay, path, ctx).await?
                         && node.kind == SourceNodeKind::Directory
                     {
-                        return self.source_file_id(&node.file_identity, accounting);
+                        return self.source_file_id(&node.file_identity, ctx);
                     }
                 }
                 Ok(stat.file_id)
@@ -370,12 +340,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
 
     pub(crate) fn retire_lookup(
         &self,
-        lookup: (LazyLookup, crate::kernel::allocation::KernelOwnedAllocation),
-        accounting: &mut KernelAccounting<'_>,
+        lookup: (LazyLookup, KernelOwnedAllocation),
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         let bytes = lookup.0.logical_owned_bytes();
         drop(lookup.0);
-        crate::kernel::retire_allocation(lookup.1, bytes, accounting).map_err(Into::into)
+        Ok(crate::kernel::retire_allocation(lookup.1, bytes, ctx)?)
     }
 }
 

@@ -11,25 +11,39 @@ pub(super) struct DemandBlobSource<'a, D> {
     pub(super) failure: Option<DemandError>,
 }
 
+impl<D: DemandSource> DemandBlobSource<'_, D> {
+    fn wanted(&self, destination: &[u8]) -> u64 {
+        self.length
+            .saturating_sub(self.offset)
+            .min(destination.len() as u64)
+    }
+    fn copy(&mut self, bytes: &[u8], destination: &mut [u8]) -> Result<usize, DemandError> {
+        if bytes.is_empty() || bytes.len() as u64 > self.wanted(destination) {
+            return Err(DemandError::StaleVersion);
+        }
+        destination[..bytes.len()].copy_from_slice(bytes);
+        self.offset += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+}
+
 impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D> {
     async fn read(
         &mut self,
         destination: &mut [u8],
         budget: WorkBudget,
-        cancellation: &CancellationToken,
+        cancel: &CancellationToken,
     ) -> std::io::Result<usize> {
-        let wanted = self
-            .length
-            .saturating_sub(self.offset)
-            .min(destination.len() as u64);
+        let wanted = self.wanted(destination);
         if wanted == 0 {
             return Ok(0);
         }
-        let copying = WorkCounters {
+        let allowance = WorkCounters {
             bytes_copied: wanted,
             ..WorkCounters::UNCHARGED
-        };
-        let allowance = copying.remaining(budget).map_err(std::io::Error::other)?;
+        }
+        .remaining(budget)
+        .map_err(std::io::Error::other)?;
         let result = self
             .provider
             .read_range(
@@ -39,7 +53,7 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
                 self.offset,
                 wanted,
                 allowance,
-                cancellation,
+                cancel,
             )
             .await;
         let chunk = match result {
@@ -47,19 +61,16 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
                 self.work = Some(receipt.work);
                 receipt.value
             }
-            Err(failure) => {
-                self.work = Some(*failure.work);
-                self.failure = Some(failure.error);
-                return Err(std::io::Error::other("source read failed"));
+            Err(failed) => {
+                self.work = Some(*failed.work);
+                self.failure = Some(failed.error);
+                return Err(std::io::Error::other("version-pinned source read failed"));
             }
         };
-        if chunk.bytes.is_empty() || chunk.bytes.len() as u64 > wanted {
-            self.failure = Some(DemandError::StaleVersion);
-            return Err(std::io::Error::other("incomplete source read"));
-        }
-        let len = chunk.bytes.len();
-        destination[..len].copy_from_slice(&chunk.bytes);
-        self.offset += len as u64;
+        let len = self.copy(&chunk.bytes, destination).map_err(|error| {
+            self.failure = Some(error);
+            std::io::Error::other("incomplete source read")
+        })?;
         self.work = Some(
             self.work
                 .unwrap_or_default()
@@ -76,20 +87,17 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
     async fn read_with_native_work(
         &mut self,
         destination: &mut [u8],
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
+        work: &crate::NativeMaterializationWork,
+        cancel: &CancellationToken,
     ) -> Result<usize, crate::FsError> {
-        original.admit(WorkCounters::UNCHARGED)?;
-        cancellation.check()?;
-        let wanted = self
-            .length
-            .saturating_sub(self.offset)
-            .min(destination.len() as u64);
+        work.admit(WorkCounters::UNCHARGED)?;
+        cancel.check()?;
+        let wanted = self.wanted(destination);
         if wanted == 0 {
             return Ok(0);
         }
-        let failure = crate::kernel::PreparedBlobDemandFailure::new(original)?;
-        let mut copying = original.reserve_work(WorkCounters {
+        let failure = crate::kernel::PreparedBlobDemandFailure::new(work)?;
+        let mut copying = work.reserve_work(WorkCounters {
             bytes_copied: wanted,
             ..WorkCounters::UNCHARGED
         })?;
@@ -101,8 +109,8 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
                 self.version,
                 self.offset,
                 wanted,
-                original,
-                cancellation,
+                work,
+                cancel,
             )
             .await
         {
@@ -111,22 +119,15 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
                 return Err(crate::kernel::BlobBuildError::Demand(failure.failed(error)).into());
             }
         };
-        if chunk.bytes.is_empty() || chunk.bytes.len() as u64 > wanted {
-            return Err(crate::kernel::BlobBuildError::Demand(
-                failure.failed(DemandError::StaleVersion),
-            )
-            .into());
-        }
-        let len = chunk.bytes.len();
-        destination[..len].copy_from_slice(&chunk.bytes);
-        self.offset += len as u64;
+        let len = self
+            .copy(&chunk.bytes, destination)
+            .map_err(|error| crate::kernel::BlobBuildError::Demand(failure.failed(error)))?;
         copying.record_completed(WorkCounters {
             bytes_copied: len as u64,
             ..WorkCounters::UNCHARGED
         })?;
         Ok(len)
     }
-
     fn take_work(&mut self) -> Option<WorkCounters> {
         self.work.take()
     }

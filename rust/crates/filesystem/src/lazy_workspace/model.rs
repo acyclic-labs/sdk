@@ -92,9 +92,12 @@ pub struct LazyWorkspaceState {
     pub workspace_id: WorkspaceId,
     /// Direct sparse parent, when this state was produced by a fork.
     pub parent_workspace_id: Option<WorkspaceId>,
-    /// Original pre-creation source cut.
+    /// Original cut and creation decision, retained across retries.
     #[serde(deserialize_with = "Option::<LazyForkOrigin>::deserialize")]
     pub fork_origin: Option<LazyForkOrigin>,
+    /// Committed, destination and source cuts retained for collection.
+    #[serde(deserialize_with = "Option::<[(LazySnapshotRef, VolumeConfig); 3]>::deserialize")]
+    pub selected_import_roots: Option<[(LazySnapshotRef, VolumeConfig); 3]>,
     /// Provider identity and invalidation epoch pinned at attach time.
     pub source: SourceReference,
     /// Immutable observations and tombstones visible to this context.
@@ -103,9 +106,6 @@ pub struct LazyWorkspaceState {
     pub shadows: LazyShadowId,
     /// Prepared authored removal recovered atomically when the workspace reopens.
     pub pending_remove: Option<PendingLazyRemove>,
-    /// Latest committed selected import.
-    #[serde(deserialize_with = "Option::<CompletedSelectedImport>::deserialize")]
-    pub completed_selected_import: Option<CompletedSelectedImport>,
 }
 
 /// Content address of one immutable source-identity shadow index node.
@@ -215,4 +215,77 @@ pub enum LazyOverlayChange {
         /// Source version deleted, or `None` for a hidden path.
         removed: Option<SourceVersion>,
     },
+}
+
+/// Whether the original child creation has been authenticated.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum LazyForkPhase {
+    /// Source captured before creation.
+    Prepared,
+    /// Original child authenticated.
+    Committed,
+}
+
+/// Immutable source cut and original SDK creation identity.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LazyForkOrigin {
+    /// Original creation operation.
+    pub operation_id: crate::OperationId,
+    /// Original complete view.
+    pub snapshot: LazySnapshotRef,
+    /// Original decode configuration.
+    pub config: VolumeConfig,
+    /// Durable creation decision.
+    pub phase: LazyForkPhase,
+}
+
+impl LazyWorkspaceState {
+    pub(super) fn new(
+        workspace_id: WorkspaceId,
+        source: SourceReference,
+        overlay: LazyOverlayId,
+        shadows: LazyShadowId,
+    ) -> Self {
+        Self {
+            schema_version: LAZY_STATE_SCHEMA,
+            revision: 1,
+            workspace_id,
+            parent_workspace_id: None,
+            fork_origin: None,
+            selected_import_roots: None,
+            source,
+            overlay,
+            shadows,
+            pending_remove: None,
+        }
+    }
+
+    /// Checks the original root without changing its source cut.
+    pub fn validate_root_binding(
+        &self,
+        id: WorkspaceId,
+        source: SourceReference,
+    ) -> Result<(), LazyWorkspaceError> {
+        if self.schema_version != LAZY_STATE_SCHEMA
+            || self.workspace_id != id
+            || self.parent_workspace_id.is_some()
+            || self.fork_origin.is_some()
+            || self.source.identity != source.identity
+            || self.source.epoch < source.epoch
+        {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_ready_fork(&self) -> Result<(), LazyWorkspaceError> {
+        if self
+            .fork_origin
+            .is_some_and(|o| o.phase == LazyForkPhase::Prepared)
+        {
+            return Err(LazyWorkspaceError::Concurrent);
+        }
+        Ok(())
+    }
 }

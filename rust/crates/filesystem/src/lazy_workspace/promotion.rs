@@ -1,6 +1,4 @@
 use super::*;
-use crate::kernel::KernelAccounting;
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
@@ -8,254 +6,168 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
     pub async fn promote(
         &self,
         path: &str,
-        maximum_bytes: u64,
-        operation: IdempotencyKey,
+        maximum: u64,
+        key: IdempotencyKey,
         permit: crate::PublicationPermit,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
-        let requested = self.canonical_path(path, accounting)?;
-        let lookup = self.lookup(&requested.value, accounting).await?;
-        let result = self
-            .promote_resolved(
-                &requested.value,
-                &lookup.0,
-                maximum_bytes,
-                operation,
-                permit,
-                accounting,
-            )
-            .await;
-        self.retire_lookup(lookup, accounting)?;
-        requested.retire(accounting)?;
+        let path = self.canonical_path(path, ctx)?;
+        let result = async {
+            let lookup = self.lookup(&path.value, ctx).await?;
+            let result = self
+                .promote_resolved(&path.value, &lookup.0, maximum, key, permit, ctx)
+                .await;
+            self.retire_lookup(lookup, ctx)?;
+            result
+        }
+        .await;
+        path.retire(ctx)?;
         result
     }
-
     async fn promote_resolved(
         &self,
-        requested: &str,
+        path: &str,
         lookup: &LazyLookup,
-        maximum_bytes: u64,
-        operation: IdempotencyKey,
+        maximum: u64,
+        key: IdempotencyKey,
         permit: crate::PublicationPermit,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
-        if matches!(lookup, LazyLookup::Authored { path, .. } if path == requested) {
-            return Ok(TransactionCommit::AlreadyCommitted(
-                self.head(accounting).await?,
-            ));
+        if matches!(lookup,LazyLookup::Authored { path: authored,.. } if authored == path) {
+            return Ok(TransactionCommit::AlreadyCommitted(self.head(ctx).await?));
         }
         let checkout = self
             .workspace
             .checkout_accounted(
                 crate::model::GenerationSelector::Head,
                 crate::model::CheckoutMode::tracking_transaction(),
-                accounting,
-                cancellation(accounting),
+                ctx,
+                cancellation(ctx),
             )
             .await?;
         let mut transaction =
-            crate::Transaction::from_checkout(&self.workspace, checkout, operation, false);
-        if let Some(parent) = parent_path(requested) {
+            crate::Transaction::from_checkout(&self.workspace, checkout, key, false);
+        if let Some(parent) = parent_path(path) {
             transaction
-                .create_dirs(parent, accounting, cancellation(accounting))
+                .create_dirs(parent, ctx, cancellation(ctx))
                 .await?;
         }
-        self.apply_resolved_promotion(
-            &mut transaction,
-            requested,
-            lookup,
-            maximum_bytes,
-            accounting,
-        )
-        .await?;
-        self.commit(&mut transaction, permit, accounting).await
+        self.apply_resolved_promotion(&mut transaction, path, lookup, maximum, ctx)
+            .await?;
+        self.commit(&mut transaction, permit, ctx).await
     }
-
     pub(super) async fn apply_resolved_promotion(
         &self,
         transaction: &mut crate::Transaction<A, O>,
-        requested: &str,
+        path: &str,
         lookup: &LazyLookup,
-        maximum_bytes: u64,
-        accounting: &mut KernelAccounting<'_>,
+        maximum: u64,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
-        let cancellation = cancellation(accounting);
         match lookup {
-            LazyLookup::Source { source, node } => {
-                self.populate_source_node(
-                    transaction,
-                    requested,
-                    *source,
-                    *node,
-                    maximum_bytes,
-                    accounting,
-                )
-                .await?;
-            }
-            LazyLookup::Authored { path, .. } if path == requested => return Ok(false),
-            LazyLookup::Authored { path, .. } => 'accounted: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = accounting.native_work() {
-                    transaction
-                        .hard_link(path, requested, original, cancellation)
-                        .await?;
-                    break 'accounted;
-                }
-                accept_receipt(
-                    transaction
-                        .hard_link(path, requested, accounting.remaining()?, cancellation)
-                        .await,
-                    accounting,
-                )?;
+            LazyLookup::Authored { path: authored, .. } if authored == path => return Ok(false),
+            LazyLookup::Authored { path: authored, .. } => {
+                accounted!(ctx, |work, cancel| transaction
+                    .hard_link(authored, path, work, cancel))?;
             }
             LazyLookup::Shadow { record, .. } => {
-                'accounted: {
-                    let cancellation = cancellation;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(original) = accounting.native_work() {
-                        break 'accounted transaction
-                            .restore_record(requested, *record, original, cancellation)
-                            .await
-                            .map_err(LazyWorkspaceError::from);
-                    }
-                    accept_receipt(
-                        transaction
-                            .restore_record(
-                                requested,
-                                *record,
-                                accounting.remaining()?,
-                                cancellation,
-                            )
-                            .await,
-                        accounting,
-                    )
-                }?;
+                accounted!(ctx, |work, cancel| transaction
+                    .restore_record(path, *record, work, cancel))?;
+            }
+            LazyLookup::Source { source, node } => {
+                self.populate_source_node(transaction, path, *source, *node, maximum, ctx)
+                    .await?
             }
         }
         Ok(true)
     }
-
-    /// Promotes only the exact identity the caller inspected.
+    /// Promotes only the identity the caller resolved.
     pub async fn promote_exact(
         &self,
         path: &str,
         expected: FileId,
-        maximum_bytes: u64,
-        operation: IdempotencyKey,
-        accounting: &mut KernelAccounting<'_>,
+        maximum: u64,
+        key: IdempotencyKey,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        let lookup = self.lookup(path, accounting).await?;
+        let lookup = self.lookup(path, ctx).await?;
         let result = async {
-            if self
-                .stable_file_id_for_lookup(path, &lookup.0, accounting)
-                .await?
-                != expected
-            {
+            if self.stable_file_id_for_lookup(path, &lookup.0, ctx).await? != expected {
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
             match self
                 .promote_resolved(
                     path,
                     &lookup.0,
-                    maximum_bytes,
-                    operation,
+                    maximum,
+                    key,
                     crate::PublicationPermit::Unrestricted,
-                    accounting,
+                    ctx,
                 )
                 .await?
             {
                 TransactionCommit::Committed(generation)
                 | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
                 TransactionCommit::IdempotencyConflict => Err(LazyWorkspaceError::Concurrent),
-                TransactionCommit::Conflict { .. } | TransactionCommit::Fenced => {
-                    Err(LazyWorkspaceError::StaleIdentity)
-                }
+                _ => Err(LazyWorkspaceError::StaleIdentity),
             }
         }
         .await;
-        self.retire_lookup(lookup, accounting)?;
+        self.retire_lookup(lookup, ctx)?;
         result
     }
-
-    /// Stages a live or frozen identity in an unpublished checkout.
+    /// Stages a live or frozen identity in an unpublished mounted checkout.
     #[cfg(feature = "native-mount")]
     pub(crate) async fn stage_into_checkout(
         &self,
         checkout: &mut crate::Checkout<A, O>,
-        snapshot: Option<LazySnapshotRef>,
+        cut: Option<LazySnapshotRef>,
         path: &str,
         expected: FileId,
-        maximum_bytes: u64,
-        accounting: &mut KernelAccounting<'_>,
+        maximum: u64,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
-        let lookup = if let Some(snapshot) = snapshot {
-            let (lookup, _, allocation) =
-                self.lookup_at_snapshot(snapshot, path, accounting).await?;
-            (lookup.ok_or(LazyWorkspaceError::NotFound)?, allocation)
-        } else {
-            self.lookup(path, accounting).await?
+        let lookup = match cut {
+            Some(cut) => {
+                let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
+                (lookup.ok_or(LazyWorkspaceError::NotFound)?, guard)
+            }
+            None => self.lookup(path, ctx).await?,
         };
         let result = async {
-            if self
-                .stable_file_id_for_lookup(path, &lookup.0, accounting)
-                .await?
-                != expected
-            {
+            if self.stable_file_id_for_lookup(path, &lookup.0, ctx).await? != expected {
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
-            let namespace = self.namespace_path(path, accounting)?;
-            let record = checkout
+            let namespace = self.namespace_path(path, ctx)?;
+            let present = checkout
                 .lookup_no_follow_with_metadata_with_accounting(
                     &namespace.value,
-                    accounting,
-                    cancellation(accounting),
+                    ctx,
+                    cancellation(ctx),
                 )
                 .await;
-            namespace.retire(accounting)?;
-            if let Some(record) = record? {
-                return if record.record.file_id == expected {
+            namespace.retire(ctx)?;
+            if let Some(present) = present? {
+                return if present.record.file_id == expected {
                     Ok(false)
                 } else {
                     Err(LazyWorkspaceError::StaleIdentity)
                 };
             }
-            if matches!(&lookup.0, LazyLookup::Authored { path: authored, .. } if authored == path)
-            {
+            if matches!(&lookup.0,LazyLookup::Authored { path: authored,.. } if authored == path) {
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
-            let candidate =
-                checkout.private_candidate_with_accounting(accounting, cancellation(accounting))?;
-            let mut transaction = 'accounted: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = accounting.native_work() {
-                    break 'accounted crate::Transaction::for_checkout_candidate(
-                        &self.workspace,
-                        candidate,
-                        original,
-                        cancellation(accounting),
-                    )?;
-                }
-                let result = crate::Transaction::for_checkout_candidate(
-                    &self.workspace,
-                    candidate,
-                    accounting.remaining()?,
-                    cancellation(accounting),
-                );
-                accept_receipt(result, accounting)?
-            };
+            let candidate = checkout.private_candidate_with_accounting(ctx, cancellation(ctx))?;
+            let mut transaction = accounted!(ctx, |work, cancel| async {
+                crate::Transaction::for_checkout_candidate(&self.workspace, candidate, work, cancel)
+            })?;
             if let Some(parent) = parent_path(path) {
                 transaction
-                    .create_dirs(parent, accounting, cancellation(accounting))
+                    .create_dirs(parent, ctx, cancellation(ctx))
                     .await?;
             }
             let changed = self
-                .apply_resolved_promotion(
-                    &mut transaction,
-                    path,
-                    &lookup.0,
-                    maximum_bytes,
-                    accounting,
-                )
+                .apply_resolved_promotion(&mut transaction, path, &lookup.0, maximum, ctx)
                 .await?;
             if changed {
                 *checkout = transaction.checkout;
@@ -263,7 +175,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             Ok(changed)
         }
         .await;
-        self.retire_lookup(lookup, accounting)?;
+        self.retire_lookup(lookup, ctx)?;
         result
     }
 }

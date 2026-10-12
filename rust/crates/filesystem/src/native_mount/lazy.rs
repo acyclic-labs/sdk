@@ -4058,7 +4058,7 @@ where
         self.source_view.begin_transition();
         let result = async {
             self.authored.advance_to_head_async().await?;
-            self.lazy.rebind_source(& mut crate:: kernel :: KernelAccounting :: standalone (
+            self.lazy.state(& mut crate:: kernel :: KernelAccounting :: standalone (
                 crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
             )).await.map_err(lazy_error)?;
             // Every unauthored node may read differently from the new epoch.
@@ -7385,17 +7385,17 @@ where
                             Resolution::Unauthored(lookup, source, _) => {
                                 let caller = carrier.cancellation();
                                 if let Some(original) = carrier.original_native_work() {
-                                    let read = self.lazy.read_unauthored(
+                                    let read = self.lazy.read_resolved(
                                         lookup,  text, Some(crate::ByteRange { offset: next, length: u64::from(wanted) }),
-                                        u64::MAX, & mut crate :: kernel::KernelAccounting::native (&original, &caller , ),
+                                        u64::MAX, crate::model::GenerationSelector::Head, & mut crate :: kernel::KernelAccounting::native (&original, &caller , ),
                                     ).await;
                                     read .map_err(native_lazy_error )?
                                 } else {
                                     let budget = carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
                                     let mut accounting = crate :: kernel::KernelAccounting::standalone (budget, &caller , );
-                                    let read = self.lazy.read_unauthored(lookup,  text,
+                                    let read = self.lazy.read_resolved(lookup,  text,
                                         Some(crate::ByteRange { offset: next, length: u64::from(wanted) }),
-                                        u64::MAX, & mut accounting).await;
+                                        u64::MAX, crate::model::GenerationSelector::Head, & mut accounting).await;
                                     let read = crate::facade:: measured(read, &accounting );
                                     let output = carrier.with_work(|work| mount_accept(work, read, lazy_error))?;
                                     let retained = output.logical_owned_bytes;
@@ -7452,8 +7452,8 @@ where
             Resolution::Unauthored(lookup, source, allocation) => {
                 let lookup = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
                 let maximum = original.remaining().map_err(MountSourceError::NativeWork)?.output_bytes;
-                self.lazy.read_unauthored(
-                    &lookup.value,  &text, None, maximum,
+                self.lazy.read_resolved(
+                    &lookup.value,  &text, None, maximum, crate::model::GenerationSelector::Head,
                     & mut crate :: kernel::KernelAccounting::native (original, original.cancellation() , ),
                 ).await .map_err(native_lazy_error )
             }
@@ -7689,8 +7689,6 @@ fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
             return MountSourceError::Cancelled,
         LazyWorkspaceError::NamespacePath(error) => return MountSourceError::NamespacePath(error),
         LazyWorkspaceError::WorkspaceCause(error) => return MountSourceError::WorkspaceCause(error),
-        LazyWorkspaceError:: NativeWorkspace ( error, allocation ) =>
-            return MountSourceError::NativeWorkspaceCause( error, allocation ),
         LazyWorkspaceError::Store(message) => return MountSourceError::Engine(std::borrow::Cow::Owned(message)),
         error => error,
     };

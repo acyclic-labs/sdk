@@ -1,6 +1,5 @@
 use super::*;
 use acyclic_fs::facade::FsWork;
-use acyclic_fs::kernel::KernelAccounting;
 /// A retained original lazy source.
 pub struct FsRootNativeSource<A, O> {
     pub(crate) backing: Arc<dyn RootLazyBacking<A, O>>,
@@ -135,14 +134,14 @@ where
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
                 self.lazy
-                    .validate_snapshot(snapshot, &mut KernelAccounting::native(work, work.cancellation()))
+                    .validate_snapshot(snapshot, &mut work.accounting(work.cancellation()))
                     .map_err(Error::from)
             })
             .map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
             let budget = io.remaining()?;
-            let mut accounting = KernelAccounting::standalone(budget, io.cancellation());
+            let mut accounting = budget.accounting(io.cancellation());
             let result = self.lazy.validate_snapshot(snapshot, &mut accounting).map_err(root_source_error);
             io.receive_content(budget.finish(result, &accounting))
         })
@@ -158,7 +157,7 @@ where
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
                 self.lazy
-                    .read_at_snapshot(snapshot, path, None, maximum, &mut KernelAccounting::native(work, work.cancellation()))
+                    .read_at_snapshot(snapshot, path, None, maximum, &mut work.accounting(work.cancellation()))
                     .await
                     .map(|(chunk, _)| chunk.bytes)
                     .map_err(Error::from)
@@ -167,7 +166,7 @@ where
         }
         io.history_future(|| async move {
             let budget = io.remaining()?;
-            let mut accounting = KernelAccounting::standalone(budget, io.cancellation());
+            let mut accounting = budget.accounting(io.cancellation());
             let result = self.lazy.read_at_snapshot(snapshot, path, None, maximum, &mut accounting)
                 .await.map(|(chunk, _)| chunk.bytes).map_err(root_source_error);
             io.receive_content(budget.finish(result, &accounting))
@@ -189,7 +188,7 @@ where
         >,
     > {
         Box::pin(async move {
-            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            let mut accounting = budget.accounting(cancellation);
             let result = self.lazy
                 .list_directory_at_snapshot(
                     snapshot,
@@ -255,7 +254,7 @@ where
         let guard = RootPublicationGuard { lease: Arc::clone(lease) };
         if let Some(original) = io.original_native_work() {
             return crate::NativeFutureBundle::new(original, || async move {
-                let mut accounting = KernelAccounting::native(original, io.cancellation());
+                let mut accounting = original.accounting(io.cancellation());
                 let (commit, snapshot) = self.lazy.write_at_snapshot(
                     snapshot, root_lazy_mutations(mutations), key, permit, &mut accounting, &mut guard.clone(),
                 ).await?;
@@ -264,7 +263,7 @@ where
         }
         io.history_future(|| async move {
             let budget = io.remaining()?;
-            let mut accounting = KernelAccounting::standalone(budget, io.cancellation());
+            let mut accounting = budget.accounting(io.cancellation());
             let result = self.lazy.write_at_snapshot(
                 snapshot, root_lazy_mutations(mutations), key, permit, &mut accounting, &mut guard.clone(),
             ).await;

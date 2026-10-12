@@ -25,14 +25,14 @@ async fn directory_pages_emit_authored_entries_once_after_source_phase() {
     let source_page = root
         .list_directory("/", None, 16, accounting!())
         .await
-        .map(|(page, _)| page)
-        .expect("source phase");
+        .expect("source phase")
+        .0;
     assert!(source_page.entries.is_empty());
     let authored_page = root
         .list_directory("/", source_page.next, 16, accounting!())
         .await
-        .map(|(page, _)| page)
-        .expect("authored phase");
+        .expect("authored phase")
+        .0;
     assert_eq!(authored_page.entries.len(), 1);
     assert!(authored_page.entries[0].authored);
     assert!(authored_page.next.is_none());
@@ -53,8 +53,8 @@ async fn directory_cursor_rejects_overlay_changes_between_pages() {
     let first = root
         .list_directory("/", None, 16, accounting!())
         .await
-        .map(|(page, _)| page)
-        .expect("first page");
+        .expect("first page")
+        .0;
     root.stat("/newly-observed.txt", accounting!())
         .await
         .expect("observe");
@@ -62,7 +62,7 @@ async fn directory_cursor_rejects_overlay_changes_between_pages() {
     assert!(matches!(
         root.list_directory("/", first.next, 16, accounting!())
             .await
-            .map(|(page, _)| page),
+            .map(|r| r.0),
         Err(LazyWorkspaceError::StaleCursor)
     ));
 }
@@ -130,8 +130,8 @@ async fn open_recovers_remove_intent_from_authored_state() {
     let LazyLookup::Authored { stat, .. } = root
         .lookup("/file.txt", accounting!())
         .await
-        .map(|(lookup, _)| lookup)
         .expect("authored")
+        .0
     else {
         panic!("expected authored file");
     };
@@ -154,7 +154,7 @@ async fn open_recovers_remove_intent_from_authored_state() {
     let tombstone = root
         .insert_overlay(
             prior.overlay,
-            "/file.txt",
+            &"/file.txt".to_owned(),
             LazyOverlayChange::Tombstone { removed: None },
             accounting!(),
         )
@@ -188,10 +188,7 @@ async fn open_recovers_remove_intent_from_authored_state() {
     );
 
     let reopened = LazyWorkspace::open(
-        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .expect("workspace")
-            .value,
+        fs.open_workspace("root").await.expect("workspace"),
         Arc::clone(&source),
         store.clone(),
         accounting!(),
@@ -255,7 +252,7 @@ async fn open_recovers_remove_intent_from_authored_state() {
             .commit(
                 &mut removal,
                 crate::PublicationPermit::Unrestricted,
-                accounting!(),
+                accounting!()
             )
             .await
             .expect("physical remove"),
@@ -263,10 +260,7 @@ async fn open_recovers_remove_intent_from_authored_state() {
     ));
 
     let finalized = LazyWorkspace::open(
-        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .expect("workspace")
-            .value,
+        fs.open_workspace("root").await.expect("workspace"),
         Arc::clone(&source),
         store,
         accounting!(),
@@ -297,7 +291,7 @@ async fn source_only_remove_recovery_keeps_tombstone_across_a_competing_create()
     let tombstone = root
         .insert_overlay(
             prior.overlay,
-            "/file.txt",
+            &"/file.txt".to_owned(),
             LazyOverlayChange::Tombstone { removed: None },
             accounting!(),
         )
@@ -331,10 +325,7 @@ async fn source_only_remove_recovery_keeps_tombstone_across_a_competing_create()
         .expect("competing authored create");
 
     let reopened = LazyWorkspace::open(
-        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .expect("workspace")
-            .value,
+        fs.open_workspace("root").await.expect("workspace"),
         Arc::clone(&source),
         store,
         accounting!(),
@@ -350,9 +341,8 @@ async fn source_only_remove_recovery_keeps_tombstone_across_a_competing_create()
             .read("/file.txt", 64, accounting!())
             .await
             .expect("authored replacement")
-            .bytes
-            .as_ref(),
-        b"authored"
+            .bytes,
+        acyclic_stream::OwnedBytes::from_static(b"authored")
     );
     reopened
         .remove("/file.txt", None, accounting!())

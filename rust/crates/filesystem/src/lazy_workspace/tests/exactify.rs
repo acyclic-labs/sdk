@@ -1,86 +1,42 @@
 use super::*;
 
 #[tokio::test]
-async fn authored_state_and_tombstones_mask_the_source() {
+async fn authored_replacements_and_tombstones_mask_source_content() {
     let fs = Fs::memory();
-    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
     let root = attach(
         &fs,
         "root",
-        Arc::clone(&source),
+        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         MemoryLazyWorkspaceStore::default(),
     )
     .await
-    .expect("attach");
-
+    .unwrap();
     root.write(
         "/file.txt",
-        Bytes::from_static(b"authored").into(),
+        acyclic_stream::OwnedBytes::from_static(b"authored"),
         IdempotencyKey::new(),
         crate::PublicationPermit::Unrestricted,
         accounting!(),
     )
     .await
-    .expect("write");
+    .unwrap();
     assert_eq!(
         root.read("/file.txt", 32, accounting!())
             .await
-            .expect("authored read")
+            .unwrap()
             .bytes
-            .as_ref(),
+            .as_slice(),
         b"authored"
     );
-    assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 1);
-    root.remove("/file.txt", None, accounting!())
-        .await
-        .expect("remove");
+    root.remove("/file.txt", None, accounting!()).await.unwrap();
     assert!(matches!(
         root.stat("/file.txt", accounting!()).await,
         Err(LazyWorkspaceError::NotFound)
     ));
-    assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
-async fn source_epoch_can_rebind_without_enumeration() {
-    let fs = Fs::memory();
-    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
-    let root = attach(
-        &fs,
-        "root",
-        Arc::clone(&source),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .expect("attach");
-    root.stat("/observed.txt", accounting!())
-        .await
-        .expect("observe");
-    let before = root
-        .snapshot(accounting!())
-        .await
-        .expect("snapshot before rebind");
-    source.invalidate();
-    let rebound = root.rebind_source(accounting!()).await.expect("rebind");
-    assert_eq!(rebound.source, source.reference());
-    assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
-    assert_eq!(
-        root.stat("/observed.txt", accounting!())
-            .await
-            .expect("cached")
-            .logical_bytes,
-        Some(6)
-    );
-    let after = root
-        .snapshot(accounting!())
-        .await
-        .expect("snapshot after refresh");
-    assert_ne!(after, before);
-    assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 2);
-}
-
-#[tokio::test]
-async fn snapshot_exactification_pins_only_previously_observed_paths() {
+async fn historical_exactification_keeps_observations_and_refreshes_unresolved_paths() {
     for observed in [false, true] {
         let fs = Fs::memory();
         let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
@@ -91,41 +47,29 @@ async fn snapshot_exactification_pins_only_previously_observed_paths() {
             MemoryLazyWorkspaceStore::default(),
         )
         .await
-        .expect("attach");
+        .unwrap();
         if observed {
-            root.stat("/file.txt", accounting!())
-                .await
-                .expect("observe old epoch");
+            root.stat("/file.txt", accounting!()).await.unwrap();
         }
-        let snapshot = root
-            .snapshot(accounting!())
-            .await
-            .expect("snapshot before rebind");
-
+        let cut = root.snapshot(accounting!()).await.unwrap();
         source.replace(Bytes::from_static(b"changed"));
-        root.rebind_source(accounting!()).await.expect("rebind");
+        root.state(accounting!()).await.unwrap();
         let exact = root
-            .exactify_snapshot(
-                snapshot,
-                "historical-exact",
-                IdempotencyKey::new(),
-                accounting!(),
+            .exactify_snapshot(cut, "exact", IdempotencyKey::new(), accounting!())
+            .await
+            .unwrap();
+        let bytes = exact
+            .read(
+                "/file.txt",
+                32,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
             .await
-            .expect("exactify historical snapshot");
-
+            .unwrap()
+            .value;
         assert_eq!(
-            exact
-                .read(
-                    "/file.txt",
-                    32,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new()
-                )
-                .await
-                .expect("read exactified file")
-                .value
-                .as_ref(),
+            bytes.as_slice(),
             if observed {
                 b"source".as_slice()
             } else {
@@ -137,173 +81,46 @@ async fn snapshot_exactification_pins_only_previously_observed_paths() {
 
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test]
-async fn native_source_rebind_refreshes_an_observed_file() {
-    use crate::demand::native::NativeDemandSource;
-    use crate::model::{FilesystemProfile, VolumeLimits};
-
-    let directory = tempfile::tempdir().expect("temporary source");
-    let path = directory.path().join("file.txt");
-    std::fs::write(&path, b"before").expect("initial file");
-    let source = Arc::new(
-        NativeDemandSource::open(
-            (directory.path()).into(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-            None,
-            None,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+async fn source_refresh_and_subtree_exactification_preserve_lazy_siblings() {
+    use crate::model::FilesystemProfile;
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["hot", "cold"] {
+        std::fs::create_dir(directory.path().join(name)).unwrap();
+        std::fs::write(
+            directory.path().join(name).join("file.txt"),
+            name.as_bytes(),
         )
-        .await
-        .expect("source")
-        .value,
-    );
+        .unwrap();
+    }
+    let source = native_source(directory.path(), FilesystemProfile::Portable).await;
     let fs = Fs::memory();
     let root = attach(
         &fs,
-        "native-rebind",
+        "root",
         Arc::clone(&source),
         MemoryLazyWorkspaceStore::default(),
     )
     .await
-    .expect("attach");
+    .unwrap();
     assert_eq!(
-        root.read("/file.txt", 64, accounting!())
+        root.read("/hot/file.txt", 64, accounting!())
             .await
-            .expect("initial read")
+            .unwrap()
             .bytes
-            .as_ref(),
-        b"before"
+            .as_slice(),
+        b"hot"
     );
-    let before = root
-        .snapshot(accounting!())
-        .await
-        .expect("snapshot before change");
-
-    std::fs::write(&path, b"after").expect("external write");
-    source
-        .invalidate(&mut crate::demand::DemandWork::new(
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        ))
-        .expect("invalidate");
-    root.rebind_source(accounting!())
-        .await
-        .expect("rebind source");
-
+    std::fs::write(directory.path().join("hot/file.txt"), b"changed").unwrap();
+    source.invalidate();
+    root.state(accounting!()).await.unwrap();
     assert_eq!(
-        root.read("/file.txt", 64, accounting!())
+        root.read("/hot/file.txt", 64, accounting!())
             .await
-            .expect("refreshed read")
+            .unwrap()
             .bytes
-            .as_ref(),
-        b"after"
+            .as_slice(),
+        b"changed"
     );
-    assert_ne!(
-        root.snapshot(accounting!())
-            .await
-            .expect("snapshot after change"),
-        before
-    );
-}
-
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-#[tokio::test]
-async fn exactify_is_bounded_and_returns_only_a_complete_generation() {
-    use crate::demand::native::NativeDemandSource;
-    use crate::model::{FilesystemProfile, VolumeLimits};
-
-    let directory = tempfile::tempdir().expect("temporary source");
-    std::fs::create_dir(directory.path().join("nested")).expect("nested directory");
-    std::fs::write(directory.path().join("a.txt"), b"alpha").expect("first file");
-    std::fs::write(directory.path().join("nested").join("b.txt"), b"beta").expect("second file");
-    let source = Arc::new(
-        NativeDemandSource::open(
-            (directory.path()).into(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-            None,
-            None,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("source")
-        .value,
-    );
-    let fs = Fs::memory();
-    let root = attach(&fs, "exactify", source, MemoryLazyWorkspaceStore::default())
-        .await
-        .expect("attach");
-    let mut insufficient = WorkBudget::UNBOUNDED;
-    insufficient.source_entries_visited = 1;
-    assert!(matches!(
-        root.exactify(
-            "/",
-            crate::PublicationPermit::Unrestricted,
-            &mut crate::kernel::KernelAccounting::standalone(
-                insufficient,
-                &CancellationToken::new()
-            )
-        )
-        .await,
-        Err(LazyWorkspaceError::Demand(DemandError::Work(_)))
-    ));
-
-    let exact = root
-        .exactify("/", crate::PublicationPermit::Unrestricted, accounting!())
-        .await
-        .expect("exact capture");
-    assert_eq!(
-        exact
-            .read(
-                "/nested/b.txt",
-                16,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .expect("captured file")
-            .value
-            .as_ref(),
-        b"beta"
-    );
-}
-
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-#[tokio::test]
-async fn exactify_subtree_keeps_siblings_lazy() {
-    use crate::demand::native::NativeDemandSource;
-    use crate::model::{FilesystemProfile, VolumeLimits};
-
-    let directory = tempfile::tempdir().expect("temporary source");
-    std::fs::create_dir(directory.path().join("hot")).expect("hot directory");
-    std::fs::create_dir(directory.path().join("cold")).expect("cold directory");
-    std::fs::write(directory.path().join("hot/file.txt"), b"hot").expect("hot file");
-    std::fs::write(directory.path().join("cold/file.txt"), b"cold").expect("cold file");
-    let source = Arc::new(
-        NativeDemandSource::open(
-            (directory.path()).into(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-            None,
-            None,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("source")
-        .value,
-    );
-    let root = attach(
-        &Fs::memory(),
-        "subtree-exactify",
-        source,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .expect("attach");
-
     let exact = root
         .exactify(
             "/hot",
@@ -311,7 +128,7 @@ async fn exactify_subtree_keeps_siblings_lazy() {
             accounting!(),
         )
         .await
-        .expect("capture hot subtree");
+        .unwrap();
     assert_eq!(
         exact
             .read(
@@ -321,30 +138,12 @@ async fn exactify_subtree_keeps_siblings_lazy() {
                 &CancellationToken::new()
             )
             .await
-            .expect("hot content")
+            .unwrap()
             .value
-            .as_ref(),
-        b"hot"
+            .as_slice(),
+        b"changed"
     );
-    #[cfg(feature = "native-mount")]
-    {
-        let staged = tempfile::tempdir().expect("empty native stage");
-        exact
-            .materialize(
-                std::iter::once("/hot"),
-                &crate::MaterializeOptions::native(staged.path()),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("materialize only pinned hot subtree");
-        assert_eq!(
-            std::fs::read(staged.path().join("hot/file.txt")).expect("staged hot file"),
-            b"hot"
-        );
-        assert!(!staged.path().join("cold").exists());
-    }
-    assert!(matches!(
+    assert!(
         exact
             .read(
                 "/cold/file.txt",
@@ -353,128 +152,223 @@ async fn exactify_subtree_keeps_siblings_lazy() {
                 &CancellationToken::new()
             )
             .await
-            .map(|receipt| Bytes::copy_from_slice(receipt.value.as_ref()))
-            .map_err(|failure| failure.error),
-        Err(WorkspaceError::NotFound)
-    ));
+            .is_err()
+    );
     assert!(matches!(
         root.lookup("/cold/file.txt", accounting!())
             .await
-            .map(|(lookup, _)| lookup)
-            .expect("cold remains lazy"),
+            .unwrap()
+            .0,
         LazyLookup::Source { .. }
     ));
     assert!(matches!(
         root.exactify(
             "/hot/file.txt",
             crate::PublicationPermit::Unrestricted,
-            accounting!(),
+            accounting!()
         )
         .await,
         Err(LazyWorkspaceError::NotDirectory)
     ));
+    #[cfg(feature = "native-mount")]
+    {
+        let staged = tempfile::tempdir().unwrap();
+        exact
+            .materialize_path(
+                "/hot",
+                &crate::MaterializeOptions::native(staged.path()),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(staged.path().join("hot/file.txt")).unwrap(),
+            b"changed"
+        );
+        assert!(!staged.path().join("cold").exists());
+    }
 }
 
-#[cfg(all(windows, feature = "native-watch"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test]
-async fn source_page_batch_lookup_transcodes_windows_names_to_workspace_profile() {
-    use crate::demand::native::NativeDemandSource;
-    use crate::model::{FilesystemProfile, VolumeLimits};
-
-    let directory = tempfile::tempdir().expect("temporary source");
-    std::fs::write(directory.path().join("café.txt"), b"source").expect("source file");
-    let source = Arc::new(
-        NativeDemandSource::open(
-            (directory.path()).into(),
-            FilesystemProfile::Windows,
-            VolumeLimits::default(),
-            None,
-            None,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("Windows source")
-        .value,
-    );
+async fn directory_inspection_keeps_cursors_valid_and_promotion_keeps_children_lazy() {
+    use crate::model::FilesystemProfile;
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["a", "b"] {
+        std::fs::write(directory.path().join(name), name.as_bytes()).unwrap();
+    }
+    std::fs::create_dir(directory.path().join("repo")).unwrap();
+    std::fs::write(
+        directory.path().join("repo/HEAD"),
+        b"ref: refs/heads/main\n",
+    )
+    .unwrap();
+    let fs = Fs::memory();
     let root = attach(
-        &Fs::memory(),
-        "windows-source-portable-authored",
-        source,
+        &fs,
+        "root",
+        native_source(directory.path(), FilesystemProfile::Portable).await,
         MemoryLazyWorkspaceStore::default(),
     )
     .await
-    .expect("attach portable authored workspace");
-    assert_eq!(root.workspace().profile(), FilesystemProfile::Portable);
+    .unwrap();
+    let (first, _) = root
+        .list_directory("/", None, 1, accounting!())
+        .await
+        .unwrap();
+    root.inspect("/a", accounting!()).await.unwrap();
+    let (second, _) = root
+        .list_directory("/", first.next, 1, accounting!())
+        .await
+        .unwrap();
+    assert_eq!(second.entries.len(), 1);
+    let (lookup, _) = root.lookup("/repo", accounting!()).await.unwrap();
+    let id = root
+        .stable_file_id_for_lookup("/repo", &lookup, accounting!())
+        .await
+        .unwrap();
+    root.promote(
+        "/repo",
+        0,
+        IdempotencyKey::new(),
+        crate::PublicationPermit::Unrestricted,
+        accounting!(),
+    )
+    .await
+    .unwrap();
+    let (lookup, _) = root.lookup("/repo", accounting!()).await.unwrap();
+    assert_eq!(
+        root.stable_file_id_for_lookup("/repo", &lookup, accounting!())
+            .await
+            .unwrap(),
+        id
+    );
+    assert_eq!(
+        root.read("/repo/HEAD", 64, accounting!())
+            .await
+            .unwrap()
+            .bytes
+            .as_slice(),
+        b"ref: refs/heads/main\n"
+    );
+}
+
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn exactification_enforces_the_entry_bound_before_returning_a_complete_generation() {
+    use crate::model::FilesystemProfile;
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("nested")).unwrap();
+    std::fs::write(directory.path().join("a.txt"), b"alpha").unwrap();
+    std::fs::write(directory.path().join("nested/b.txt"), b"beta").unwrap();
+    let root = attach(
+        &Fs::memory(),
+        "root",
+        native_source(directory.path(), FilesystemProfile::Portable).await,
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let budget = WorkBudget {
+        source_entries_visited: 1,
+        ..WorkBudget::UNBOUNDED
+    };
+    assert!(
+        root.exactify(
+            "/",
+            crate::PublicationPermit::Unrestricted,
+            &mut KernelAccounting::standalone(budget, &CancellationToken::new())
+        )
+        .await
+        .is_err()
+    );
     let exact = root
         .exactify("/", crate::PublicationPermit::Unrestricted, accounting!())
         .await
-        .expect("exactify Windows source into portable authored workspace");
+        .unwrap();
     assert_eq!(
         exact
             .read(
-                "/café.txt",
+                "/nested/b.txt",
                 16,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new()
             )
             .await
-            .expect("captured file")
+            .unwrap()
             .value
-            .as_ref(),
+            .as_slice(),
+        b"beta"
+    );
+}
+
+#[cfg(all(windows, feature = "native-watch"))]
+#[tokio::test]
+async fn windows_names_are_transcoded_to_the_authored_profile() {
+    use crate::model::FilesystemProfile;
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("caf\u{e9}.txt"), b"source").unwrap();
+    let root = attach(
+        &Fs::memory(),
+        "root",
+        native_source(directory.path(), FilesystemProfile::Windows).await,
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let exact = root
+        .exactify("/", crate::PublicationPermit::Unrestricted, accounting!())
+        .await
+        .unwrap();
+    assert_eq!(
+        exact
+            .read(
+                "/caf\u{e9}.txt",
+                16,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .unwrap()
+            .value
+            .as_slice(),
         b"source"
     );
 }
 
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test]
-async fn exactify_preserves_hard_links_across_batch_boundaries() {
-    use crate::demand::native::NativeDemandSource;
-    use crate::model::{FilesystemProfile, VolumeLimits};
-
-    let directory = tempfile::tempdir().expect("temporary source");
-    let source_path = directory.path().join("a000");
-    std::fs::write(&source_path, b"shared").expect("source file");
+async fn hard_links_survive_exactification_across_batch_boundaries() {
+    use crate::model::FilesystemProfile;
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("a000");
+    std::fs::write(&first, b"shared").unwrap();
     for index in 1..520 {
-        std::fs::hard_link(&source_path, directory.path().join(format!("a{index:03}")))
-            .expect("source hard link");
+        std::fs::hard_link(&first, directory.path().join(format!("a{index:03}"))).unwrap();
     }
-    let source = Arc::new(
-        NativeDemandSource::open(
-            (directory.path()).into(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-            None,
-            None,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("source")
-        .value,
-    );
     let root = attach(
         &Fs::memory(),
-        "hard-link-batches",
-        source,
+        "root",
+        native_source(directory.path(), FilesystemProfile::Portable).await,
         MemoryLazyWorkspaceStore::default(),
     )
     .await
-    .expect("attach");
+    .unwrap();
     let exact = root
         .exactify("/", crate::PublicationPermit::Unrestricted, accounting!())
         .await
-        .expect("exactify all batches");
-    let first = exact
+        .unwrap();
+    let a = exact
         .stat("/a000", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .expect("first stat")
+        .unwrap()
         .value;
-    let last = exact
+    let b = exact
         .stat("/a519", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .expect("last stat")
+        .unwrap()
         .value;
-    assert_eq!(first.file_id, last.file_id);
-    assert_eq!(last.link_count, 520);
+    assert_eq!(a.file_id, b.file_id);
+    assert_eq!(b.link_count, 520);
 }

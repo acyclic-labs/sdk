@@ -1,26 +1,32 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn frozen_reads_listing_and_write_replay_keep_the_original_authored_head() {
+async fn frozen_views_and_write_replay_keep_the_original_generation() {
     let fs = Fs::memory();
     let root = attach(
         &fs,
-        "frozen",
+        "root",
         Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         MemoryLazyWorkspaceStore::default(),
     )
     .await
-    .expect("attach");
+    .unwrap();
     root.workspace()
         .write_text("/authored.txt", "before")
         .await
-        .expect("initial write");
-    let snapshot = root.snapshot(accounting!()).await.expect("snapshot");
+        .unwrap();
+    let basis = root.snapshot(accounting!()).await.unwrap();
     let key = IdempotencyKey::new();
-    let batch = || std::iter::once(("/new.txt", Some(Bytes::from_static(b"published").into())));
+    let batch = || {
+        std::iter::once((
+            "/new.txt",
+            Some(acyclic_stream::OwnedBytes::from_static(b"published")),
+        ))
+    };
     let (commit, published) = root
         .write_at_snapshot::<_, _, Box<dyn std::error::Error + Send + Sync>>(
-            snapshot,
+            basis,
             batch(),
             key,
             crate::PublicationPermit::Unrestricted,
@@ -28,52 +34,49 @@ async fn frozen_reads_listing_and_write_replay_keep_the_original_authored_head()
             &mut (),
         )
         .await
-        .expect("publish frozen batch");
+        .unwrap();
     assert!(matches!(commit, TransactionCommit::Committed(_)));
-    let published = published.expect("publication snapshot");
+    let published = published.unwrap();
     root.workspace()
         .write_text("/authored.txt", "after")
         .await
-        .expect("later write");
+        .unwrap();
     root.workspace()
         .write_text("/later.txt", "later")
         .await
-        .expect("later path");
+        .unwrap();
     root.workspace()
         .write_text("/new.txt", "later")
         .await
-        .expect("advance published file");
-    let (chunk, used_source) = root
-        .read_at_snapshot(snapshot, "/authored.txt", None, 32, accounting!())
+        .unwrap();
+    let (bytes, source) = root
+        .read_at_snapshot(basis, "/authored.txt", None, 32, accounting!())
         .await
-        .expect("frozen read");
-    assert_eq!(chunk.bytes.as_ref(), b"before");
-    assert!(!used_source);
-    let cancellation = CancellationToken::new();
-    let mut accounting =
-        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        .unwrap();
+    assert_eq!(bytes.bytes.as_slice(), b"before");
+    assert!(!source);
     let mut cursor = None;
     let mut authored = Vec::new();
     loop {
         let (page, _, _) = root
-            .list_directory_at_snapshot(snapshot, "/", cursor, 16, &mut accounting)
+            .list_directory_at_snapshot(basis, "/", cursor, 16, accounting!())
             .await
-            .expect("frozen page");
+            .unwrap();
         authored.extend(
             page.entries
                 .iter()
-                .filter(|entry| entry.authored)
-                .map(|entry| entry.name.as_bytes().to_vec()),
+                .filter(|e| e.authored)
+                .map(|e| e.name.as_bytes().to_vec()),
         );
         cursor = page.next;
         if cursor.is_none() {
             break;
         }
     }
-    assert_eq!(authored, vec![b"authored.txt".to_vec()]);
+    assert_eq!(authored, [b"authored.txt".to_vec()]);
     let (commit, replayed) = root
         .write_at_snapshot::<_, _, Box<dyn std::error::Error + Send + Sync>>(
-            snapshot,
+            basis,
             batch(),
             key,
             crate::PublicationPermit::Unrestricted,
@@ -81,33 +84,36 @@ async fn frozen_reads_listing_and_write_replay_keep_the_original_authored_head()
             &mut (),
         )
         .await
-        .expect("replay original DATA");
+        .unwrap();
     assert!(matches!(commit, TransactionCommit::AlreadyCommitted(_)));
-    assert_eq!(replayed.expect("original snapshot"), published);
+    assert_eq!(replayed.unwrap(), published);
     assert_eq!(
         root.read_at_snapshot(published, "/new.txt", None, 32, accounting!())
             .await
-            .expect("original content")
+            .unwrap()
             .0
             .bytes
-            .as_ref(),
+            .as_slice(),
         b"published"
     );
+    let changed = std::iter::once((
+        "/new.txt",
+        Some(acyclic_stream::OwnedBytes::from_static(b"changed")),
+    ));
     let (commit, proof) = root
         .write_at_snapshot::<_, _, Box<dyn std::error::Error + Send + Sync>>(
-            snapshot,
-            std::iter::once(("/new.txt", Some(Bytes::from_static(b"changed").into()))),
+            basis,
+            changed,
             key,
             crate::PublicationPermit::Unrestricted,
             accounting!(),
             &mut (),
         )
         .await
-        .expect("known DATA survives changed retry input");
+        .unwrap();
     assert!(matches!(commit, TransactionCommit::AlreadyCommitted(_)));
-    let error = proof.err().expect("changed input rejects");
     assert!(matches!(
-        error.downcast_ref::<LazyWorkspaceError>(),
+        proof.err().unwrap().downcast_ref::<LazyWorkspaceError>(),
         Some(LazyWorkspaceError::StaleIdentity)
     ));
 }

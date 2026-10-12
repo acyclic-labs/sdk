@@ -115,7 +115,7 @@ pub(super) fn materialization_journal(operation_id: OperationId) -> Materializat
             "workspace_id": workspace_id,
             "parent_workspace_id": null,
             "fork_origin": null,
-            "completed_selected_import": null,
+            "selected_import_roots": null,
             "source": crate::demand::SourceReference { identity: [1; 16], epoch: 0 },
             "overlay": LazyOverlayId::from_bytes([2; 32]),
             "shadows": shadows,

@@ -1,6 +1,4 @@
 use super::*;
-use crate::kernel::KernelAccounting;
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
@@ -8,87 +6,71 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         &self,
         transaction: &mut crate::Transaction<A, O>,
         permit: crate::PublicationPermit,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
-        let cancellation = cancellation(accounting);
+        let cancel = cancellation(ctx);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
+        if let Some(work) = ctx.native_work() {
             return transaction
-                .commit_with_native_work(None, permit, original, cancellation, &mut |_| async {
+                .commit_with_native_work(None, permit, work, cancel, &mut |_| async {
                     Ok::<(), LazyWorkspaceError>(())
                 })
                 .await;
         }
-        accept_receipt(
-            transaction
-                .commit(
-                    None,
-                    permit,
-                    accounting.remaining()?,
-                    cancellation,
-                    |_| async {
-                        Ok::<_, crate::OperationFailure<LazyWorkspaceError>>(OperationReceipt {
-                            value: (),
-                            work: WorkCounters::UNCHARGED,
-                        })
-                    },
-                )
-                .await,
-            accounting,
-        )
+        let result = transaction
+            .commit(None, permit, ctx.remaining()?, cancel, |_| async {
+                Ok::<_, crate::OperationFailure<LazyWorkspaceError>>(OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            })
+            .await;
+        accept_receipt(result, ctx)
     }
-
-    /// Removes only the requested identity and records its source version.
+    /// Removes only the requested identity and records the deleted source version.
     pub async fn remove(
         &self,
         path: &str,
         expected: Option<FileId>,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        let lookup = self.lookup(path, accounting).await?;
+        let lookup = self.lookup(path, ctx).await?;
         let result = async {
-            let state = self.state(accounting).await?;
             let removed = match &lookup.0 {
                 LazyLookup::Source { node, .. } => Some(node.version),
                 _ => {
-                    self.removed_source_version(&state, path, accounting)
+                    self.removed_source_version(&self.state(ctx).await?, path, ctx)
                         .await?
                 }
             };
-            self.remove_resolved(path, expected, &lookup.0, removed, accounting)
+            self.remove_resolved(path, expected, &lookup.0, removed, ctx)
                 .await
         }
         .await;
-        self.retire_lookup(lookup, accounting)?;
+        self.retire_lookup(lookup, ctx)?;
         result
     }
-
-    /// Hides one resolved path without recording a deleted source version.
+    /// Hides a path without claiming a deleted source version.
     pub async fn hide_source_path(
         &self,
         path: &str,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        let lookup = self.lookup(path, accounting).await?;
-        let result = self
-            .remove_resolved(path, None, &lookup.0, None, accounting)
-            .await;
-        self.retire_lookup(lookup, accounting)?;
+        let lookup = self.lookup(path, ctx).await?;
+        let result = self.remove_resolved(path, None, &lookup.0, None, ctx).await;
+        self.retire_lookup(lookup, ctx)?;
         result
     }
-
     async fn remove_resolved(
         &self,
         path: &str,
         expected: Option<FileId>,
         lookup: &LazyLookup,
         removed: Option<SourceVersion>,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        let actual = self
-            .stable_file_id_for_lookup(path, lookup, accounting)
-            .await?;
-        if expected.is_some_and(|expected| expected != actual) {
+        let actual = self.stable_file_id_for_lookup(path, lookup, ctx).await?;
+        if expected.is_some_and(|id| id != actual) {
             return Err(LazyWorkspaceError::StaleIdentity);
         }
         let kind = if matches!(lookup, LazyLookup::Authored { .. }) {
@@ -100,26 +82,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         };
         let mut prepared = false;
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let state = self.state(accounting).await?;
+            let state = self.state(ctx).await?;
             let shadows = if let LazyLookup::Authored { stat, .. } = lookup {
                 let checkout = self
-                    .checkout(crate::model::GenerationSelector::Head, accounting)
+                    .checkout(crate::model::GenerationSelector::Head, ctx)
                     .await?;
                 let record = checkout
                     .value
-                    .lookup_file_record_by_id_with_accounting(
-                        stat.file_id,
-                        accounting,
-                        cancellation(accounting),
-                    )
+                    .lookup_file_record_by_id_with_accounting(stat.file_id, ctx, cancellation(ctx))
                     .await;
-                checkout.retire(accounting)?;
+                checkout.retire(ctx)?;
                 self.insert_shadow(
                     state.shadows,
                     stat.file_id,
                     record?.ok_or(LazyWorkspaceError::NotFound)?,
                     stat.metadata,
-                    accounting,
+                    ctx,
                 )
                 .await?
             } else {
@@ -130,11 +108,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     state.overlay,
                     path,
                     LazyOverlayChange::Tombstone { removed },
-                    accounting,
+                    ctx,
                 )
                 .await?;
             let revision = state.revision;
-            let replacement = LazyWorkspaceState {
+            let next = LazyWorkspaceState {
                 revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
                 overlay,
                 shadows,
@@ -148,12 +126,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             };
             if self
                 .store
-                .compare_and_swap_lazy_workspace(
-                    self.workspace.id(),
-                    revision,
-                    replacement,
-                    accounting,
-                )
+                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
                 .await?
             {
                 prepared = true;
@@ -169,8 +142,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 .checkout_accounted(
                     crate::model::GenerationSelector::Head,
                     crate::model::CheckoutMode::tracking_transaction(),
-                    accounting,
-                    cancellation(accounting),
+                    ctx,
+                    cancellation(ctx),
                 )
                 .await?;
             let mut transaction = crate::Transaction::from_checkout(
@@ -179,70 +152,57 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 idempotency_key,
                 false,
             );
-            if let Err(error) = 'accounted: {
-                let cancellation = cancellation(accounting);
-                let build = |path| AuthoredMutation::Remove {
+            let staged = accounted!(ctx, |work, cancel| transaction.mutate(
+                path,
+                |path| Ok::<_, WorkspaceError>(AuthoredMutation::Remove {
                     path,
-                    expected_file_id: Some(actual),
-                };
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = accounting.native_work() {
-                    break 'accounted transaction
-                        .mutate(path, |path| Ok(build(path)), original, cancellation)
-                        .await
-                        .map_err(LazyWorkspaceError::from);
-                }
-                accept_receipt(
-                    transaction
-                        .mutate(
-                            path,
-                            |path| Ok(build(path)),
-                            accounting.remaining()?,
-                            cancellation,
-                        )
-                        .await,
-                    accounting,
-                )
-            } {
-                self.recover_pending_remove(accounting).await?;
-                return Err(error.into());
+                    expected_file_id: Some(actual)
+                }),
+                work,
+                cancel
+            ));
+            if let Err(error) = staged {
+                self.recover_pending_remove(ctx).await?;
+                return Err(error);
             }
             match self
                 .commit(
                     &mut transaction,
                     crate::PublicationPermit::Unrestricted,
-                    accounting,
+                    ctx,
                 )
                 .await?
             {
                 TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_) => {}
-                TransactionCommit::Conflict { .. } | TransactionCommit::Fenced => {
-                    self.recover_pending_remove(accounting).await?;
-                    return Err(LazyWorkspaceError::StaleIdentity);
-                }
-                TransactionCommit::IdempotencyConflict => {
-                    self.recover_pending_remove(accounting).await?;
-                    return Err(LazyWorkspaceError::Concurrent);
+                outcome => {
+                    self.recover_pending_remove(ctx).await?;
+                    return Err(
+                        if matches!(outcome, TransactionCommit::IdempotencyConflict) {
+                            LazyWorkspaceError::Concurrent
+                        } else {
+                            LazyWorkspaceError::StaleIdentity
+                        },
+                    );
                 }
             }
         }
-        self.recover_pending_remove(accounting).await
+        self.recover_pending_remove(ctx).await
     }
 
-    /// Prepares mounted removals and identity records for one DATA decision.
+    /// Prepares mounted removals and identity shadows for the same DATA decision.
     #[cfg(feature = "native-mount")]
     pub(crate) async fn prepare_mount_removals(
         &self,
         paths: &[String],
-        selected_paths: &[String],
+        selected: &[String],
         records: &[(FileRecord, FileMetadata)],
         operation: IdempotencyKey,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self
                 .store
-                .load_lazy_workspace(self.workspace.id(), accounting)
+                .load_lazy_workspace(self.workspace.id(), ctx)
                 .await?
                 .ok_or(LazyWorkspaceError::NotFound)?;
             state.require_ready_fork()?;
@@ -253,7 +213,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 return Err(LazyWorkspaceError::StaleSource);
             }
             if let Some(pending) = &state.pending_remove {
-                return if matches!(pending.kind, PendingLazyRemoveKind::Mounted { idempotency_key } if idempotency_key == operation)
+                return if matches!(pending.kind,PendingLazyRemoveKind::Mounted { idempotency_key } if idempotency_key == operation)
                     && state.overlay == pending.prepared_overlay
                 {
                     Ok(())
@@ -262,17 +222,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 };
             }
             let mut overlay = state.overlay;
-            for path in paths.iter().chain(selected_paths) {
-                let removed = self
-                    .removed_source_version(&state, path, accounting)
-                    .await?;
+            for path in paths.iter().chain(selected) {
+                let removed = self.removed_source_version(&state, path, ctx).await?;
                 overlay = self
-                    .insert_overlay(
-                        overlay,
-                        path,
-                        LazyOverlayChange::Tombstone { removed },
-                        accounting,
-                    )
+                    .insert_overlay(overlay, path, LazyOverlayChange::Tombstone { removed }, ctx)
                     .await?;
             }
             let mut shadows = state.shadows;
@@ -283,12 +236,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         record.file_id,
                         *record,
                         crate::WorkspaceMetadata::from_engine(*metadata),
-                        accounting,
+                        ctx,
                     )
                     .await?;
             }
             let revision = state.revision;
-            let replacement = LazyWorkspaceState {
+            let next = LazyWorkspaceState {
                 revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
                 overlay,
                 shadows,
@@ -304,12 +257,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             };
             if self
                 .store
-                .compare_and_swap_lazy_workspace(
-                    self.workspace.id(),
-                    revision,
-                    replacement,
-                    accounting,
-                )
+                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
                 .await?
             {
                 return Ok(());
@@ -317,42 +265,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         }
         Err(LazyWorkspaceError::Concurrent)
     }
-
-    /// Observes the immutable publication decision without changing the binding.
+    /// Reads the original mounted publication decision without updating the binding.
     #[cfg(feature = "native-mount")]
     pub(crate) async fn mount_removal_publication(
         &self,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<bool>, LazyWorkspaceError> {
         let state = self
             .store
-            .load_lazy_workspace(self.workspace.id(), accounting)
+            .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or(LazyWorkspaceError::NotFound)?;
-        let Some(PendingLazyRemove {
-            kind: PendingLazyRemoveKind::Mounted { idempotency_key },
-            ..
-        }) = state.pending_remove
-        else {
-            return Ok(None);
-        };
-        Ok(Some(
-            self.operation_generation(idempotency_key, accounting)
-                .await?
-                .is_some(),
-        ))
+        match state.pending_remove {
+            Some(PendingLazyRemove {
+                kind: PendingLazyRemoveKind::Mounted { idempotency_key },
+                ..
+            }) => Ok(Some(
+                self.operation_generation(idempotency_key, ctx)
+                    .await?
+                    .is_some(),
+            )),
+            _ => Ok(None),
+        }
     }
-
-    /// Finishes the mounted overlay using the original DATA decision.
+    /// Finishes the mounted overlay from its actual DATA result.
     #[cfg(feature = "native-mount")]
     pub(crate) async fn finish_mount_removals(
         &self,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
-        let Some(committed) = self.mount_removal_publication(accounting).await? else {
+        let Some(committed) = self.mount_removal_publication(ctx).await? else {
             return Ok(false);
         };
-        self.recover_pending_remove(accounting).await?;
+        self.recover_pending_remove(ctx).await?;
         Ok(committed)
     }
 }
