@@ -363,7 +363,7 @@ mod measured_open_tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let request = content()?;
         let schema_bytes = br#"{"type":"object"}"#;
-        let schema = FileRef::new(request.volume().clone(), "effects/schema.json", "generation-1", FileDescriptor::from_bytes(schema_bytes, "application/schema+json")?, "schema.json")?;
+        let schema = FileRef::new(request.volume().clone(), "effects/schema.json".into(), "generation-1".into(), FileDescriptor::from_bytes(schema_bytes, "application/schema+json", &mut None)?, "schema.json".into(), &mut None)?;
         let content_verifier = Arc::new(InteractionContent(BTreeMap::from([
             (request.path().to_owned(), EXTENSION_BYTES.to_vec()),
             (schema.path().to_owned(), schema_bytes.to_vec()),
@@ -382,7 +382,7 @@ mod measured_open_tests {
         };
         writer.execute(fresh(41, 0, Action::PlanEffect { effect_id, provider: "test.effects".into(), guarantee: EffectGuarantee::IdempotentRetry, effect_kind: "test.write".into(), request, result_schema: schema }), #[cfg(feature = "filesystem")] None, &mut None).await?;
         writer.execute(fresh(42, 1, Action::MarkEffectDispatched { effect_id, attempt_id }), #[cfg(feature = "filesystem")] None, &mut None).await?;
-        let observation = issuer().attest_effect(effect_id, writer.reducer().effect(effect_id).expect("dispatched effect"), attempt_id, EffectStatus::Failed { message: "known failure".into() })?;
+        let observation = issuer().attest_effect(effect_id, writer.reducer().effect(effect_id).expect("dispatched effect"), attempt_id, EffectStatus::Failed { message: "known failure".into() }, &mut None)?;
         writer.execute(fresh(43, 2, Action::ResolveEffect { observation }), #[cfg(feature = "filesystem")] None, &mut None).await?;
         let expected = writer.reducer().snapshot(usize::MAX, &mut None)?.0;
         provider.forbid_writes.store(true, Ordering::SeqCst);

@@ -67,5 +67,5 @@ fn reducer_snapshot(bencher: Bencher, events: u64) {
     }
     bencher
         .counter(ItemsCount::new(usize::try_from(events).unwrap()))
-        .bench_local(|| reducer.snapshot().unwrap());
+        .bench_local(|| reducer.snapshot(usize::MAX, &mut None).unwrap());
 }

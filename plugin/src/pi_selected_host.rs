@@ -50,6 +50,7 @@ pub(crate) struct PiSelectedCommand<S = String, P = Vec<String>> {
 }
 
 pub(crate) struct PiControlHost<'a> {
+    pub(crate) directory: &'a std::path::Path,
     pub(crate) runtime: Arc<PiNativeRuntime>,
     pub(crate) filesystem: Arc<PiNativeFilesystem>,
     pub(crate) stream: std::sync::Arc<LocalStream>,
@@ -57,7 +58,8 @@ pub(crate) struct PiControlHost<'a> {
     pub(crate) protected: Arc<PiOwnerConfig>,
     pub(crate) retained: &'a AdapterState,
     pub(crate) roots: &'a BTreeMap<String, PiRootHandle>,
-    pub(crate) native: Arc<PiNativeCommandHost>,
+    pub(crate) native: Option<Arc<PiNativeCommandHost>>,
+    pub(crate) root_provider: tokio::sync::Mutex<Option<Arc<crate::pi_root_provider::PiRootProvider<LocalStream>>>>,
     pub(crate) root_source: Option<&'a crate::pi_fork_host::PiRootSource>,
     pub(crate) work: acyclic_fs::NativeMaterializationWork,
     pub(crate) pending: std::sync::Mutex<Option<(Vec<crate::PendingSpawn>, acyclic_fs::NativeAllocation)>>,
@@ -66,14 +68,18 @@ pub(crate) struct PiControlHost<'a> {
 
 impl<'a> PiControlHost<'a> {
     #[allow(clippy::too_many_arguments, reason = "original providers and invocation work are independent")]
-    pub(crate) fn new(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
+    pub(crate) fn new(directory: &'a std::path::Path, runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
         stream: std::sync::Arc<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
         retained: &'a AdapterState, roots: &'a BTreeMap<String, PiRootHandle>,
-        native: Arc<PiNativeCommandHost>, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+        native: Option<Arc<PiNativeCommandHost>>, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         runtime.verify_owner_with_native_work(&protected, work)?;
-        Ok(Self { runtime, filesystem, stream, resources, protected, retained, roots, native,
+        Ok(Self { directory, runtime, filesystem, stream, resources, protected, retained, roots, native,
+            root_provider: tokio::sync::Mutex::new(None),
             root_source: None, work: work.clone(),
             pending: std::sync::Mutex::new(None), prepared: std::sync::Mutex::new(None) })
+    }
+    pub(crate) fn native(&self) -> Result<&Arc<PiNativeCommandHost>> {
+        self.native.as_ref().ok_or_else(|| denied("Pi control has no original native host"))
     }
     fn root_binding(&self) -> Result<&PiTaskBinding> {
         match &self.retained.task_binding {

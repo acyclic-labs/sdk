@@ -161,6 +161,21 @@ pub(crate) struct PiSession {
     native_catalog_backing_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
+impl PiSession {
+    pub(super) fn command_host(&self, work: &acyclic_fs::NativeMaterializationWork,
+        native: Option<Arc<pi_native_host::PiNativeCommandHost>>,
+    ) -> acyclic_harness::Result<pi_selected_host::PiControlHost<'_>> {
+        let owner = match &native {
+            Some(native) => native.original_owner(),
+            None => pi_owner::PiOwnerConfig::load_with_native_work(
+                &self.resources.private_state_root, &self.relative_directory, work)?.into_native_shared(work)?,
+        };
+        pi_selected_host::PiControlHost::new(&self.relative_directory, self.runtime.clone(),
+            self.filesystem.clone(), self.stream.clone(), &self.resources, owner,
+            &self.state, &self.roots, native, work)
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum NativeCatalogComponent {
     Pending,
