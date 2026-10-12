@@ -105,7 +105,7 @@ impl<P: StreamProvider> ResourcePreparationLease for crate::durable_host::TaskJo
                 });
             }
         }
-        crate::conversation::BoundedContentFuture::new(io, || self.verify(settlement))
+        crate::conversation::BoundedContentFuture::new(io, || self.verify(settlement, io))
     }
 }
 

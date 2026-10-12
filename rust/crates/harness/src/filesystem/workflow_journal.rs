@@ -252,7 +252,7 @@ where
         record.validate(io)?;
         if let Some(owner) = &self.owner {
             if verify_machine {
-                owner.validate_workflow_record(&record)?;
+                owner.validate_workflow_record(&record, io)?;
             } else if record.prior.machine != owner.workflow_admission().initial.machine
             {
                 return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
@@ -844,7 +844,7 @@ where
             expected_revision, &idempotency_key, &record, io,
         )?;
         if let Some(owner) = &self.owner {
-            owner.validate_workflow_record(&record)?;
+            owner.validate_workflow_record(&record, io)?;
         }
         {
             let history_hold;

@@ -8,23 +8,12 @@ use crate::{
 };
 
 #[cfg(feature = "filesystem")]
-pub(crate) const fn model_serde_diagnostic_label_bytes() -> u64 {
-    crate::contract::preparation_serde_diagnostic_label_bytes()
-        + concat!(
-            "ModelPrefix",
-            "version",
-            "parent",
-            "message_digest",
-            "total_messages",
-            "messages"
-        )
-        .len() as u64
-        + 6 * 4
-}
+pub(crate) const MODEL_DIAGNOSTIC_LABEL_BYTES: u64 =
+    crate::contract::preparation_serde_diagnostic_label_bytes() + 84;
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ModelPrefix {
     fn diagnostic_label_bytes() -> u64 {
-        model_serde_diagnostic_label_bytes()
+        MODEL_DIAGNOSTIC_LABEL_BYTES
     }
     fn maximum_slot_bytes() -> u64 {
         <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
@@ -33,7 +22,7 @@ impl crate::filesystem::PreparationRecord for ModelPrefix {
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolResultContent {
     fn diagnostic_label_bytes() -> u64 {
-        model_serde_diagnostic_label_bytes()
+        MODEL_DIAGNOSTIC_LABEL_BYTES
     }
     fn maximum_slot_bytes() -> u64 {
         <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
@@ -47,7 +36,7 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for ToolResultContent {
     fn diagnostic_label_bytes() -> u64 {
-        model_serde_diagnostic_label_bytes()
+        MODEL_DIAGNOSTIC_LABEL_BYTES
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
         self.payload_bytes()

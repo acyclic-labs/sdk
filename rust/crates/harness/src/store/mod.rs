@@ -8,8 +8,7 @@ mod forks;
 mod migrations;
 mod opening;
 use execution::stream_idempotency_key_with_work;
-use forks::{fork_child_binding_with_work, fork_command_key_with_work};
-use migrations::extension_migration_command;
+use forks::fork_child_binding_with_work;
 pub use migrations::{ExtensionMigrationRequest, NativeExtensionMigrations};
 
 mod checkpoints;
@@ -40,15 +39,14 @@ use crate::{
         Action, ApplyResult, Authority, AuthorityVerifier, Command, EffectStatus, EventPayload,
         EventReference, ExtensionDependency, Reducer, SchemaRegistry, Scope, Snapshot,
     },
-    effects::{validate_result_bytes, validate_schema_bytes},
     fork::{CompositeForkVerifier, ForkPreparer, ForkReport, ForkRequest, ForkSeed},
     interaction::InteractionOutcome,
     merge::ProjectMergeVerifier,
 };
 
 use acyclic_stream::{
-    CommitOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, StreamError,
-    StreamPath, StreamProvider,
+    CommitOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, StreamPath,
+    StreamProvider,
 };
 
 use acyclic_stream::OwnedBytes;
