@@ -3,7 +3,7 @@ use crate::foundation::Digest;
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::simulation::{Simulation, SimulationFault, SimulationOperation, SimulationOptions};
 use crate::storage::{
-    ObjectKind, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectStore,
+    ObjectKind, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStore,
     ObjectStoreError, object_digest,
 };
 use crate::{AsyncObjectStore, CancellationToken, WorkCounters};
@@ -71,7 +71,7 @@ impl PromotionExecutor for CountingExecutor {
         _cancellation: &CancellationToken,
     ) -> impl Future<Output = ObjectResult<()>> {
         self.calls.set(self.calls.get() + 1);
-        std::future::ready(Ok(ObjectReceipt {
+        std::future::ready(Ok(crate::OperationReceipt {
             value: (),
             work: WorkCounters::default(),
         }))

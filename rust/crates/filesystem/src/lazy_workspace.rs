@@ -4797,7 +4797,7 @@ where
             let generation = self.workspace.generation(
                 frozen.authored_generation, original, cancellation,
             ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
-            let workspace = self.workspace.fork_with_permit_guarded_with_native_work(
+            let workspace = self.workspace.fork_with_native_work(
                 destination, ForkOptions::from_generation(generation, baseline_key),
                 permit, original, cancellation, &mut fork_guard,
             ).await?;
@@ -14378,14 +14378,14 @@ mod tests {
         assert!(original.receipt().source_entries_visited > 0);
         assert_ne!(baseline.workspace_id(), root.workspace().id());
         assert_eq!(baseline.workspace_id(), candidate.workspace_id());
-        assert_eq!(baseline.read("/hot/a", 64).await.expect("nonempty baseline").as_ref(), b"source-a");
-        assert_eq!(baseline.read("/hot/gone", 64).await.expect("removed baseline").as_ref(), b"source-gone");
-        assert_eq!(candidate.read("/hot/a", 64).await.expect("candidate changed").as_ref(), b"imported-a");
-        assert_eq!(candidate.read("/hot/new", 64).await.expect("candidate added").as_ref(), b"imported-new");
-        assert!(matches!(candidate.stat("/hot/gone").await, Err(WorkspaceError::NotFound)));
+        assert_eq!(baseline.read("/hot/a", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("nonempty baseline").as_ref(), b"source-a");
+        assert_eq!(baseline.read("/hot/gone", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("removed baseline").as_ref(), b"source-gone");
+        assert_eq!(candidate.read("/hot/a", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("candidate changed").as_ref(), b"imported-a");
+        assert_eq!(candidate.read("/hot/new", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("candidate added").as_ref(), b"imported-new");
+        assert!(matches!(candidate.stat("/hot/gone", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error), Err(WorkspaceError::NotFound)));
         for generation in [&baseline, &candidate] {
-            assert_eq!(generation.read("/outside-authored", 64).await.expect("frozen outside authored").as_ref(), b"frozen-outside");
-            assert!(matches!(generation.stat("/cold").await, Err(WorkspaceError::NotFound)));
+            assert_eq!(generation.read("/outside-authored", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("frozen outside authored").as_ref(), b"frozen-outside");
+            assert!(matches!(generation.stat("/cold", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error), Err(WorkspaceError::NotFound)));
         }
         assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("original head").id(), imported.id());
         assert_eq!(root.store.load_lazy_workspace(root.workspace().id()).await.expect("original companion"), before);
@@ -14761,9 +14761,7 @@ mod tests {
         let token = CancellationToken::new();
         let key = IdempotencyKey::from_bytes([0xd1; 16]);
         let frozen = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.snapshot(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.expect("freeze").value;
-        let prepared = root.prepare_fork_snapshot_measured(
-            "authentic-child", frozen, key.operation_id(), budget, &token,
-        ).await.expect("durable first freeze");
+        let prepared = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.prepare_fork_snapshot("authentic-child", frozen, key.operation_id(), &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.expect("durable first freeze");
         prepared.work.verify(budget).expect("finite preparation");
         assert_eq!(prepared.value, frozen);
         assert!(fs.open_workspace("authentic-child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
@@ -14813,7 +14811,7 @@ mod tests {
         let token = CancellationToken::new();
         let key = IdempotencyKey::from_bytes([0xd2; 16]);
         let frozen = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.snapshot(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.expect("snapshot").value;
-        root.prepare_fork_snapshot_measured("bind-child", frozen, key.operation_id(), budget, &token)
+        (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.prepare_fork_snapshot("bind-child", frozen, key.operation_id(), &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) })
             .await.expect("prepare before actual creation");
         assert!(fs.open_workspace("bind-child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
         let config = root.workspace().volume.config();
@@ -14986,7 +14984,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         source.cancel_next_range();
         assert!(matches!(
-            { let stage_cancellation = &cancellation; let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", root.source_file_id(&node), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)),
+            { let stage_cancellation = &cancellation; let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", { let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&node.file_identity, ledger)).expect("source identity") }, u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)),
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::Cancelled)
         ));
         assert!(cancellation.is_cancelled());
@@ -15073,15 +15071,15 @@ mod tests {
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         assert!(matches!(
-            { let stage_cancellation = &cancelled; let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", root.source_file_id(&node), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)),
+            { let stage_cancellation = &cancelled; let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", { let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&node.file_identity, ledger)).expect("source identity") }, u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)),
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::Cancelled)
         ));
         assert!(
-            { let stage_cancellation = &CancellationToken::new(); let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", root.source_file_id(&node), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
+            { let stage_cancellation = &CancellationToken::new(); let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", { let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&node.file_identity, ledger)).expect("source identity") }, u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
             .expect("stage source in dirty mount")
         );
         assert!(
-            !{ let stage_cancellation = &CancellationToken::new(); let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", root.source_file_id(&node), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
+            !{ let stage_cancellation = &CancellationToken::new(); let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", { let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&node.file_identity, ledger)).expect("source identity") }, u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
                 .expect("already staged source identity")
         );
         assert_eq!(
@@ -15135,7 +15133,7 @@ mod tests {
                 panic!("expected unresolved source alias");
             };
             assert!(
-                { let stage_cancellation = &CancellationToken::new(); let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, path, root.source_file_id(&node), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
+                { let stage_cancellation = &CancellationToken::new(); let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, path, { let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&node.file_identity, ledger)).expect("source identity") }, u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
                 .expect("stage source alias")
             );
         }
@@ -15290,7 +15288,7 @@ mod tests {
         let LazyLookup::Source(node) = root.lookup("/file.txt").await.expect("source") else {
             panic!("expected source file");
         };
-        root.remove_if("/file.txt", Some(root.source_file_id(&node)))
+        root.remove_if("/file.txt", Some({ let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&node.file_identity, ledger)).expect("source identity") }))
             .await
             .expect("source-only tombstone");
         assert_eq!(
@@ -15480,9 +15478,9 @@ mod tests {
         let before = root.inspect_state(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary inspection uses ordinary funding") }).expect("state before inspection");
 
         let (lookup, source_reference) = root
-            .inspect_unauthored("/file.txt", None)
+            .inspect_unauthored("/file.txt", InspectBasis::default(), &LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))
             .await
-            .expect("inspect source file");
+            .map(|phase| match phase { LazyReadonlyNode::Portable(value) => value, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary inspection") }).expect("inspect source file");
         let LazyLookup::Source(node) = lookup else {
             panic!("inspection must resolve the source file");
         };
@@ -15534,7 +15532,7 @@ mod tests {
         let first = root.workspace().stat("/a", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("first stat");
         let second = root.workspace().stat("/b", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("second stat");
         assert_eq!(first.file_id, second.file_id);
-        assert_eq!(first.file_id, root.source_file_id(&source.node));
+        assert_eq!(first.file_id, { let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&source.node.file_identity, ledger)).expect("source identity") });
         assert_eq!(first.link_count, 2);
         assert_eq!(second.link_count, 2);
         assert_eq!(first.metadata.posix_mode, Some(0o100640));
@@ -15586,7 +15584,7 @@ mod tests {
         let first = root.workspace().stat("/a", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("first stat");
         let second = root.workspace().stat("/b", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("second stat");
         assert_eq!(first.file_id, second.file_id);
-        assert_eq!(first.file_id, root.source_file_id(&source.node));
+        assert_eq!(first.file_id, { let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&source.node.file_identity, ledger)).expect("source identity") });
         assert_eq!(
             root.read("/b", 64)
                 .await
@@ -15723,7 +15721,7 @@ mod tests {
                 panic!("source lookup expected")
             }
         };
-        assert_eq!(root.source_file_id(&first), root.source_file_id(&second));
+        assert_eq!({ let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&first.file_identity, ledger)).expect("source identity") }, { let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&second.file_identity, ledger)).expect("source identity") });
         assert_eq!(
             root.seek("/first", 2, LazySeekTarget::Data)
                 .await
@@ -15814,22 +15812,23 @@ mod tests {
                 panic!("expected source directory")
             }
         };
-        let source_id = root.source_file_id(&source_node);
+        let source_id = { let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&source_node.file_identity, ledger)).expect("source identity") };
         #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
         {
             let token = CancellationToken::new();
             let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token)
                 .expect("original readonly listed-node scope");
             let state = root.inspect_state(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary inspection uses ordinary funding") }).expect("actual observed companion");
-            let ((listed, reference), funding) = root.inspect_listed_with_native_work(
-                &state, "/repo", source_node, false, &original, &token,
+            let phase = root.inspect_unauthored(
+                "/repo", InspectBasis { state: Some(&state), listed: Some(source_node), ..InspectBasis::default() },
+                &LazyTreapWork::native_with_work(&original, &token).expect("original accounting"),
             ).await.expect("original listed metadata without another source callback");
+            let LazyReadonlyNode::Native(owned) = phase else { panic!("native inspection retains funding"); };
+            let ((listed, reference), funding) = owned.into_parts();
             let LazyLookup::Source(listed_node) = &listed else { panic!("unpromoted listed source"); };
             assert_eq!(listed_node, &source_node);
             assert_eq!(reference, Some(state.source));
-            assert_eq!(root.stable_file_id_for_lookup_with_native_work(
-                "/repo", &listed, &original, &token,
-            ).await.expect("original source identity"), source_id);
+            assert_eq!(root.stable_file_id_for_lookup("/repo", &listed, &mut LazyReadonlyAccounting::Native { original: &original, cancellation: &token }).await.expect("original source identity"), source_id);
             assert_eq!(root.store.load_lazy_workspace(root.workspace().id()).await
                 .expect("read-only listed companion"), Some(state));
             drop(listed);
@@ -15842,7 +15841,7 @@ mod tests {
 
         let promoted = root.lookup("/repo").await.expect("promoted directory");
         assert_eq!(
-            root.stable_file_id_for_lookup("/repo", &promoted)
+            root.stable_file_id_for_lookup("/repo", &promoted, &mut LazyReadonlyAccounting::Portable { work: WorkCounters::UNCHARGED, budget: WorkBudget::UNBOUNDED, cancellation: &CancellationToken::new() })
                 .await
                 .expect("stable projection identity"),
             source_id
@@ -15852,9 +15851,7 @@ mod tests {
             let token = CancellationToken::new();
             let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token)
                 .expect("original promoted-directory identity scope");
-            assert_eq!(root.stable_file_id_for_lookup_with_native_work(
-                "/repo", &promoted, &original, &token,
-            ).await.expect("same canonical original source-directory projection"), source_id);
+            assert_eq!(root.stable_file_id_for_lookup("/repo", &promoted, &mut LazyReadonlyAccounting::Native { original: &original, cancellation: &token }).await.expect("same canonical original source-directory projection"), source_id);
         }
         assert_eq!((root.read("/repo/HEAD", 64).await.expect("lazy child")).as_ref(), b"ref: refs/heads/main\n");
     }
@@ -15877,7 +15874,7 @@ mod tests {
                 panic!("expected source node")
             }
         };
-        let expected_source = root.source_file_id(&source_node);
+        let expected_source = { let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&source_node.file_identity, ledger)).expect("source identity") };
         root.write("/file.txt", Bytes::from_static(b"replacement"))
             .await
             .expect("authored replacement");
@@ -15979,7 +15976,7 @@ mod tests {
                     assert_eq!(generation.read(path, 64, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("same physical generation").as_ref(), expected);
                 }
                 assert_eq!(root.workspace().stat("/file.txt", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("original source file identity").file_id,
-                    root.source_file_id(&source.node));
+                    { let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&source.node.file_identity, ledger)).expect("source identity") });
             }
             assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
         }
@@ -16029,7 +16026,7 @@ mod tests {
             assert_eq!((published.source, published.overlay, published.shadows),
                 (basis.source, basis.overlay, basis.shadows));
             assert_eq!(root.workspace().stat("/b", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("published identity").file_id,
-                root.source_file_id(&source.node));
+                { let cancellation = CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation); accounting.with_kernel(|ledger, _| root.source_file_id(&source.node.file_identity, ledger)).expect("source identity") });
             assert_eq!(root.read_at_snapshot_measured(
                 published, "/b", 64, finite_fixture_budget(), &token,
             ).await.expect("reader consumes actual final proof").value.as_ref(), b"replacement");
@@ -16978,7 +16975,7 @@ mod tests {
         original.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("publish original link");
         let snapshot = root.snapshot(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.expect("freeze original target");
         let mut advanced = root.workspace().begin_transaction(IdempotencyKey::from_bytes([0x76; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("advance transaction");
-        advanced.remove("/link").await.expect("remove original binding");
+        advanced.remove("/link", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.expect("remove original binding");
         advanced.create_symbolic_link("/link", Bytes::from_static(b"advanced"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("new target");
         advanced.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("publish advanced target");
         let current = root.snapshot(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.expect("advanced current");
@@ -17170,11 +17167,11 @@ mod tests {
             SourceReference { identity: [0x73; 16], epoch: snapshot.source.epoch },
             snapshot.overlay, snapshot.shadows,
         );
-        let identity_failure = root.validate_snapshot_measured(replaced_identity, budget, &token)
+        let identity_failure = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.validate_snapshot(replaced_identity, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) })
             .await.expect_err("original physical source identity differs");
         assert!(matches!(identity_failure.error.semantic_error(), LazyWorkspaceError::StaleSource));
         source.invalidate();
-        let validated = root.validate_snapshot_measured(snapshot, budget, &token)
+        let validated = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.validate_snapshot(snapshot, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) })
             .await.expect("original immutable metadata survives live epoch advancement");
         validated.work.verify(budget).expect("bounded retained root authentication");
         assert!(validated.work.bytes_hashed > failure.work.bytes_hashed);
@@ -17182,7 +17179,7 @@ mod tests {
             snapshot.workspace_id, snapshot.authored_generation, snapshot.source,
             LazyOverlayId::from_bytes([0x72; 32]), snapshot.shadows,
         );
-        let invalid = root.validate_snapshot_measured(missing_root, budget, &token)
+        let invalid = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.validate_snapshot(missing_root, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) })
             .await.expect_err("digest alone cannot authenticate absent overlay root");
         assert!(matches!(invalid.error.semantic_error(), LazyWorkspaceError::Store(_)));
         assert!(invalid.work.items_examined > 0);
@@ -17191,7 +17188,7 @@ mod tests {
             snapshot.workspace_id, snapshot.authored_generation, snapshot.source,
             snapshot.overlay, LazyShadowId([0x74; 32]),
         );
-        let invalid = root.validate_snapshot_measured(missing_shadow, budget, &token)
+        let invalid = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.validate_snapshot(missing_shadow, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) })
             .await.expect_err("digest alone cannot authenticate absent shadow root");
         assert!(matches!(invalid.error.semantic_error(), LazyWorkspaceError::Store(_)));
         invalid.work.verify(budget).expect("retained authored, overlay, and missing shadow prefix");
@@ -17419,8 +17416,8 @@ mod tests {
             .expect("exact capture");
         assert_eq!((exact
             .value
-            .read("/nested/b.txt", 16)
-            .await
+            .read("/nested/b.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("captured file")).as_ref(), b"beta");
         assert_eq!(exact.work.source_entries_visited, 3);
         assert_eq!(
@@ -17491,8 +17488,8 @@ mod tests {
             .expect("capture hot subtree");
         assert_eq!((exact
             .value
-            .read("/hot/file.txt", 16)
-            .await
+            .read("/hot/file.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("hot content")).as_ref(), b"hot");
         #[cfg(feature = "native-mount")]
         {
@@ -17514,7 +17511,7 @@ mod tests {
             assert!(!staged.path().join("cold").exists());
         }
         assert!(matches!(
-            exact.value.read("/cold/file.txt", 16).await,
+            exact.value.read("/cold/file.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
             Err(WorkspaceError::NotFound)
         ));
         assert!(matches!(
@@ -17561,8 +17558,8 @@ mod tests {
             .expect("exactify Windows source into portable authored workspace");
         assert_eq!((exact
             .value
-            .read("/cafÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©.txt", 16)
-            .await
+            .read("/cafÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("captured file")).as_ref(), b"source");
     }
 
@@ -17599,8 +17596,8 @@ mod tests {
         let exact = (async { let cancellation = &CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = root.exactify("/", crate::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) })
             .await
             .expect("exactify all batches");
-        let first = exact.value.stat("/a000").await.expect("first stat");
-        let last = exact.value.stat("/a519").await.expect("last stat");
+        let first = exact.value.stat("/a000", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("first stat");
+        let last = exact.value.stat("/a519", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("last stat");
         assert_eq!(first.file_id, last.file_id);
         assert_eq!(last.link_count, 520);
     }

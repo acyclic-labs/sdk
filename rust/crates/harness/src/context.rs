@@ -2640,7 +2640,7 @@ mod tests {
         fn new() -> Result<Self> {
             Ok(Self {
                 volume: VolumeRef::new(
-                    ProviderRef::new("test", "filesystem", "2")?,
+                    ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                     "context".into(),
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
@@ -3321,7 +3321,7 @@ mod tests {
 
     fn message(role: ModelRole, text: &str) -> Result<ModelMessage> {
         let volume = VolumeRef::new(
-            ProviderRef::new("test", "filesystem", "2")?,
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
             "context".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([1; 16])),

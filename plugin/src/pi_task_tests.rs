@@ -48,7 +48,7 @@ fn result(operation: OperationId, value: Outcome<FileRef>) -> Value {
 }
 
 fn binding() -> PiTaskBinding {
-    let provider = ProviderRef::new("pi-recovery-test", "filesystem", "1").unwrap();
+    let provider = ProviderRef::new("pi-recovery-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent_id = AgentId::from_bytes([31; 16]);
     PiTaskBinding {
         native_session_id: "pi-root".to_owned(),
@@ -1026,8 +1026,7 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
         &reopen_work,
     ).await.unwrap();
     let suspension = reopened.runtime.task_host().workflow_suspension(task).await.unwrap().unwrap();
-    reopened.runtime.task_host().resume_workflow(task, suspension.revision, input,
-        acyclic_harness::IdempotencyKey::new("pi-root-control/distinct-next").unwrap()).await.unwrap();
+    reopened.runtime.task_host().resume_workflow(task, suspension.revision, input, acyclic_harness::IdempotencyKey::new("pi-root-control/distinct-next").unwrap(), None).await.unwrap();
     let next = reopened.runtime.run_operation_with_native_work(&Worker {
         id: "pi-root-control-next".into(), available: ResourceSnapshot::default(),
         labels: BTreeMap::new(),
@@ -1304,7 +1303,7 @@ mod native_transition {
         let context = fixture.runtime.runtime.task_context_with_native_work(task, &fixture.fence, &observation).await.unwrap();
         let mut current = fixture.runtime.runtime.open_task_with_native_work(task, &fixture.fence, context, &observation).await.unwrap();
         let checkpoint = current.checkpoint().clone();
-        fixture.runtime.runtime.task_host().cancel_with_native_work(task, &observation).await.unwrap();
+        fixture.runtime.runtime.task_host().cancel(task, Some(&observation)).await.unwrap();
         let retry = crate::pi_root_provider::guarded_pi_value(&input, fixture.owner.policy().maximum_payload_bytes, &observation).unwrap();
         let before = observation.receipt();
         assert!(current.step_with_native_work(OperationId::from_bytes([operation; 16]),

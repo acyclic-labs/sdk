@@ -85,7 +85,7 @@ async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_init
         &fixture.runtime.runtime.commands(), 1, &work).await.unwrap();
     assert!(!original_native_first_dispatch_pending(&fixture.runtime, &fixture.stream,
         &fixture.owner, &plan, &work).await.unwrap());
-    fixture.runtime.runtime.task_host().cancel(prepared.binding.task_id).await.unwrap();
+    fixture.runtime.runtime.task_host().cancel(prepared.binding.task_id, None).await.unwrap();
     assert!(!original_native_first_dispatch_pending(&fixture.runtime, &fixture.stream,
         &fixture.owner, &plan, &work).await.unwrap());
 }

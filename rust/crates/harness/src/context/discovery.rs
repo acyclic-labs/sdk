@@ -181,7 +181,7 @@ pub struct PinnedContextPath {
 impl PinnedContextPath {
     fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         self.root.validate(work)?;
-        self.generation.validate_with_work(work)?;
+        self.generation.validate(work)?;
         validate_content_path(&self.path, work)?;
         if self.generation.as_resource().provider() != self.root.volume.provider()
             || (!self.root.directory.is_empty()

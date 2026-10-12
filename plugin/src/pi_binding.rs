@@ -91,8 +91,8 @@ impl PiScratchCreation {
     ) -> acyclic_harness::Result<()> {
         binding_validation_step(work, 1)?;
         match work {
-            Some(work) => self.generation.validate_with_native_work(work)?,
-            None => self.generation.validate()?,
+            Some(work) => self.generation.validate(&mut Some(&mut acyclic_harness::store::native_work_io(work)?))?,
+            None => self.generation.validate(&mut None)?,
         }
         if self.workspace_id == [0; 16]
             || self.generation.as_resource().provider() != volume.provider()
@@ -267,8 +267,8 @@ fn validate_pi_provider(provider: &ProviderRef,
     work: Option<&acyclic_fs::NativeMaterializationWork>,
 ) -> acyclic_harness::Result<()> {
     match work {
-        Some(work) => provider.validate_with_native_work(work)?,
-        None => provider.validate()?,
+        Some(work) => provider.validate(&mut Some(&mut acyclic_harness::store::native_work_io(work)?))?,
+        None => provider.validate(&mut None)?,
     }
     if [provider.namespace(), provider.family(), provider.version()]
         .iter()

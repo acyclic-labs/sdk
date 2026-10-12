@@ -234,7 +234,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         let mut work = observer.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]
         let mut work = None;
-        this.stream_provider.validate_with_work(&mut work)?;
+        this.stream_provider.validate(&mut work)?;
         if this.stream_provider.family() != "stream" || this.parent.authority().kind != crate::core::AggregateKind::Conversation {
             return Err(reject(crate::wire::ErrorCode::Invalid, "fork requires Stream history and a parent conversation"));
         }
@@ -342,7 +342,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
 
     /// Registers an exact provider-owned resource capture.
     pub fn with_capture_provider(mut self, provider: Arc<dyn ForkCaptureProvider>) -> Result<Self> {
-        provider.provider().validate()?;
+        provider.provider().validate(&mut None)?;
         if self
             .capture_providers
             .iter()
@@ -462,7 +462,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 let provider = crate::core::copy_provider(resource.provider(), &mut quota)?;
                 let key = crate::core::copy_copy_vector(resource.key(), &mut quota)?;
                 let version = resource.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
-                let copied = ResourceRef::new_with_work(resource.kind(), provider, key, version, quota.work())?;
+                let copied = ResourceRef::new(resource.kind(), provider, key, version, quota.work())?;
                 quota.transfer();
                 Ok::<_, Error>(copied)
             })?;
@@ -1984,7 +1984,7 @@ mod task_origin_tests {
 
     #[tokio::test]
     async fn allocation_retains_creation_fence_and_rejects_foreign_task_origins() -> Result<()> {
-        let provider = ProviderRef::new("task-origin-test", "filesystem", "2")?;
+        let provider = ProviderRef::new("task-origin-test".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(acyclic_fs::Fs::memory(), provider.clone())?;
         let parent = Authority {
             kind: AggregateKind::Task,

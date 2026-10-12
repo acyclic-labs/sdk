@@ -39,7 +39,7 @@ impl AsyncObjectStore for PeakRecordingStore {
         };
         work.verify(budget)
             .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        Ok(crate::storage::ObjectReceipt { value: (), work })
+        Ok(crate::OperationReceipt { value: (), work })
     }
 
     async fn read(

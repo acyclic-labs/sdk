@@ -327,8 +327,8 @@ pub use native_mount::{
     seal_checkout_with_permit,
 };
 pub use notification::{
-    AsyncNotificationStore, ImmediateNotificationStore, MemoryNotificationStore, NotificationError,
-    NotificationPoll, NotificationResult, NotificationStore,
+    AsyncNotificationStore, MemoryNotificationStore, NotificationError,
+    NotificationPoll, NotificationResult,
 };
 pub use operation_window::{
     MemoryOperationWindowStore, OperationLease, OperationLeaseId, OperationReconcileLimits,
@@ -368,10 +368,10 @@ pub use speculation::{
     StorePromotionExecutorError, execute_promotion, execute_residency,
 };
 pub use storage::{
-    AppendOutcome, AuthorityFailure, AuthorityReceipt, AuthorityResult, AuthorityStore,
+    AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStore,
     AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome, GuardedAppend,
     HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectKind, ObjectRead,
-    ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStore,
+    ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStore,
     ObjectStoreError, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
     object_digest,
 };

@@ -132,7 +132,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     use crate::conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
     let fixture = crate::durable_host::tests::created_resource_access::CreationFixture::new().await?;
     let created = fixture.create_filesystem_child_with_grants(&["fork:publish", "conversation:bind"]).await?;
-    let stream_provider = crate::resources::ProviderRef::new("created-controls", "stream", "2")?;
+    let stream_provider = crate::resources::ProviderRef::new("created-controls".into(), "stream".into(), "2".into(), &mut None)?;
     let verifier = Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536)?),
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),

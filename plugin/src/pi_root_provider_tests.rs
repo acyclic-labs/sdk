@@ -51,7 +51,7 @@ impl Fixture {
         let agent = AgentId::from_bytes([111; 16]);
         let task = TaskId::from_bytes([112; 16]);
         let root = [113; 16];
-        let provider = ProviderRef::new("pi-provider-tests", "filesystem", "1").unwrap();
+        let provider = ProviderRef::new("pi-provider-tests".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
         let journal = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project(hex::encode(root))).unwrap();
@@ -314,7 +314,7 @@ async fn pi_root_provider_all_lost_ack_boundaries_resume_original_operations_wit
             }
             let reopened = fixture.reopen_provider().await;
             if cancelled {
-                fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id).await.unwrap();
+                fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id, None).await.unwrap();
                 reopened.cancel();
             }
             let observed = reopened.reconcile_native(dispatch.attempt_id, &fixture.startup).await.unwrap();
@@ -682,7 +682,7 @@ async fn pi_root_output_context_preserves_actual_task_and_stages_only_original_s
     assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, operation, &foreign_generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_err());
-    fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id).await.unwrap();
+    fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id, None).await.unwrap();
     assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, operation, &generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_err());

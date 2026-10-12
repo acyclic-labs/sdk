@@ -306,7 +306,7 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
     let mut messages = crate::model::vec_with_capacity::<ModelMessage>(selection.message_ids.len(), io)?;
     let mut tool_calls = ProjectionIndex::new(io);
     for id in &selection.message_ids {
-        projection_step(io, 1)?;
+        crate::model::charge_items(io, 1)?;
         let message = conversation
             .message(*id)
             .ok_or_else(|| projection_invalid(io, "selected conversation message is missing"))?;
@@ -497,17 +497,6 @@ fn projection_invalid(io: Option<&crate::executor::PreparationIo>, reason: &'sta
     Error::Invalid(reason.into())
 }
 
-fn projection_step(io: Option<&crate::executor::PreparationIo>, items: u64) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let next = acyclic_fs::WorkCounters { items_examined: items, ..Default::default() };
-        io.preflight(next)?;
-        io.charge(next)?;
-    }
-    let _ = (io, items);
-    Ok(())
-}
-
 fn projection_allocation(bytes: u64, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
@@ -549,7 +538,7 @@ fn projection_result_attachment<'a>(
     attachments: &'a [Attachment], io: Option<&crate::executor::PreparationIo>,
 ) -> Result<&'a Attachment> {
     for attachment in attachments {
-        projection_step(io, 1)?;
+        crate::model::charge_items(io, 1)?;
         if attachment.label.as_deref() == Some("model_projection") {
             return Ok(attachment);
         }
@@ -562,7 +551,7 @@ fn validate_projection_tool_identity(
 ) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        projection_step(Some(io), 1)?;
+        crate::model::charge_items(Some(io), 1)?;
         if !crate::contract::is_valid_component_label(name) {
             return Err(projection_invalid(Some(io), "tool name is invalid"));
         }
@@ -603,7 +592,7 @@ impl<'a> ProjectionIndex<'a> {
 
     // Callers validate unique ordered message ids before insertion.
     fn insert(&mut self, id: &Uuid, value: usize) -> Result<()> {
-        projection_step(self.io, 1)?;
+        crate::model::charge_items(self.io, 1)?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = self.io {
             let bytes = std::mem::size_of::<(Uuid, usize)>() as u64;
@@ -623,7 +612,7 @@ impl<'a> ProjectionIndex<'a> {
     }
 
     fn get(&self, id: &Uuid) -> Result<Option<&usize>> {
-        projection_step(self.io, 1)?;
+        crate::model::charge_items(self.io, 1)?;
         Ok(self.values.get(id))
     }
 }
@@ -662,7 +651,7 @@ impl ProjectionAttachments<'_> {
         let items = match self {
             Self::Borrowed(items) => {
                 for attachment in items.iter().take(count) {
-                    projection_step(io, 1)?;
+                    crate::model::charge_items(io, 1)?;
                     crate::executor::with_history_io(io, |work| attachment.validate(work))?;
                     append(crate::model::clone_file(&attachment.file, io)?)?;
                 }
@@ -675,7 +664,7 @@ impl ProjectionAttachments<'_> {
             let hold = source_hold.as_ref().expect("native manifest retains ownership");
             let mut retained = 0_u64;
             for attachment in items.iter().take(count) {
-                projection_step(Some(io), 1)?;
+                crate::model::charge_items(Some(io), 1)?;
                 retained = retained.checked_add(attachment.file.logical_owned_bytes()?)
                     .ok_or_else(|| projection_invalid(Some(io), "projected file ownership overflows"))?;
             }
@@ -689,7 +678,7 @@ impl ProjectionAttachments<'_> {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let move_files = { _hold = source_hold; io.is_none() };
         for attachment in items.into_iter().take(count) {
-            projection_step(io, 1)?;
+            crate::model::charge_items(io, 1)?;
             crate::executor::with_history_io(io, |work| attachment.validate(work))?;
             let file = if move_files { attachment.file }
                 else { crate::model::clone_file(&attachment.file, io)? };
@@ -849,7 +838,7 @@ fn convert_projection_value<'a, T: crate::filesystem::UploadRecord>(
             maximum_depth: 128 },
         T::json_value_schema(),
         &mut |next| match next {
-            crate::contract::JsonCodecCharge::Inspect { items } => projection_step(Some(io), items),
+            crate::contract::JsonCodecCharge::Inspect { items } => crate::model::charge_items(Some(io), items),
             _ => Err(projection_invalid(Some(io), "owned projection inspection reported nonresident work")),
         },
     )?;
@@ -951,7 +940,7 @@ async fn read_json_artifact<T: DeserializeOwned, R: ContentResidencyVerifier + ?
 fn validate_model_json_numbers(
     value: &serde_json::Value, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    projection_step(io, 1)?;
+    crate::model::charge_items(io, 1)?;
     match value {
         serde_json::Value::Array(values) => values.iter()
             .try_for_each(|value| validate_model_json_numbers(value, io)),
@@ -1005,7 +994,7 @@ mod tests {
     fn file(agent: AgentId, path: &str, media_type: &str, bytes: &[u8]) -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent), &mut None

@@ -800,7 +800,7 @@ mod native_metadata_controls {
         let scope = issuer.issue("original-effect-scope", &crate::Capabilities::new([capability::EFFECT_RUN]), Some(crate::AgentId::from_bytes([42; 16])), None, &mut None).expect("scope proof");
         let files = Arc::new(crate::filesystem::FilesystemHost::new(
             acyclic_fs::Fs::memory(),
-            crate::resources::ProviderRef::new("effect-metadata-control", "filesystem", "2")?,
+            crate::resources::ProviderRef::new("effect-metadata-control".into(), "filesystem".into(), "2".into(), &mut None)?,
         )?);
         let content = Arc::new(crate::filesystem::FilesystemContentVerifier::new(
             files, &issuer.verifier(&mut None).expect("verifier copy"), &scope, crate::conversation::Limits::default().file_bytes, None,

@@ -364,7 +364,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     );
     let scope = storage
         .issuer.issue("summary-parent", &grants, Some(agent), None, &mut None).expect("scope proof");
-    let stream_provider = ProviderRef::new("local", "stream", "2")?;
+    let stream_provider = ProviderRef::new("local".into(), "stream".into(), "2".into(), &mut None)?;
     let archived = history.fork_history(
         aggregate.reducer(), 4,
         HistoryReadLimits { maximum_events: 4, maximum_bytes: 2_097_152 },
@@ -1215,7 +1215,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     let project_head = storage.host.create_volume(&project).await?;
     let scope = storage.issuer.issue("full-parent", &Capabilities::new(storage.scope.capabilities().iter().map(str::to_owned)
             .chain(["fork:publish".to_owned(), project.capability(VolumeOperation::Read)?])), Some(agent), None, &mut None).expect("scope proof");
-    let stream_provider = ProviderRef::new("local", "stream", "2")?;
+    let stream_provider = ProviderRef::new("local".into(), "stream".into(), "2".into(), &mut None)?;
     let preparer = FilesystemForkPreparer::new(storage.host.clone(), parent.reducer().clone(),
         storage.verifier(&mut None).expect("verifier copy"), scope.clone(), project.clone(), stream_provider.clone(),
         storage.content_verifier.clone(),
