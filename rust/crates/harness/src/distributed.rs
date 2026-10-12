@@ -337,7 +337,7 @@ pub(crate) async fn observe_declaration<P: StreamProvider>(
         return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Conflict,
             "declaration operation identity differs"));
     }
-    spec.verify_owner_with_work(owner, verifier, custody.work())?;
+    spec.verify_owner(owner, verifier, custody.work())?;
     let spec = *spec;
     if custody.work().is_some() { custody.relinquish(std::mem::size_of::<OperationSpec>() as u64)?; }
     custody.transfer();
@@ -381,7 +381,7 @@ pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
         return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Conflict,
             "historical declaration identifies another operation"));
     }
-    declaration.verify_owner_with_work(owner, verifier, custody.work())?;
+    declaration.verify_owner(owner, verifier, custody.work())?;
     let stream = source_stream(client, COORDINATOR_PATH, custody.work())?;
     let path_bytes = if custody.work().as_deref()
         .is_some_and(operations::original_native_decode_mode)
@@ -716,7 +716,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         } = write
         {
             self.scheduler
-                .require_model_claim(operation_id, attempt_id, step, &request_digest)?;
+                .require_model_claim(operation_id, attempt_id, step, &request_digest, &mut None)?;
         }
         Ok(acyclic_stream::CommitCondition::Tail {
             path: self.stream.stream.path().clone(),
@@ -1069,7 +1069,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 has_more = true;
                 break;
             }
-            child.spec.verify_owner_with_work(owner, verifier, custody.work())?;
+            child.spec.verify_owner(owner, verifier, custody.work())?;
             let slot = crate::core::copy_text(slot, &mut custody)?;
             entries.push(ChildOperationLink {
                 slot,
@@ -1230,7 +1230,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Err(coordinator_boundary(work, wire::ErrorCode::NotFound,
                 "operation is absent for this owner"));
         }
-        operation.spec.verify_owner_with_work(owner, verifier, work)?;
+        operation.spec.verify_owner(owner, verifier, work)?;
         Ok(operation)
     }
 
@@ -1357,7 +1357,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         if !scope.capabilities().contains(capability::OPERATION_DECLARE) {
             return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized, "scope lacks operation:declare"));
         }
-        spec.verify_owner_with_work(owner, verifier, work)?;
+        spec.verify_owner(owner, verifier, work)?;
         if let Some(parent) = &spec.parent {
             self.refresh_with_work(work).await?;
             self.authorize_operation_with_work(
@@ -1394,7 +1394,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Unauthorized,
                 "session declaration owner is invalid"));
         }
-        spec.verify_owner_with_work(owner, verifier, custody.work())?;
+        spec.verify_owner(owner, verifier, custody.work())?;
         if spec.parent.is_some() {
             return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Invalid,
                 "session declaration must be a root"));
@@ -1445,7 +1445,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         for (key, event) in keys.iter().zip(&events) {
             if let SchedulerEvent::Declared { spec } = event {
                 self.verify_content_with_work(&spec.state, request.work()).await?;
-                self.scheduler.validate_session_with_work(spec, &limits, request.work())?;
+                self.scheduler.validate_session(spec, &limits, request.work())?;
             }
             revision = revision.checked_add(1).ok_or_else(|| {
                 coordinator_boundary(request.work(), wire::ErrorCode::Invalid,
@@ -1636,7 +1636,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 self.verify_content_with_work(&spec.state, work).await?;
             }
             self.verify_published_result_with_work(&event, work).await?;
-            self.scheduler.validate_event_with_work(&event, work)?;
+            self.scheduler.validate_event(&event, work)?;
             let revision = next_revision(self.revision)?;
             let committed_at_ms = self.next_committed_at_ms_with_work(work)?;
             canonical_held = 0; // the original envelope producer acquires input custody
@@ -1829,7 +1829,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::NotFound,
                 "owned pull operation is absent"))?
                 .spec
-                .verify_owner_with_work(owner, verifier, work)?;
+                .verify_owner(owner, verifier, work)?;
         }
         Ok(())
     }
@@ -4688,18 +4688,18 @@ mod tests {
         let original = spec(OperationId::from_bytes([92; 16]), 0)?;
         let owner = original.owner.authority();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        original.verify_owner(owner, &issuer.verifier())?;
+        original.verify_owner(owner, &issuer.verifier(), &mut None)?;
         let foreign = Authority {
             kind: AggregateKind::Task,
             id: "foreign".into(),
         };
         let wrong_audience = AuthorityIssuer::new("test-runtime", [9; 32], foreign.clone());
         assert!(matches!(
-            original.verify_owner(owner, &wrong_audience.verifier()),
+            original.verify_owner(owner, &wrong_audience.verifier(), &mut None),
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
-            original.verify_owner(&foreign, &issuer.verifier()),
+            original.verify_owner(&foreign, &issuer.verifier(), &mut None),
             Err(Error::Unauthorized(_))
         ));
         let mut json =
@@ -4714,14 +4714,14 @@ mod tests {
         let tampered: OperationSpec =
             serde_json::from_value(json).map_err(|error| Error::Invalid(error.to_string()))?;
         assert!(matches!(
-            tampered.verify_owner(owner, &issuer.verifier()),
+            tampered.verify_owner(owner, &issuer.verifier(), &mut None),
             Err(Error::Unauthorized(_))
         ));
         let mut insufficient = original.clone();
         insufficient.owner_scope =
             issuer.root("observe-only", Capabilities::new(["operation:observe"]));
         assert!(matches!(
-            insufficient.verify_owner(owner, &issuer.verifier()),
+            insufficient.verify_owner(owner, &issuer.verifier(), &mut None),
             Err(Error::Unauthorized(_))
         ));
         Ok(())
@@ -4962,7 +4962,7 @@ mod tests {
         validate_child_page_request(parent, None, usize::MAX)?;
         assert!(validate_child_page_request(parent, Some("\u{7f}"), 1).is_err());
         validate_child_page_request(parent, Some(&"x".repeat(1_024)), 1)?;
-        validate_child_page_request(parent, Some("résumé"), 1)?;
+        validate_child_page_request(parent, Some("rÃƒÂ©sumÃƒÂ©"), 1)?;
 
         let page = ChildOperationPage {
             revision: 4,

@@ -716,105 +716,59 @@ impl ModelContent {
     pub(crate) fn visit_file_bindings<'a>(
         &'a self, mut visit: impl FnMut(&'a FileRef, Option<&'a NativeConfigurationBinding>) -> Result<()>,
     ) -> Result<()> {
-        let mut file = |reference: &'a FileRef, policy: &'a FileProjectionPolicy| -> Result<()> {
-            visit(reference, None)?;
+        for (file, policy) in self.file_parts() {
+            visit(file, None)?;
             if let FileProjectionPolicy::Native(policy) = policy
                 && let Some(binding) = &policy.configuration {
                 visit(&binding.configuration.content, Some(binding))?;
-            }
-            Ok(())
-        };
-        for part in self.parts() {
-            match part {
-                ModelContentPart::File { file: reference, policy } => file(reference, policy)?,
-                ModelContentPart::ToolResult { content: ToolResultContent::Parts { parts }, .. } => {
-                    for part in parts {
-                        if let ModelDataPart::File { file: reference, policy } = part { file(reference, policy)?; }
-                    }
-                }
-                _ => {}
             }
         }
         Ok(())
     }
 
+    fn file_parts(&self) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
+        self.parts().iter().flat_map(|part| {
+            let direct = match part {
+                ModelContentPart::File { file, policy } => Some((file, policy)),
+                _ => None,
+            };
+            let data = match part {
+                ModelContentPart::ToolResult { content: ToolResultContent::Parts { parts }, .. } => parts.as_slice(),
+                _ => &[],
+            };
+            direct.into_iter().chain(data.iter().filter_map(|part| match part {
+                ModelDataPart::File { file, policy } => Some((file, policy)),
+                _ => None,
+            }))
+        })
+    }
+
     /// Returns ordered media refs followed by their immutable option refs.
     #[must_use]
-    pub fn file_refs(&self) -> Vec<&FileRef> {
-        let mut files = Vec::new();
-        for part in self.parts() {
-            match part {
-                ModelContentPart::File { file, policy } => policy.append_refs(file, &mut files),
-                ModelContentPart::ToolResult {
-                    content: ToolResultContent::Parts { parts },
-                    ..
-                } => {
-                    for part in parts {
-                        if let ModelDataPart::File { file, policy } = part {
-                            policy.append_refs(file, &mut files);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        files
+    pub fn file_refs(&self) -> impl Iterator<Item = &FileRef> {
+        self.file_parts().flat_map(|(file, policy)| {
+            let configuration = match policy {
+                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref()
+                    .map(|binding| &binding.configuration.content),
+                _ => None,
+            };
+            std::iter::once(file).chain(configuration)
+        })
     }
 
     /// Detects native media in ordinary data and paired result data.
     #[must_use]
     pub fn contains_native_media(&self) -> bool {
-        self.parts().iter().any(|part| match part {
-            ModelContentPart::File {
-                policy: FileProjectionPolicy::Native(_),
-                ..
-            } => true,
-            ModelContentPart::ToolResult {
-                content: ToolResultContent::Parts { parts },
-                ..
-            } => parts.iter().any(|part| {
-                matches!(
-                    part,
-                    ModelDataPart::File {
-                        policy: FileProjectionPolicy::Native(_),
-                        ..
-                    }
-                )
-            }),
-            _ => false,
-        })
+        self.file_parts().any(|(_, policy)| matches!(policy, FileProjectionPolicy::Native(_)))
     }
 
     /// Claims that the original authenticated host must verify before dispatch.
     #[must_use]
-    pub fn native_configurations(&self) -> Vec<&NativeConfigurationBinding> {
-        let mut bindings = Vec::new();
-        for part in self.parts() {
-            match part {
-                ModelContentPart::File {
-                    policy: FileProjectionPolicy::Native(policy),
-                    ..
-                } => {
-                    bindings.extend(policy.configuration.iter());
-                }
-                ModelContentPart::ToolResult {
-                    content: ToolResultContent::Parts { parts },
-                    ..
-                } => {
-                    for part in parts {
-                        if let ModelDataPart::File {
-                            policy: FileProjectionPolicy::Native(policy),
-                            ..
-                        } = part
-                        {
-                            bindings.extend(policy.configuration.iter());
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        bindings
+    pub fn native_configurations(&self) -> impl Iterator<Item = &NativeConfigurationBinding> {
+        self.file_parts().filter_map(|(_, policy)| match policy {
+            FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
+            _ => None,
+        })
     }
 }
 
@@ -1137,14 +1091,7 @@ impl FileProjectionPolicy {
         } else { Ok(()) }
     }
 
-    fn append_refs<'a>(&'a self, file: &'a FileRef, files: &mut Vec<&'a FileRef>) {
-        files.push(file);
-        if let Self::Native(policy) = self
-            && let Some(binding) = &policy.configuration
-        {
-            files.push(&binding.configuration.content);
-        }
-    }
+
 }
 
 impl ToolResultContent {
@@ -1158,14 +1105,7 @@ impl ToolResultContent {
                 for part in parts {
                     let payload = match part {
                         ModelDataPart::Text { text } => text.capacity() as u64,
-                        ModelDataPart::File { file, policy } => {
-                            let file = file.logical_owned_bytes()?;
-                            let policy = match policy {
-                                FileProjectionPolicy::Native(policy) => model_native_policy_owned_bytes(policy)?,
-                                FileProjectionPolicy::Reference | FileProjectionPolicy::BoundedFull => 0,
-                            };
-                            model_owned_add(file, policy)?
-                        }
+                        ModelDataPart::File { file, policy } => model_file_payload_bytes(file, policy)?,
                     };
                     bytes = model_owned_add(bytes, payload)?;
                 }
@@ -1791,7 +1731,10 @@ impl PreparedModelRequest {
             {
                 _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
             }
-            model_verify_descriptor(&reference, &bytes, io)?;
+            #[cfg(feature = "filesystem")]
+            reference.descriptor().verify_with_io(&bytes, io)?;
+            #[cfg(not(feature = "filesystem"))]
+            reference.descriptor().verify(&bytes)?;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => io.decode_preparation::<ModelPrefix>(&bytes)?.into_retained(),
@@ -1889,35 +1832,12 @@ fn model_hasher_update(
     Ok(())
 }
 
-fn model_verify_descriptor(
-    file: &FileRef, bytes: &[u8], io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-        return file.descriptor().verify_with_native_work(bytes, work);
-    }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    #[cfg(feature = "filesystem")]
-    let work = acyclic_fs::WorkCounters {
-        bytes_hashed: if bytes.len() as u64 == file.descriptor().byte_length() { bytes.len() as u64 } else { 0 },
-        ..Default::default()
-    };
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io { io.preflight(work)?; }
-    let result = file.descriptor().verify(bytes);
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io { io.charge(work)?; }
-    result
-}
 
 async fn model_verify_content_files(
     content: &ModelContent, verifier: &dyn crate::conversation::ContentResidencyVerifier,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    let mut files = Vec::new();
-    content.visit_file_bindings(|file, _| model_vec_push(&mut files, file, io))?;
-    for file in files {
+    for file in content.file_refs() {
         model_step(io, 1)?;
         match io {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2002,20 +1922,6 @@ impl ModelAttempt {
             request_digest: self.request_digest,
         }
     }
-}
-
-/// Borrowed durable attempt: native reconciliation never clones its prefix.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[derive(Clone, Copy, Debug)]
-pub struct NativeModelAttempt<'a> {
-    /// Owning execution.
-    pub operation_id: OperationId,
-    /// Zero-based logical step.
-    pub step: u32,
-    /// Exact dispatched request digest.
-    pub request_digest: [u8; 32],
-    /// Already retained durable events.
-    pub observed: &'a [ModelEvent],
 }
 
 /// An actual concrete stream box admitted before invoking its builder.
@@ -2136,7 +2042,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// Reconciles a borrowed durable prefix without cloning or ordinary fallback.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn reconcile_with_native_work<'a>(
-        &'a self, _attempt: NativeModelAttempt<'a>, _work: &'a NativeMaterializationWork,
+        &'a self, _dispatch: ModelDispatch, _observed: &'a [ModelEvent], _work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<Vec<ModelEvent>>, NativeAllocation)>> {
         _work.remaining()?;
         Err(native_model_unsupported())
@@ -2253,8 +2159,8 @@ mod tests {
                     .is_err()
             );
             assert!(content.contains_native_media());
-            assert_eq!(content.file_refs(), vec![&media, &options]);
-            assert_eq!(content.native_configurations(), vec![&binding]);
+            assert_eq!(content.file_refs().collect::<Vec<_>>(), vec![&media, &options]);
+            assert_eq!(content.native_configurations().collect::<Vec<_>>(), vec![&binding]);
             let wire = serde_json::to_value(&content)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             let decoded: ModelContent =
@@ -2275,7 +2181,7 @@ mod tests {
             }),
         ] {
             assert!(!content.contains_native_media());
-            assert!(content.native_configurations().is_empty());
+            assert!(content.native_configurations().next().is_none());
         }
         assert!(
             serde_json::from_value::<ModelDataPart>(

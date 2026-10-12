@@ -62,7 +62,7 @@ pub async fn seal_checkout_with_permit_measured<A: AsyncAuthorityStore, O: Async
     }
     match checkout.mode().mutations {
         crate::model::MutationMode::PrivateOverlay => {
-            let receipt = checkout.commit_with_permit(operation_id, permit, budget, cancellation)
+            let receipt = checkout.commit(operation_id, None, None, None, permit, budget, cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
                 .await.map_err(|failure| publication_failure(failure, &mut work))?;
             work = receipt.work;
             match receipt.value {
@@ -132,11 +132,11 @@ pub async fn seal_checkout_with_permit_force_measured<A: AsyncAuthorityStore, O:
         let remaining = work.remaining(budget).map_err(engine_error)?;
         let publication = if checkout.has_pending_mutations() {
             checkout
-                .commit_with_permit(operation_id, permit, remaining, cancellation)
+                .commit(operation_id, None, None, None, permit, remaining, cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
                 .await
         } else {
             checkout
-                .commit_with_permit_even_if_clean(operation_id, permit, remaining, cancellation)
+                .commit_even_if_clean(operation_id, None, None, None, permit, remaining, cancellation, &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
                 .await
         }
         .map_err(|failure| publication_failure(failure, &mut work))?;
@@ -213,7 +213,7 @@ where
                 // Resolve the original durable operation before another compile,
                 // owner callback, flush or authority append. A known ACK converges
                 // through the very same SDK pending-publication engine.
-                if let Some(outcome) = checkout.retry_stale_commit_guarded_with_native_work(
+                if let Some(outcome) = checkout.retry_stale_commit_with_native_work(
                     operation_id, permit, original, cancellation, before_publication,
                     producer_custody, operation_context, operation_evidence.clone(), original_fingerprint_permit,
                 ).await? {
@@ -233,7 +233,7 @@ where
                 for _ in 0..attempts {
                     original.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
                         .map_err(|error| T::from(MountSourceError::NativeWork(error)))?;
-                    let outcome = checkout.commit_with_permit_even_if_clean_guarded_with_native_work(
+                    let outcome = checkout.commit_even_if_clean_with_native_work(
                         operation_id, permit, original, cancellation, before_publication,
                         producer_custody, operation_context, operation_evidence.clone(), original_fingerprint_permit,
                     ).await?;
@@ -262,7 +262,7 @@ where
                 if !checkout.has_pending_mutations() {
                     return Ok(Some(NativeSourcePublicationAck::Unchanged { generation: original_generation }));
                 }
-                let (outcome, allocation) = checkout.resume_live_guarded_with_native_work(
+                let (outcome, allocation) = checkout.resume_live_with_native_work(
                     operation_id, 8, 256, permit, original, cancellation, before_publication, producer_custody,
                     operation_context, operation_evidence, original_fingerprint_permit,
                 ).await?;
@@ -379,21 +379,13 @@ mod tests {
         }
         assert!(matches!(
             first
-                .commit(
-                    OperationId::from_bytes([1; 16]),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation
-                )
+                .commit(OperationId::from_bytes([1; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
                 .await?
                 .value,
             CheckoutCommitOutcome::Committed { .. }
         ));
         let conflict = stale
-            .commit(
-                OperationId::from_bytes([2; 16]),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .commit(OperationId::from_bytes([2; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
             .await?;
         assert!(matches!(
             conflict.value,
