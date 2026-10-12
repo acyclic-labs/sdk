@@ -662,7 +662,7 @@ impl DurableToolRunner {
             name_hold = hold;
             custody.absorb(&mut name_hold)?;
             let mut arguments_hold;
-            let (arguments, hold) = crate::tool::clone_value_with_native_work(arguments, work)?;
+            let (arguments, hold) = crate::tool::clone_value(arguments, None, work)?;
             arguments_hold = hold;
             custody.absorb(&mut arguments_hold)?;
             let invocation = ToolPayload::native(
