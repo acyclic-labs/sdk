@@ -545,7 +545,9 @@ impl MountPath {
     }
 }
 
-pub(crate) trait MountSourceFailureCause: Send + Sync {
+/// Retains a source failure and its semantic classification.
+pub trait MountSourceFailureCause: Send + Sync {
+    /// Returns the retained semantic failure.
     fn semantic_error(&self) -> &MountSourceError;
 }
 

@@ -1163,6 +1163,7 @@ pub trait RebaseProbe {
     /// Stable backend-specific failure.
     type Error: std::error::Error;
 
+    /// Authenticates one dependency region.
     fn probe(
         &self,
         generation: GenerationId,
@@ -1176,6 +1177,7 @@ pub trait AsyncRebaseProbe {
     /// Stable backend-specific failure.
     type Error: std::error::Error;
 
+    /// Authenticates one dependency region asynchronously.
     fn probe_async(
         &self,
         generation: GenerationId,

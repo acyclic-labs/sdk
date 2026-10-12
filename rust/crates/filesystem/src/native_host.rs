@@ -2005,7 +2005,8 @@ use windows::Win32::Storage::FileSystem::FILE_BASIC_INFO;
 #[cfg(any(feature = "native-mount", test))]
 #[derive(Debug, thiserror::Error)]
 #[error("native metadata cannot represent {0}")]
-pub(crate) struct NativeMetadataError(pub(crate) &'static str);
+/// Metadata the host cannot represent.
+pub struct NativeMetadataError(pub(crate) &'static str);
 
 #[cfg(target_os = "macos")]
 #[cfg(any(feature = "native-mount", test))]

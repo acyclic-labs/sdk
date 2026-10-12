@@ -403,6 +403,7 @@ impl OwnedSourceChunk {
 
 /// Nonblocking bounded byte source for browser, network, and native streams.
 pub trait AsyncBlobSource {
+    /// Reads bounded bytes into the destination.
     fn read<'a>(
         &'a mut self,
         destination: &'a mut [u8],
@@ -410,6 +411,7 @@ pub trait AsyncBlobSource {
         cancellation: &'a CancellationToken,
     ) -> impl Future<Output = std::io::Result<usize>>;
 
+    /// Returns an owned chunk when the source supports it.
     fn read_owned(
         &mut self,
         _maximum: usize,
@@ -420,6 +422,7 @@ pub trait AsyncBlobSource {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Reads bytes under the original native invocation.
     fn read_with_native_work<'a>(
         &'a mut self, _destination: &'a mut [u8],
         _original: &'a crate::NativeMaterializationWork,
@@ -429,6 +432,7 @@ pub trait AsyncBlobSource {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Returns an owned chunk under the original native invocation.
     fn read_owned_with_native_work(
         &mut self, _maximum: usize, _original: &crate::NativeMaterializationWork,
         _cancellation: &CancellationToken,
@@ -436,6 +440,7 @@ pub trait AsyncBlobSource {
         async { Ok(None) }
     }
 
+    /// Takes work accumulated by the source.
     fn take_work(&mut self) -> Option<WorkCounters> {
         None
     }

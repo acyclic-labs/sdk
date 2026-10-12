@@ -890,7 +890,7 @@ fn closure_error(error: crate::FsError) -> ClosureError {
 
 // Shared standalone state is borrowed only by synchronous accounting leaves.
 // Native mode keeps the actual original meter, never a reconstructed receipt.
-struct StandaloneProofState {
+pub(crate) struct StandaloneProofState {
     allocations: super::allocation::AllocationLedger,
     work: WorkCounters,
     budget: WorkBudget,

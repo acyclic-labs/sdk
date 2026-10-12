@@ -60,13 +60,7 @@ impl ProviderFailure {
         }
     }
 
-    pub(super) fn hresult(self) -> windows::core::HRESULT {
-        match self {
-            Self::Native(code) => code,
-            Self::Work(_) | Self::OriginalWorkPoisoned => windows::core::HRESULT(0x8007_045d_u32.cast_signed()),
-            Self::Cancelled => windows::core::HRESULT(0x8007_03ee_u32.cast_signed()),
-        }
-    }
+
 }
 
 fn materialization_failure(error: crate::NativeTreeMaterializationError) -> ProviderFailure {

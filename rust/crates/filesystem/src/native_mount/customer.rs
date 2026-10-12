@@ -1750,24 +1750,6 @@ fn native_demand_lifecycle_error(error: crate::demand::DemandError) -> MountLife
 }
 
 
-fn portable_namespace_path(
-    path: &crate::kernel::NamespacePath,
-) -> Result<String, MountLifecycleError> {
-    let mut value = String::new();
-    for component in path.components() {
-        value.push('/');
-        value.push_str(std::str::from_utf8(component.as_bytes()).map_err(|_| {
-            MountLifecycleError::Source(MountSourceError::Unsupported(
-                "lazy portable mounts cannot root at a non-UTF-8 path".to_owned(),
-            ))
-        })?);
-    }
-    if value.is_empty() {
-        value.push('/');
-    }
-    Ok(value)
-}
-
 impl<A, O> Workspace<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
