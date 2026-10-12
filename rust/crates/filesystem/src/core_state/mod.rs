@@ -1,6 +1,5 @@
 //! Journaled local persistence for filesystem control-plane state.
 
-use crate::lazy_workspace::MemoryLazyNode;
 use crate::record_store::Revisioned;
 use crate::workspace_context::{
     WorkspaceContextChildren, discard_context_subtree, plan_context_subtree_discard,
@@ -611,7 +610,6 @@ mod publications;
 use nodes::*;
 mod collection;
 mod lazy_log;
-use lazy_log::*;
 mod records;
 use records::*;
 mod native_records;
