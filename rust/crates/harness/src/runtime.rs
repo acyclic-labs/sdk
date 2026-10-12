@@ -7940,7 +7940,7 @@ impl TaskContext {
         operation_id: OperationId,
         interaction: Interaction,
     ) -> Result<InteractionOutcome> {
-        interaction.validate()?;
+        interaction.validate(&mut None)?;
         if !self.scope.grants.contains(capability::INTERACTION_ROUTE) {
             return Err(Error::Unauthorized("scope lacks interaction:route".into()));
         }

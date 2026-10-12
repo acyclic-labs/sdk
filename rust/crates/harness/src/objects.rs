@@ -342,6 +342,7 @@ impl ObjectContentStore {
 }
 
 /// Lazily routes immutable Objects refs to separately registered owner bindings.
+#[derive(Default)]
 pub struct ObjectContentMountResolver {
     stores: BTreeMap<String, Arc<ObjectContentStore>>,
 }
@@ -349,15 +350,14 @@ pub struct ObjectContentMountResolver {
 impl ObjectContentMountResolver {
     /// Creates a resolver from independently authenticated bucket bindings.
     pub fn new(stores: impl IntoIterator<Item = Arc<ObjectContentStore>>) -> Result<Self> {
-        let mut resolver = Self {
-            stores: BTreeMap::new(),
-        };
+        let mut resolver = Self::default();
         for store in stores {
             store.volume.validate(&mut None)?;
             let key = store.volume.capability(VolumeOperation::Read, &mut None)?;
-            if resolver.stores.insert(key, store).is_some() {
+            if resolver.stores.contains_key(&key) {
                 return Err(Error::Invalid("Objects content volume is registered twice".into()));
             }
+            resolver.stores.insert(key, store);
         }
         Ok(resolver)
     }

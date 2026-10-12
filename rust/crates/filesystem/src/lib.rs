@@ -309,7 +309,7 @@ pub use native_mount::{
     MountContentPin, MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLifecycleError,
     MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions, MountPath,
     MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError, MountSparseRange,
-    MountSparseSpan, MountViewLease, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
+    MountSparseSpan, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
     NativeMountCleanupState, NativeMountError, NativeMountKind, NativeMountRecoveryCleanupState,
     NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession,
     NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
@@ -381,7 +381,7 @@ pub use streams_record::{
 };
 #[cfg(feature = "native-watch")]
 pub use watch::{
-    NativeWatch, NativeWatchBackend, NativeWatchCapabilities, NativeWatchError, NativeWatchOptions,
+    NativeWatch, NativeWatchCapabilities, NativeWatchError, NativeWatchOptions,
     WatchBatch, WatchBatchOriginal, WatchChange, WatchInvalidationReason, native_watch_capabilities,
 };
 #[cfg(all(feature = "native-watch", target_os = "windows"))]

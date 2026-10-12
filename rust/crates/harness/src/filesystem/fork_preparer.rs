@@ -357,7 +357,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemForkPreparer<A, O> {
     fn controller(&self, io: Option<&PreparationIo>) -> Result<ParentProjectController<'_, A, O>> {
         ParentProjectController::new(&self.host, &self.parent, &self.verifier, &self.scope, &self.project, io)
     }
@@ -464,7 +464,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                 let version = resource.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
                 let copied = ResourceRef::new_with_work(resource.kind(), provider, key, version, quota.work())?;
                 quota.transfer();
-                Ok(copied)
+                Ok::<_, Error>(copied)
             })?;
             resources.push(copied);
             proofs.push(crate::resource_preparation::ResourceCreationProofRef {
@@ -679,13 +679,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         }
         let future = bound.source.prepare(&self.parent, super::summary_fork::clone_selection(selection, io)?,
             bound.journal.as_ref(), self.resolver.as_ref(), io)?;
-        let _frame = match &future {
-            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } =>
-                io.map(|io| io.guard_owned(*frame_bytes)).transpose()?,
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::store::history::HistoryContentFuture::Native(_) => None,
-        };
-        future.await.map(Some)
+        match io {
+            Some(io) => io.finish_future(future).await,
+            None => future.await,
+        }.map(Some)
     }
 
     fn attempt<'a>(
@@ -771,7 +768,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PreparationAttempt<'_, A, O> {
 
     fn journal_limit(&self, default: u64) -> u64 {
         self.task_preparation.as_ref().map_or(default, |task| {

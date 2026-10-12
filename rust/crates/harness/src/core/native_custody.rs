@@ -1114,36 +1114,32 @@ pub(super) fn admission_from_owned_value(
     fn number(value: Value) -> Result<u64> {
         value.as_u64().ok_or_else(invalid)
     }
-    fn dependency(value: Value, _work: &mut Option<&mut dyn HistoryIo>) -> Result<ExtensionDependency> {
+    fn dependency(value: Value, _quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<ExtensionDependency> {
         let mut fields = object(value, 2)?;
         let name = text(field(&mut fields, "name")?)?;
         let version = u32::try_from(number(field(&mut fields, "version")?)?).map_err(|_| invalid())?;
         Ok(ExtensionDependency { name, version })
     }
-    fn configuration(value: Value, work: &mut Option<&mut dyn HistoryIo>) -> Result<ExtensionConfiguration> {
+    fn configuration(value: Value, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<ExtensionConfiguration> {
         let mut fields = object(value, 3)?;
-        let extension = dependency(field(&mut fields, "extension")?, work)?;
+        let extension = dependency(field(&mut fields, "extension")?, quota)?;
         let Value::Array(bytes) = field(&mut fields, "schema_digest")? else { return Err(invalid()) };
         if bytes.len() != 32 { return Err(invalid()); }
         let mut schema_digest = [0_u8;32];
         for (output, value) in schema_digest.iter_mut().zip(bytes) {
             *output = u8::try_from(number(value)?).map_err(|_| invalid())?;
         }
-        let content = FileRef::from_value(field(&mut fields, "content")?, work)?;
+        let content = FileRef::from_value(field(&mut fields, "content")?, quota.work())?;
         Ok(ExtensionConfiguration { extension, schema_digest, content })
     }
     fn vector<T>(
-        value: Value, work: &mut Option<&mut dyn HistoryIo>,
-        mut decode: impl FnMut(Value, &mut Option<&mut dyn HistoryIo>) -> Result<T>,
-    ) -> Result<(Vec<T>, u64)> {
+        value: Value, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        mut decode: impl FnMut(Value, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
+    ) -> Result<Vec<T>> {
         let Value::Array(values) = value else { return Err(invalid()) };
-        let count = values.len();
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let mut output = reserve_copy_vector(count, &mut quota)?;
-        for value in values { output.push(decode(value, quota.work())?); }
-        let added = quota.retained();
-        quota.transfer();
-        Ok((output, added))
+        let mut output = reserve_copy_vector(values.len(), quota)?;
+        for value in values { output.push(decode(value, quota)?); }
+        Ok(output)
     }
     work.as_deref().expect("original owned admission observer").check_cancellation()?;
     let mut fields = object(value, 3)?;
@@ -1160,10 +1156,8 @@ pub(super) fn admission_from_owned_value(
     };
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let admission = (|| -> Result<ExtensionAdmission> {
-        let (selected, selected_bytes) = vector(field(&mut fields, "selected")?, quota.work(), dependency)?;
-        quota.adopt(selected_bytes)?;
-        let (configurations, configuration_bytes) = vector(field(&mut fields, "configurations")?, quota.work(), configuration)?;
-        quota.adopt(configuration_bytes)?;
+        let selected = vector(field(&mut fields, "selected")?, &mut quota, dependency)?;
+        let configurations = vector(field(&mut fields, "configurations")?, &mut quota, configuration)?;
         let admission = ExtensionAdmission { source, selected, configurations };
         admission.validate(quota.work())?;
         Ok(admission)

@@ -1494,12 +1494,7 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
         Ok(capability)
     }
 
-    pub(super) fn file_capability(&mut self, file: &FileRef) -> Result<String> {
-        file.validate(self.work())?;
-        self.capability("file:read:", file)
-    }
-
-    fn file_digest(&mut self, file: &FileRef) -> Result<[u8; 32]> {
+    pub(super) fn file_digest(&mut self, file: &FileRef) -> Result<[u8; 32]> {
         file.validate(self.work())?;
         crate::contract::canonical_json_digest_with_work(file, crate::store::default_projection_read_limits().maximum_bytes, self.work())
     }
@@ -1976,18 +1971,10 @@ impl ForkReport {
             let resource_count = self.captures.iter()
                 .filter(|capture| matches!(capture, Capture::Captured(_))).count();
             let omission_count = self.captures.len() - resource_count;
-            let (resources, omissions, retained) = {
-                let mut quota = crate::wire_codec::CodecQuota::new(owned.work(), 0)?;
-                let resources = crate::core::reserve_copy_vector::<CapturedResource>(
-                    resource_count, &mut quota)?;
-                let omissions = crate::core::reserve_copy_vector::<ForkOmission>(
-                    omission_count, &mut quota)?;
-                let retained = quota.retained();
-                quota.transfer();
-                (resources, omissions, retained)
-            };
-            // Both real Vec capacities were admitted before their allocator attempts.
-            owned.adopt(retained)?;
+            let resources = crate::core::reserve_copy_vector::<CapturedResource>(
+                resource_count, &mut owned)?;
+            let omissions = crate::core::reserve_copy_vector::<ForkOmission>(
+                omission_count, &mut owned)?;
             (resources, omissions)
         } else {
             (Vec::new(), Vec::new())
@@ -2039,7 +2026,7 @@ impl ForkReport {
             boundary: self.request.boundary,
         };
         seed.validate(owned.work())?;
-        // Transfer these actual newly allocated vector slots with the returned seed; failures drop the vectors before the existing custody guard.
+        // Drop failed vectors before their claims; transfer successful claims with the seed.
         owned.transfer();
         Ok(seed)
     }
@@ -2380,13 +2367,8 @@ impl ForkSeed {
         Ok(())
     }
 
-    /// Capabilities the child issuer may sign after admitting this exact seed.
-    pub fn shared_capabilities(&self) -> Result<Capabilities> {
-        self.shared_capabilities_for(self.child_agent)
-    }
-
     /// Exact shared operations issuable to an attached reader or owning child.
-    pub fn shared_capabilities_for(&self, reader: AgentId) -> Result<Capabilities> {
+    pub fn shared_capabilities(&self, reader: AgentId) -> Result<Capabilities> {
         self.validate(&mut None)?;
         if reader != self.child_agent && !self.attached_agents.contains(&reader) {
             return Err(Error::Unauthorized("agent is not attached to fork".into()));
@@ -3220,7 +3202,7 @@ mod tests {
         shared_seed.validate(&mut None)?;
         assert!(
             shared_seed
-                .shared_capabilities()?
+                .shared_capabilities(shared_seed.child_agent)?
                 .contains(&shared_volume.capability(VolumeOperation::Read, &mut None)?)
         );
         shared_seed
