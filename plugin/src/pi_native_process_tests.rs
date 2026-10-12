@@ -252,8 +252,8 @@ impl Fixture {
         authorization.1.absorb(&mut issuer.1).map_err(native_error)?;
         authorization.1.absorb(&mut scope.1).map_err(native_error)?;
         let ((audience, issuer, scope), custody) = authorization;
-        ConversationEffectHost::new_with_native_work(self.stream.clone(), audience, issuer, scope,
-            SchemaRegistry::new(), self.content.clone(), registry, custody, work)
+        ConversationEffectHost::new(self.stream.clone(), audience, issuer, scope,
+            SchemaRegistry::new(), self.content.clone(), registry, Some(custody), Some(work))
     }
     async fn wait_started(&self) -> Result<()> {
         for _ in 0..6000 {

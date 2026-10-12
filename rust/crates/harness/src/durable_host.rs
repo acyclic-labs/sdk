@@ -7075,6 +7075,7 @@ pub(crate) mod tests {
             SchemaRegistry::new(),
             payloads.clone(),
             providers,
+            None, None,
         )?;
         let command = OperationId::from_bytes([55; 16]);
         let (first, second) = tokio::join!(

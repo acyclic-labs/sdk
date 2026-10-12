@@ -499,6 +499,7 @@ where
         SchemaRegistry::new(),
         content.clone(),
         registry,
+        None, None,
     )?);
     let mut restart = Restart {
         task: task_id,
@@ -720,6 +721,7 @@ where
         SchemaRegistry::new(),
         content.clone(),
         registry,
+        None, None,
     )?);
     Ok(Recovery {
         owner,
