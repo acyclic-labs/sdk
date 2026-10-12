@@ -661,7 +661,7 @@ impl DurableContextProvider {
                     "compaction requires a durable summary; context cannot be silently dropped"))?;
                     compaction::compact_context(context, max_messages, summary, &retention, work)
                 } else {
-                    compaction::clone_context(context, work)
+                    compaction::clone_context(context, None, work)
                 }
             })?;
         Ok((

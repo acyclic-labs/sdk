@@ -43,10 +43,9 @@ mod callbacks;
 mod default_tools;
 mod headless;
 use callbacks::{HostMachine, HostModel, HostTool};
-mod registry;
-
 mod opening;
 mod operations;
+mod registry;
 
 type BrowserRuntime =
     FilesystemTaskRuntime<BrowserStream, IndexedDbAuthorityStore, IndexedDbObjectStore>;

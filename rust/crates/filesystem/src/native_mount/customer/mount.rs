@@ -31,24 +31,6 @@ where
         Ok(())
     }
 
-    /// Publishes all pending effects under one active operation lease.
-    pub async fn sync_with_permit(
-        &self,
-        permit: crate::PublicationPermit,
-    ) -> Result<(), MountLifecycleError> {
-        flush_session_callbacks(&self.session)?;
-        self.source
-            .sync_async(permit)
-            .await
-            .map_err(MountLifecycleError::Source)
-    }
-
-    /// Publishes pending writes and advances the live checkout to workspace head.
-    pub async fn refresh(&self) -> Result<(), MountLifecycleError> {
-        self.sync().await?;
-        self.advance_to_head().await
-    }
-
     /// Advances an already-clean live checkout to the workspace head.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
         let advanced = self.source.advance_to_head_async().await;
@@ -156,14 +138,7 @@ where
         if selected.kind != FileKind::Directory {
             return Err(MountLifecycleError::Workspace(WorkspaceError::NotDirectory));
         }
-        let source = options::checkout_source(
-            checkout,
-            (root, root_custody),
-            options.publication,
-            &work,
-            options.native_original.as_ref(),
-            options.callback_guard.as_ref(),
-        )?;
+        let source = options::checkout_source(checkout, (root, root_custody), &options, &work)?;
         let session_destination = work.path(&destination, None)?;
         let prepared =
             super::super::prepare_native_mount_start(&work).map_err(NativeMountError::from)?;

@@ -159,8 +159,8 @@ async fn original_native_prepared_binding_preserves_approval_and_cancellation_be
     assert_eq!(work.receipt(), original_prefix);
     let request = fixture.request().await?;
     assert_eq!(
-        request.approval_digest_with_native_work(fixture.owner.task_binding().0, fixture.command, &work)?,
-        request.approval_digest(fixture.owner.task_binding().0, fixture.command)?,
+        request.approval_digest(fixture.owner.task_binding().0, fixture.command, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?,
+        request.approval_digest(fixture.owner.task_binding().0, fixture.command, None)?,
     );
     let process = fixture.provider(&work).await?;
     let effect = task_effect_id(fixture.owner.task_binding().0, fixture.command)?;
@@ -175,7 +175,7 @@ async fn original_native_prepared_binding_preserves_approval_and_cancellation_be
     assert!(matches!(process.dispatch_with_native_work(dispatch, &work),
         Err(Error::NativeWork { .. })));
     assert_eq!(work.receipt(), before);
-    assert!(fixture.view.operation_cancellation().is_cancelled());
+    assert!(fixture.view.work().cancellation().is_cancelled());
     assert!(!fixture.view.manifest().options.root.join("dst/output.txt").exists());
     Ok(())
 }
@@ -310,7 +310,7 @@ async fn cold_native_drain_proof_authenticates_terminal_result_without_relaunch(
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, .. })
     ));
     assert_eq!(cleanup.receipt(), command_check_prefix);
-    assert!(fixture.view.operation_cancellation().is_cancelled());
+    assert!(fixture.view.work().cancellation().is_cancelled());
     assert_eq!(original.receipt(), original_prefix);
     assert_eq!(cleanup.receipt().backend_write_operations, 0);
     assert_eq!(cleanup.receipt().materializations, 0);
@@ -358,7 +358,7 @@ async fn warm_native_drain_keeps_original_tree_and_accepts_authorized_cleanup_sp
         process.original_attempt(), &fixture.view, &cleanup, &cleanup_cancellation,
     )?.await?;
     proof.require_view_binding(fixture.view.as_ref(), fixture.owner.as_ref(), &original)?;
-    assert!(fixture.view.operation_cancellation().is_cancelled());
+    assert!(fixture.view.work().cancellation().is_cancelled());
     let _actual_completion = dispatch.await.map_err(|error| Error::Storage(error.to_string()))?;
     tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
     assert!(!root.join("escaped").exists());
@@ -380,7 +380,7 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
     assert!(fixture.effects(process.clone())?.run_task_effect_with_native_work(
         &fixture.owner, fixture.command, &fixture.plan, &work,
     ).await.is_err());
-    assert!(fixture.view.operation_cancellation().is_cancelled());
+    assert!(fixture.view.work().cancellation().is_cancelled());
     let attempt = crate::EffectAttemptId::from_bytes(
         task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes());
     let prefix = work.receipt();
@@ -402,7 +402,7 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
     let again = process.receipt(attempt, &query, None).await.unwrap().unwrap();
     assert_eq!(again.effect, effect);
     assert!(!output.exists());
-    assert!(fixture.view.operation_cancellation().is_cancelled());
+    assert!(fixture.view.work().cancellation().is_cancelled());
     drop(effect);
     drop(custody);
     Ok(())
@@ -520,10 +520,7 @@ where
             .await?.with_invocation_cancellation(work.cancellation()).into_native_shared(work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let project = self.source.clone_with_native_work(work)?;
-        let generation = crate::resources::GenerationRef::new_with_native_work(
-            generation.as_resource().provider(), generation.as_resource().key(),
-            generation.as_resource().version(), work,
-        )?;
+        let generation = crate::resources::GenerationRef::new(generation.as_resource().provider(), generation.as_resource().key(), generation.as_resource().version(), Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
         let snapshot = (crate::source_authorization::ProjectSourceSnapshot {
             project: project.0, generation: generation.0,
             native_snapshot: Some(io.value_json(&candidate, 128 * 1024 * 1024)?),
@@ -542,7 +539,7 @@ where
 
     fn effects(&self, process: Arc<Process<P>>) -> Result<ConversationEffectHost<P>> {
         let mut registry = EffectRegistry::default().with_result_resolver(self.content.clone());
-        registry.register(process)?;
+        registry.register(process, None)?;
         ConversationEffectHost::new(
             self.owner.stream(),
             self.issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
@@ -588,25 +585,25 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     let issued = fixture.view.task_working_view_with_native_work(&fixture.owner, &work)?.await?;
     let operation = OperationId::from_bytes([216; 16]);
     let before = work.receipt().source_bytes_read;
-    let project = issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &work)?.await?;
+    let project = issued.read_builtin_file(Path::new("src/cold.txt"), 64, &work)?.await?;
     assert_eq!(project.as_slice(), b"genuine cold project");
     assert!(project.matches_meter(&fixture.lazy_work.as_ref().expect("original seeded volume work").runtime_meter()));
     assert!(work.receipt().source_bytes_read - before >= project.len() as u64);
     drop(project);
     issued.verify_with_native_work(&work)?.await?;
-    issued.write_builtin_file(operation, Path::new("dst/issued.txt"), "scratch",
+    issued.write_builtin_file(Path::new("dst/issued.txt"), "scratch",
         false, None, &work)?.await?;
-    let scratch = issued.read_builtin_file(operation, Path::new("dst/issued.txt"), 16, &work)?.await?;
+    let scratch = issued.read_builtin_file(Path::new("dst/issued.txt"), 16, &work)?.await?;
     assert_eq!(scratch.as_slice(), b"scratch");
     drop(scratch);
     let before = work.receipt().backend_write_operations;
-    assert!(issued.write_builtin_file(operation, Path::new("src/denied.txt"), "denied",
+    assert!(issued.write_builtin_file(Path::new("src/denied.txt"), "denied",
         false, None, &work)?.await.is_err());
-    assert!(issued.write_builtin_file(operation, Path::new("results/denied.txt"), "denied",
+    assert!(issued.write_builtin_file(Path::new("results/denied.txt"), "denied",
         true, None, &work)?.await.is_err());
     assert_eq!(work.receipt().backend_write_operations, before);
     let foreign = test_work(acyclic_fs::performance::work_budget(100_000_000, 100_000_000), &cancellation)?;
-    assert!(issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &foreign).is_err());
+    assert!(issued.read_builtin_file(Path::new("src/cold.txt"), 64, &foreign).is_err());
     assert_eq!(foreign.receipt().source_bytes_read, 0);
     fixture.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
     fixture.lazy_mount.as_ref().expect("actual fixture lazy mount")
@@ -665,7 +662,7 @@ async fn genuine_view_retirement_preserves_cached_proof_on_admission_and_wait_de
     };
     assert!(cached_process.is_none());
     assert!(cached_partial.is_none());
-    receipt.process_drain_proof().require_view_binding(
+    receipt.process.require_view_binding(
         fixture.view.as_ref(), fixture.owner.as_ref(), &original,
     )?;
     assert!(original.cancellation().is_cancelled());
@@ -718,7 +715,7 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
     fixture.task.task_host().cancel(fixture.owner.task_binding().0, None).await?;
     let before = work.receipt().backend_write_operations;
     assert!(issued.verify_with_native_work(&work)?.await.is_err());
-    assert!(issued.write_builtin_file(OperationId::from_bytes([215; 16]),
+    assert!(issued.write_builtin_file(
         Path::new("dst/stale.txt"), "denied", true, None, &work)?.await.is_err());
     assert_eq!(work.receipt().backend_write_operations, before);
     assert!(!fixture.view.manifest().options.root.join("dst/stale.txt").exists());
@@ -755,13 +752,13 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let provider = ProviderRef::new("native-test".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let files = Arc::new(FilesystemHost::new(filesystem.clone(), provider.clone())?);
+    let files = FilesystemHost::new(filesystem.clone(), &provider, None)?;
     let agent = AgentId::from_bytes([61; 16]);
     let auxiliary_provider = ProviderRef::new("native-test-aux".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let auxiliary_host = Arc::new(FilesystemHost::new(
+    let auxiliary_host = FilesystemHost::new(
         auxiliary_filesystem,
-        auxiliary_provider.clone(),
-    )?);
+        &auxiliary_provider, None,
+    )?;
     let auxiliary = VolumeRef::new(
         auxiliary_provider,
         "auxiliary",
@@ -1179,10 +1176,7 @@ where
                 project_policy = Some(crate::filesystem::FsRootProjectSourceProvider::new(
                     Arc::clone(&files), issuer.audience(), task_id, Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
                 )?.with_bootstrap_source_with_native_work(protected, work)?);
-                project_generation = Some(crate::resources::GenerationRef::new_with_native_work(
-            borrowed[0].generation.as_resource().provider(), borrowed[0].generation.as_resource().key(),
-            borrowed[0].generation.as_resource().version(), work,
-        )?);
+                project_generation = Some(crate::resources::GenerationRef::new(borrowed[0].generation.as_resource().provider(), borrowed[0].generation.as_resource().key(), borrowed[0].generation.as_resource().version(), Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?);
                 let namespace = NativeVolumeNamespace::LazyMount { snapshot };
                 let mut mixed_borrowed = borrowed;
                 mixed_borrowed[0].namespace = &namespace;
@@ -1198,7 +1192,7 @@ where
                     &owner, &guards.0, &preparation_root, &options, &borrowed, &vec![None; borrowed.len()], work,
                 )?.await?
             };
-            view.into_arc_with_native_work(work)?
+            view
     };
     let mut request = NativeProcessRequest {
         executable: std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?,
@@ -1295,7 +1289,7 @@ where
             Interaction::approval(
                 "Run the exact admitted process".into(),
                 command,
-                request.approval_digest(owner.task_binding().0, command)?,
+                request.approval_digest(owner.task_binding().0, command, None)?,
             )?,
         )
         .await?;
@@ -1654,7 +1648,7 @@ async fn native_builtin_current_volume_grants_and_unmounted_results_deny_before_
     assert!(fixture.owner
         .require_volume_grant(&seed.source, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(&work)?)).is_err());
     for path in ["a-source/input.txt", "results/unmounted.txt", "../results/escape.txt"] {
-        assert!(view.write_builtin_file(&fixture.owner, OperationId::from_bytes([212; 16]),
+        assert!(view.write_builtin_file(&fixture.owner,
             Path::new(path), "forbidden", true, None, &work).await.is_err());
     }
     assert_eq!(work.receipt().output_bytes, 0);
@@ -1682,11 +1676,11 @@ async fn native_builtin_rejects_same_uuid_foreign_original_owner_and_cancelled_c
         fixture.options.budget_for_volume_count(fixture.bindings.len())?, &cancellation,
     )?;
     let operation = OperationId::from_bytes([213; 16]);
-    assert!(view.read_builtin_file(&foreign.owner, operation,
+    assert!(view.read_builtin_file(&foreign.owner,
         Path::new("a-source/input.txt"), 32, &work).await.is_err());
     assert_eq!(work.receipt().source_bytes_read, 0);
     fixture.task.task_host().cancel(fixture.owner.task_binding().0, None).await?;
-    assert!(view.write_builtin_file(&fixture.owner, operation,
+    assert!(view.write_builtin_file(&fixture.owner,
         Path::new("b-destination/after-cancel"), "forbidden", true, None, &work).await.is_err());
     assert_eq!(work.receipt().output_bytes, 0);
     assert!(!fixture.allocation.root.join("b-destination/after-cancel").exists());
@@ -2097,7 +2091,7 @@ async fn receipt_reconciliation_reopens_all_local_stores_after_provider_objects_
         ))
         .await
         .map_err(|error| Error::Storage(error.to_string()))?,
-        auxiliary.volume.provider().clone(),
+        auxiliary.volume.provider(), None,
     )?;
     let auxiliary_ref = workspace_ref(
         auxiliary.volume.provider().clone(),
@@ -2187,12 +2181,12 @@ async fn reopen_native(
             id: "native-test-conversation".into(),
         },
     );
-    let files = Arc::new(FilesystemHost::new(
+    let files = FilesystemHost::new(
         Fs::local(acyclic_fs::LocalOptions::new(storage.join("filesystem")))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        ProviderRef::new("native-test".into(), "filesystem".into(), "1".into(), &mut None)?,
-    )?);
+        &ProviderRef::new("native-test".into(), "filesystem".into(), "1".into(), &mut None)?, None,
+    )?;
     let content = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &seed.scope, 1_000_000, None)?;
     let results = FilesystemContentPublisher::new(files.clone(), &seed.result_volume, &issuer.verifier(&mut None).expect("verifier copy"), &seed.scope, 1_000_000, None)?;
     let reopened = Arc::new(
@@ -2236,7 +2230,7 @@ async fn reopen_native(
         .await?,
     );
     let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
-    registry.register(process.clone())?;
+    registry.register(process.clone(), None)?;
     let effects = ConversationEffectHost::new(
         owner.stream(),
         issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
@@ -2570,8 +2564,8 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
         }
         let original = fixture.request().await?;
         assert_ne!(
-            original.approval_digest(fixture.owner.task_binding().0, fixture.command)?,
-            request.approval_digest(fixture.owner.task_binding().0, fixture.command)?
+            original.approval_digest(fixture.owner.task_binding().0, fixture.command, None)?,
+            request.approval_digest(fixture.owner.task_binding().0, fixture.command, None)?
         );
         fixture.replace_request(&request).await?;
         assert!(

@@ -177,11 +177,11 @@ pub use core_state::{
 pub use distributed::StreamAuthorityStore;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    CheckoutCommitOutcome, ContentChange, ContentTimes, DetachedFile,
+    ContentChange, ContentTimes, DetachedFile,
     DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage,
     EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
-    FsReceipt, FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,
-    LiveMutationOutcome, MergeConflict, MergePreparation, NamedAttributeWriteMode,
+    FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,
+    LiveMutationOutcome, LivePublicationObservation, MergeConflict, MergePreparation, NamedAttributeWriteMode,
     PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile,
     ResolvedFileRangeReadRequest, StagedContent, Volume,
 };
@@ -228,7 +228,7 @@ pub use lazy_workspace::{
     LazyOverlayId, LazySeekTarget, LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef,
     LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
     MemoryLazyWorkspaceStore, SelectedImportPlan,
-    OriginalQualifiedSnapshot, NativePublicationSnapshot,
+    NativePublicationSnapshot,
 };
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,

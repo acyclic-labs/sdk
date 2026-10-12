@@ -298,15 +298,10 @@ impl crate::AsyncObjectStore for OriginalArchive {
         let cancellation = context.cancellation;
         let result = async {
             {
-                let __object_args = (object_id, bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = crate::AsyncObjectStore::put(
-                    &self.inner,
-                    __object_args.0,
-                    __object_args.1,
-                    &mut __object_work,
-                )
-                .await;
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
+                let __object_result =
+                    crate::AsyncObjectStore::put(&self.inner, object_id, bytes, &mut __object_work)
+                        .await;
                 __object_work.receipt(__object_result)
             }
         }
@@ -328,12 +323,11 @@ impl crate::AsyncObjectStore for OriginalArchive {
         let cancellation = context.cancellation;
         let result = async {
             {
-                let __object_args = (object_id, maximum_bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result = crate::AsyncObjectStore::read(
                     &self.inner,
-                    __object_args.0,
-                    __object_args.1,
+                    object_id,
+                    maximum_bytes,
                     &mut __object_work,
                 )
                 .await;
@@ -357,15 +351,11 @@ impl crate::AsyncObjectStore for OriginalArchive {
         let cancellation = context.cancellation;
         let result = async {
             {
-                let __object_args = (requests, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result = crate::AsyncObjectStore::read_many(
-                    &self.inner,
-                    __object_args.0,
-                    &mut __object_work,
-                )
-                .await
-                .map(|(values, _allocation)| values);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
+                let __object_result =
+                    crate::AsyncObjectStore::read_many(&self.inner, requests, &mut __object_work)
+                        .await
+                        .map(|(values, _allocation)| values);
                 __object_work.receipt(__object_result)
             }
         }
@@ -386,14 +376,10 @@ impl crate::AsyncObjectStore for OriginalArchive {
         let cancellation = context.cancellation;
         let result = async {
             {
-                let __object_args = (object_id, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result = crate::AsyncObjectStore::contains(
-                    &self.inner,
-                    __object_args.0,
-                    &mut __object_work,
-                )
-                .await;
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
+                let __object_result =
+                    crate::AsyncObjectStore::contains(&self.inner, object_id, &mut __object_work)
+                        .await;
                 __object_work.receipt(__object_result)
             }
         }

@@ -13,7 +13,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant.require_file_read(reference, io)?;
         let bytes = self.read_pinned_io(reference, maximum_bytes, io).await?;
         if io.is_none() {
-            let generation = self.file_generation(reference)?;
+            let generation = self.file_generation(reference, None)?;
             let workspace = workspace_ref(
                 self.provider.clone(),
                 &reference.volume().storage_name(&mut None)?,
@@ -360,65 +360,105 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant.require_directory_path(volume, path, io)
     }
 
-    pub(in crate::filesystem) async fn read_pinned(
-        &self,
-        reference: &FileRef,
-        maximum_bytes: u64,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        self.read_pinned_io(reference, maximum_bytes, None).await
-    }
-
-    pub(in crate::filesystem) fn file_generation(
-        &self,
-        reference: &FileRef,
-    ) -> Result<GenerationRef> {
-        self.file_generation_with_io(reference, None)
-    }
-
-    pub(crate) fn file_generation_with_io(
+    pub(crate) fn file_generation(
         &self,
         reference: &FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<GenerationRef> {
         if let Some(io) = io {
-            return GenerationRef::from_hex_with_io(&self.provider, reference.version(), io);
+            let provider = &self.provider;
+            let encoded = reference.version();
+            let inspection = acyclic_fs::WorkCounters {
+                items_examined: encoded.len() as u64,
+                ..Default::default()
+            };
+            io.preflight(inspection)?;
+            io.charge(inspection)?;
+            if encoded.is_empty()
+                || encoded.len() % 2 != 0
+                || !encoded.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(io.invalid("file version is not a Filesystem generation"));
+            }
+            for part in [provider.namespace(), provider.family(), provider.version()] {
+                let inspection = acyclic_fs::WorkCounters {
+                    items_examined: part.len() as u64,
+                    ..Default::default()
+                };
+                io.preflight(inspection)?;
+                io.charge(inspection)?;
+            }
+            let provider_hold;
+            let provider = provider.clone_with_io(io)?;
+            provider_hold = io.guard_owned(provider.logical_owned_bytes()?)?;
+            let length = encoded.len() / 2;
+            io.retain_owned(length as u64)?;
+            let key_hold = io.guard_owned(length as u64)?;
+            let decoding = acyclic_fs::WorkCounters {
+                source_bytes_read: encoded.len() as u64,
+                bytes_copied: length as u64,
+                ..Default::default()
+            };
+            io.preflight(decoding)?;
+            io.allocation_attempt(length as u64)?;
+            let mut key = Vec::with_capacity(length);
+            for chunk in encoded.as_bytes().chunks(64) {
+                let mut decoded = [0_u8; 32];
+                let count = chunk.len() / 2;
+                hex::decode_to_slice(chunk, &mut decoded[..count])
+                    .map_err(|_| io.invalid("file version is not a Filesystem generation"))?;
+                key.extend_from_slice(&decoded[..count]);
+            }
+            io.charge(decoding)?;
+            let unused = (length as u64)
+                .checked_sub(key.capacity() as u64)
+                .ok_or_else(|| io.invalid("generation key exceeded admitted capacity"))?;
+            io.release(unused)?;
+            let value = crate::executor::with_history_io(Some(io), |work| {
+                GenerationRef::from_resource_with_work(
+                    crate::resources::ResourceRef::new(
+                        crate::resources::ResourceKind::Generation, provider, key, None, work,
+                    )?, work,
+                )
+            })?;
+            key_hold.into_retained();
+            provider_hold.into_retained();
+            return Ok(value);
         }
         let raw = hex::decode(reference.version())
             .map_err(|_| Error::Invalid("file version is not a Filesystem generation".into()))?;
-        GenerationRef::new(self.provider.clone(), raw.into(), None)
+        GenerationRef::new(&(self.provider), &(raw), None, None).map(|(value, _)| value)
     }
 }
-pub(in crate::filesystem) async fn read_generation_with_io<
+pub(in crate::filesystem) async fn read_generation<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 >(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,
     maximum: u64,
-    io: &PreparationIo,
+    io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = io.original_native_work() {
-        return generation
-            .read(path, maximum, original, io.cancellation())
-            .await
-            .map_err(|source| Error::NativeWorkspace {
-                source,
-                custody: None,
-            });
-    }
-    let bytes = io.receive(
+    let unmeasured;
+    let io = match io {
+        Some(io) => io,
+        None => {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
+        }
+    };
+    io.remaining()?;
+    let bytes = io.sdk(
         generation
-            .read(path, maximum, io.remaining()?, io.cancellation())
+            .read(path, maximum, io, io.cancellation())
             .await,
     )?;
-    let capacity = bytes.retained_capacity().ok_or_else(|| {
-        fork_preparer_io::failure(
-            Some(io),
-            crate::wire::ErrorCode::Unsupported,
-            "content producer does not expose its owned capacity",
-        )
-    })?;
-    io.retain_owned(capacity as u64)?;
+    if io.original_native_work().is_none() {
+        let capacity = bytes.retained_capacity().ok_or_else(|| {
+            fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Unsupported,
+                "content producer does not expose its owned capacity")
+        })?;
+        io.retain_owned(capacity as u64)?;
+    }
     Ok(bytes)
 }

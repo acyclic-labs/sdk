@@ -154,11 +154,7 @@ impl Reducer {
                 0,
             ));
         }
-        crate::contract::validate_trusted_json_byte_bound(
-            &receipt.target_project,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            work,
-        )?;
+        crate::contract::json_byte_length(&receipt.target_project, acyclic_stream::MAX_RECORD_BYTES as u64, work).map(|_| ())?;
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let name = receipt.target_project.storage_name(quota.work())?;
         quota.adopt(name.capacity() as u64)?;

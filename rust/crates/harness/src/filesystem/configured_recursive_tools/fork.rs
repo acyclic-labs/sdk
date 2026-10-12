@@ -49,7 +49,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             return Err(Error::Unauthorized("configured producer claims changed after source selection".into()));
         }
         let checkpoint = if let Some(original) = original {
-            Some(original.source_checkpoint.clone())
+            Some(original.request.source_checkpoint.as_ref().ok_or_else(||
+                Error::Unauthorized("original fork has no source checkpoint".into()))?.clone())
         } else {
             let remaining = content_work.remaining(self.config.content_budget).map_err(work_error)?;
             let observed = context.observe_staged_file_once_measured(checkpoint_operation(context.operation_id()),
@@ -157,7 +158,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native child claims changed after immutable source choice" });
         }
         let checkpoint = match original {
-            Some(original) => Some(crate::executor::with_history_io(Some(&io), |work| original.source_checkpoint.copy(work))?),
+            Some(original) => Some(crate::executor::with_history_io(Some(&io), |work| {
+                original.request.source_checkpoint.as_ref().ok_or_else(||
+                    crate::filesystem::fork_preparer_io::failure(Some(&io), crate::wire::ErrorCode::Unauthorized,
+                        "original fork has no source checkpoint"))?.copy(work)
+            })?),
             None => {
                 let observed = context.observe_staged_file_once_with_native_work(
                     checkpoint_operation(context.operation_id()), work,

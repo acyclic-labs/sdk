@@ -160,7 +160,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(Arc::new(ProofDataCustody::default()))
     }
 
-    pub(super) fn private_candidate_with_accounting(
+    pub(crate) fn private_candidate_with_accounting(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,

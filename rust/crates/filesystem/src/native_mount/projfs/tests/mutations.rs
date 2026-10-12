@@ -150,24 +150,12 @@ async fn a_link_the_user_replaced_stays() -> Result<(), Box<dyn std::error::Erro
 async fn a_held_placeholder_is_replaced_before_revalidation_returns()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
-    use crate::demand::native::NativeDemandSource;
 
     let root = tempfile::tempdir()?;
     let source_root = root.path().join("source");
     std::fs::create_dir(&source_root)?;
     std::fs::write(source_root.join("held.txt"), b"old")?;
-    let demand = NativeDemandSource::open(
-        std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
-        crate::model::FilesystemProfile::Windows,
-        crate::model::VolumeLimits::default(),
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        work.cancellation(),
-    )
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
+    let demand = windows_demand_source(&source_root, work.cancellation()).await?;
     let lazy = crate::LazyWorkspace::attach_with_config(
         &Fs::memory(),
         "held-placeholder",
@@ -212,7 +200,6 @@ async fn a_held_placeholder_is_replaced_before_revalidation_returns()
 async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
-    use crate::demand::native::NativeDemandSource;
 
     let root = tempfile::tempdir()?;
     let source_root = root.path().join("source");
@@ -225,18 +212,7 @@ async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
     };
     std::fs::write(&source_file, b"old")?;
     set_read_only(true)?;
-    let demand = NativeDemandSource::open(
-        std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
-        crate::model::FilesystemProfile::Windows,
-        crate::model::VolumeLimits::default(),
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        work.cancellation(),
-    )
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
+    let demand = windows_demand_source(&source_root, work.cancellation()).await?;
     let lazy = crate::LazyWorkspace::attach_with_config(
         &Fs::memory(),
         "read-only-placeholder",
@@ -273,25 +249,13 @@ async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
 async fn projected_directories_rename_and_what_moved_with_them_reads()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
-    use crate::demand::native::NativeDemandSource;
 
     let root = tempfile::tempdir()?;
     let source_root = root.path().join("source");
     std::fs::create_dir_all(source_root.join("pkg").join("sub"))?;
     std::fs::write(source_root.join("pkg").join("shared.rs"), b"shared")?;
     std::fs::write(source_root.join("pkg").join("sub").join("deep.rs"), b"deep")?;
-    let demand = NativeDemandSource::open(
-        std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
-        crate::model::FilesystemProfile::Windows,
-        crate::model::VolumeLimits::default(),
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        work.cancellation(),
-    )
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
+    let demand = windows_demand_source(&source_root, work.cancellation()).await?;
     let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
     let lazy = crate::LazyWorkspace::attach_with_config(
         &engine,

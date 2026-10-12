@@ -36,8 +36,8 @@ fn recursive_publication_is_direct_parent_only() {
                 .await
                 .unwrap();
         }
-        let child_path = route_path(&control.state.routes["child"]);
-        let grandchild_path = route_path(&control.state.routes["grandchild"]);
+        let child_path = control.state.routes["child"].active_path().unwrap();
+        let grandchild_path = control.state.routes["grandchild"].active_path().unwrap();
         assert_ne!(child_path, grandchild_path);
         for (turn, tool, path) in [
             ("child-turn", "parent-read", &child_path),
@@ -206,7 +206,7 @@ fn multi_root_publication_reopens_the_same_routes() {
         control
             .pre_tool(
                 json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"write",
-            "tool_name":"Write","tool_input":{"path":route_path(&route).join("in-flight.txt")}}),
+            "tool_name":"Write","tool_input":{"path":route.active_path().unwrap().join("in-flight.txt")}}),
             )
             .await
             .unwrap();
@@ -280,7 +280,7 @@ fn multi_root_publication_reopens_the_same_routes() {
         control.shutdown().await.unwrap();
         let reopened = ControlPlane::open(fixture.data.clone()).await.unwrap();
         let (_, routed, root_id) = reopened
-            .route_root_from_cwd(&route_path(&reopened.state.routes["child"]))
+            .route_root_from_cwd(&reopened.state.routes["child"].active_path().unwrap())
             .unwrap();
         assert_eq!(routed.unwrap().agent_id, "child");
         assert_eq!(root_id, second_root);

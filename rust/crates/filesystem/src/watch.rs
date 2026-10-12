@@ -1123,7 +1123,7 @@ impl NativeWatch {
             return Err(NativeWatchError::RootIsNotDirectory);
         }
         let root_identity = held_root.identity();
-        if metadata.identity().map_err(demand_watch_error)? != root_identity {
+        if metadata.identity() != root_identity {
             return Err(NativeWatchError::RootChanged);
         }
         #[cfg(windows)]
@@ -2153,7 +2153,7 @@ impl NativeWatch {
         let Some(root) = self.held_root.root.as_ref() else {
             return Ok(false);
         };
-        let held = root.stat(Path::new(""), work)?.identity()?;
+        let held = root.stat(Path::new(""), work)?.identity();
         match crate::native_host::root_path_identity(&self.root, work) {
             Ok(identity) => Ok(held == self.root_identity && identity == self.root_identity),
             Err(crate::demand::DemandError::Io(error))
@@ -3083,5 +3083,5 @@ mod demand_admission_tests {
 }
 
 #[cfg(test)]
-#[path = "tests/watch.rs"]
+#[path = "tests/watch/mod.rs"]
 mod tests;

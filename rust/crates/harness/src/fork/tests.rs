@@ -136,7 +136,7 @@ fn child_result_capture_rejects_alias_partial_and_foreign_generation() -> Result
         &mut None,
     )?);
     seed.child_result_generation =
-        Some(GenerationRef::new(provider.clone(), [73; 32].into(), None)?);
+        Some(GenerationRef::new(&(provider), &([73; 32]), None, None)?.0);
     seed.validate(&mut None)?;
     let mut mutation = seed.clone();
     mutation.child_result_generation = None;
@@ -151,16 +151,12 @@ fn child_result_capture_rejects_alias_partial_and_foreign_generation() -> Result
         crate::wire::ErrorCode::Invalid
     );
     mutation = seed;
-    mutation.child_result_generation = Some(GenerationRef::new(
-        ProviderRef::new(
+    mutation.child_result_generation = Some(GenerationRef::new(&(ProviderRef::new(
             provider.namespace().into(),
             provider.family().into(),
             "foreign-result-provider".into(),
             &mut None,
-        )?,
-        [73; 32].into(),
-        None,
-    )?);
+        )?), &([73; 32]), None, None)?.0);
     assert_eq!(
         mutation.validate(&mut None).unwrap_err().code(),
         crate::wire::ErrorCode::Invalid
@@ -244,7 +240,7 @@ fn project_capture_requires_new_volume_with_independent_owner() -> Result<()> {
                 VolumeOwner::Project(owner.into()),
                 &mut None,
             )?,
-            generation: GenerationRef::new(provider.clone(), [key; 32].into(), None)?,
+            generation: GenerationRef::new(&(provider), &([key; 32]), None, None)?.0,
         })
     };
     let source = project("parent", "project", 1)?;

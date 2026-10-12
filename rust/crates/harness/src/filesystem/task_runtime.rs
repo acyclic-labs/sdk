@@ -14,7 +14,7 @@ use crate::{
     durable_host::CoordinatorTaskHost,
     durable_tool::ResumableToolRegistry,
     executor::{ExecutionJournal, StockExecutor, StockTurnProgress, TurnInput, TurnOutput},
-    interaction::{Interaction, InteractionOutcome},
+    interaction::Interaction,
     model::{Model, ModelProvider},
     runtime::{
         AgentHarness, ContentBindings, DurableTaskHost, InteractionRouter, OwnedTaskMailbox,
@@ -380,88 +380,6 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
             self.host
                 .read_received_mail_owned(self.owner.as_ref(), receive_operation, item, None)
                 .await
-        })
-    }
-}
-
-struct TaskJournalInteractions {
-    task: TaskId,
-    journal: Arc<dyn ExecutionJournal>,
-    #[cfg(not(target_arch = "wasm32"))]
-    native_custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-impl InteractionRouter for TaskJournalInteractions {
-    fn route<'a>(
-        &'a self,
-        operation_id: OperationId,
-        interaction: Interaction,
-    ) -> BoxFuture<'a, Result<InteractionOutcome>> {
-        Box::pin(async move {
-            let id = crate::durable_host::task_interaction_id(self.task, operation_id);
-            self.journal.open_interaction(id, interaction).await?;
-            Ok(self
-                .journal
-                .interaction_outcome(id)
-                .await?
-                .unwrap_or(InteractionOutcome::Indeterminate { operation_id }))
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_interactions(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        if self
-            .native_custody
-            .as_ref()
-            .is_some_and(|custody| custody.work().shares_allocation_context(work))
-        {
-            Ok(())
-        } else {
-            Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "task journal router has no original native custody",
-            })
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn route_with_native_work<'a>(
-        &'a self,
-        operation_id: OperationId,
-        interaction: Interaction,
-        request_custody: acyclic_fs::NativeAllocation,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>>
-    {
-        let paid = (interaction, request_custody);
-        self.supports_native_interactions(work)?;
-        if !paid.1.work().shares_allocation_context(work) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "interaction request differs from original work",
-            });
-        }
-        crate::NativeFutureBundle::new(work, || async move {
-            let paid = paid;
-            let id = crate::durable_host::task_interaction_id_with_native_work(
-                self.task,
-                operation_id,
-                work,
-            )?;
-            self.journal
-                .open_interaction_with_native_work(id, &paid.0, work)?
-                .await?;
-            let (outcome, custody) = self
-                .journal
-                .interaction_outcome_with_native_work(id, work)?
-                .await?;
-            Ok((
-                outcome.unwrap_or(InteractionOutcome::Indeterminate { operation_id }),
-                custody,
-            ))
         })
     }
 }
@@ -1308,15 +1226,7 @@ where
         journal: Arc<FilesystemExecutionJournal<P, A, O>>,
     ) -> Result<TaskContext> {
         if self.interaction_owner.is_some() {
-            context.with_owned_interactions(
-                task,
-                Arc::new(TaskJournalInteractions {
-                    task,
-                    journal,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    native_custody: None,
-                }),
-            )
+            context.with_owned_interactions(task, journal)
         } else {
             Ok(context)
         }
@@ -1348,38 +1258,12 @@ where
                 reason: "journal interaction route differs from original task",
             });
         }
-        match self.native_journal_interactions(task, journal, work)? {
-            Some(router) => context.with_native_interactions(router, work),
-            None => Ok(context),
+        if self.interaction_owner.is_some() {
+            journal.supports_native_interactions(work)?;
+            context.with_native_interactions(journal, work)
+        } else {
+            Ok(context)
         }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_journal_interactions(
-        &self,
-        task: TaskId,
-        journal: Arc<FilesystemExecutionJournal<P, A, O>>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<Arc<dyn InteractionRouter>>> {
-        if self.interaction_owner.is_none() {
-            return Ok(None);
-        }
-        if !journal.supports_native_execution(work)? {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "interaction journal has no original native owner",
-            });
-        }
-        let io = super::PreparationIo::from_native_work(work)?;
-        let bytes = std::mem::size_of::<TaskJournalInteractions>() as u64;
-        io.retain_owned(bytes)?;
-        io.allocation_attempt(bytes)?;
-        let custody = io.take_native_custody(bytes)?;
-        Ok(Some(Arc::new(TaskJournalInteractions {
-            task,
-            journal,
-            native_custody: Some(custody),
-        })))
     }
 
     /// The existing typed admission, recovery and cancellation API.
@@ -2181,7 +2065,9 @@ where
         })?;
         if retained.operation_id != admission.operation_id
             || retained.request_digest
-                != observed::digest(&admission, io, acyclic_stream::MAX_RECORD_BYTES as u64)?
+                != crate::executor::with_history_io(io, |work|
+                    crate::contract::canonical_json_digest_with_work(&admission,
+                        if io.is_some() { acyclic_stream::MAX_RECORD_BYTES as u64 } else { u64::MAX }, work))?
             || retained.initial.machine != admission.machine
         {
             return Err(observed::boundary(
@@ -2757,7 +2643,7 @@ where
                     commands
                         .execute_with_native_work(
                             Arc::clone(shared),
-                            observed::clone_fence(fence, Some(io))?,
+                            crate::executor::with_history_io(Some(io), |work| fence.clone_with_work(work))?,
                             observed::clone_command(command, Some(io))?,
                             payload,
                             work,
@@ -2877,11 +2763,12 @@ where
             self.policy.clone(),
             work,
         )?;
-        let executor = match self.native_journal_interactions(task, Arc::clone(journal), work)? {
-            Some(router) => executor.with_native_interactions(router, work)?,
-            None => executor,
-        };
-        Ok(executor)
+        if self.interaction_owner.is_some() {
+            journal.supports_native_interactions(work)?;
+            executor.with_native_interactions(journal.clone(), work)
+        } else {
+            Ok(executor)
+        }
     }
 
     /// Constructs stock execution with the task-owned journal and optional output volume.

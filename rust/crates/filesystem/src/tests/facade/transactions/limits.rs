@@ -320,7 +320,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {
-                crate::FsResult::Ok(crate::FsReceipt {
+                crate::FsResult::Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
                 })
@@ -404,7 +404,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {
-                crate::FsResult::Ok(crate::FsReceipt {
+                crate::FsResult::Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
                 })

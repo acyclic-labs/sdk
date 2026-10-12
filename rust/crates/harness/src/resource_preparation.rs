@@ -343,7 +343,7 @@ impl ResourcePreparationRequest {
                 observer.release_owned(encoded_extent)?;
             }
         } else {
-            crate::contract::validate_json_byte_bound(self, self.maximum_bytes)?;
+            crate::contract::json_byte_length(self, self.maximum_bytes, &mut None).map(|_| ())?;
         }
         if let Some(checkpoint) = &self.source_checkpoint {
             checkpoint.validate(work)?;

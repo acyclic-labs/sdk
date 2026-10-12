@@ -304,16 +304,23 @@ impl McpCatalog {
         for remote in &self.tools {
             let definition = self.definition(remote)?;
             let name = definition.name.clone();
-            next.register(Tool {
-                definition,
-                executor: Arc::new(RemoteTool {
-                    server: self.server.clone(),
-                    name: remote.name.clone(),
-                    output_schema: remote.output_schema.clone(),
-                    transport: Arc::clone(transport),
-                }),
-                projection: Arc::clone(projection),
-            })?;
+            next.register(
+                (
+                    Tool {
+                        definition,
+                        executor: Arc::new(RemoteTool {
+                            server: self.server.clone(),
+                            name: remote.name.clone(),
+                            output_schema: remote.output_schema.clone(),
+                            transport: Arc::clone(transport),
+                        }),
+                        projection: Arc::clone(projection),
+                    },
+                    None,
+                ),
+                &mut None,
+                None,
+            )?;
             if self.selected(&remote.name) {
                 next.select_model_version(&name, &self.revision)?;
             } else {

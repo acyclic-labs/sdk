@@ -1,6 +1,6 @@
 //! Journaled local persistence for filesystem control-plane state.
 
-use crate::lazy_workspace::{MemoryLazyNode, NativeOwnedCoreState};
+use crate::lazy_workspace::MemoryLazyNode;
 use crate::record_store::Revisioned;
 use crate::workspace_context::{
     WorkspaceContextChildren, discard_context_subtree, plan_context_subtree_discard,

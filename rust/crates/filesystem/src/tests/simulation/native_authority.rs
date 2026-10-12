@@ -167,35 +167,25 @@ async fn original_simulation_propagates_opaque_backend_rejection_before_ordinary
     };
     assert!(matches!(
         ({
-            let __authority_args = (id, &work, &cancellation);
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.1, __authority_args.2);
-            let __authority_result = authority
-                .head(__authority_args.0, &mut __authority_work)
-                .await;
+            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
+            let __authority_result = authority.head(id, &mut __authority_work).await;
             __authority_result
         }),
         Err(AuthorityStoreError::NativeOriginalUnsupported)
     ));
     assert!(matches!(
         ({
-            let __authority_args = (
-                id,
-                Sequence::GENESIS,
-                ReplayLimit {
-                    records: 1,
-                    payload_bytes: 64,
-                },
-                &work,
-                &cancellation,
-            );
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.3, __authority_args.4);
+            let authority_input_2 = ReplayLimit {
+                records: 1,
+                payload_bytes: 64,
+            };
+
+            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
             let __authority_result = authority
                 .replay(
-                    __authority_args.0,
-                    __authority_args.1,
-                    __authority_args.2,
+                    id,
+                    Sequence::GENESIS,
+                    authority_input_2,
                     &mut __authority_work,
                 )
                 .await
@@ -208,36 +198,19 @@ async fn original_simulation_propagates_opaque_backend_rejection_before_ordinary
     ));
     assert!(matches!(
         ({
-            let __authority_args = (id, expected, &work, &cancellation);
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
-            let __authority_result = authority
-                .fence(
-                    __authority_args.0,
-                    __authority_args.1,
-                    &mut __authority_work,
-                )
-                .await;
+            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
+            let __authority_result = authority.fence(id, expected, &mut __authority_work).await;
             __authority_result
         }),
         Err(AuthorityStoreError::NativeOriginalUnsupported)
     ));
     assert!(matches!(
         ({
-            let __authority_args = (
-                id,
-                OperationId::from_bytes([0xf3; 16]),
-                &work,
-                &cancellation,
-            );
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
+            let authority_input_1 = OperationId::from_bytes([0xf3; 16]);
+
+            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
             let __authority_result = authority
-                .find_operation(
-                    __authority_args.0,
-                    __authority_args.1,
-                    &mut __authority_work,
-                )
+                .find_operation(id, authority_input_1, &mut __authority_work)
                 .await
                 .map(|(value, allocation)| {
                     (value, allocation.expect("native authority allocation"))
@@ -294,13 +267,13 @@ async fn original_simulation_mutation_faults_and_unsupported_providers_never_cal
         simulation.schedule_next(SimulationOperation::AuthorityCreate, fault)?;
         assert!(matches!(
             ({
-                let __authority_args = (id, proposed.clone(), &original, &cancellation);
-                let mut __authority_work =
-                    crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
+                let authority_input_1 = proposed.clone();
+
+                let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
                 let __authority_result = authority
                     .create_first_record(
-                        __authority_args.0,
-                        __authority_args.1,
+                        id,
+                        authority_input_1,
                         &mut __authority_work,
                         None::<&mut ()>,
                     )
@@ -313,15 +286,11 @@ async fn original_simulation_mutation_faults_and_unsupported_providers_never_cal
         simulation.schedule_next(SimulationOperation::AuthorityAppend, fault)?;
         assert!(matches!(
             ({
-                let __authority_args = (
-                    original_append(id, expected, proposed.clone()),
-                    &original,
-                    &cancellation,
-                );
-                let mut __authority_work =
-                    crate::AuthorityWork::native(__authority_args.1, __authority_args.2);
+                let authority_input_0 = original_append(id, expected, proposed.clone());
+
+                let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
                 let __authority_result = authority
-                    .compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>)
+                    .compare_and_append(authority_input_0, &mut __authority_work, None::<&mut ()>)
                     .await
                     .map_err(|error| error.into_error(std::convert::identity))
                     .map(|(value, allocation)| {
@@ -334,20 +303,16 @@ async fn original_simulation_mutation_faults_and_unsupported_providers_never_cal
         simulation.schedule_next(SimulationOperation::AuthorityAppend, fault)?;
         assert!(matches!(
             ({
-                let __authority_args = (
-                    original_append(id, expected, proposed.clone()),
-                    &original,
-                    &cancellation,
-                    &mut guard,
-                );
-                let mut __authority_work =
-                    crate::AuthorityWork::native(__authority_args.1, __authority_args.2);
+                let authority_input_0 = original_append(id, expected, proposed.clone());
+                let authority_input_3 = &mut guard;
+
+                let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
                 let __authority_result = authority
                     .compare_and_append(
-                        __authority_args.0,
+                        authority_input_0,
                         &mut __authority_work,
                         Some(&mut crate::NativeAuthorityGuard(
-                            (__authority_args.3).clone(),
+                            (authority_input_3).clone(),
                         )),
                     )
                     .await
@@ -364,13 +329,13 @@ async fn original_simulation_mutation_faults_and_unsupported_providers_never_cal
     }
     assert!(matches!(
         ({
-            let __authority_args = (id, proposed.clone(), &original, &cancellation);
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
+            let authority_input_1 = proposed.clone();
+
+            let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
             let __authority_result = authority
                 .create_first_record(
-                    __authority_args.0,
-                    __authority_args.1,
+                    id,
+                    authority_input_1,
                     &mut __authority_work,
                     None::<&mut ()>,
                 )
@@ -382,15 +347,11 @@ async fn original_simulation_mutation_faults_and_unsupported_providers_never_cal
     ));
     assert!(matches!(
         ({
-            let __authority_args = (
-                original_append(id, expected, proposed.clone()),
-                &original,
-                &cancellation,
-            );
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.1, __authority_args.2);
+            let authority_input_0 = original_append(id, expected, proposed.clone());
+
+            let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
             let __authority_result = authority
-                .compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>)
+                .compare_and_append(authority_input_0, &mut __authority_work, None::<&mut ()>)
                 .await
                 .map_err(|error| error.into_error(std::convert::identity))
                 .map(|(value, allocation)| {
@@ -402,20 +363,16 @@ async fn original_simulation_mutation_faults_and_unsupported_providers_never_cal
     ));
     assert!(matches!(
         ({
-            let __authority_args = (
-                original_append(id, expected, proposed),
-                &original,
-                &cancellation,
-                &mut guard,
-            );
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.1, __authority_args.2);
+            let authority_input_0 = original_append(id, expected, proposed);
+            let authority_input_3 = &mut guard;
+
+            let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
             let __authority_result = authority
                 .compare_and_append(
-                    __authority_args.0,
+                    authority_input_0,
                     &mut __authority_work,
                     Some(&mut crate::NativeAuthorityGuard(
-                        (__authority_args.3).clone(),
+                        (authority_input_3).clone(),
                     )),
                 )
                 .await

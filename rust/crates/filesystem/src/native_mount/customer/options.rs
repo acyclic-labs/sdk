@@ -6,23 +6,27 @@ pub(super) fn checkout_source<A, O>(
         crate::kernel::NamespacePath,
         crate::kernel::allocation::KernelOwnedAllocation,
     ),
-    publication: MountPublication,
+    options: &MountOptions,
     work: &NativeMaterializationWork,
-    original: Option<&NativeMaterializationWork>,
-    guard: Option<&Arc<dyn super::super::NativeMountCallbackGuard>>,
 ) -> Result<Arc<CheckoutMountSource<A, O>>, MountLifecycleError>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let config = checkout.volume_config();
-    let shared = SharedCheckout::with_publication_meter(checkout, publication, work)?;
+    let shared = SharedCheckout::with_publication_meter(checkout, options.publication, work)?;
     let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) = root.1 else {
         return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
     };
-    let source =
-        CheckoutMountSource::new_at_meter(shared, config, root.0, custody, work, original)?;
-    let source = match guard {
+    let source = CheckoutMountSource::new_at_meter(
+        shared,
+        config,
+        root.0,
+        custody,
+        work,
+        options.native_original.as_ref(),
+    )?;
+    let source = match options.callback_guard.as_ref() {
         Some(guard) => source.with_native_callback_guard(guard.clone()),
         None => source,
     };

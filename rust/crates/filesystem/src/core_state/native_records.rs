@@ -8,7 +8,7 @@ use crate::materializer::{
 use crate::workspace_context::WorkspaceContextRoot;
 
 type Error = LocalCoreStateStoreError;
-type Owned<T> = NativeOwnedCoreState<T>;
+type Owned<T> = (T, crate::NativeAllocation);
 
 pub(super) fn check(work: &Work, cxl: &CancellationToken) -> Result<(), Error> {
     cxl.check().map_err(|_| NativeError::Cancelled)?;
@@ -29,19 +29,19 @@ pub(super) fn checked_packet<T>(
     bytes: impl FnOnce(&T) -> Result<u64, Error>,
 ) -> Result<Owned<T>, Error> {
     // Keep the value-first tuple intact through every rejecting branch.
-    let parts = owned.into_parts();
-    if !parts.1.matches_work(work) {
+    let parts = owned;
+    if !parts.1.work().shares_allocation_context(work) {
         return Err(Error::NativeLedgerMismatch);
     }
     if parts.1.bytes() != bytes(&parts.0)? {
         return Err(Error::Integrity);
     }
-    Ok(Owned::from_parts(parts.0, parts.1))
+    Ok((parts.0, parts.1))
 }
 
 fn transfer<T>(owned: Owned<T>, work: &Work, held: &mut NativeAllocation) -> Result<T, Error> {
-    let (value, mut allocation) = owned.into_parts();
-    let result = if allocation.matches_work(work) {
+    let (value, mut allocation) = owned;
+    let result = if allocation.work().shares_allocation_context(work) {
         held.absorb(&mut allocation).map_err(Error::from)
     } else {
         Err(Error::NativeLedgerMismatch)
@@ -300,7 +300,7 @@ pub(super) fn clone_native_record_value(
         }
     };
     held.substitute(native_record_owned_bytes(&value, work)?)?;
-    Ok(Owned::from_parts(value, held))
+    Ok((value, held))
 }
 
 pub(super) fn native_record_owned_bytes(value: &RecordValue, work: &Work) -> Result<u64, Error> {
@@ -366,17 +366,13 @@ fn read<T: DeserializeOwned>(
 ) -> Result<Option<Owned<RecordValue>>, Error> {
     // Declare the guard before the decoder's physical result.
     let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let Some((value, allocation)) = measured_read_file::<Option<T>>(path, work)? else {
-        return Ok(None);
-    };
-    let value = transfer(Owned::from_parts(value, allocation), work, &mut held)?;
-    let Some(value) = value else {
-        return Ok(None);
-    };
+    let Some((value, allocation)) = measured_read_file::<Option<T>>(path, work)? else { return Ok(None); };
+    let value = transfer((value, allocation), work, &mut held)?;
+    let Some(value) = value else { return Ok(None); };
     let mut value = map(value);
     value.normalize(Some(work))?;
     held.substitute(native_record_owned_bytes(&value, work)?)?;
-    Ok(Some(Owned::from_parts(value, held)))
+    Ok(Some((value, held)))
 }
 
 pub(super) fn read_native_record(
@@ -413,7 +409,7 @@ pub(super) fn load_native_lineage(
     let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let value = transfer(owned, work, &mut held)?;
     match value {
-        RecordValue::Lineage(value) => Ok(Some(Owned::from_parts(value, held))),
+        RecordValue::Lineage(value) => Ok(Some((value, held))),
         _ => Err(Error::Integrity),
     }
 }
@@ -433,21 +429,10 @@ pub(super) fn compare_native_lineage(
     })?;
     let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let replacement = transfer(replacement, work, &mut held)?;
-    if load_native_lineage(root, log, id, work, cxl)?
-        .as_ref()
-        .map_or(0, |value| value.as_state().revision)
-        != expected
-    {
-        return Ok(false);
-    }
+    if load_native_lineage(root, log, id, work, cxl)?.as_ref().map_or(0, |value| (&value.0).revision) != expected { return Ok(false); }
     let mut change = Change::new(work)?;
-    change.put_owned(
-        RecordKey::Lineage(id),
-        Owned::from_parts(RecordValue::Lineage(replacement), held),
-        work,
-    )?;
-    cxl.check()
-        .map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
+    change.put_owned(RecordKey::Lineage(id), (RecordValue::Lineage(replacement), held), work)?;
+    cxl.check().map_err(|_| NativeError::Cancelled)?;
     log.commit(root, change)?;
     Ok(true)
 }
@@ -510,7 +495,7 @@ pub(super) fn load_native_context(
         }
         _ => return Err(Error::Integrity),
     };
-    Ok(Some(Owned::from_parts(value, held)))
+    Ok(Some((value, held)))
 }
 
 pub(super) fn native_lineage_owned_bytes(
@@ -639,14 +624,8 @@ fn live_ids(
             let next = reader.next(&mut &*work)?;
             #[cfg(windows)]
             let next = reader.next_wide(&mut &*work)?;
-            let Some((entry, allocation)) = next else {
-                break;
-            };
-            let entry = transfer(
-                Owned::from_parts(entry, allocation),
-                work,
-                &mut entry_allocation,
-            )?;
+            let Some((entry, allocation)) = next else { break; };
+            let entry = transfer((entry, allocation), work, &mut entry_allocation)?;
             #[cfg(unix)]
             let id = decode_filename(entry.name.as_encoded_bytes(), work)?;
             #[cfg(windows)]
@@ -691,9 +670,7 @@ fn live_ids(
         let id = ids[index];
         match log.get_native_value(root, RecordKey::Context(id), work, cxl)? {
             Some(context) => {
-                if context_link(context.as_state())?.0 != id {
-                    return Err(Error::Integrity);
-                }
+                if context_link((&context.0))?.0 != id { return Err(Error::Integrity); }
                 index += 1;
             }
             None => {
@@ -707,7 +684,7 @@ fn live_ids(
             }
         }
     }
-    Ok(Owned::from_parts(ids, held))
+    Ok((ids, held))
 }
 
 struct Bucket {
@@ -800,21 +777,9 @@ fn put_buckets(change: &mut Change, mut buckets: Vec<Bucket>, work: &Work) -> Re
             change.put_scalar(RecordKey::Children(parent), None, work)?;
             change.put_scalar(RecordKey::ChildCount(parent), None, work)?;
         } else {
-            let Bucket {
-                parent,
-                children,
-                allocation,
-            } = bucket;
-            change.put_owned(
-                RecordKey::Children(parent),
-                Owned::from_parts(RecordValue::FlatChildren(children), allocation),
-                work,
-            )?;
-            change.put_scalar(
-                RecordKey::ChildCount(parent),
-                count.map(RecordValue::ChildCount),
-                work,
-            )?;
+            let Bucket { parent, children, allocation } = bucket;
+            change.put_owned(RecordKey::Children(parent), (RecordValue::FlatChildren(children), allocation), work)?;
+            change.put_scalar(RecordKey::ChildCount(parent), count.map(RecordValue::ChildCount), work)?;
         }
     }
     Ok(())
@@ -861,20 +826,16 @@ fn rebuild_index(
     let ids = live_ids(root, log, work, cxl)?;
     let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut buckets = Vec::new();
-    for id in ids.as_state() {
-        let value = log
-            .get_native_value(root, RecordKey::Context(*id), work, cxl)?
-            .ok_or(Error::Integrity)?;
-        let (identity, parent) = context_link(value.as_state())?;
-        if identity != *id {
-            return Err(Error::Integrity);
-        }
+    for id in (&ids.0) {
+        let value = log.get_native_value(root, RecordKey::Context(*id), work, cxl)?.ok_or(Error::Integrity)?;
+        let (identity, parent) = context_link((&value.0))?;
+        if identity != *id { return Err(Error::Integrity); }
         if let Some(parent) = parent {
             let index = empty_bucket(&mut buckets, parent, work, &mut held)?;
             add_child(&mut buckets[index], identity, work)?;
         }
     }
-    commit_index(root, log, Owned::from_parts(buckets, held), work, cxl)
+    commit_index(root, log, (buckets, held), work, cxl)
 }
 
 pub(super) fn compare_native_context(
@@ -895,15 +856,7 @@ pub(super) fn compare_native_context(
     reserve(&mut replacements, 1, work, &mut held)?;
     let replacement = transfer(replacement, work, &mut held)?;
     replacements.push(replacement);
-    compare_native_contexts(
-        root,
-        log,
-        &[(id, expected)],
-        Owned::from_parts(replacements, held),
-        false,
-        work,
-        cxl,
-    )
+    compare_native_contexts(root, log, &[(id, expected)], (replacements, held), false, work, cxl)
 }
 
 pub(super) fn compare_native_contexts(
@@ -930,21 +883,13 @@ pub(super) fn compare_native_contexts(
     })?;
     let mut after_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut after = transfer(replacements, work, &mut after_allocation)?;
-    if exact && live_ids(root, log, work, cxl)?.as_state().len() != expected.len() {
-        return Ok(false);
-    }
+    if exact && live_ids(root, log, work, cxl)?.0.len() != expected.len() { return Ok(false); }
     let mut before_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut before = Vec::new();
     reserve(&mut before, expected.len(), work, &mut before_allocation)?;
     for (id, revision) in expected {
         let current = load_native_context(root, log, *id, work, cxl)?;
-        if current
-            .as_ref()
-            .map_or(0, |value| value.as_state().revision)
-            != *revision
-        {
-            return Ok(false);
-        }
+        if current.as_ref().map_or(0, |value| (&value.0).revision) != *revision { return Ok(false); }
         before.push((*id, current));
     }
     // Stable insertion sort plus remove-earlier duplicates reproduces collect
@@ -1007,14 +952,9 @@ pub(super) fn compare_native_contexts(
     }
     let mut bucket_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut buckets = Vec::new();
-    for parent in before
-        .iter()
-        .filter_map(|(_, record)| record.as_ref()?.as_state().parent_context_id)
-        .chain(after.iter().filter_map(|record| record.parent_context_id))
-    {
-        if bucket_position(&buckets, parent, work)?.is_some() {
-            continue;
-        }
+    for parent in before.iter().filter_map(|(_, record)| record.as_ref()?.0.parent_context_id)
+        .chain(after.iter().filter_map(|record| record.parent_context_id)) {
+        if bucket_position(&buckets, parent, work)?.is_some() { continue; }
         let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let mut children = Vec::new();
         if let Some(owned) = log.get_native_value(root, RecordKey::Children(parent), work, cxl)? {
@@ -1052,10 +992,7 @@ pub(super) fn compare_native_contexts(
                 ..Default::default()
             })?;
             if *id == replacement.context_id {
-                if let Some(record) = record {
-                    old_parent = record.as_state().parent_context_id;
-                    old_id = record.as_state().context_id;
-                }
+                if let Some(record) = record { old_parent = (&record.0).parent_context_id; old_id = (&record.0).context_id; }
                 break;
             }
         }
@@ -1101,8 +1038,8 @@ pub(super) fn compare_native_contexts(
         let bytes = native_context_owned_bytes(&record, work)?;
         let allocation = after_allocation.split_off(bytes)?;
         let key = RecordKey::Context(record.context_id);
-        let public = Owned::from_parts(RecordValue::Context(record), allocation);
-        let flat = clone_native_record_value(public.as_state(), work, cxl)?;
+        let public = (RecordValue::Context(record), allocation);
+        let flat = clone_native_record_value((&public.0), work, cxl)?;
         drop(public);
         change.put_owned(key, flat, work)?;
     }

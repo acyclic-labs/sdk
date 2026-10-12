@@ -391,7 +391,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 "summary fork history allowance is insufficient".into(),
             ));
         }
-        crate::contract::validate_json_byte_bound(seed, history_limits.maximum_bytes)?;
+        crate::contract::json_byte_length(seed, history_limits.maximum_bytes, &mut None).map(|_| ())?;
         self.verifier.verify(scope, &mut None)?;
         if parent.verifier.audience() != &seed.parent
             || self.verifier.audience() != &seed.child
@@ -525,7 +525,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 "inherited history page bounds are invalid".into(),
             ));
         }
-        crate::contract::validate_json_byte_bound(seed, limits.maximum_bytes)?;
+        crate::contract::json_byte_length(seed, limits.maximum_bytes, &mut None).map(|_| ())?;
         seed.validate(&mut None)?;
         let publication_revision = crate::contract::next_revision(seed.parent_revision)?;
         let (publication, consumed) = self

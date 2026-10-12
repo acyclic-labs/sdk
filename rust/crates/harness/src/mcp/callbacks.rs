@@ -150,7 +150,7 @@ impl McpRuntimeCallbacks {
         Ok(Self { executor: executor.with_tool_registry(crate::tool::ToolRegistry::default()), journal, model_name, sampling })
     }
     async fn run(&self, context: ToolContext, request: &McpCallbackRequest) -> Result<Value> {
-        crate::contract::validate_json_byte_bound(request, context.scope().limits().file_bytes)?;
+        crate::contract::json_byte_length(request, context.scope().limits().file_bytes, &mut None).map(|_| ())?;
         request.validate()?;
         if request.parent != context.operation_id() { return Err(Error::Unauthorized("MCP callback parent differs from admitted call".into())); }
         let operation = request.operation()?;

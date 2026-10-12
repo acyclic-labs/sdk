@@ -50,7 +50,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             self.journal_limit(MAX_REQUEST_BYTES),
             self.io.as_ref(),
         )?);
-        for (volume, _) in creation_volumes(&request) {
+        for volume in creation_volumes(&request) {
             self.verify_task_lease(false).await?;
             self.preparer
                 .host
@@ -71,8 +71,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     self.journal_limit(MAX_REQUEST_BYTES),
                     self.io.as_ref(),
                     self.task_preparation,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.native_creation_guard.as_ref(),
                 )
                 .await?;
         }
@@ -105,7 +103,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 source_project,
                 source_generation,
                 self.io.as_ref(),
-                self.task_preparation,
+                self.task_preparation.map(Arc::as_ref),
             )?)
         } else {
             std::borrow::Cow::Owned(self.read_grant(source_project)?)
@@ -120,9 +118,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             Some(self.clone_paths(paths)?),
             &private_key,
             self.io.as_ref(),
-            self.task_preparation,
+            self.task_preparation.map(Arc::as_ref),
             #[cfg(not(target_arch = "wasm32"))]
-            self.native_creation_guard.as_ref(),
+            self.task_preparation,
         )
         .await?;
         let controller = self.preparer.controller(self.io.as_ref())?;
@@ -137,9 +135,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             None,
             &project_key,
             self.io.as_ref(),
-            self.task_preparation,
+            self.task_preparation.map(Arc::as_ref),
             #[cfg(not(target_arch = "wasm32"))]
-            self.native_creation_guard.as_ref(),
+            self.task_preparation,
         )
         .await?;
         let (child_result_volume, child_result_generation) =
@@ -155,9 +153,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     Some(Vec::new()),
                     &key,
                     self.io.as_ref(),
-                    self.task_preparation,
+                    self.task_preparation.map(Arc::as_ref),
                     #[cfg(not(target_arch = "wasm32"))]
-                    self.native_creation_guard.as_ref(),
+                    self.task_preparation,
                 )
                 .await?;
                 (
@@ -223,9 +221,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         .as_ref()
                         .map(PreparedForkHistory::conversation),
                     self.io.as_ref(),
-                    self.task_preparation,
+                    self.task_preparation.map(Arc::as_ref),
                     #[cfg(not(target_arch = "wasm32"))]
-                    self.native_creation_guard.as_ref(),
+                    self.task_preparation,
                 )
                 .await?;
             (
@@ -283,9 +281,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     &key,
                     self.preparer.resolver.as_ref(),
                     self.io.as_ref(),
-                    self.task_preparation,
+                    self.task_preparation.map(Arc::as_ref),
                     #[cfg(not(target_arch = "wasm32"))]
-                    self.native_creation_guard.as_ref(),
+                    self.task_preparation,
                 )
                 .await?;
             let capacity = inherited_context
@@ -431,7 +429,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             history_witness: None,
             attachment_manifests,
         };
-        let mut history = self.io.as_ref().map(PreparationIo::history_io);
+        let mut history = self.io.as_ref();
         report.validate(
             &mut history
                 .as_mut()
@@ -475,7 +473,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 report.clone().into_seed(&mut None)?
             };
             if let Some(history) = &self.preparer.history {
-                let mut observer = self.io.as_ref().map(PreparationIo::history_io);
+                let mut observer = self.io.as_ref();
                 self.preparer.parent.attest_fork_history_with_work(
                     &mut seed,
                     history.conversation(),
@@ -492,8 +490,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     self.journal_limit(MAX_REQUEST_BYTES),
                     self.io.as_ref(),
                     self.task_preparation,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.native_creation_guard.as_ref(),
                 )
                 .await?;
         }

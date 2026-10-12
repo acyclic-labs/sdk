@@ -129,22 +129,6 @@ impl NativeRootOutputSource {
             .authorize(self, VolumeOperation::Write, work)?
             .await
     }
-
-    pub(crate) fn into_native_shared(self, work: &NativeMaterializationWork) -> Result<Arc<Self>> {
-        if !self.custody.work().shares_allocation_context(work)
-            || self.custody.bytes() < std::mem::size_of::<Self>() as u64
-        {
-            return Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "ROOT output sharing requires its original metadata custody",
-            ));
-        }
-        work.charge(acyclic_fs::WorkCounters {
-            allocation_operations: 1,
-            ..Default::default()
-        })?;
-        Ok(Arc::new(self))
-    }
 }
 
 impl ContentResidencyVerifier for NativeRootOutputSource {
@@ -266,7 +250,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         verifier: &AuthorityVerifier,
         scope: &Scope,
         work: &NativeMaterializationWork,
-    ) -> Result<NativeRootOutputSource> {
+    ) -> Result<Arc<NativeRootOutputSource>> {
         crate::NativeFutureBundle::new(work, || async {
             owner.require_volume_grant(
                 volume,
@@ -371,10 +355,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             )?;
             let custody = work.claim(
                 std::mem::size_of::<NativeRootOutputSource>() as u64,
-                0,
+                1,
                 acyclic_fs::WorkCounters::UNCHARGED,
             )?;
-            Ok(NativeRootOutputSource {
+            Ok(Arc::new(NativeRootOutputSource {
                 reader,
                 writer,
                 owner: Arc::clone(owner) as Arc<dyn NativeRootOutputOwner>,
@@ -384,7 +368,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 workspace,
                 generation,
                 custody,
-            })
+            }))
         })?
         .await
     }

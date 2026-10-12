@@ -67,6 +67,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 u64::MAX,
                 &IdempotencyKey::new(format!("model-prefix:{digest}"))?,
                 InternalContentClass::ModelPrefix,
+                None,
             )
             .await
     }

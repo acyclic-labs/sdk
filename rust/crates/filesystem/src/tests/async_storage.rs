@@ -210,47 +210,28 @@ async fn memory_stores_expose_the_complete_async_contract() -> Result<(), Box<dy
         digest: object_digest(ObjectKind::BlobChunk, &second_bytes),
     };
     (async {
-        let __object_args = (
-            first,
-            first_bytes.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = AsyncObjectStore::put(
-            &objects,
-            __object_args.0,
-            __object_args.1,
-            &mut __object_work,
-        )
-        .await;
+        let authority_input_1 = first_bytes.clone();
+
+        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let __object_result =
+            AsyncObjectStore::put(&objects, first, authority_input_1, &mut __object_work).await;
         __object_work.receipt(__object_result)
     })
     .await?;
     (async {
-        let __object_args = (
-            second,
-            second_bytes.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = AsyncObjectStore::put(
-            &objects,
-            __object_args.0,
-            __object_args.1,
-            &mut __object_work,
-        )
-        .await;
+        let authority_input_1 = second_bytes.clone();
+
+        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let __object_result =
+            AsyncObjectStore::put(&objects, second, authority_input_1, &mut __object_work).await;
         __object_work.receipt(__object_result)
     })
     .await?;
     assert!(
         (async {
-            let __object_args = (first, WorkBudget::UNBOUNDED, &cancellation);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
             let __object_result =
-                AsyncObjectStore::contains(&objects, __object_args.0, &mut __object_work).await;
+                AsyncObjectStore::contains(&objects, first, &mut __object_work).await;
             __object_work.receipt(__object_result)
         })
         .await?
@@ -258,15 +239,9 @@ async fn memory_stores_expose_the_complete_async_contract() -> Result<(), Box<dy
     );
     assert_eq!(
         (async {
-            let __object_args = (first, 5, WorkBudget::UNBOUNDED, &cancellation);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = AsyncObjectStore::read(
-                &objects,
-                __object_args.0,
-                __object_args.1,
-                &mut __object_work,
-            )
-            .await;
+            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let __object_result =
+                AsyncObjectStore::read(&objects, first, 5, &mut __object_work).await;
             __object_work.receipt(__object_result)
         })
         .await?
@@ -286,12 +261,10 @@ async fn memory_stores_expose_the_complete_async_contract() -> Result<(), Box<dy
         },
     ];
     let batched = (async {
-        let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
-        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-        let __object_result =
-            AsyncObjectStore::read_many(&objects, __object_args.0, &mut __object_work)
-                .await
-                .map(|(values, _allocation)| values);
+        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let __object_result = AsyncObjectStore::read_many(&objects, &requests, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
         __object_work.receipt(__object_result)
     })
     .await?;
@@ -549,47 +522,30 @@ async fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_e
     };
     let object_failures = [
         (async {
-            let __object_args = (
-                object_id,
-                OwnedBytes::from_static(b"cancelled"),
-                WorkBudget::UNBOUNDED,
-                &cancelled,
-            );
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = AsyncObjectStore::put(
-                &objects,
-                __object_args.0,
-                __object_args.1,
-                &mut __object_work,
-            )
-            .await;
-            __object_work.receipt(__object_result)
-        })
-        .await
-        .map(|_| ()),
-        (async {
-            let __object_args = (object_id, 9, WorkBudget::UNBOUNDED, &cancelled);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = AsyncObjectStore::read(
-                &objects,
-                __object_args.0,
-                __object_args.1,
-                &mut __object_work,
-            )
-            .await;
-            __object_work.receipt(__object_result)
-        })
-        .await
-        .map(|_| ()),
-        (async {
-            let __object_args = (
-                std::slice::from_ref(&request),
-                WorkBudget::UNBOUNDED,
-                &cancelled,
-            );
-            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let authority_input_1 = OwnedBytes::from_static(b"cancelled");
+
+            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled);
             let __object_result =
-                AsyncObjectStore::read_many(&objects, __object_args.0, &mut __object_work)
+                AsyncObjectStore::put(&objects, object_id, authority_input_1, &mut __object_work)
+                    .await;
+            __object_work.receipt(__object_result)
+        })
+        .await
+        .map(|_| ()),
+        (async {
+            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled);
+            let __object_result =
+                AsyncObjectStore::read(&objects, object_id, 9, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        })
+        .await
+        .map(|_| ()),
+        (async {
+            let authority_input_0 = std::slice::from_ref(&request);
+
+            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled);
+            let __object_result =
+                AsyncObjectStore::read_many(&objects, authority_input_0, &mut __object_work)
                     .await
                     .map(|(values, _allocation)| values);
             __object_work.receipt(__object_result)
@@ -597,10 +553,9 @@ async fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_e
         .await
         .map(|_| ()),
         (async {
-            let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancelled);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled);
             let __object_result =
-                AsyncObjectStore::contains(&objects, __object_args.0, &mut __object_work).await;
+                AsyncObjectStore::contains(&objects, object_id, &mut __object_work).await;
             __object_work.receipt(__object_result)
         })
         .await

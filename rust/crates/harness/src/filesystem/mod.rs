@@ -172,64 +172,9 @@ pub use parent::{
 };
 
 #[cfg(not(target_arch = "wasm32"))]
-struct SourcePublicationFailureSlot {
-    source: Box<Error>,
-    custody: Option<acyclic_fs::NativeAllocation>,
-}
-
+mod source_publication;
 #[cfg(not(target_arch = "wasm32"))]
-impl SourcePublicationFailureSlot {
-    fn prepare(io: Option<&PreparationIo>) -> Result<Self> {
-        let bytes = std::mem::size_of::<Error>() as u64;
-        let custody = if let Some(io) = io {
-            io.retain_owned(bytes)?;
-            io.allocation_attempt(bytes)?;
-            if io.original_native_work().is_some() {
-                Some(io.take_native_custody(bytes)?)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        Ok(Self {
-            source: Box::new(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Indeterminate,
-                reason: "reserved source publication failure",
-            }),
-            custody,
-        })
-    }
-
-    fn finish(
-        self,
-        generation: acyclic_fs::GenerationId,
-        source: Error,
-        retention_failure: Option<acyclic_fs::LazyWorkspaceError>,
-    ) -> Error {
-        let Self {
-            source: mut slot,
-            custody,
-        } = self;
-        *slot = source;
-        Error::NativeSourcePublicationUncertain {
-            generation,
-            source: slot,
-            retention_failure,
-            custody,
-        }
-    }
-
-    fn discard(self, io: Option<&PreparationIo>) -> Result<()> {
-        drop(self);
-        if let Some(io) = io
-            && io.original_native_work().is_none()
-        {
-            io.release(std::mem::size_of::<Error>() as u64)?;
-        }
-        Ok(())
-    }
-}
+use source_publication::SourcePublicationFailureSlot;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn content_for_operation_impl(
@@ -459,7 +404,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let indexed = match io {
                 Some(io) => {
                     let indexed_path = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("/{metadata_path}"), work))?;
-                    read_generation_with_io(&prior, &indexed_path, metadata_bytes.len() as u64, io)
+                    read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, Some(io))
                         .await?
                 }
                 None => {
@@ -736,7 +681,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     reason: "content provider or size limit mismatch",
                 });
             }
-            let generation = self.file_generation_with_io(reference, Some(io))?;
+            let generation = self.file_generation(reference, Some(io))?;
             let workspace =
                 fork_preparer_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
             let rendered = original
@@ -792,7 +737,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(io) = io {
             io.retain_owned((reference.path().len() + 1) as u64)?;
         }
-        let generation = self.file_generation_with_io(reference, io)?;
+        let generation = self.file_generation(reference, io)?;
         let generation_hold = io
             .map(|io| io.guard_owned(generation.logical_owned_bytes()?))
             .transpose()?;
@@ -841,7 +786,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             self.provider.clone(),
             &file.volume().storage_name(&mut None)?,
         )?;
-        self.retain_generation(&workspace, &self.file_generation(file)?)
+        self.retain_generation(&workspace, &self.file_generation(file, None)?)
             .await
     }
 }

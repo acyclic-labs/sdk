@@ -76,7 +76,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             "created identities differ from the exact fork allocation".into(),
         ));
     }
-    for ((volume, _), resource) in creation_volumes(&fork).zip(&request.resources) {
+    for (volume, resource) in creation_volumes(&fork).zip(&request.resources) {
         if volume.provider() != &host.provider {
             return Err(Error::Unauthorized(
                 "created volume belongs to another provider".into(),
@@ -97,7 +97,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .iter()
         .position(|resource| resource == &proof.resource)
         .ok_or_else(|| Error::Unauthorized("proof does not name a created fork volume".into()))?;
-    let (volume, selected_role) = creation_volumes(&fork)
+    let volume = creation_volumes(&fork)
         .nth(index)
         .ok_or_else(|| Error::Unauthorized("created allocation index is absent".into()))?;
     let evidence = allocation_ref(&host.provider, volume, Some(io))?;
@@ -125,7 +125,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let binding = seed_digest(&seed, maximum, Some(io))?;
     let mut selected: Option<AuthenticatedAllocation> = None;
     let mut original_origin = None;
-    for (number, (volume, role)) in creation_volumes(&fork).enumerate() {
+    for (number, volume) in creation_volumes(&fork).enumerate() {
         let (mut claim, held) = host
             .read_fork_allocation(&seed, volume, binding, maximum, Some(io))
             .await?;
@@ -150,10 +150,14 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 "created allocation does not authenticate its original task request".into(),
             ));
         }
-        let prepared_generation = match role {
-            ForkAllocationRole::Scratch => &seed.child_private_generation,
-            ForkAllocationRole::Project => seed
-                .resources
+        let prepared_generation = if volume == &fork.preparation.child_private_volume {
+            &seed.child_private_generation
+        } else if Some(volume) == fork.preparation.child_result_volume.as_ref() {
+            seed.child_result_generation.as_ref().ok_or_else(|| {
+                Error::Unauthorized("original child result generation is absent".into())
+            })?
+        } else {
+            seed.resources
                 .iter()
                 .find_map(|resource| match &resource.revision {
                     ResourceRevision::Project {
@@ -164,20 +168,17 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 })
                 .ok_or_else(|| {
                     Error::Unauthorized("original child project generation is absent".into())
-                })?,
-            ForkAllocationRole::Result => {
-                seed.child_result_generation.as_ref().ok_or_else(|| {
-                    Error::Unauthorized("original child result generation is absent".into())
                 })?
-            }
         };
         let reference = bounded_io::content_workspace(&host.provider, volume, Some(io))?;
         let workspace = bounded_io::open(host, &reference, io).await?;
         let prepared = bounded_io::generation(host, &workspace, prepared_generation, io).await?;
-        let suffix = match role {
-            ForkAllocationRole::Scratch => "scratch",
-            ForkAllocationRole::Project => "project",
-            ForkAllocationRole::Result => "result",
+        let suffix = if volume == &fork.preparation.child_private_volume {
+            "scratch"
+        } else if Some(volume) == fork.preparation.child_result_volume.as_ref() {
+            "result"
+        } else {
+            "project"
         };
         let creation = IdempotencyKey::new(crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!(
                 "fork:{}:{}:{suffix}",
@@ -196,7 +197,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 Error::Unauthorized("original fork allocation operation is missing".into())
             })?;
         let generation = bounded_io::generation_ref(&host.provider, initial.id(), Some(io))?;
-        let captured = if role == ForkAllocationRole::Scratch {
+        let captured = if volume == &fork.preparation.child_private_volume {
             seed.resources
                 .iter()
                 .find_map(|resource| match &resource.revision {
@@ -246,7 +247,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     let mut selected = selected
         .ok_or_else(|| Error::Unauthorized("created allocation identity is absent".into()))?;
-    if selected_role == ForkAllocationRole::Scratch {
+    if selected.volume == fork.preparation.child_private_volume {
         selected.authority = Some(fork.child);
     }
     let mut granted = BTreeSet::new();

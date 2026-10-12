@@ -23,11 +23,18 @@ impl WasmTaskRegistry {
             project,
         });
         self.tools
-            .register(Tool {
-                definition,
-                executor: host.clone(),
-                projection: host,
-            })
+            .register(
+                (
+                    Tool {
+                        definition,
+                        executor: host.clone(),
+                        projection: host,
+                    },
+                    None,
+                ),
+                &mut None,
+                None,
+            )
             .map_err(js_error)
     }
 
