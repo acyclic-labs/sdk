@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::KernelAccounting;
 #[test]
 fn projfs_name_order_differs_from_sdk_cursor_order() {
     let name = windows_name;
@@ -312,12 +313,14 @@ async fn a_lazy_workspace_lists_through_the_projection() -> Result<(), Box<dyn s
     std::fs::write(source_root.join("b.rs"), b"b")?;
     let demand = windows_demand_source(&source_root, work.cancellation()).await?;
     let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-    let lazy = crate::LazyWorkspace::attach_with_config(
+    let (lazy, _) = crate::LazyWorkspace::attach(
         &engine,
         "listed-projfs",
         Arc::new(demand),
         crate::LocalCoreStateStore::open_owned(root.path().join("core"))?,
         VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::OperationId::new(),
+        &mut KernelAccounting::native(&work, work.cancellation()),
     )
     .await?;
     let destination = root.path().join("mount");

@@ -77,34 +77,66 @@ fn context(
 }
 
 #[tokio::test]
-    async fn stock_native_lineage_preserves_original_resource_and_durable_restart() {
-        let directory = tempfile::tempdir().expect("original namespace");
-        let id = WorkspaceId::from_bytes([0xd2; 16]);
-        let cancellation = crate::CancellationToken::new();
-        let original = NativeMaterializationWork::new(finite_budget(), &cancellation).expect("finite original");
-        let work = original.native_volume_work(finite_budget()).expect("actual resource view");
-        let value = lineage(id);
-        let store = LocalCoreStateStore::open_owned(directory.path()).expect("real owner");
-        assert!(WorkspaceLineageStore::compare_and_swap_with_native_work(
-            &store, id, 0, paid_lineage(&value, &work, &cancellation), &work, &cancellation,
-        ).await.expect("stock original CAS"));
-        let loaded = WorkspaceLineageStore::load_with_native_work(&store, id, &work, &cancellation)
-            .await.expect("stock original load").expect("exact record");
-        assert_eq!((&loaded.0), &value);
-        let parts = loaded;
-        assert!(parts.1.matches_work(&work));
-        drop(parts);
-        assert!(!WorkspaceLineageStore::compare_and_swap_with_native_work(
-            &store, id, 0, paid_lineage(&value, &work, &cancellation), &work, &cancellation,
-        ).await.expect("actual CAS miss"));
-        drop(store);
-        let restarted = LocalCoreStateStore::new(directory.path());
-        let loaded = WorkspaceLineageStore::load_with_native_work(&restarted, id, &work, &cancellation)
-            .await.expect("cold canonical WAL replay").expect("durable record");
-        assert_eq!((&loaded.0), &value);
-        assert_eq!(WorkspaceLineageStore::load(&restarted, id).await.expect("ordinary consumer"), Some(value));
-        work.receipt().verify(finite_budget()).expect("same finite original receipt");
-    }
+async fn stock_native_lineage_preserves_original_resource_and_durable_restart() {
+    let directory = tempfile::tempdir().expect("original namespace");
+    let id = WorkspaceId::from_bytes([0xd2; 16]);
+    let cancellation = crate::CancellationToken::new();
+    let original =
+        NativeMaterializationWork::new(finite_budget(), &cancellation).expect("finite original");
+    let work = original
+        .native_volume_work(finite_budget())
+        .expect("actual resource view");
+    let value = lineage(id);
+    let store = LocalCoreStateStore::open_owned(directory.path()).expect("real owner");
+    assert!(
+        WorkspaceLineageStore::compare_and_swap_with_native_work(
+            &store,
+            id,
+            0,
+            paid_lineage(&value, &work, &cancellation),
+            &work,
+            &cancellation,
+        )
+        .await
+        .expect("stock original CAS")
+    );
+    let loaded = WorkspaceLineageStore::load_with_native_work(&store, id, &work, &cancellation)
+        .await
+        .expect("stock original load")
+        .expect("exact record");
+    assert_eq!((&loaded.0), &value);
+    let parts = loaded;
+    assert!(parts.1.work().shares_allocation_context(&work));
+    drop(parts);
+    assert!(
+        !WorkspaceLineageStore::compare_and_swap_with_native_work(
+            &store,
+            id,
+            0,
+            paid_lineage(&value, &work, &cancellation),
+            &work,
+            &cancellation,
+        )
+        .await
+        .expect("actual CAS miss")
+    );
+    drop(store);
+    let restarted = LocalCoreStateStore::new(directory.path());
+    let loaded = WorkspaceLineageStore::load_with_native_work(&restarted, id, &work, &cancellation)
+        .await
+        .expect("cold canonical WAL replay")
+        .expect("durable record");
+    assert_eq!((&loaded.0), &value);
+    assert_eq!(
+        WorkspaceLineageStore::load(&restarted, id)
+            .await
+            .expect("ordinary consumer"),
+        Some(value)
+    );
+    work.receipt()
+        .verify(finite_budget())
+        .expect("same finite original receipt");
+}
 
 #[tokio::test]
 async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
@@ -169,54 +201,87 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
         .expect_err("original cancellation");
     assert!(matches!(
         error.0,
-        crate::lineage::WorkspaceLineageError::Store(
-            LocalCoreStateStoreError::MaterializationWork(
-                NativeTreeMaterializationError::Cancelled
-            )
-        )
+        crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
+            crate::LazyWorkspaceError::Cancelled
+        ))
     ));
     assert_eq!(work.receipt(), before);
     assert!(!store.root().exists());
 }
 
 #[tokio::test]
-    async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_limit() {
-        let directory = tempfile::tempdir().expect("original namespace");
-        let id = WorkspaceContextId::from_bytes([0xd4; 16]);
-        let value = context(id, None, directory.path());
-        let store = LocalCoreStateStore::new(directory.path());
-        assert!(WorkspaceContextStore::compare_and_swap(&store, id, 0, value.clone()).await.expect("legacy canonical fixture"));
-        let cancellation = crate::CancellationToken::new();
-        let mut tight = finite_budget();
-        tight.source_bytes_read = 7;
-        let tight_original = NativeMaterializationWork::new(finite_budget(), &cancellation).expect("original");
-        let tight_work = tight_original.native_volume_work(tight).expect("finite exact read view");
-        let error = WorkspaceContextStore::load_with_native_work(&store, id, &tight_work, &cancellation)
-            .await.expect_err("real original read boundary");
-        assert!(matches!(error.0, crate::workspace_context::WorkspaceContextError::Store(LocalCoreStateStoreError::MaterializationWork(NativeTreeMaterializationError::Work(_)))));
-        assert_eq!(tight_work.receipt().source_bytes_read, 7);
-        let original = NativeMaterializationWork::new(finite_budget(), &cancellation).expect("original");
-        let work = original.native_volume_work(finite_budget()).expect("resource view");
-        let loaded = WorkspaceContextStore::load_with_native_work(&store, id, &work, &cancellation)
-            .await.expect("funded deep projection").expect("context");
-        assert_eq!((&loaded.0), &value);
-        let mut parts = loaded;
-        assert!(parts.1.matches_work(&work));
-        assert_eq!(parts.1.bytes(), native_records::native_context_owned_bytes(&parts.0, &work).expect("actual capacities"));
-        parts.0.revision += 1;
-        parts.0.state = WorkspaceContextState::Frozen;
-        assert!(WorkspaceContextStore::compare_and_swap_with_native_work(
-            &store, id, 1, (parts.0, parts.1), &work, &cancellation,
-        ).await.expect("same canonical context CAS"));
-        drop(store);
-        let reopened = LocalCoreStateStore::new(directory.path());
-        let actual = WorkspaceContextStore::load_with_native_work(&reopened, id, &work, &cancellation)
-            .await.expect("reopened original context").expect("context");
-        assert_eq!((&actual.0).revision, 2);
-        assert_eq!((&actual.0).state, WorkspaceContextState::Frozen);
-        assert_eq!((&actual.0).roots, value.roots);
-        work.receipt().verify(finite_budget()).expect("finite root resource");
-    }
+async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_limit() {
+    let directory = tempfile::tempdir().expect("original namespace");
+    let id = WorkspaceContextId::from_bytes([0xd4; 16]);
+    let value = context(id, None, directory.path());
+    let store = LocalCoreStateStore::new(directory.path());
+    assert!(
+        WorkspaceContextStore::compare_and_swap(&store, id, 0, value.clone())
+            .await
+            .expect("legacy canonical fixture")
+    );
+    let cancellation = crate::CancellationToken::new();
+    let mut tight = finite_budget();
+    tight.source_bytes_read = 7;
+    let tight_original =
+        NativeMaterializationWork::new(finite_budget(), &cancellation).expect("original");
+    let tight_work = tight_original
+        .native_volume_work(tight)
+        .expect("finite exact read view");
+    let error =
+        WorkspaceContextStore::load_with_native_work(&store, id, &tight_work, &cancellation)
+            .await
+            .expect_err("real original read boundary");
+    assert!(matches!(
+        error.0,
+        crate::workspace_context::WorkspaceContextError::Store(LocalCoreStateStoreError::LazyWork(
+            crate::LazyWorkspaceError::Demand(crate::DemandError::Work(_))
+        ))
+    ));
+    assert_eq!(tight_work.receipt().source_bytes_read, 7);
+    let original =
+        NativeMaterializationWork::new(finite_budget(), &cancellation).expect("original");
+    let work = original
+        .native_volume_work(finite_budget())
+        .expect("resource view");
+    let loaded = WorkspaceContextStore::load_with_native_work(&store, id, &work, &cancellation)
+        .await
+        .expect("funded deep projection")
+        .expect("context");
+    assert_eq!((&loaded.0), &value);
+    let mut parts = loaded;
+    assert!(parts.1.work().shares_allocation_context(&work));
+    assert_eq!(
+        parts.1.bytes(),
+        native_records::native_context_owned_bytes(&parts.0, &work).expect("actual capacities")
+    );
+    parts.0.revision += 1;
+    parts.0.state = WorkspaceContextState::Frozen;
+    assert!(
+        WorkspaceContextStore::compare_and_swap_with_native_work(
+            &store,
+            id,
+            1,
+            (parts.0, parts.1),
+            &work,
+            &cancellation,
+        )
+        .await
+        .expect("same canonical context CAS")
+    );
+    drop(store);
+    let reopened = LocalCoreStateStore::new(directory.path());
+    let actual = WorkspaceContextStore::load_with_native_work(&reopened, id, &work, &cancellation)
+        .await
+        .expect("reopened original context")
+        .expect("context");
+    assert_eq!((&actual.0).revision, 2);
+    assert_eq!((&actual.0).state, WorkspaceContextState::Frozen);
+    assert_eq!((&actual.0).roots, value.roots);
+    work.receipt()
+        .verify(finite_budget())
+        .expect("finite root resource");
+}
 
 async fn assert_bucket(
     store: &LocalCoreStateStore,
@@ -272,7 +337,7 @@ async fn intact_corrupt_native_log_retains_exact_error_path_custody() {
         )) => {
             let owned = (path, allocation);
             assert_eq!(owned.1.bytes(), owned.0.capacity() as u64);
-            assert!(owned.1.matches_work(&work));
+            assert!(owned.1.work().shares_allocation_context(&work));
             assert_eq!(owned.0, paths.current);
             drop(owned);
         }
