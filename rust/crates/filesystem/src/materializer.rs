@@ -1048,21 +1048,6 @@ impl NativeMaterializationWork {
         Ok(NativeCleanupWrite { meter: self.allocation_work(), additional_resource: None, reserved: true })
     }
 
-    /// Reserves visits on the original ledger and its resource allowances.
-    pub(crate) fn reserve_items(
-        &self, count: u64,
-    ) -> Result<NativeItemReservation, NativeTreeMaterializationError> {
-        let mut state = self.state();
-        let mut reserve = || state.reserve(crate::materializer::NativeResourceCredit::Items, count);
-        let reserved = match &self.resource {
-            Some(resource) => resource.reserve(NativeResourceCredit::Items.delta(count), 0, None, &mut reserve),
-            None => reserve(),
-        };
-        reserved.map_err(native_materialization_work_error)?;
-        drop(state);
-        Ok(NativeItemReservation { meter: self.allocation_work(), remaining: count })
-    }
-
     /// Admits an allocation and retains its ownership until deallocation.
     pub fn claim(&self, bytes: u64) -> Result<NativeAllocation, NativeTreeMaterializationError> {
         self.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
@@ -1566,20 +1551,6 @@ impl NativeWorkReservation {
         NativeCleanupLoan { credit: parking_lot::Mutex::new(self), original, wait }
     }
 
-    /// Loans reserved visits to the existing item reservation.
-    pub(crate) fn partition_items(
-        &mut self, count: u64,
-    ) -> Result<NativeItemReservation, NativeTreeMaterializationError> {
-        let remaining = self.remaining.items_examined.checked_sub(count)
-            .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
-        {
-            let mut state = self.meter.state();
-            state.partition_native_work_items(count).map_err(native_materialization_work_error)?;
-        }
-        self.remaining.items_examined = remaining;
-        Ok(NativeItemReservation { meter: self.meter.clone(), remaining: count })
-    }
-
     /// Transfers reserved work within the same aggregate allowance.
     pub(crate) fn partition_work(
         &mut self, maximum: crate::WorkCounters,
@@ -1613,6 +1584,19 @@ impl NativeWorkReservation {
             .map_err(native_materialization_work_error)?;
         overrun.map_err(Into::into)
     }
+    /// Retains mandatory completed work even when its allowance was exceeded.
+    pub(crate) fn record_deferred(&mut self, actual: crate::WorkCounters) {
+        let Err(error) = self.record_completed(actual) else { return; };
+        let mut state = self.meter.state();
+        state.record_native_io_failure(match error {
+            NativeTreeMaterializationError::Work(error) => crate::DemandError::Work(error),
+            NativeTreeMaterializationError::Cancelled => crate::DemandError::Cancelled,
+            NativeTreeMaterializationError::OriginalWorkPoisoned => crate::DemandError::OriginalWorkPoisoned,
+            _ => crate::DemandError::InvalidRequest,
+        });
+        state.poison_native_original_work();
+    }
+
     /// Charges only actual native attempt dimensions at their start boundary.
     fn started_io(&mut self, actual: crate::WorkCounters) -> Result<(), NativeTreeMaterializationError> {
         self.try_started_io(actual).map_err(|error| match error {
@@ -1736,13 +1720,7 @@ impl NativeCleanupLoan<'_> {
         self.credit.lock().record_completed(actual)
     }
 
-    /// Partitions original credit; it cannot admit a new item allowance.
-    pub(crate) fn reserve_items(
-        &self, count: u64,
-    ) -> Result<NativeItemReservation, NativeTreeMaterializationError> {
-        self.check_wait()?;
-        self.credit.lock().partition_items(count)
-    }
+
 }
 
 /// Physical-terminal custody of one moved, birth-paid original work token.
@@ -2194,57 +2172,6 @@ impl crate::native_host::NativeHostWork for &std::sync::Arc<NativeOwnedCleanupCr
     ) -> (T, Result<(), Self::Error>) {
         let (result, recorded) = reservation.attempt(operation);
         (result, recorded.map_err(|error| self.host_relay(error)))
-    }
-}
-
-/// Custody of actual future item visits; no ledger is moved or reconstructed.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct NativeItemReservation {
-    meter: NativeMaterializationWork,
-    remaining: u64,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeItemReservation {
-    /// Records visits completed under this reservation.
-    pub(crate) fn consume(&mut self, count: u64) -> Result<(), NativeTreeMaterializationError> {
-        self.consume_original(count).map_err(native_materialization_work_error)
-    }
-
-    pub(crate) fn consume_original(&mut self, count: u64) -> Result<(), crate::DemandError> {
-        let remaining = self.remaining.checked_sub(count)
-            .ok_or(crate::WorkError::Overflow)?;
-        let mut state = self.meter.state();
-        let recorded = state.complete(crate::materializer::NativeResourceCredit::Items, count, count);
-        let scoped = self.meter.resource.as_ref().map_or(Ok(()), |resource|
-            resource.complete_credit(NativeResourceCredit::Items, count, count));
-        self.remaining = remaining;
-        recorded.and(scoped)
-    }
-
-    /// Drop cannot abandon physical cleanup or panic over a prior quota spill.
-    pub(crate) fn consume_deferred(&mut self, count: u64) {
-        if let Err(error) = self.consume_original(count) {
-            let mut state = self.meter.state();
-            state.record_native_io_failure(error);
-            state.poison_native_original_work();
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for NativeItemReservation {
-    fn drop(&mut self) {
-        let count = std::mem::take(&mut self.remaining);
-        if count == 0 { return; }
-        let mut state = self.meter.state();
-        state.refund(crate::materializer::NativeResourceCredit::Items, count).expect("original reservation is balanced");
-        if let Some(resource) = &self.meter.resource {
-            if let Err(error) = resource.refund_credit(NativeResourceCredit::Items, count, None) {
-                state.record_native_io_failure(error);
-                state.poison_native_original_work();
-            }
-        }
     }
 }
 
