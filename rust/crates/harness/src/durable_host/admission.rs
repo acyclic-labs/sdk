@@ -61,7 +61,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         crate::NativeFutureBundle::new(work, || async move {
             use crate::store::history::HistoryIo;
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)?;
             let (record, custody) = request;
             io.absorb_native_custody(custody)?;
             io.retain_owned(std::mem::size_of::<Admission<TaskId>>() as u64)?;

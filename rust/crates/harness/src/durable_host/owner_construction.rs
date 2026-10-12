@@ -21,7 +21,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         fence: &crate::scheduler::LeaseFence,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskJournalOwner<P>> {
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::HistoryWork::new)?;
         self.journal_owner_with_work(
             task,
             std::borrow::Cow::Borrowed(fence),
@@ -215,9 +216,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(native) = &native {
             owner
-                .verify_read_access(&mut Some(&mut crate::store::history::native_work_io(
-                    native,
-                )?))
+                .verify_read_access(&mut Some(
+                    &mut crate::filesystem::PreparationIo::from_native_work(native)
+                        .map(crate::store::HistoryWork::new)?,
+                ))
                 .await?;
         } else {
             owner.verify(true, &mut None).await?;

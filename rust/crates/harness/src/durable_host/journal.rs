@@ -33,7 +33,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         pending: &crate::filesystem::WorkflowReleaseWitness<'_>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::HistoryWork::new)?;
         if pending.condition().0 != (self.task_id, &self.fence) {
             return Err(Error::Unauthorized(
                 "pending workflow belongs to another task or fence".into(),
@@ -82,7 +83,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(true)
     }
 
-    /// Derives a tool-effect workflow from this same original task reservation.
+    /// Derives a workflow for this original task's scoped tool invocation.
     pub(crate) async fn for_tool_workflow(
         mut self,
         context: &crate::runtime::ToolContext,
@@ -108,74 +109,58 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             context.task().require_original_native_dispatch(work)?;
             self.require_mail_scope_with_native_work(context.task().scope(), work)?;
         }
-        crate::executor::with_history_io(io, |work| {
-            self.require_mail_scope(context.task().scope(), work)
-        })?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let (admission, _admission_hold) = match native {
-            Some(work) => {
-                let (admission, custody) = self
-                    .host
-                    .observe_admission_with_native_work(self.task_id, work)
-                    .await?;
-                (admission, Some(custody))
-            }
-            None => (self.host.observe_admission(self.task_id).await?, None),
-        };
-        #[cfg(target_arch = "wasm32")]
-        let admission = self.host.observe_admission(self.task_id).await?;
-        if context.task().scope().run_limits() != admission.run_limits
-            || context.task().scope().extensions() != admission.extensions.as_ref()
-        {
-            return Err(Error::Unauthorized(
-                "tool workflow changed original admission policy".into(),
-            ));
-        }
         let mut history = io.map(crate::executor::PreparationIo::history_io);
         let mut work = history
             .as_mut()
             .map(|work| work as &mut dyn crate::store::HistoryIo);
+        self.require_mail_scope(context.task().scope(), &mut work)?;
+        {
+            let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+            let (admission, held) = self
+                .host
+                .read_retained_admission_counted(self.operation_id(), quota.work())
+                .await?;
+            quota.adopt(held)?;
+            if context.task().scope().run_limits() != admission.run_limits
+                || context.task().scope().extensions() != admission.extensions.as_ref()
+            {
+                return Err(Error::Unauthorized(
+                    "tool workflow changed original admission policy".into(),
+                ));
+            }
+            drop(admission);
+        }
         self.verify(false, &mut work).await?;
         #[cfg(not(target_arch = "wasm32"))]
         let before = io
             .map(crate::executor::PreparationIo::owned_bytes)
             .transpose()?
             .unwrap_or(0);
-        let workflow = tool.workflow_admission(context, invocation, io)?;
-        let output_schema = crate::executor::with_history_io(io, |work| {
-            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        self.workflow = tool.workflow_admission(context, invocation, io)?;
+        self.output_schema = {
+            let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
             let value = crate::core::copy_value(&tool.definition.output_schema, &mut quota)?;
             quota.transfer();
-            Ok::<_, Error>(value)
-        })?;
+            value
+        };
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = native {
+        if let Some(native) = native {
             let io = io.expect("original native funding");
-            let mut retained = io.take_native_custody(
-                io.owned_bytes()?
-                    .checked_sub(before)
-                    .ok_or(Error::Invalid("tool workflow custody underflow".into()))?,
-            )?;
+            let bytes = io
+                .owned_bytes()?
+                .checked_sub(before)
+                .ok_or(Error::Invalid("tool workflow custody underflow".into()))?;
+            let mut retained = io.take_native_custody(bytes)?;
             self._native_custody
                 .as_mut()
                 .expect("authenticated native owner")
                 .absorb(&mut retained)?;
-            self.workflow = workflow;
-            self.output_schema = output_schema;
             let bytes = self.native_owned_bytes()?;
             self._native_custody
                 .as_mut()
                 .expect("authenticated native owner")
                 .substitute(bytes)?;
-            work.remaining()?;
-        } else {
-            self.workflow = workflow;
-            self.output_schema = output_schema;
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.workflow = workflow;
-            self.output_schema = output_schema;
+            native.remaining()?;
         }
         Ok(self)
     }
@@ -192,18 +177,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         record: &crate::workflow::WorkflowRecord,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        let conflict = |reason: &'static str| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io
-                .and_then(crate::executor::PreparationIo::original_native_work)
-                .is_some()
-            {
-                return Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason,
-                };
-            }
-            Error::Conflict(reason.into())
+        let conflict = |reason| {
+            crate::executor::with_history_io(io, |work| {
+                admission_boundary(work, crate::wire::ErrorCode::Conflict, reason)
+            })
         };
         if record.prior.machine != self.workflow.initial.machine {
             return Err(conflict(
@@ -240,16 +217,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(conflict("workflow transition differs from pinned machine"));
         }
         if let crate::workflow::MachineStatus::Completed { value } = &proof.1.status {
-            if io.is_some() {
+            crate::executor::with_history_io(io, |work| {
                 crate::contract::validate_json_schema_value(
                     &self.output_schema,
                     value,
                     "task output",
-                    io,
-                )?;
-            } else {
-                crate::tool::validate_value(&self.output_schema, value, "task output", None)?;
-            }
+                    work,
+                )
+            })?;
         }
         Ok(())
     }
@@ -529,62 +504,27 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         bytes: OwnedBytes,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
-        if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-            return Err(admission_boundary(
-                work,
-                crate::wire::ErrorCode::Invalid,
-                "workflow record exceeds canonical Stream byte bound",
-            ));
-        }
         let class = if admission {
             "workflow-admissions"
         } else {
             "workflows"
         };
-        const PREFIX: &[u8] = b"harness/v2/";
-        let mut path_text = [0; b"harness/v2/workflow-admissions/".len() + 36];
-        let operation_start = PREFIX.len() + class.len() + 1;
-        let length = operation_start + 36;
-        if let Some(io) = work.as_deref_mut() {
-            io.admit_copy(length as u64)?;
-            io.copy_bytes(length as u64)?;
-        }
-        path_text[..PREFIX.len()].copy_from_slice(PREFIX);
-        path_text[PREFIX.len()..operation_start - 1].copy_from_slice(class.as_bytes());
-        path_text[operation_start - 1] = b'/';
-        uuid::Uuid::from_bytes(self.operation_id().into_bytes())
-            .hyphenated()
-            .encode_lower(&mut path_text[operation_start..length]);
-        let path_text =
-            std::str::from_utf8(&path_text[..length]).expect("canonical ASCII workflow path");
-        if let Some(io) = work.as_deref_mut() {
-            io.admit_owned(length as u64)?;
-            io.admit_allocation(length as u64)?;
-            io.copy_bytes(length as u64)?;
-            io.retain_owned(length as u64)?;
-        }
-        let path = acyclic_stream::StreamPath::new(path_text)?;
-        let result = self
-            .append(
-                path,
-                expected_tail,
-                key,
-                bytes,
-                crate::distributed::JournalWrite::Fresh,
-                work,
-            )
-            .await;
-        let released = match work.as_deref_mut() {
-            Some(io) => io.release_owned(length as u64),
-            None => Ok(()),
-        };
-        match result {
-            Ok(value) => {
-                released?;
-                Ok(value)
-            }
-            Err(error) => Err(error),
-        }
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let text = crate::contract::preparation_format(
+            format_args!("harness/v2/{class}/{}", self.operation_id()),
+            quota.work(),
+        )?;
+        quota.adopt(text.capacity() as u64)?;
+        let stream = crate::store::operations::stream(&self.stream, &text, quota.work())?;
+        self.append(
+            stream.0.path().clone(),
+            expected_tail,
+            key,
+            bytes,
+            crate::distributed::JournalWrite::Fresh,
+            quota.work(),
+        )
+        .await
     }
 
     pub(super) async fn prepare_append_with_work<'a, 'b>(

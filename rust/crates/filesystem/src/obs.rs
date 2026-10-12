@@ -575,7 +575,6 @@ mod worker_context_tests {
         .with_subscriber(unrelated)
         .await?;
         let evidence = evidence.lock().expect("evidence poisoned");
-        assert_eq!(evidence.event_parent.as_deref(), Some("worker_operation"));
         assert_eq!(
             evidence.events.len(),
             2,

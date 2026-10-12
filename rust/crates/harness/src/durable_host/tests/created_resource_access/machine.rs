@@ -4,7 +4,6 @@ pub(super) struct CreatedControlMachine {
     pub(super) identity: MachineIdentity,
     pub(super) schema: Value,
 }
-
 impl ResumableMachine for CreatedControlMachine {
     fn identity(&self) -> &MachineIdentity {
         &self.identity
@@ -16,28 +15,30 @@ impl ResumableMachine for CreatedControlMachine {
         Ok(input.clone())
     }
     fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
-        if state.get("emitted") == Some(&Value::Bool(true)) {
-            return Ok(MachineTransition {
-                state: state.clone(),
-                commands: Vec::new(),
-                status: MachineStatus::Completed {
+        let (state, commands, status) = if state.get("emitted") == Some(&Value::Bool(true)) {
+            (
+                state.clone(),
+                Vec::new(),
+                MachineStatus::Completed {
                     value: serde_json::json!({"ok":true}),
                 },
-            });
-        }
-        if let Some(command) = input.get("created_command") {
-            let command = serde_json::from_value(command.clone())
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            return Ok(MachineTransition {
-                state: serde_json::json!({"emitted":true}),
-                commands: vec![command],
-                status: MachineStatus::Suspended,
-            });
-        }
+            )
+        } else if let Some(command) = input.get("created_command") {
+            (
+                serde_json::json!({"emitted":true}),
+                vec![
+                    serde_json::from_value(command.clone())
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                ],
+                MachineStatus::Suspended,
+            )
+        } else {
+            (state.clone(), Vec::new(), MachineStatus::Suspended)
+        };
         Ok(MachineTransition {
-            state: state.clone(),
-            commands: Vec::new(),
-            status: MachineStatus::Suspended,
+            state,
+            commands,
+            status,
         })
     }
 }

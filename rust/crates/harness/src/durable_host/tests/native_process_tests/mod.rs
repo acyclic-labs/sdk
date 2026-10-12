@@ -212,7 +212,7 @@ where
         );
         let handle = owner
             .authorize_project_source_with_native_work(
-                context.context(),
+                context.as_ref(),
                 &self.issuer,
                 policy,
                 task,
@@ -226,7 +226,7 @@ where
         let inspection = self
             .task
             .inspect_project_source_with_native_work(
-                context.context(),
+                context.as_ref(),
                 owner,
                 handle,
                 operation,

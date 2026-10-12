@@ -10,7 +10,8 @@ impl<P: StreamProvider> crate::runtime::TaskStateProvider for CoordinatorTaskHos
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)?;
             self.verify_owner(task, fence, false, &mut Some(&mut io))
                 .await
         })
@@ -24,7 +25,8 @@ impl<P: StreamProvider> crate::runtime::TaskStateProvider for CoordinatorTaskHos
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)?;
             self.verify_owner(task, fence, true, &mut Some(&mut io))
                 .await
         })
@@ -147,7 +149,8 @@ impl<P: StreamProvider> crate::runtime::TaskStateProvider for CoordinatorTaskHos
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (RuntimeScope, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)?;
             let (scope, bytes) = self
                 .resume_scope_with_work(task, operation, &mut Some(&mut io))
                 .await?;

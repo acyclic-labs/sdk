@@ -59,7 +59,8 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)?;
             self.claim_model_dispatch_with_work(
                 task,
                 attempt,

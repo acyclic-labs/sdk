@@ -137,7 +137,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         let mut io = native
-            .map(crate::store::history::native_work_io)
+            .map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            })
             .transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut work = io

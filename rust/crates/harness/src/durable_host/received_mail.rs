@@ -31,13 +31,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "parcel recipient or sequence differs",
             ));
         }
-        let path = crate::contract::preparation_format(
-            format_args!(
-                "harness/v2/workflows/{}",
-                owner.workflow_admission().operation_id
-            ),
-            io,
-        )?;
+        let path = crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(
+                format_args!(
+                    "harness/v2/workflows/{}",
+                    owner.workflow_admission().operation_id
+                ),
+                work,
+            )
+        })?;
         let _path = io
             .map(|io| io.guard_owned(path.capacity() as u64))
             .transpose()?;

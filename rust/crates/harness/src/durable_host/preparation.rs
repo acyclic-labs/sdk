@@ -41,7 +41,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 .take()
                 .expect("funded preparation builder runs once");
             async move {
-                let mut io = match crate::store::history::native_work_io(native) {
+                let mut io = match crate::filesystem::PreparationIo::from_native_work(native)
+                    .map(crate::store::HistoryWork::new)
+                {
                     Ok(io) => io,
                     Err(cause) => {
                         drop(request);
@@ -52,7 +54,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     }
                 };
                 let token = self.resource_preparation(request, &mut Some(&mut io)).await;
-                let mut metadata = io.into_custody();
+                let mut metadata = io.into_custody()?;
                 match token {
                     Ok(mut token) => {
                         if let Err(cause) = custody.absorb(&mut metadata) {
@@ -159,7 +161,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 if let Some(native) = native.as_ref() {
                     self.verify(
                         false,
-                        &mut Some(&mut crate::store::history::native_work_io(native)?),
+                        &mut Some(
+                            &mut crate::filesystem::PreparationIo::from_native_work(native)
+                                .map(crate::store::HistoryWork::new)?,
+                        ),
                     )
                     .await?;
                 } else {

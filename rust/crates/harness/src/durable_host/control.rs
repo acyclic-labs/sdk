@@ -5,7 +5,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Cancels under the original owner and retained retry identity.
     pub async fn cancel(&self, task_id: TaskId, native: crate::NativeWork<'_>) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut io = native.map(crate::store::native_work_io).transpose()?;
+        let mut io = native
+            .map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            })
+            .transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::HistoryIo);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -115,7 +120,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task: TaskId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Option<Outcome<Value>>, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::HistoryWork::new)?;
         let metadata = std::mem::size_of::<Option<Outcome<Value>>>() as u64;
         crate::store::history::HistoryIo::retain_owned(&mut io, metadata)?;
         let (outcome, owned) = self.outcome_with_work(task, &mut Some(&mut io)).await?;

@@ -231,7 +231,9 @@ where
     if let Some((_, _, _, scratch_operation, _)) = root_births {
         use crate::store::history::HistoryIo as _;
         let original = original_work.expect("protected Root births require original work");
-        let mut metadata = crate::store::history::native_work_io(original)?;
+        let mut metadata = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(original)?,
+        );
         metadata.claim(
             std::mem::size_of::<(Authority, AuthorityIssuer, Scope)>() as u64,
             0,
@@ -239,7 +241,7 @@ where
         )?;
         let mut authority = (
             metadata.clone_authority(issuer.audience())?,
-            metadata.into_custody(),
+            metadata.into_custody()?,
         );
         let mut copied_issuer = issuer.clone_with_native_work(original)?;
         authority.1.absorb(&mut copied_issuer.1)?;

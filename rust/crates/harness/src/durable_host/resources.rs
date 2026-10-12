@@ -143,7 +143,8 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
             });
         }
         crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)?;
             self.verify_with_work(&mut Some(&mut io)).await
         })
     }

@@ -209,11 +209,9 @@ impl TaskAdmissionRecord {
                 .transpose()?;
             crate::resources::ResourceRef::new(source.kind(), provider, key, version, quota.work())
         }
-        let mut io =
-            crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         io.check_cancellation()?;
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
         let mut quota =
@@ -429,7 +427,7 @@ impl TaskAdmissionRecord {
             }
         }
         validate_task_schemas(&self.input_schema, &self.output_schema, true, quota.work())?;
-        crate::contract::validate_json_schema_value_with_work(
+        crate::contract::validate_json_schema_value(
             &self.input_schema,
             &self.input,
             "task input",

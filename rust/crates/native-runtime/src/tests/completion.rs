@@ -1,5 +1,18 @@
 use super::*;
 
+fn failed_child(test: &str, marker: &str, message: &str) -> io::Result<()> {
+    let output = crate::process_output(
+        std::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", test, "--nocapture"])
+            .env(marker, "1"),
+        Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )?;
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+    Ok(())
+}
+
 #[cfg(any(windows, target_os = "linux"))]
 #[test]
 fn accepted_callback_cannot_disappear_without_terminal_completion() -> io::Result<()> {
@@ -21,20 +34,11 @@ fn accepted_callback_cannot_disappear_without_terminal_completion() -> io::Resul
         );
         return Err(io::Error::other("missing terminal callback"));
     }
-    let output = crate::process_output(
-        std::process::Command::new(std::env::current_exe()?)
-            .args([
-                "--exact",
-                "tests::completion::accepted_callback_cannot_disappear_without_terminal_completion",
-                "--nocapture",
-            ])
-            .env(MARKER, "1"),
-        Duration::from_secs(120),
-        8 * 1024 * 1024,
-    )?;
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("dropping accepted native callback"));
-    Ok(())
+    failed_child(
+        "tests::completion::accepted_callback_cannot_disappear_without_terminal_completion",
+        MARKER,
+        "dropping accepted native callback",
+    )
 }
 
 #[test]
@@ -52,20 +56,11 @@ fn native_file_worker_unwind_is_fail_stop() -> io::Result<()> {
         )?);
         return Err(io::Error::other("worker unwind returned"));
     }
-    let output = crate::process_output(
-        std::process::Command::new(std::env::current_exe()?)
-            .args([
-                "--exact",
-                "tests::completion::native_file_worker_unwind_is_fail_stop",
-                "--nocapture",
-            ])
-            .env(MARKER, "1"),
-        Duration::from_secs(120),
-        8 * 1024 * 1024,
-    )?;
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("injected native worker unwind"));
-    Ok(())
+    failed_child(
+        "tests::completion::native_file_worker_unwind_is_fail_stop",
+        MARKER,
+        "injected native worker unwind",
+    )
 }
 
 #[test]
@@ -132,14 +127,7 @@ fn host_task_panic_preserves_payload_and_retires_controls() -> io::Result<()> {
             drop(task);
             release.send(()).map_err(io::Error::other)?;
         }
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while (!dropped.load(Ordering::Acquire) || meter.memory.load(Ordering::Acquire) != 0)
-            && Instant::now() < deadline
-        {
-            std::thread::yield_now();
-        }
-        assert!(dropped.load(Ordering::Acquire));
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        wait_until(|| dropped.load(Ordering::Acquire) && meter.memory.load(Ordering::Acquire) == 0);
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
     }
     Ok(())

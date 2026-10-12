@@ -92,7 +92,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut io = native
-            .map(crate::store::history::native_work_io)
+            .map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            })
             .transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut work = io
@@ -193,7 +196,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let outcome = match outcome {
             Outcome::Succeeded(value) => {
                 if work.is_some() {
-                    let validator = crate::contract::compile_json_schema_with_work(
+                    let validator = crate::contract::compile_json_schema(
                         &admission.output_schema,
                         "task output",
                         work,
@@ -206,11 +209,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         ));
                     }
                 } else {
-                    crate::tool::validate_value(
+                    crate::contract::validate_json_schema_value(
                         &admission.output_schema,
                         &value,
                         "task output",
-                        None,
+                        &mut None,
                     )?;
                 }
                 let bytes = crate::store::history::canonical_bytes_with_work(
@@ -356,7 +359,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<bool> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut io = native
-            .map(crate::store::history::native_work_io)
+            .map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            })
             .transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut work = io

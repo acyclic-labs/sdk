@@ -71,7 +71,8 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
         }
         crate::NativeFutureBundle::new(work, || async move {
             use crate::store::history::HistoryIo;
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)?;
             let (record, record_guard) = request;
             let (fence, fence_guard) = fence;
             io.absorb_native_custody(record_guard)?;
@@ -124,7 +125,8 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
     > {
         crate::NativeFutureBundle::new(work, || async move {
             use crate::store::history::HistoryIo;
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)?;
             let extra = std::mem::size_of::<Option<(TaskId, TaskAdmissionRecord)>>()
                 - std::mem::size_of::<TaskAdmissionRecord>();
             io.retain_owned(extra as u64)?;

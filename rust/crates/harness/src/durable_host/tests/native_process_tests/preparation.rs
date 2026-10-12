@@ -29,7 +29,9 @@ async fn native_builtin_current_volume_grants_and_unmounted_results_deny_before_
             .require_volume_grant(
                 &seed.source,
                 VolumeOperation::Write,
-                &mut Some(&mut crate::store::history::native_work_io(&work)?)
+                &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(&work)?
+                ))
             )
             .is_err()
     );

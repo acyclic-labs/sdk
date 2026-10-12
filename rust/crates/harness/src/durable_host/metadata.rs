@@ -69,7 +69,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task: TaskId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::HistoryWork::new)?;
         let admission = self
             .admission_with_work(
                 OperationId::from_bytes(task.into_bytes()),

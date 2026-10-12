@@ -169,7 +169,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.check_configuration_work(work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut io = work
-            .map(crate::store::history::native_work_io)
+            .map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            })
             .transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut observer = io
@@ -226,7 +229,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.check_configuration_work(work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut io = work
-            .map(crate::store::history::native_work_io)
+            .map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            })
             .transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut observer = io

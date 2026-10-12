@@ -53,7 +53,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "mailbox scope differs from its original native admission",
             });
         }
-        let mut observer = crate::store::history::native_work_io(work)?;
+        let mut observer = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::HistoryWork::new)?;
         self.require_mail_scope(scope, &mut Some(&mut observer))
     }
 
@@ -510,7 +511,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Option<crate::Outcome<FileRef>>,
         acyclic_fs::NativeAllocation,
     )> {
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::HistoryWork::new)?;
         let mut coordinator = self.host.coordinator.lock().await;
         coordinator.refresh(&mut Some(&mut io)).await?;
         let operation = coordinator.observe_operation(
@@ -533,7 +535,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             ));
         }
         let output = outcome.clone_with_work(&mut Some(&mut io))?;
-        Ok((Some(output), io.into_custody()))
+        Ok((Some(output), io.into_custody()?))
     }
 
     pub(crate) fn require_effect_grants(

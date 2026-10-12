@@ -22,7 +22,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         #[cfg(target_arch = "wasm32")]
         let owner = self.journal_owner(task, fence.clone()).await?;
         #[cfg(not(target_arch = "wasm32"))]
-        let mut io = native.map(crate::store::native_work_io).transpose()?;
+        let mut io = native
+            .map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            })
+            .transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::HistoryIo);
         #[cfg(target_arch = "wasm32")]

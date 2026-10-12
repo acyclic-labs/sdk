@@ -172,12 +172,18 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<()> {
         self.verify_root_binding_identity_with_native_work(proof, readonly, work)?;
         if readonly {
-            self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?))
-                .await
+            self.verify_read_access(&mut Some(
+                &mut crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)?,
+            ))
+            .await
         } else {
             self.verify(
                 false,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(
+                    &mut crate::filesystem::PreparationIo::from_native_work(work)
+                        .map(crate::store::HistoryWork::new)?,
+                ),
             )
             .await
         }
@@ -229,20 +235,22 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         verifier.verify_audience(
             self.host.verifier.audience(),
             &mut Some(
-                &mut crate::store::history::native_work_io(work).map_err(|cause| {
-                    crate::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
+                &mut crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)?,
             ),
         )?;
         verifier.verify(
             &self.host.owner_scope,
-            &mut Some(&mut crate::store::history::native_work_io(work)?),
+            &mut Some(
+                &mut crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)?,
+            ),
         )?;
-        self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?))
-            .await
+        self.verify_read_access(&mut Some(
+            &mut crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)?,
+        ))
+        .await
     }
 
     /// Retains the existing coordinator-only publication guard, never this host or task context.
@@ -253,7 +261,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<Arc<dyn crate::resource_preparation::CreatedTaskLease>> {
         self.authenticated_root_binding_with_native_work(work)
             .await?;
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::HistoryWork::new)?;
         crate::store::history::HistoryIo::retain_owned(
             &mut io,
             std::mem::size_of::<CreatedTaskPublicationLease<P>>() as u64,
@@ -278,8 +287,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "bootstrap source requires an original root admission",
             });
         }
-        self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?))
-            .await?;
+        self.verify_read_access(&mut Some(
+            &mut crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)?,
+        ))
+        .await?;
         self.host
             .observe_admission_with_native_work(self.task_id, work)
             .await
@@ -301,7 +313,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "bootstrap admission differs from its actual root",
             });
         }
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::HistoryWork::new)?;
         let digest = crate::contract::canonical_json_digest_with_work(
             root,
             acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -313,8 +326,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "bootstrap admission differs from protected original workflow",
             });
         }
-        self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?))
-            .await
+        self.verify_read_access(&mut Some(
+            &mut crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)?,
+        ))
+        .await
     }
 
     pub(crate) fn retain_root_binding(
@@ -329,7 +345,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         #[cfg(not(target_arch = "wasm32"))]
         let mut native_io = native
             .as_ref()
-            .map(crate::store::history::native_work_io)
+            .map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            })
             .transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut work = native_io
@@ -464,7 +483,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         binding: &crate::store::VerifiedRootBinding,
         native: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(native)?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(native)
+            .map(crate::store::HistoryWork::new)?;
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
         let declaration = &original.0;
         declaration.verify_owner(self.verifier.audience(), &self.verifier, &mut observer)?;
@@ -516,7 +536,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     continue;
                 };
                 let binding = witness.binding();
-                let mut io = crate::store::history::native_work_io(native)?;
+                let mut io = crate::filesystem::PreparationIo::from_native_work(native)
+                    .map(crate::store::HistoryWork::new)?;
                 let original = crate::distributed::original_reservation_proof(
                     &self.stream,
                     self.verifier.audience(),
