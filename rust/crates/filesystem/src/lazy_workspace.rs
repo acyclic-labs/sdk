@@ -2728,7 +2728,7 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
             return Err(self.original_source_error(DemandError::StaleSource));
         }
         // Reserve the destination copy before source I/O.
-        let copy = original.reserve_copy(requested)?;
+        let copy = original.reserve_work(crate::WorkCounters { bytes_copied: requested, ..crate::WorkCounters::UNCHARGED })?;
         let before = original.receipt();
         let result = self.provider.read_range_with_native_work(
             self.source, &self.path, self.version, self.offset, requested,
@@ -2759,7 +2759,7 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
             return Err(self.original_source_error(DemandError::StaleVersion));
         };
         destination.copy_from_slice(&chunk.bytes);
-        copy.record(count)?;
+        { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: count, ..crate::WorkCounters::UNCHARGED }) }?;
         self.offset = next_offset;
         Ok(chunk.bytes.len())
     }

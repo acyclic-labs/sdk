@@ -955,7 +955,7 @@ mod native_cache {
         source: &[u8], work: &NativeMaterializationWork,
     ) -> Result<OwnedBytes, ObjectStoreError> {
         let mut allocation = work.claim(source.len() as u64)?;
-        let copy = work.reserve_copy(source.len() as u64)?;
+        let copy = work.reserve_work(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(source.len())
             .map_err(|error| ObjectStoreError::Native(NativeTreeMaterializationError::AllocationFailed(error)))?;
@@ -970,7 +970,7 @@ mod native_cache {
                 ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
         })?;
         prepared.writable()[..source.len()].copy_from_slice(source);
-        copy.record(source.len() as u64)?;
+        { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED }) }?;
         prepared.freeze(source.len()).map_err(|_| ObjectStoreError::Corrupt)
     }
 

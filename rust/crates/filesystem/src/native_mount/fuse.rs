@@ -3094,10 +3094,7 @@ impl FusePhysicalSession {
         let Self { session, sdk_input, sdk_worker, core, active_root,
             retirement_helper, native_root_identity, birth_cleanup } = self;
         let loan = if native.is_none() {
-            Some(match wait {
-                Some(wait) => birth_cleanup.cleanup_loan(wait),
-                None => birth_cleanup.accepted_cleanup_loan(),
-            })
+            Some(birth_cleanup.loan(wait))
         } else { None };
         if session.is_none()
             && sdk_worker.is_none() && active_root.is_none()
@@ -3547,7 +3544,7 @@ impl FuseSession {
         drop(state);
         if self.invalidator.is_some() {
             self.with_physical(|physical| {
-                let loan = physical.birth_cleanup.accepted_cleanup_loan();
+                let loan = physical.birth_cleanup.loan(None);
                 loan.started_io(crate::WorkCounters {
                     backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
                 })?;
