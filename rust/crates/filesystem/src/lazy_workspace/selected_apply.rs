@@ -17,7 +17,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         operation: crate::OperationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<SelectedImportEffects, LazyWorkspaceError> {
-        self.validate_snapshot(destination, ctx)?;
+        self.validate_snapshot(destination, ctx).await?;
         if plan.source_used && plan.source.source != self.source.reference() {
             return Err(LazyWorkspaceError::StaleSource);
         }
