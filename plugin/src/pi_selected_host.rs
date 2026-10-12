@@ -1,4 +1,3 @@
-use acyclic_fs::demand::DemandSource;
 //! Selected controls execute inside the ORIGINAL command owner, never a source worker.
 use crate::{
     AdapterState, PiTaskBinding, PluginTaskBinding, ServiceResources,
@@ -9,6 +8,7 @@ use crate::{
     pi_root_provider::PiRootHandle,
     pi_task::{PiTaskExecution, PiTaskInput},
 };
+use acyclic_fs::demand::DemandSource;
 use acyclic_fs::{CancellationToken, LazySnapshotRef, WorkCounters};
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
