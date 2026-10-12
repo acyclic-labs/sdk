@@ -15,22 +15,19 @@ impl FuseMount {
         let bytes = destination.as_os_str().as_bytes();
         if bytes.contains(&0) { return Err(NativeMountError::InvalidDestination); }
         let count = bytes.len().checked_add(1).ok_or(crate::WorkError::Overflow)?;
-        let mut path = fuse_vec(count, work).map_err(NativeMountError::from)?;
-        fuse_copy_admit(bytes.len() as u64, work).map_err(NativeMountError::from)?;
+        let mut path = fuse_vec(count, work)?;
+        fuse_copy_admit(bytes.len() as u64, work)?;
         path.extend_from_slice(bytes);
         path.push(0);
-        fuse_copy_record(bytes.len() as u64, work).map_err(NativeMountError::from)?;
+        fuse_copy_record(bytes.len() as u64, work)?;
         Ok(Self { path, device: None, helper: None, socket: None, mounted: false })
     }
 
-    pub(super) fn start(&mut self, config: &Config, writable: bool, mode: libc::mode_t)
+    pub(super) fn start(&mut self, writable: bool, mode: libc::mode_t)
         -> std::io::Result<()>
     {
         use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
-        if config.mount_options.contains(&MountOption::AutoUnmount) {
-            return Err(std::io::ErrorKind::InvalidInput.into());
-        }
         let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
             .map_err(|_| std::io::ErrorKind::InvalidInput)?;
         self.device = Some(std::fs::OpenOptions::new().read(true).write(true)

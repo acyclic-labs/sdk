@@ -50,9 +50,9 @@ impl InvalidationQueue {
 pub(super) fn stale_kernel_items(
     by_inode: &mut HashMap<u64, InodeEntry>,
     inode_by_path: &HashMap<FuseOwned<MountPath>, u64>,
-    unchanged_since: impl Fn(&MountPath, Option<crate::FileId>, ViewStamp) -> Result<bool, FuseRequestError>,
+    unchanged_since: impl Fn(&MountPath, Option<crate::FileId>, ViewStamp) -> Result<bool, NativeMountError>,
     through: ViewStamp, work: &crate::NativeMaterializationWork,
-) -> Result<FuseOwned<Vec<KernelCacheItem>>, FuseRequestError> {
+) -> Result<FuseOwned<Vec<KernelCacheItem>>, NativeMountError> {
     enum Action { Inode(u64), Negative { inode: u64, item: usize }, Binding { inode: u64, index: usize } }
     let mut items = fuse_vec(0, work)?;
     let mut actions = fuse_vec(0, work)?;
@@ -166,8 +166,7 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
                     let state = &mut *state;
                     let items = stale_kernel_items(&mut state.by_inode, &state.inode_by_path,
                         |path, file_id, stamp| core.source.unchanged_since_with_meter(path, file_id, stamp, work)
-                            .map_err(FuseRequestError::from), through, work)
-                        .map_err(NativeMountError::from)?;
+                            .map_err(NativeMountError::from), through, work)?;
                     state.invalidation.scanned = Some(through);
                     completed_through = Some(through);
                     items.map(Vec::into_iter)
@@ -180,7 +179,7 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
             let dropped = drop_kernel_caches(notifier, &mut items.items, work, &mut sdk_failure);
             drop(items);
             dropped?;
-            sdk_failure.take().map_or(Ok(()), Err).map_err(FuseRequestError::from)
+            sdk_failure.take().map_or(Ok(()), Err)
         });
         let result = result.map(|receipt| receipt.value);
         let denied = result.is_err();

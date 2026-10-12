@@ -74,7 +74,7 @@ impl Filesystem for FuseProjection {
         let metadata = create_metadata(mode & !umask, S_IFDIR, request.uid(), request.gid());
         respond!(self.core, reply, span, work,
             self.create_node(parent.0, name, |path, work|
-                self.core.source.create_directory(path, metadata, work).map_err(FuseRequestError::from), work),
+                self.core.source.create_directory(path, metadata, work).map_err(NativeMountError::from), work),
             |entry| reply.entry(&entry.ttl, &entry.attr, Generation(0)));
     }
 
@@ -92,7 +92,7 @@ impl Filesystem for FuseProjection {
                 _ => return Err(libc::EOPNOTSUPP.into()),
             };
             self.create_node(parent.0, name, |path, work|
-                self.core.source.create_special(path, kind, device, metadata, work).map_err(FuseRequestError::from), work)
+                self.core.source.create_special(path, kind, device, metadata, work).map_err(NativeMountError::from), work)
         }, |entry| reply.entry(&entry.ttl, &entry.attr, Generation(0)));
     }
 
@@ -101,7 +101,7 @@ impl Filesystem for FuseProjection {
         let metadata = create_metadata(0o777, S_IFLNK, request.uid(), request.gid());
         respond!(self.core, reply, span, work, self.create_node(parent.0, name, |path, work| {
             let target = fuse_source_chunk(target.as_os_str().as_bytes(), work)?;
-            self.core.source.create_symbolic_link(path, target, metadata, work).map_err(FuseRequestError::from)
+            self.core.source.create_symbolic_link(path, target, metadata, work).map_err(NativeMountError::from)
         }, work), |entry| reply.entry(&entry.ttl, &entry.attr, Generation(0)));
     }
 
@@ -195,13 +195,13 @@ impl Filesystem for FuseProjection {
 
     fn releasedir(&self, _: &Request, inode: INodeNo, fh: FuseFileHandle, _: OpenFlags, reply: ReplyEmpty) {
         let span = callback_span!(TRACE, releasedir, ino = inode.0, fh = fh.0);
-        respond!(self.core, reply, span, _work, Ok::<_, FuseRequestError>(()), |()| reply.ok());
+        respond!(self.core, reply, span, _work, Ok::<_, NativeMountError>(()), |()| reply.ok());
     }
 
     fn fsyncdir(&self, _: &Request, inode: INodeNo, fh: FuseFileHandle, _: bool, reply: ReplyEmpty) {
         let span = callback_span!(TRACE, fsyncdir, ino = inode.0, fh = fh.0);
         respond!(self.core, reply, span, work,
-            self.source_write(work, || self.core.source.flush(work).map_err(FuseRequestError::from)), |()| reply.ok());
+            self.source_write(work, || self.core.source.flush(work).map_err(NativeMountError::from)), |()| reply.ok());
     }
 
     fn setxattr(&self, _: &Request, inode: INodeNo, name: &OsStr, value: &[u8], flags: i32,

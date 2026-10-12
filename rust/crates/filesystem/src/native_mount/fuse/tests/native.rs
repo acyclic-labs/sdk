@@ -1,5 +1,31 @@
 use super::*;
 
+#[test]
+fn reserve_failures_keep_errno_and_retained_typed_cause() {
+    struct Cause(MountSourceError);
+    impl crate::native_mount::MountSourceFailureCause for Cause {
+        fn semantic_error(&self) -> &MountSourceError { &self.0 }
+    }
+    let reserve = || Vec::<u8>::new().try_reserve(usize::MAX).expect_err("capacity overflow");
+    assert_eq!(native_callback_errno(&NativeMountError::Allocation(reserve())), libc::ENOMEM);
+    assert_eq!(native_callback_errno(&NativeMountError::Source(MountSourceError::Allocation(reserve()))), libc::ENOMEM);
+    assert_eq!(native_callback_errno(&NativeMountError::Source(MountSourceError::NamespacePath(
+        crate::kernel::NamespacePathError::AllocationFailed,
+    ))), libc::ENOMEM);
+    let owner: Arc<dyn crate::native_mount::MountSourceFailureCause> = Arc::new(Cause(
+        MountSourceError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(reserve())),
+    ));
+    let failure = NativeMountError::Source(MountSourceError::Retained(Arc::clone(&owner)));
+    assert!(super::super::fatal_handler_error(&failure));
+    let Some(NativeMountError::Source(MountSourceError::Retained(cloned))) =
+        super::super::clone_fatal_handler_error(&failure)
+    else { panic!("retained reserve failure must remain cloneable"); };
+    assert!(Arc::ptr_eq(&owner, &cloned));
+    assert!(matches!(cloned.semantic_error(), MountSourceError::NativeWork(
+        crate::NativeTreeMaterializationError::AllocationFailed(_),
+    )));
+}
+
 pub(super) fn posix_config() -> crate::model::VolumeConfig {
     let mut config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
     config.profile = crate::model::FilesystemProfile::Posix;
@@ -164,9 +190,8 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
     assert!(projection.open_source(source.as_ref(), &path, created.node.file_id,
         libc::O_TRUNC, None, &work).is_err());
     assert!(around.lookup(&path)?.is_some());
-    let denied = |result: Result<(), crate::native_mount::fuse::FuseRequestError>| {
-        assert!(matches!(result, Err(crate::native_mount::fuse::FuseRequestError::Native(
-            crate::NativeMountError::CallbackDenied { .. }))));
+    let denied = |result: Result<(), crate::NativeMountError>| {
+        assert!(matches!(result, Err(crate::NativeMountError::CallbackDenied { .. })));
     };
     denied(projection.remove_name(ROOT_INODE, std::ffi::OsStr::new("write-authority"), &work));
     denied(projection.rename_name(ROOT_INODE, std::ffi::OsStr::new("write-authority"),
@@ -177,18 +202,18 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
     denied(projection.copy_range(0, 0, 0, 0, 0, 0, 1, 0, &work).map(|_| ()));
     denied(projection.create_node(ROOT_INODE, std::ffi::OsStr::new("denied-directory"),
         |path, work| source.create_directory(path, FileMetadata::default(), work)
-            .map_err(crate::native_mount::fuse::FuseRequestError::from), &work).map(|_| ()));
+            .map_err(crate::NativeMountError::from), &work).map(|_| ()));
     denied(projection.write_named_attribute(0, std::ffi::OsStr::new("user.denied"),
         b"denied", 0, 0, &work));
     denied(projection.remove_named_attribute(0, std::ffi::OsStr::new("user.denied"), &work));
     assert!(projection.source_write(&work, || source.remove(
         &path, Some(created.node.file_id), &work,
-    ).map_err(crate::native_mount::fuse::FuseRequestError::from)).is_err());
+    ).map_err(crate::NativeMountError::from)).is_err());
     assert!(around.lookup(&path)?.is_some(), "pre-effect refusal cannot remove the file");
     guard.writable.store(true, std::sync::atomic::Ordering::Release);
     let removed = projection.source_write(&work, || {
         source.remove(&path, Some(created.node.file_id), &work)
-            .map_err(crate::native_mount::fuse::FuseRequestError::from)?;
+            .map_err(crate::NativeMountError::from)?;
         guard.writable.store(false, std::sync::atomic::Ordering::Release);
         Ok(())
     });
@@ -218,7 +243,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
     let result = core.request(|work| {
         source.remove(&path, Some(created.node.file_id), work)?;
         cancellation.cancel();
-        source.lookup_with_meter(&path, work).map_err(crate::native_mount::fuse::FuseRequestError::from)
+        source.lookup_with_meter(&path, work).map_err(crate::NativeMountError::from)
     });
     let Err(failure) = result else {
         return Err("post-effect cancellation was reported as success".into());
@@ -249,7 +274,7 @@ pub(super) fn authentic_missing_source_name_does_not_poison_handler_health()
     let result = core.request(|work| {
         let path = crate::native_mount::fuse::fuse_clone_path(&path, work)?;
         source.lookup_with_meter(&path, work)?
-            .ok_or(MountSourceError::NotFound).map_err(crate::native_mount::fuse::FuseRequestError::from)
+            .ok_or(MountSourceError::NotFound).map_err(crate::NativeMountError::from)
     });
     let Err(failure) = &result else {
         return Err("real absent lookup lost its original request packet".into());
@@ -281,7 +306,7 @@ pub(super) fn active_callback_borrows_original_meter_without_future_receipt_doub
         let result = core.request(|callback_work| {
             assert!(Arc::ptr_eq(callback_work.native_read_meter(), work.native_read_meter()));
             let path = crate::native_mount::fuse::fuse_clone_path(&path, callback_work)?;
-            source.lookup_with_meter(&path, callback_work).map_err(crate::native_mount::fuse::FuseRequestError::from)
+            source.lookup_with_meter(&path, callback_work).map_err(crate::NativeMountError::from)
         });
         assert!(core.finish(result).map_err(std::io::Error::from_raw_os_error)?.is_some());
         assert_eq!(core.completed_callback_work(), crate::WorkCounters::UNCHARGED);
@@ -350,14 +375,15 @@ pub(super) fn measured_deferred_open_refuses_an_actual_rebound_file_identity()
         FINITE_HANDLER_POLICY, &cancellation, |work| {
             let path = crate::native_mount::fuse::fuse_clone_path(&path, work)
                 .map_err(crate::NativeMountError::from)?;
-            let allocation = crate::native_mount::fuse::fuse_initialized(
-                (), std::mem::size_of::<crate::native_mount::fuse::DeferredOpenFile>() as u64, work,
-            ).map_err(crate::NativeMountError::from)?;
+            let allocation = work.claim(
+                std::mem::size_of::<crate::native_mount::fuse::DeferredOpenFile>() as u64,
+                1, crate::WorkCounters::UNCHARGED,
+            )?;
             Ok(Arc::new(crate::native_mount::fuse::DeferredOpenFile {
                 source: crate::native_mount::fuse::fuse_arc_clone(&source, work)
                     .map_err(crate::NativeMountError::from)?,
                 path,
-                opened,
+                file_id: opened.node.file_id,
                 file: std::sync::Mutex::new(None),
                 _allocation: allocation,
             }))
@@ -466,51 +492,31 @@ pub(super) fn last_facade_drop_signals_the_original_keeper_and_retires_its_actua
 }
 
 #[test]
-pub(super) fn preborn_helper_frame_reaps_real_child_after_original_cancellation()
+pub(super) fn preborn_helpers_retain_custody_through_cancellation_and_spawn_refusal()
 -> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = crate::CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(
-        crate::WorkBudget {
+    for program in [c"/bin/true", c"/this-native-helper-program-authentically-does-not-exist"] {
+        let cancellation = crate::CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(crate::WorkBudget {
             backend_read_operations: 16_004, backend_write_operations: 13,
             ..FINITE_HANDLER_POLICY
-        }, &cancellation,
-    ).map_err(|(cause, _)| cause)?;
-    let mut helper = crate::native_mount::fuse::FuseRetirementHelper::prepare_program(
-        c"/bin/true", &original,
-    )?;
-    let before = original.receipt();
-    cancellation.cancel();
-    helper.retire(c"/unused", None)?;
-    assert!(helper.helper.is_none() && helper.frame.is_none());
-    let after = original.receipt();
-    assert_eq!(after.allocation_operations, before.allocation_operations,
-        "all known argv/environment/control backing existed before birth");
-    assert!(original.cancellation().is_cancelled());
-    helper.retire(c"/unused", None)?;
-    assert_eq!(original.receipt(), after, "terminal replay cannot spawn another process");
-    Ok(())
-}
-
-#[test]
-pub(super) fn preborn_helper_keeps_original_spawn_cause_after_genuine_sdk_refusal()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = crate::CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(
-        crate::WorkBudget {
-            backend_read_operations: 16_004, backend_write_operations: 13,
-            ..FINITE_HANDLER_POLICY
-        }, &cancellation,
-    ).map_err(|(cause, _)| cause)?;
-    let mut helper = crate::native_mount::fuse::FuseRetirementHelper::prepare_program(
-        c"/this-native-helper-program-authentically-does-not-exist", &original,
-    )?;
-    let before = original.receipt();
-    cancellation.cancel();
-    let error = helper.retire(c"/unused", None).expect_err("the real posix_spawn must report ENOENT");
-    assert!(matches!(error, crate::NativeMountError::Materialization(
-        crate::NativeTreeMaterializationError::Io(error)
-    ) if error.raw_os_error() == Some(libc::ENOENT)));
-    assert!(helper.helper.is_none() && helper.frame.is_none());
-    assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+        }, &cancellation).map_err(|(cause, _)| cause)?;
+        let mut helper = crate::native_mount::fuse::FuseRetirementHelper::prepare_program(program, &original)?;
+        let before = original.receipt();
+        cancellation.cancel();
+        let result = helper.retire(c"/unused", None);
+        if program == c"/bin/true" {
+            result?;
+            let after = original.receipt();
+            helper.retire(c"/unused", None)?;
+            assert_eq!(original.receipt(), after, "terminal replay cannot spawn another process");
+        } else {
+            assert!(matches!(result, Err(crate::NativeMountError::Materialization(
+                crate::NativeTreeMaterializationError::Io(error)
+            )) if error.raw_os_error() == Some(libc::ENOENT)));
+        }
+        assert!(helper.helper.is_none() && helper.frame.is_none());
+        assert!(original.cancellation().is_cancelled());
+        assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+    }
     Ok(())
 }

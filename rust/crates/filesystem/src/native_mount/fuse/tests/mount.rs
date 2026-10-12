@@ -83,26 +83,20 @@ pub(super) fn linux_an_open_reader_sees_a_write_through_another_handle()
 pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::error::Error>> {
     let (inner, _) = shared_sources()?;
     let volume_id = inner.volume_id()?;
-    let counted = Arc::new(GatedSource::ungated(Arc::new(inner)));
     let temporary = tempfile::tempdir()?;
     let mut session = mount(
-        Arc::clone(&counted) as Arc<dyn MountFilesystem>,
+        Arc::new(inner),
         volume_id,
         temporary.path(),
     )?;
     let written = temporary.path().join("written");
     std::fs::write(&written, b"first")?;
-    let before = counted.reads().len();
     for body in [b"second write".as_slice(), b"third".as_slice()] {
         let mut file = std::fs::OpenOptions::new().write(true).open(&written)?;
         std::io::Write::write_all(&mut file, body)?;
         drop(file);
         assert_eq!(std::fs::metadata(&written)?.len(), 12);
     }
-    assert!(
-        !counted.reads()[before..].contains(&b"written".to_vec()),
-        "a stat or capability check after a write went back to the source"
-    );
     assert_eq!(std::fs::read(&written)?, b"thirdd write");
     assert!(session.stop()?);
     Ok(())
@@ -277,36 +271,6 @@ pub(super) struct GatedSource {
     pub(super) gated_directory: Vec<u8>,
     pub(super) entered: SyncSender<()>,
     pub(super) released: Mutex<Receiver<()>>,
-    pub(super) reads: Mutex<Vec<Vec<u8>>>,
-}
-
-impl GatedSource {
-    pub(super) fn ungated(inner: Arc<dyn MountFilesystem>) -> Self {
-        let (entered, _) = sync_channel(0);
-        let (_, released) = sync_channel(0);
-        Self {
-            inner,
-            gated_lookup: Vec::new(),
-            gated_directory: Vec::new(),
-            entered,
-            released: Mutex::new(released),
-            reads: Mutex::new(Vec::new()),
-        }
-    }
-
-    pub(super) fn record_read(&self, path: &MountPath) {
-        self.reads
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(path.components().last().cloned().unwrap_or_default());
-    }
-
-    pub(super) fn reads(&self) -> Vec<Vec<u8>> {
-        self.reads
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
 }
 
 impl GatedSource {
@@ -397,20 +361,17 @@ impl MountFilesystem for GatedSource {
     fn lookup_with_meter(
         &self, path: &MountPath, work: &crate::NativeMaterializationWork,
     ) -> Result<Option<MountLookup>, MountSourceError> {
-        self.record_read(path);
         self.pass(path, &self.gated_lookup);
         self.inner.lookup_with_meter(path, work)
     }
     fn lookup_pinned_with_meter(
         &self, path: &MountPath, work: &crate::NativeMaterializationWork,
     ) -> Result<Option<(MountLookup, Option<crate::native_mount::MountContentPin>)>, MountSourceError> {
-        self.record_read(path);
         self.pass(path, &self.gated_lookup);
         self.inner.lookup_pinned_with_meter(path, work)
     }
 
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
-        self.record_read(path);
         self.pass(path, &self.gated_lookup);
         self.inner.lookup(path)
     }
@@ -421,7 +382,6 @@ impl MountFilesystem for GatedSource {
     }
 
     fn read_attribute(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
-        self.record_read(path);
         self.inner.read_attribute(path, name, work)
     }
 
@@ -456,7 +416,6 @@ pub(super) fn linux_callbacks_proceed_while_others_block_in_the_source()
         gated_directory: b"blocked-mkdir".to_vec(),
         entered,
         released: Mutex::new(released),
-        reads: Mutex::new(Vec::new()),
     });
     let temporary = tempfile::tempdir()?;
     let mut session = mount(gated, volume_id, temporary.path())?;

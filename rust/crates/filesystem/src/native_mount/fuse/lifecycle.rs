@@ -38,7 +38,8 @@ impl FuseRecoveryControl {
         if self.helper.is_none() {
             let direct = crate::native_host::unix_name_with_work(
                 destination.as_os_str(), &mut &*work, |path, work| {
-                    fuse_recovery_attempt(work, true, || {
+                    crate::native_host::NativeHostWork::attempt_io(work,
+                        crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED }, || {
                         // SAFETY: the admitted terminated pathname stays alive
                         // throughout this actual native control call.
                         if unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } == 0 { Ok(()) }
@@ -79,7 +80,9 @@ impl FuseRecoveryControl {
                 self.retire_controls(work)?;
                 return Err(NativeMountError::Lifecycle("fusermount crash recovery exceeded 30 seconds"));
             }
-            fuse_recovery_attempt(&mut &*work, false, || { std::thread::sleep(Duration::from_millis(10)); Ok(()) })?;
+            crate::native_host::NativeHostWork::attempt_io(&mut &*work,
+                crate::WorkCounters { backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED },
+                || { std::thread::sleep(Duration::from_millis(10)); Ok(()) })?;
         }
         self.retire_controls(work)?;
         if fuse_recovery_is_mounted(destination, work)? {
@@ -88,20 +91,6 @@ impl FuseRecoveryControl {
         self.detached = true;
         Ok(())
     }
-}
-
-pub(super) fn fuse_recovery_attempt<W: crate::native_host::NativeHostWork>(
-    work: &mut W, write: bool,
-    call: impl FnOnce() -> std::io::Result<()>,
-) -> Result<(), W::Error> {
-    let delta = if write {
-        crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED }
-    } else {
-        crate::WorkCounters { backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED }
-    };
-    crate::native_host::NativeHostWork::admit(work, delta)?;
-    crate::native_host::NativeHostWork::record(work, delta)?;
-    call().map_err(Into::into)
 }
 
 pub(super) fn fuse_recovery_stat<W: crate::native_host::NativeHostWork>(

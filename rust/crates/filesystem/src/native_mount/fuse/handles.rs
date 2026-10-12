@@ -16,7 +16,7 @@ impl FuseOpenFile {
         }
     }
 
-    pub(super) fn clone(&self, work: &crate::NativeMaterializationWork) -> Result<Self, FuseRequestError> {
+    pub(super) fn clone(&self, work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountError> {
         Ok(match self {
             Self::Source(file) => Self::Source(fuse_arc_clone(file, work)?),
             Self::Deferred(file) => Self::Deferred(fuse_arc_clone(file, work)?),
@@ -34,7 +34,11 @@ impl FuseOpenFile {
     pub(super) fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         match self {
             Self::Source(file) => file.settle(work),
-            Self::Deferred(file) => file.settle(work),
+            Self::Deferred(file) => {
+                let opened = file.file.lock().map_err(|_| MountSourceError::Stale)?
+                    .as_ref().map(|file| fuse_arc_clone(file, work).map_err(MountSourceError::from)).transpose()?;
+                opened.map_or(Ok(()), |file| file.settle(work))
+            }
         }
     }
 }
@@ -48,48 +52,21 @@ pub(super) fn fuse_open_file((file, bytes): (Arc<dyn MountOpenFile>, u64), work:
     Ok(Arc::new(owner))
 }
 
-pub(super) fn fuse_source_chunk(bytes: &[u8], work: &crate::NativeMaterializationWork)
-    -> Result<crate::kernel::OwnedSourceChunk, FuseRequestError>
-{
-    let length = bytes.len() as u64;
-    fuse_copy_admit(length, work)?;
-    let original = work.clone();
-    let mut allocation = original.claim(length, u64::from((length) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
-    let mut buffer = Vec::new();
-    buffer.try_reserve_exact(bytes.len()).map_err(NativeMountError::Allocation)?;
-    allocation.reconcile_capacity(buffer.capacity() as u64).map_err(NativeMountError::from)?;
-    buffer.extend_from_slice(bytes);
-    fuse_copy_record(length, work)?;
-    let logical_owned_bytes = allocation.bytes();
-    let owned = acyclic_stream::OwnedBytes::from_vec_with_guard(
-        buffer, allocation, original.runtime_meter(),
-    ).map_err(|failure| match failure.into_error() {
-        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-            NativeMountError::from(original.runtime_error(error))
-        }
-        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-        => {
-            unreachable!("guarded vector conversion only fails original admission")
-        }
-    })?;
-    Ok(crate::kernel::OwnedSourceChunk::intrinsic(owned, logical_owned_bytes))
-}
-
 pub(super) struct FileHandle {
     pub(super) inode: u64,
     pub(super) open_file: FuseOpenFile,
-    pub(super) operation: Arc<FuseOwned<Mutex<()>>>,
+    pub(super) operation: Arc<(Mutex<()>, crate::NativeAllocation)>,
     pub(super) dirty: bool,
     pub(super) claim: Option<crate::FileId>,
-    pub(super) _storage: FuseOwned<()>,
+    pub(super) _storage: crate::NativeAllocation,
 }
 
 pub(super) struct DeferredOpenFile {
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) path: FuseOwned<MountPath>,
-    pub(super) opened: MountLookup,
+    pub(super) file_id: crate::FileId,
     pub(super) file: Mutex<Option<FuseFile>>,
-    pub(super) _allocation: FuseOwned<()>,
+    pub(super) _allocation: crate::NativeAllocation,
 }
 
 impl DeferredOpenFile {
@@ -100,7 +77,7 @@ impl DeferredOpenFile {
         }
         let opened = self.source.open_file_with_meter(&self.path, work)?;
         let opened = fuse_open_file(opened, work)?;
-        if opened.lookup_with_meter(work)?.node.file_id != self.opened.node.file_id {
+        if opened.lookup_with_meter(work)?.node.file_id != self.file_id {
             return Err(MountSourceError::Stale);
         }
         *file = Some(fuse_arc_clone(&opened, work).map_err(MountSourceError::from)?);
@@ -108,33 +85,6 @@ impl DeferredOpenFile {
     }
 
 
-    pub(super) fn discard_packet(packet: crate::kernel::OwnedSourceChunk, work: &crate::NativeMaterializationWork)
-        -> Result<(), MountSourceError>
-    {
-        let (bytes, owned_bytes, intrinsic) = packet.into_owned_parts();
-        drop(bytes);
-        if intrinsic { return Ok(()); }
-        work.native_read_meter().lock().release(owned_bytes)
-            .map_err(|error| MountSourceError::from(crate::native_mount::NativeMountStartupAdmissionError::from(error)))
-    }
-
-    pub(super) fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        let opened = {
-            let file = self.file.lock().map_err(|_| MountSourceError::Stale)?;
-            file.as_ref().map(|file| fuse_arc_clone(file, work)
-                .map_err(MountSourceError::from)).transpose()?
-        };
-        match opened {
-            Some(opened) => opened.settle(work),
-            None => Ok(()),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct Implicit {
-    pub(super) handle: u64,
-    pub(super) writes: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -161,7 +111,7 @@ impl ProjectionState {
     pub(super) fn admit_file_handle(
         &mut self, source: &dyn MountFilesystem, inode: u64, opened: OpenedFile<'_>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(u64, FopenFlags, Option<PageStore>), FuseRequestError> {
+    ) -> Result<(u64, FopenFlags, Option<PageStore>), NativeMountError> {
         fuse_item(work)?;
         let OpenedFile { path, lookup, stamp, flags, open_file, dirty, stores_pages } = opened;
         let file_id = lookup.node.file_id;
@@ -171,9 +121,10 @@ impl ProjectionState {
         let previous = self.by_inode.get(&inode).ok_or(libc::ESTALE)?.cached_content;
         let opened_version = ContentVersion::of(lookup);
         let claim = changes_content(flags).then_some(file_id);
-        let storage = fuse_initialized((), std::mem::size_of::<(u64, FileHandle)>() as u64, work)?;
-        let operation = Arc::new(fuse_initialized(Mutex::new(()),
-            std::mem::size_of::<FuseOwned<Mutex<()>>>() as u64, work)?);
+        let storage = work.claim(std::mem::size_of::<(u64, FileHandle)>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let operation = work.claim(std::mem::size_of::<(Mutex<()>, crate::NativeAllocation)>() as u64,
+            1, crate::WorkCounters::UNCHARGED)?;
+        let operation = Arc::new((Mutex::new(()), operation));
         self.files.try_reserve(1).map_err(NativeMountError::Allocation)?;
         let store = match (stamp, u32::try_from(lookup.node.logical_bytes)) {
             (Some(stamp), Ok(length)) if stores_pages && admitted && previous.is_none()
@@ -232,7 +183,7 @@ impl ProjectionState {
     }
 
     pub(super) fn open_handle(&self, inode: u64, handle: u64, work: &crate::NativeMaterializationWork)
-        -> Result<FuseOpenFile, FuseRequestError>
+        -> Result<FuseOpenFile, NativeMountError>
     {
         fuse_item(work)?;
         let file = self.files.get(&handle).ok_or(libc::ESTALE)?;
@@ -241,7 +192,7 @@ impl ProjectionState {
     }
 
     pub(super) fn open_handle_operation(&self, inode: u64, handle: u64, work: &crate::NativeMaterializationWork)
-        -> Result<Arc<FuseOwned<Mutex<()>>>, FuseRequestError>
+        -> Result<Arc<(Mutex<()>, crate::NativeAllocation)>, NativeMountError>
     {
         fuse_item(work)?;
         let file = self.files.get(&handle).ok_or(libc::ESTALE)?;
@@ -259,7 +210,7 @@ impl ProjectionState {
     }
 
     pub(super) fn open_inode(&self, inode: u64, work: &crate::NativeMaterializationWork)
-        -> Result<Option<FuseOpenFile>, FuseRequestError>
+        -> Result<Option<FuseOpenFile>, NativeMountError>
     {
         for file in self.files.values() {
             fuse_item(work)?;
@@ -269,7 +220,7 @@ impl ProjectionState {
     }
 
     pub(super) fn attributes_to_read(&self, source: &dyn MountFilesystem, inode: u64,
-        work: &crate::NativeMaterializationWork) -> Result<Option<AttributeTarget>, FuseRequestError>
+        work: &crate::NativeMaterializationWork) -> Result<Option<AttributeTarget>, NativeMountError>
     {
         fuse_item(work)?;
         if let Some(entry) = self.by_inode.get(&inode) {
@@ -279,7 +230,7 @@ impl ProjectionState {
     }
 
     pub(super) fn attribute_target(&self, inode: u64, work: &crate::NativeMaterializationWork)
-        -> Result<AttributeTarget, FuseRequestError>
+        -> Result<AttributeTarget, NativeMountError>
     {
         match self.open_inode(inode, work)? {
             Some(open_file) => Ok(AttributeTarget::Handle(open_file)),
@@ -297,7 +248,7 @@ impl ProjectionState {
     }
 
     pub(super) fn retain_detached_handles(&mut self, inode: u64, detached: &FuseOpenFile,
-        work: &crate::NativeMaterializationWork) -> Result<(), FuseRequestError>
+        work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError>
     {
         let mut assigned = 0_u64;
         for file in self.files.values_mut() {
@@ -346,7 +297,7 @@ impl FuseProjection {
         flags: i32,
         storing: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(u64, FopenFlags), FuseRequestError> {
+    ) -> Result<(u64, FopenFlags), NativeMountError> {
         if flags & libc::O_TRUNC != 0 { self.check_source_write(work)?; }
         let source = self.core.source.as_ref();
         let (path, file_id, stamp_before, binding_before, held) = {
@@ -381,11 +332,11 @@ impl FuseProjection {
         };
         let (open_file, refreshed, stamp, truncated) = match held {
             Some((lookup, facts)) => {
-                let allocation = fuse_initialized((), std::mem::size_of::<DeferredOpenFile>() as u64, work)?;
+                let allocation = work.claim(std::mem::size_of::<DeferredOpenFile>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
                 let deferred = FuseOpenFile::Deferred(Arc::new(DeferredOpenFile {
                     source: fuse_arc_clone(&self.core.source, work)?,
                     path: fuse_clone_path(&path, work)?,
-                    opened: lookup,
+                    file_id: lookup.node.file_id,
                     file: Mutex::new(None),
                     _allocation: allocation,
                 }));
@@ -395,7 +346,7 @@ impl FuseProjection {
         };
         let _binding = source
             .acquire_binding_lease_with_meter(binding_before, work)
-            .map_err(FuseRequestError::from)?;
+            .map_err(NativeMountError::from)?;
         let mut state = self.core.state()?;
         if state.path(inode).ok() != Some(&*path) {
             return Err(libc::ESTALE.into());
@@ -424,7 +375,7 @@ impl FuseProjection {
             work,
         )?;
         drop(state);
-        Ok((handle, self.store_pages(store, open_flags, work)?))
+        Ok((handle, self.store_pages(store, open_flags, work)))
     }
 
     #[allow(
@@ -439,16 +390,16 @@ impl FuseProjection {
         flags: i32,
         stamp_before: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(FuseOpenFile, MountLookup, Option<ViewStamp>, bool), FuseRequestError> {
+    ) -> Result<(FuseOpenFile, MountLookup, Option<ViewStamp>, bool), NativeMountError> {
         if flags & libc::O_TRUNC != 0 { self.check_source_write(work)?; }
-        let (open_file, opened) = source.open_file_with_lookup_with_meter(path, work).map_err(FuseRequestError::from)?;
+        let (open_file, opened) = source.open_file_with_lookup_with_meter(path, work).map_err(NativeMountError::from)?;
         let open_file = FuseOpenFile::Source(fuse_open_file(open_file, work)?);
         if opened.node.file_id != file_id {
             return Err(libc::ESTALE.into());
         }
         let truncated = flags & libc::O_TRUNC != 0;
         if truncated {
-            self.source_write(work, || open_file.file(work)?.resize_with_meter(0, work).map_err(FuseRequestError::from))?;
+            self.source_write(work, || open_file.file(work)?.resize_with_meter(0, work).map_err(NativeMountError::from))?;
         }
         let unchanged = if !truncated {
             match stamp_before {
@@ -460,16 +411,13 @@ impl FuseProjection {
             (opened, stamp_before)
         } else {
             let stamp = source.view_stamp_with_meter(work)?;
-            let lookup = open_file.file(work)?.lookup_with_meter(work).map_err(FuseRequestError::from)?;
+            let lookup = open_file.file(work)?.lookup_with_meter(work).map_err(NativeMountError::from)?;
             if lookup.node.file_id != file_id { return Err(libc::ESTALE.into()); }
             (lookup, stamp)
         };
         Ok((open_file, refreshed, stamp, truncated))
     }
 
-}
-
-impl FuseProjection {
     pub(super) fn create_file(
         &self,
         request: &Request,
@@ -478,7 +426,7 @@ impl FuseProjection {
         mode: u32,
         flags: i32,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(Entry, u64, FopenFlags), FuseRequestError> {
+    ) -> Result<(Entry, u64, FopenFlags), NativeMountError> {
         self.check_source_write(work)?;
         let source = self.core.source.as_ref();
         let _names = self.core.names()?;
@@ -498,7 +446,7 @@ impl FuseProjection {
         };
         let (existing, proof) = match absent_since {
             Some(held) if source.unchanged_since_with_meter(child.key(), None, held, work)? => (None, Some(held)),
-            _ => (source.lookup_with_meter(path, work).map_err(FuseRequestError::from)?, stamp),
+            _ => (source.lookup_with_meter(path, work).map_err(NativeMountError::from)?, stamp),
         };
         let (lookup, open_file, dirty, _claim, confirmed) = if let Some(existing) = existing {
             {
@@ -513,22 +461,22 @@ impl FuseProjection {
                     self.confirm_names(HashMap::new(), [(child.key(), existing.node)], work)?;
                 let claimed = claim(existing.node.file_id)?;
                 let open_file = FuseOpenFile::Source(fuse_open_file(source.open_file_with_meter(path, work)?, work)?);
-                let opened = open_file.file(work)?.lookup_with_meter(work).map_err(FuseRequestError::from)?;
+                let opened = open_file.file(work)?.lookup_with_meter(work).map_err(NativeMountError::from)?;
                 if opened.node.file_id != existing.node.file_id {
                     return Err(libc::ESTALE.into());
                 }
                 if flags & libc::O_TRUNC == 0 {
                     (opened, open_file, false, claimed, confirmed)
                 } else {
-                    self.source_write(work, || open_file.file(work)?.resize_with_meter(0, work).map_err(FuseRequestError::from))?;
-                    let resized = open_file.file(work)?.lookup_with_meter(work).map_err(FuseRequestError::from)?;
+                    self.source_write(work, || open_file.file(work)?.resize_with_meter(0, work).map_err(NativeMountError::from))?;
+                    let resized = open_file.file(work)?.lookup_with_meter(work).map_err(NativeMountError::from)?;
                     (resized, open_file, true, claimed, confirmed)
                 }
             }
         } else {
             let metadata = create_metadata(mode, S_IFREG, request.uid(), request.gid());
             let created = self.source_write(work, || source.create_file(path, metadata, proof, work)
-                .map_err(FuseRequestError::from))?;
+                .map_err(NativeMountError::from))?;
             let claimed = claim(created.node.file_id)?;
             (
                 created,
@@ -549,7 +497,7 @@ impl FuseProjection {
             &confirmed,
             work,
         )?;
-        let created = state.attr(inode, &lookup).map_err(FuseRequestError::from).and_then(|attr| {
+        let created = state.attr(inode, &lookup).map_err(NativeMountError::from).and_then(|attr| {
             let opened = OpenedFile {
                 path: child.key(),
                 lookup: &lookup,
@@ -566,7 +514,7 @@ impl FuseProjection {
             created.map_err(|error| state.release_lookup_reference(inode, 1, work).err().unwrap_or_else(|| error.into()))?;
         let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
         drop(state);
-        let open_flags = self.store_pages(store, open_flags, work)?;
+        let open_flags = self.store_pages(store, open_flags, work);
         Ok((Entry { attr, ttl }, handle, open_flags))
     }
 
@@ -575,17 +523,22 @@ impl FuseProjection {
         inode: u64,
         handle: u64,
         access: Access,
-        operation: impl FnOnce(u64) -> Result<T, FuseRequestError>,
+        operation: impl FnOnce(u64) -> Result<T, NativeMountError>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<T, FuseRequestError> {
+    ) -> Result<T, NativeMountError> {
         if access == Access::Write { self.check_source_write(work)?; }
         if handle != 0 || !self.skips_open {
             return operation(handle);
         }
-        let held = self.core.state()?.implicit.get(&inode).map(|held| **held);
+        let (held, writes) = {
+            let state = self.core.state()?;
+            let held = state.implicit.get(&inode).map(|held| held.0);
+            let writes = held.and_then(|handle| state.files.get(&handle)).is_some_and(|file| file.claim.is_some());
+            (held, writes)
+        };
         match (held, access) {
-            (Some(implicit), Access::Read) => operation(implicit.handle),
-            (Some(implicit), Access::Write) if implicit.writes => operation(implicit.handle),
+            (Some(handle), Access::Read) => operation(handle),
+            (Some(handle), Access::Write) if writes => operation(handle),
             (_, Access::Write) => {
                 let reopened = {
                     let _names = self.core.names()?;
@@ -608,28 +561,27 @@ impl FuseProjection {
     pub(super) fn reopen_implicit(
         &self,
         inode: u64,
-        stale: Option<Implicit>,
+        stale: Option<u64>,
         access: Access,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<u64, FuseRequestError> {
-        let writes = access == Access::Write || stale.is_some_and(|stale| stale.writes);
+    ) -> Result<u64, NativeMountError> {
+        let writes = access == Access::Write || {
+            let state = self.core.state()?;
+            stale.and_then(|handle| state.files.get(&handle)).is_some_and(|file| file.claim.is_some())
+        };
         let flags = if writes { libc::O_RDWR } else { libc::O_RDONLY };
         let (opened, _) = self.open_node(inode, flags, false, work)?;
         let mut state = self.core.state()?;
-        let current = state.implicit.get(&inode).map(|implicit| implicit.handle);
-        if current.is_some() && current != stale.map(|stale| stale.handle) {
+        let current = state.implicit.get(&inode).map(|implicit| implicit.0);
+        if current.is_some() && current != stale {
             // Another callback reopened it meanwhile.
             let _ = state.discard_file_handle(inode, opened);
             return current.ok_or_else(|| libc::ESTALE.into());
         }
-        if let Some(stale) = state.implicit.insert(
-            inode,
-            fuse_initialized(Implicit {
-                handle: opened,
-                writes,
-            }, std::mem::size_of::<(u64, FuseOwned<Implicit>)>() as u64, work)?,
-        ) {
-            let _ = state.discard_file_handle(inode, stale.handle);
+        let storage = work.claim(std::mem::size_of::<(u64, (u64, crate::NativeAllocation))>() as u64,
+            1, crate::WorkCounters::UNCHARGED)?;
+        if let Some(stale) = state.implicit.insert(inode, (opened, storage)) {
+            let _ = state.discard_file_handle(inode, stale.0);
         }
         Ok(opened)
     }

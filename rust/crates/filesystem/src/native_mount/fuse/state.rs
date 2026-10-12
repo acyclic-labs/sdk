@@ -33,7 +33,7 @@ pub(super) struct ChildName {
 
 impl ChildName {
     pub(super) fn new(source: &dyn MountFilesystem, spelled: FuseOwned<MountPath>,
-        work: &crate::NativeMaterializationWork) -> Result<Self, FuseRequestError>
+        work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountError>
     {
         let folded = source.folded_path_with_meter(&spelled, work)?
             .map(|(path, bytes)| FuseOwned::adopt(path, bytes, work)).transpose()?;
@@ -63,13 +63,23 @@ pub(super) struct ProjectionState {
     pub(super) inode_by_path: HashMap<FuseOwned<MountPath>, u64>,
     pub(super) inode_by_file: HashMap<crate::FileId, u64>,
     pub(super) files: HashMap<u64, FileHandle>,
-    pub(super) implicit: HashMap<u64, FuseOwned<Implicit>>,
+    pub(super) implicit: HashMap<u64, (u64, crate::NativeAllocation)>,
     pub(super) streams: DirectoryStreams,
     pub(super) invalidation: InvalidationQueue,
     pub(super) page_stores: PageStores,
 }
 
 impl ProjectionState {
+    pub(super) fn new(defaults: AttributeDefaults) -> Self {
+        Self {
+            defaults, next_inode: ROOT_INODE + 1, next_handle: 1,
+            by_inode: HashMap::new(), inode_by_path: HashMap::new(), inode_by_file: HashMap::new(),
+            files: HashMap::new(), implicit: HashMap::new(),
+            streams: DirectoryStreams::default(), invalidation: InvalidationQueue::default(),
+            page_stores: PageStores::default(),
+        }
+    }
+
     pub(super) fn path(&self, inode: u64) -> Result<&MountPath, i32> {
         self.by_inode
             .get(&inode)
@@ -86,7 +96,7 @@ impl ProjectionState {
     }
 
     pub(super) fn child_path(&self, parent: u64, name: &OsStr, work: &crate::NativeMaterializationWork)
-        -> Result<FuseOwned<MountPath>, FuseRequestError>
+        -> Result<FuseOwned<MountPath>, NativeMountError>
     {
         fuse_item(work)?;
         let parent = self.path(parent)?;
@@ -110,7 +120,7 @@ impl ProjectionState {
         &mut self, source: &dyn MountFilesystem, path: FuseOwned<MountPath>, lookup: &MountLookup,
         stamp: Option<ViewStamp>, lookup_reference: bool, confirmed: &HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<u64, FuseRequestError> {
+    ) -> Result<u64, NativeMountError> {
         fuse_item(work)?;
         if let Some(previous) = self.inode_by_path.get(&*path).copied()
             && self.by_inode.get(&previous)
@@ -151,7 +161,7 @@ impl ProjectionState {
 
     pub(super) fn unvouched_names(&self, source: &dyn MountFilesystem, file_id: crate::FileId,
         path: &MountPath, work: &crate::NativeMaterializationWork)
-        -> Result<FuseOwned<Vec<FuseOwned<MountPath>>>, FuseRequestError>
+        -> Result<FuseOwned<Vec<FuseOwned<MountPath>>>, NativeMountError>
     {
         let mut names = fuse_vec(0, work)?;
         let Some(entry) = self.inode_by_file.get(&file_id).and_then(|inode| self.by_inode.get(inode))
@@ -170,7 +180,7 @@ impl ProjectionState {
     }
 
     pub(super) fn release_lookup_reference(&mut self, inode: u64, references: u64,
-        work: &crate::NativeMaterializationWork) -> Result<(), FuseRequestError>
+        work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError>
     {
         fuse_item(work)?;
         if let Some(entry) = self.by_inode.get(&inode) {
@@ -193,7 +203,7 @@ impl ProjectionState {
             entry.lookup_references == 0
         });
         if forgotten && let Some(implicit) = self.implicit.remove(&inode) {
-            let _ = self.discard_file_handle(inode, implicit.handle);
+            let _ = self.discard_file_handle(inode, implicit.0);
         }
         let remove = self
             .by_inode
@@ -211,7 +221,7 @@ impl ProjectionState {
 
     pub(super) fn admissible(&self, source: &dyn MountFilesystem, anchor: &MountPath,
         file_id: Option<crate::FileId>, stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork)
-        -> Result<bool, FuseRequestError>
+        -> Result<bool, NativeMountError>
     {
         let Some(stamp) = stamp else { return Ok(false); };
         if file_id.is_some_and(|file_id| !source.reports_changes_to(file_id)) { return Ok(false); }
@@ -220,7 +230,7 @@ impl ProjectionState {
     }
 
     pub(super) fn admit_attributes(&mut self, source: &dyn MountFilesystem, inode: u64,
-        stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<Duration, FuseRequestError>
+        stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<Duration, NativeMountError>
     {
         fuse_item(work)?;
         let Some(entry) = self.by_inode.get(&inode) else { return Ok(Duration::ZERO); };
@@ -230,7 +240,7 @@ impl ProjectionState {
     }
 
     pub(super) fn admit_entry(&mut self, source: &dyn MountFilesystem, inode: u64, name: &ChildName,
-        stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<Duration, FuseRequestError>
+        stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<Duration, NativeMountError>
     {
         let attributes = self.admit_attributes(source, inode, stamp, work)?;
         if !name.is_exact() { return Ok(Duration::ZERO); }
@@ -255,7 +265,7 @@ impl ProjectionState {
         name: &ChildName,
         stamp: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Entry, FuseRequestError> {
+    ) -> Result<Entry, NativeMountError> {
         let ttl = self
             .admit_negative(source, parent, name, stamp, work)?
             .ok_or(libc::ENOENT)?;
@@ -278,7 +288,7 @@ impl ProjectionState {
     }
 
     pub(super) fn admit_negative(&mut self, source: &dyn MountFilesystem, parent: u64, name: &ChildName,
-        stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<Option<Duration>, FuseRequestError>
+        stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<Option<Duration>, NativeMountError>
     {
         let Some(stamp) = stamp else { return Ok(None); };
         if !name.is_exact() || !self.admissible(source, name.key(), None, Some(stamp), work)? { return Ok(None); }
@@ -288,7 +298,7 @@ impl ProjectionState {
     }
 
     pub(super) fn admit_listing(&mut self, source: &dyn MountFilesystem, inode: u64,
-        stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<(), FuseRequestError>
+        stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError>
     {
         let Some(entry) = self.by_inode.get(&inode) else { return Ok(()); };
         let admitted = self.admissible(source, entry.anchor(), Some(entry.lookup.node.file_id), stamp, work)?;
@@ -304,7 +314,7 @@ impl ProjectionState {
         inode: u64,
         resolved: &Resolved,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(FileAttr, Duration), FuseRequestError> {
+    ) -> Result<(FileAttr, Duration), NativeMountError> {
         let lookup = resolved.lookup;
         if inode == ROOT_INODE {
             replace_root_lookup(&mut self.by_inode, &mut self.inode_by_file, lookup, work)?;
@@ -325,7 +335,7 @@ impl ProjectionState {
     }
 
     pub(super) fn node_facts(&self, source: &dyn MountFilesystem, inode: u64, handle: Option<u64>,
-        work: &crate::NativeMaterializationWork) -> Result<Result<Resolved, NodeFacts>, FuseRequestError>
+        work: &crate::NativeMaterializationWork) -> Result<Result<Resolved, NodeFacts>, NativeMountError>
     {
         fuse_item(work)?;
         let entry = self.by_inode.get(&inode).ok_or(libc::ESTALE)?;

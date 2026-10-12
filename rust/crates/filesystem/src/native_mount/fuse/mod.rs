@@ -13,7 +13,7 @@ use crate::kernel::{FileMetadata, MetadataField};
 use fuser::{
     BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr,
     FileHandle as FuseFileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
-    KernelConfig, LockOwner, MountOption, Notifier, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
+    KernelConfig, LockOwner, Notifier, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
     ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen,
     ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
@@ -86,8 +86,6 @@ mod invalidation;
 use invalidation::*;
 mod state;
 use state::*;
-mod test_support;
-use test_support::*;
 mod core;
 use core::*;
 pub(super) use core::FuseStartupMeterScope;

@@ -4,11 +4,11 @@ pub(super) fn resolve_path(
     source: &dyn MountFilesystem,
     path: &MountPath,
     work: &crate::NativeMaterializationWork,
-) -> Result<(Option<MountLookup>, Option<ViewStamp>), FuseRequestError> {
+) -> Result<(Option<MountLookup>, Option<ViewStamp>), NativeMountError> {
     let binding_epoch = source.binding_epoch_with_meter(work)?;
-    let _lease = source.acquire_binding_lease_with_meter(binding_epoch, work).map_err(FuseRequestError::from)?;
+    let _lease = source.acquire_binding_lease_with_meter(binding_epoch, work)?;
     let stamp = source.view_stamp_with_meter(work)?;
-    let lookup = source.lookup_with_meter(path, work).map_err(FuseRequestError::from)?;
+    let lookup = source.lookup_with_meter(path, work)?;
     if !source.view_is_stable_with_meter(work)? || source.binding_epoch_with_meter(work)? != binding_epoch {
         return Err(libc::ESTALE.into());
     }
@@ -19,19 +19,19 @@ pub(super) fn resolve_node(
     source: &dyn MountFilesystem,
     facts: Result<Resolved, NodeFacts>,
     work: &crate::NativeMaterializationWork,
-) -> Result<Resolved, FuseRequestError> {
+) -> Result<Resolved, NativeMountError> {
     match facts {
         Ok(current) => Ok(current),
         Err(NodeFacts::Handle(open_file)) => {
             let stamp = source.view_stamp_with_meter(work)?;
             Ok(Resolved {
-                lookup: open_file.file(work)?.lookup_with_meter(work).map_err(FuseRequestError::from)?,
+                lookup: open_file.file(work)?.lookup_with_meter(work)?,
                 stamp,
                 through: None,
             })
         }
-        Err(NodeFacts::Names { file_id, paths }) => {
-            for path in paths {
+        Err(NodeFacts::Names { file_id, mut paths }) => {
+            for path in paths.drain(..) {
                 let (lookup, stamp) = resolve_path(source, &path, work)?;
                 if let Some(lookup) = lookup
                     && file_id.is_none_or(|file_id| lookup.node.file_id == file_id)
@@ -49,7 +49,7 @@ pub(super) fn resolve_node(
 }
 
 impl FuseProjection {
-    pub(super) fn child(&self, state: &ProjectionState, parent: u64, name: &OsStr, work: &crate::NativeMaterializationWork) -> Result<ChildName, FuseRequestError> {
+    pub(super) fn child(&self, state: &ProjectionState, parent: u64, name: &OsStr, work: &crate::NativeMaterializationWork) -> Result<ChildName, NativeMountError> {
         Ok(ChildName::new(
             self.core.source.as_ref(),
             state.child_path(parent, name, work)?,
@@ -62,7 +62,7 @@ impl FuseProjection {
         mut confirmed: HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
         resolved: impl IntoIterator<Item = (&'a MountPath, MountNode)>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>, FuseRequestError> {
+    ) -> Result<HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>, NativeMountError> {
         let source = self.core.source.as_ref();
         for (path, node) in resolved {
             fuse_item(work)?;
@@ -75,7 +75,7 @@ impl FuseProjection {
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        self.core.record_handler_failure(work, NativeMountError::from(error));
+                        self.core.record_handler_failure(work, error);
                         confirm_name(&mut confirmed, node.file_id, name, None, work)?;
                     }
                 }
@@ -84,7 +84,7 @@ impl FuseProjection {
         Ok(confirmed)
     }
 
-    pub(super) fn lookup_entry(&self, parent: u64, name: &OsStr, work: &crate::NativeMaterializationWork) -> Result<Entry, FuseRequestError> {
+    pub(super) fn lookup_entry(&self, parent: u64, name: &OsStr, work: &crate::NativeMaterializationWork) -> Result<Entry, NativeMountError> {
         let source = self.core.source.as_ref();
         let _names = self.core.names()?;
         let child = {
@@ -92,7 +92,7 @@ impl FuseProjection {
             let child = self.child(&state, parent, name, work)?;
             let ProjectionState { by_inode, inode_by_path, .. } = &mut *state;
             if let Some((inode, lookup, stamp)) = cached_projected_lookup(by_inode, inode_by_path, child.key(),
-                |file, stamp| source.unchanged_since_with_meter(child.key(), Some(file), stamp, work).map_err(FuseRequestError::from), work)? {
+                |file, stamp| source.unchanged_since_with_meter(child.key(), Some(file), stamp, work).map_err(NativeMountError::from), work)? {
                 let attr = state.attr(inode, &lookup)?;
                 let ttl = state.admit_entry(source, inode, &child, Some(stamp), work)?;
                 return Ok(Entry { attr, ttl });
@@ -138,7 +138,7 @@ impl FuseProjection {
         inode: u64,
         handle: Option<u64>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(FileAttr, Duration), FuseRequestError> {
+    ) -> Result<(FileAttr, Duration), NativeMountError> {
         let source = self.core.source.as_ref();
         let _names = self.core.names()?;
         let facts = {
@@ -156,16 +156,13 @@ impl FuseProjection {
         Ok(self.core.state()?.apply(source, inode, &resolved, work)?)
     }
 
-}
-
-impl FuseProjection {
     pub(super) fn create_node(
         &self,
         parent: u64,
         name: &OsStr,
-        create: impl FnOnce(&MountPath, &crate::NativeMaterializationWork) -> Result<MountLookup, FuseRequestError>,
+        create: impl FnOnce(&MountPath, &crate::NativeMaterializationWork) -> Result<MountLookup, NativeMountError>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Entry, FuseRequestError> {
+    ) -> Result<Entry, NativeMountError> {
         self.check_source_write(work)?;
         let source = self.core.source.as_ref();
         let _names = self.core.names()?;
@@ -206,7 +203,7 @@ impl FuseProjection {
         Ok(Entry { attr, ttl })
     }
 
-    pub(super) fn hold_unopened(&self, lookup: Option<&MountLookup>, work: &crate::NativeMaterializationWork) -> Result<(), FuseRequestError> {
+    pub(super) fn hold_unopened(&self, lookup: Option<&MountLookup>, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         if !self.skips_open {
             return Ok(());
         }
@@ -218,7 +215,7 @@ impl FuseProjection {
         })
     }
 
-    pub(super) fn remove_name(&self, parent: u64, name: &OsStr, work: &crate::NativeMaterializationWork) -> Result<(), FuseRequestError> {
+    pub(super) fn remove_name(&self, parent: u64, name: &OsStr, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         self.check_source_write(work)?;
         let source = self.core.source.as_ref();
         let _names = self.core.names_exclusive()?;
@@ -228,16 +225,16 @@ impl FuseProjection {
             self.child(&state, parent, name, work)?
         };
         let path = &child.spelled;
-        let current = source.lookup_with_meter(path, work).map_err(FuseRequestError::from)?;
+        let current = source.lookup_with_meter(path, work)?;
         self.hold_unopened(current.as_ref(), work)?;
         let detaching = self.core.state()?.detaching_inode(current.as_ref());
-        let detached = detaching
-            .map(|inode| source.detach_file_with_meter(path, work).map_err(FuseRequestError::from).and_then(|detached| Ok((inode, FuseOpenFile::Source(fuse_open_file(detached, work)?)))))
-            .transpose()
-            .map_err(FuseRequestError::from)?;
+        let detached = detaching.map(|inode| {
+            let detached = source.detach_file_with_meter(path, work)?;
+            Ok::<_, NativeMountError>((inode, FuseOpenFile::Source(fuse_open_file(detached, work)?)))
+        }).transpose()?;
         let removed = self.source_write(work, || source
             .remove(path, current.map(|lookup| lookup.node.file_id), work)
-            .map_err(FuseRequestError::from));
+            .map_err(NativeMountError::from));
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
             state.retain_detached_handles(inode, &detached, work)?;
@@ -255,7 +252,7 @@ impl FuseProjection {
         new_name: &OsStr,
         flags: u32,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), FuseRequestError> {
+    ) -> Result<(), NativeMountError> {
         self.check_source_write(work)?;
         let source = self.core.source.as_ref();
         if flags & !RENAME_NOREPLACE != 0 {
@@ -272,24 +269,19 @@ impl FuseProjection {
             )
         };
         let replaced = if replace {
-            source.lookup_with_meter(&to.spelled, work).map_err(FuseRequestError::from)?
+            source.lookup_with_meter(&to.spelled, work)?
         } else {
             None
         };
         self.hold_unopened(replaced.as_ref(), work)?;
         let detaching = self.core.state()?.detaching_inode(replaced.as_ref());
-        let detached = detaching
-            .map(|inode| {
-                source
-                    .detach_file_with_meter(&to.spelled, work)
-                    .map_err(FuseRequestError::from)
-                    .and_then(|detached| Ok((inode, FuseOpenFile::Source(fuse_open_file(detached, work)?))))
-            })
-            .transpose()
-            .map_err(FuseRequestError::from)?;
+        let detached = detaching.map(|inode| {
+            let detached = source.detach_file_with_meter(&to.spelled, work)?;
+            Ok::<_, NativeMountError>((inode, FuseOpenFile::Source(fuse_open_file(detached, work)?)))
+        }).transpose()?;
         let renamed = self.source_write(work, || source
             .rename(&from.spelled, &to.spelled, replace, work)
-            .map_err(FuseRequestError::from));
+            .map_err(NativeMountError::from));
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
             state.retain_detached_handles(inode, &detached, work)?;
@@ -302,7 +294,7 @@ impl FuseProjection {
         Ok(())
     }
 
-    pub(super) fn link_name(&self, inode: u64, new_parent: u64, new_name: &OsStr, work: &crate::NativeMaterializationWork) -> Result<Entry, FuseRequestError> {
+    pub(super) fn link_name(&self, inode: u64, new_parent: u64, new_name: &OsStr, work: &crate::NativeMaterializationWork) -> Result<Entry, NativeMountError> {
         self.check_source_write(work)?;
         let source = self.core.source.as_ref();
         let _names = self.core.names()?;
@@ -322,7 +314,7 @@ impl FuseProjection {
             .link_count
             .checked_add(1)
             .ok_or(libc::EMLINK)?;
-        self.source_write(work, || source.hard_link(&from, &to.spelled, work).map_err(FuseRequestError::from))?;
+        self.source_write(work, || source.hard_link(&from, &to.spelled, work).map_err(NativeMountError::from))?;
         let mut state = self.core.state()?;
         let attr = state.attr(inode, &projected)?;
         let binding = {

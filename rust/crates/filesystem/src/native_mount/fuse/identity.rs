@@ -16,21 +16,19 @@ pub(super) struct InodeEntry {
     pub(super) cached_content: Option<ContentVersion>,
     pub(super) negative_children: HashMap<FuseOwned<Vec<u8>>, ViewStamp>,
     pub(super) empty_since: Option<ViewStamp>,
-    pub(super) identity_storage: FuseOwned<()>,
-    pub(super) _storage: FuseOwned<()>,
+    pub(super) identity_storage: Option<crate::NativeAllocation>,
+    pub(super) _storage: crate::NativeAllocation,
 }
 
 impl InodeEntry {
     pub(super) fn new(binding: FuseOwned<MountPath>, lookup: MountLookup,
         verified: Option<ViewStamp>, lookup_references: u64,
-        work: &crate::NativeMaterializationWork) -> Result<Self, FuseRequestError>
+        work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountError>
     {
         let mut bindings = fuse_vec(1, work)?;
         bindings.push(Binding { path: binding, verified, kernel: None });
-        let mut storage = FuseOwned::empty(());
-        storage.claim(std::mem::size_of::<(u64, InodeEntry)>() as u64, work)?;
-        storage.claim(std::mem::size_of::<(crate::FileId, u64)>() as u64, work)?;
-        let identity_storage = storage.split_claim(std::mem::size_of::<(crate::FileId, u64)>() as u64);
+        let storage = work.claim(std::mem::size_of::<(u64, InodeEntry)>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let identity_storage = Some(work.claim(std::mem::size_of::<(crate::FileId, u64)>() as u64, 1, crate::WorkCounters::UNCHARGED)?);
         Ok(Self {
             bindings, lookup, facts: verified, kernel: None, lookup_references,
             open_handles: 0, cached_content: None, negative_children: HashMap::new(),
@@ -39,7 +37,7 @@ impl InodeEntry {
     }
 
     pub(super) fn binding(&self, path: &MountPath, work: &crate::NativeMaterializationWork)
-        -> Result<Option<&Binding>, FuseRequestError>
+        -> Result<Option<&Binding>, NativeMountError>
     {
         for binding in self.bindings.iter() {
             fuse_item(work)?;
@@ -49,7 +47,7 @@ impl InodeEntry {
     }
 
     pub(super) fn binding_mut(&mut self, path: &MountPath, work: &crate::NativeMaterializationWork)
-        -> Result<Option<&mut Binding>, FuseRequestError>
+        -> Result<Option<&mut Binding>, NativeMountError>
     {
         for binding in self.bindings.iter_mut() {
             fuse_item(work)?;
@@ -65,7 +63,7 @@ impl InodeEntry {
     }
 
     pub(super) fn current_facts(&self, source: &dyn MountFilesystem, work: &crate::NativeMaterializationWork)
-        -> Result<Option<ViewStamp>, FuseRequestError>
+        -> Result<Option<ViewStamp>, NativeMountError>
     {
         let Some(stamp) = self.facts else { return Ok(None); };
         let file_id = self.lookup.node.file_id;
@@ -79,14 +77,14 @@ impl InodeEntry {
     }
 
     pub(super) fn lacks_named_attributes(&self, source: &dyn MountFilesystem, work: &crate::NativeMaterializationWork)
-        -> Result<bool, FuseRequestError>
+        -> Result<bool, NativeMountError>
     {
         Ok(self.lookup.metadata.named_attributes == MetadataField::Unavailable
             && self.current_facts(source, work)?.is_some())
     }
 
     pub(super) fn remember_negative_child(&mut self, name: &[u8], stamp: ViewStamp,
-        work: &crate::NativeMaterializationWork) -> Result<bool, FuseRequestError>
+        work: &crate::NativeMaterializationWork) -> Result<bool, NativeMountError>
     {
         fuse_item(work)?;
         if let Some(held) = self.negative_children.get_mut(name) {
@@ -110,7 +108,7 @@ pub(super) fn hold(held: &mut Option<ViewStamp>, stamp: ViewStamp) {
 
 impl ProjectionState {
     pub(super) fn remove_path_cache(&mut self, path: &MountPath, work: &crate::NativeMaterializationWork)
-        -> Result<(), FuseRequestError>
+        -> Result<(), NativeMountError>
     {
         fuse_item(work)?;
         if let Some(inode) = self.inode_by_path.get(path).copied() {
@@ -121,7 +119,7 @@ impl ProjectionState {
     }
 
     pub(super) fn remove_binding(&mut self, inode: u64, path: &MountPath, work: &crate::NativeMaterializationWork)
-        -> Result<(), FuseRequestError>
+        -> Result<(), NativeMountError>
     {
         unbind(&mut self.by_inode, &mut self.inode_by_file, inode, path, work)?;
         if self.inode_by_path.get(path) == Some(&inode) { self.inode_by_path.remove(path); }
@@ -129,7 +127,7 @@ impl ProjectionState {
     }
 
     pub(super) fn invalidate_prefix(&mut self, prefix: &MountPath, work: &crate::NativeMaterializationWork)
-        -> Result<(), FuseRequestError>
+        -> Result<(), NativeMountError>
     {
         let mut affected = fuse_vec(0, work)?;
         for (inode, entry) in &self.by_inode {
@@ -142,12 +140,12 @@ impl ProjectionState {
                 }
             }
         }
-        for (inode, path) in affected { self.remove_binding(inode, &path, work)?; }
+        for (inode, path) in affected.drain(..) { self.remove_binding(inode, &path, work)?; }
         Ok(())
     }
 
     pub(super) fn rename_prefix(&mut self, source: &MountPath, destination: &MountPath,
-        work: &crate::NativeMaterializationWork) -> Result<(), FuseRequestError>
+        work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError>
     {
         let mut replacements = fuse_vec(0, work)?;
         let mut paths = HashMap::new();
@@ -168,7 +166,7 @@ impl ProjectionState {
         }
         // All fallible path buffers are ready before any inode alias changes.
         self.streams.rename_prefix(source, destination, work)?;
-        for (inode, index, path) in replacements {
+        for (inode, index, path) in replacements.drain(..) {
             self.by_inode.get_mut(&inode).expect("planned inode remains locked").bindings[index].path = path;
         }
         drop(std::mem::replace(&mut self.inode_by_path, paths));
@@ -179,9 +177,9 @@ impl ProjectionState {
 
 pub(super) fn cached_projected_lookup(
     by_inode: &mut HashMap<u64, InodeEntry>, inode_by_path: &HashMap<FuseOwned<MountPath>, u64>,
-    path: &MountPath, unchanged_since: impl FnOnce(crate::FileId, ViewStamp) -> Result<bool, FuseRequestError>,
+    path: &MountPath, unchanged_since: impl FnOnce(crate::FileId, ViewStamp) -> Result<bool, NativeMountError>,
     work: &crate::NativeMaterializationWork,
-) -> Result<Option<(u64, MountLookup, ViewStamp)>, FuseRequestError> {
+) -> Result<Option<(u64, MountLookup, ViewStamp)>, NativeMountError> {
     fuse_item(work)?;
     let Some(inode) = inode_by_path.get(path).copied() else { return Ok(None); };
     let Some(entry) = by_inode.get_mut(&inode) else { return Ok(None); };
@@ -195,7 +193,7 @@ pub(super) fn cached_projected_lookup(
 pub(super) fn replace_root_lookup(
     by_inode: &mut HashMap<u64, InodeEntry>, inode_by_file: &mut HashMap<crate::FileId, u64>,
     lookup: MountLookup, work: &crate::NativeMaterializationWork,
-) -> Result<(), FuseRequestError> {
+) -> Result<(), NativeMountError> {
     fuse_item(work)?;
     if lookup.node.kind != MountNodeKind::Directory { return Err(libc::EIO.into()); }
     let root = by_inode.get_mut(&ROOT_INODE).ok_or(libc::ESTALE)?;
@@ -204,11 +202,11 @@ pub(super) fn replace_root_lookup(
         if inode_by_file.get(&lookup.node.file_id).is_some_and(|inode| *inode != ROOT_INODE) {
             return Err(libc::EIO.into());
         }
-        let storage = fuse_initialized((), std::mem::size_of::<(crate::FileId, u64)>() as u64, work)?;
+        let storage = work.claim(std::mem::size_of::<(crate::FileId, u64)>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         inode_by_file.try_reserve(1).map_err(NativeMountError::Allocation)?;
         if inode_by_file.get(&previous) == Some(&ROOT_INODE) { inode_by_file.remove(&previous); }
         inode_by_file.insert(lookup.node.file_id, ROOT_INODE);
-        root.identity_storage = storage;
+        root.identity_storage = Some(storage);
         root.lookup = lookup;
     }
     Ok(())
@@ -218,9 +216,9 @@ pub(super) fn forget_unbound_names(
     by_inode: &mut HashMap<u64, InodeEntry>,
     inode_by_path: &mut HashMap<FuseOwned<MountPath>, u64>,
     inode: u64, path: &MountPath,
-    still_bound: impl Fn(&MountPath, Option<ViewStamp>) -> Result<bool, FuseRequestError>,
+    still_bound: impl Fn(&MountPath, Option<ViewStamp>) -> Result<bool, NativeMountError>,
     deferred: &mut FuseOwned<Vec<KernelCacheItem>>, work: &crate::NativeMaterializationWork,
-) -> Result<(), FuseRequestError> {
+) -> Result<(), NativeMountError> {
     let mut items = fuse_vec(0, work)?;
     let Some(entry) = by_inode.get(&inode) else { return Ok(()); };
     let mut removed = fuse_vec(0, work)?;
@@ -267,7 +265,7 @@ pub(super) fn bind_path(
     by_inode: &mut HashMap<u64, InodeEntry>, inode_by_path: &mut HashMap<FuseOwned<MountPath>, u64>,
     inode_by_file: &mut HashMap<crate::FileId, u64>, path: &MountPath, inode: u64,
     work: &crate::NativeMaterializationWork,
-) -> Result<(), FuseRequestError> {
+) -> Result<(), NativeMountError> {
     fuse_item(work)?;
     if let Some(previous) = inode_by_path.get(path).copied() {
         if previous != inode { unbind(by_inode, inode_by_file, previous, path, work)?; }
@@ -284,7 +282,7 @@ pub(super) fn bind_path(
 pub(super) fn unbind(
     by_inode: &mut HashMap<u64, InodeEntry>, inode_by_file: &mut HashMap<crate::FileId, u64>,
     inode: u64, path: &MountPath, work: &crate::NativeMaterializationWork,
-) -> Result<(), FuseRequestError> {
+) -> Result<(), NativeMountError> {
     let Some(entry) = by_inode.get_mut(&inode) else { return Ok(()); };
     let mut matched = None;
     for (index, binding) in entry.bindings.iter().enumerate() {
@@ -311,11 +309,11 @@ pub(super) fn forget_file(
     inode_by_file: &mut HashMap<crate::FileId, u64>,
     file_id: crate::FileId,
     inode: u64,
-    identity_storage: &mut FuseOwned<()>,
+    identity_storage: &mut Option<crate::NativeAllocation>,
 ) {
     if inode_by_file.get(&file_id) == Some(&inode) {
         inode_by_file.remove(&file_id);
-        drop(std::mem::take(identity_storage));
+        drop(identity_storage.take());
     }
 }
 
@@ -341,7 +339,7 @@ pub(super) fn intern_projected(
     inode_by_path: &mut HashMap<FuseOwned<MountPath>, u64>, inode_by_file: &mut HashMap<crate::FileId, u64>,
     path: FuseOwned<MountPath>, lookup: &MountLookup, stamp: Option<ViewStamp>,
     lookup_reference: bool, work: &crate::NativeMaterializationWork,
-) -> Result<u64, FuseRequestError> {
+) -> Result<u64, NativeMountError> {
     fuse_item(work)?;
     if let Some(inode) = inode_by_file.get(&lookup.node.file_id).copied() {
         let needs_binding = by_inode.get(&inode).ok_or(libc::ESTALE)?.binding(&path, work)?.is_none();
@@ -357,7 +355,7 @@ pub(super) fn intern_projected(
     }
     let inode = *next_inode;
     if inode <= ROOT_INODE { return Err(libc::EOVERFLOW.into()); }
-    let following = inode.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+    let following = inode.checked_add(1).ok_or(libc::EOVERFLOW)?;
     let mut key = fuse_clone_path(&path, work)?;
     key.claim(std::mem::size_of::<(FuseOwned<MountPath>, u64)>() as u64, work)?;
     let entry = InodeEntry::new(path, *lookup, stamp, u64::from(lookup_reference), work)?;
