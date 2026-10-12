@@ -10,7 +10,7 @@ use super::provider_stack;
 use super::{
     DIRECTORY_PAGE_SIZE, DriverStartFailure, MountContentPin, MountFilesystem, MountLookup,
     MountNode, MountNodeKind, MountPath, MountSourceError, NativeMountError, NativeMountRequest,
-    NativeMountCallbackFailure, ViewObserver, ViewOrigin, ViewStamp,
+    ViewObserver, ViewOrigin, ViewStamp,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
@@ -267,23 +267,19 @@ fn installed_callback_work(
 fn with_callback_meter<T>(
     runtime: &Runtime, authored_write: bool,
     operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, NativeMountError>,
-) -> Result<T, NativeMountCallbackFailure> {
-    let bound = installed_callback_work(runtime).map_err(|cause| NativeMountCallbackFailure {
-        cause, work: crate::WorkCounters::UNCHARGED,
-    })?;
+) -> Result<T, (NativeMountError, crate::WorkCounters)> {
+    let bound = installed_callback_work(runtime).map_err(|cause| (cause, crate::WorkCounters::UNCHARGED))?;
     let active = lock_recover(&runtime.stop_meter).upgrade();
     if let Some(meter) = active.or(bound) {
         verify_callback_work(runtime, &meter, authored_write)
-            .map_err(|cause| NativeMountCallbackFailure {
-                cause, work: meter.native_read_meter().lock().work,
-            })?;
+            .map_err(|cause| (cause, meter.native_read_meter().lock().work))?;
         return super::run_native_mount_handler_on_meter(&meter, operation)
-            .map_err(|cause| NativeMountCallbackFailure { cause, work: meter.native_read_meter().lock().work });
+            .map_err(|cause| (cause, meter.native_read_meter().lock().work));
     }
     let result = super::run_native_mount_handler(runtime.handler_budget, &runtime.handler_cancellation, operation);
     let completed = match &result {
         Ok(receipt) => receipt.work,
-        Err(failure) => failure.work,
+        Err(failure) => failure.1,
     };
     let folded = {
         let mut failures = lock_recover(runtime.post_operation_failure.as_ref());
@@ -291,9 +287,7 @@ fn with_callback_meter<T>(
         if let Err(cause) = folded {
             failures.unreplayable_barrier = true;
             if result.is_ok() && failures.unreplayable.is_none() {
-                failures.unreplayable = Some(NativeMountCallbackFailure {
-                    cause: NativeMountError::Work(cause), work: completed,
-                });
+                failures.unreplayable = Some((NativeMountError::Work(cause), completed));
             }
         }
         folded
@@ -301,9 +295,7 @@ fn with_callback_meter<T>(
     match (result, folded) {
         (result, Ok(())) => result.map(|receipt| receipt.value),
         (Err(failure), Err(_)) => Err(failure),
-        (Ok(_), Err(cause)) => Err(NativeMountCallbackFailure {
-            cause: NativeMountError::Work(cause), work: completed,
-        }),
+        (Ok(_), Err(cause)) => Err((NativeMountError::Work(cause), completed)),
     }
 }
 
@@ -338,7 +330,7 @@ fn verify_source_write_work(
     Ok(())
 }
 
-fn take_callback_failure(runtime: &Runtime) -> Option<NativeMountCallbackFailure> {
+fn take_callback_failure(runtime: &Runtime) -> Option<(NativeMountError, crate::WorkCounters)> {
     lock_recover(runtime.post_operation_failure.as_ref()).unreplayable.take()
 }
 
@@ -393,7 +385,7 @@ struct PostOperationFailures {
     next_capture_serial: u64,
     /// Terminal distinct SDK requests only; active lifecycle scopes remain in their original invocation and never contribute to this aggregate.
     completed_callback_work: crate::WorkCounters,
-    unreplayable: Option<NativeMountCallbackFailure>,
+    unreplayable: Option<(NativeMountError, crate::WorkCounters)>,
     /// Moving the first original cause to a caller never clears its fence.
     unreplayable_barrier: bool,
     /// A callback whose provider controls could not be admitted never ran its authored handler.
@@ -1764,7 +1756,7 @@ impl Projector {
         operation: impl FnOnce(Projection<'_>) -> Result<T, NativeMountError>,
     ) -> Result<T, NativeMountError> {
         self.with_control_meter(runtime, meter, |meter| {
-            let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(meter)?;
+            let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(meter)).map_err(super::NativeMountStartupAdmissionError::from)?;
             operation(Projection {
                 source: runtime.source.as_ref(), work: meter, custody: &custody, context,
                 root: &runtime.root, root_identity: runtime.metadata_root.identity(),
@@ -2192,7 +2184,7 @@ impl Projector {
                 (|| {
                     installed_callback_work(runtime)?;
                     verify_callback_work(runtime, &meter, false)?;
-                    let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
+                    let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&meter)).map_err(super::NativeMountStartupAdmissionError::from)?;
                     self.run_round(Projection {
                         source: runtime.source.as_ref(), work: &meter, custody: &custody,
                         context, root: &runtime.root, root_identity: runtime.metadata_root.identity(),
@@ -2212,7 +2204,7 @@ impl Projector {
                         self.with_control_meter_locked(runtime, &work, |meter| {
                             self.active_rounds.fetch_add(1, Ordering::AcqRel);
                             let _round = ProjectorRound(self);
-                            let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(meter)?;
+                            let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(meter)).map_err(super::NativeMountStartupAdmissionError::from)?;
                             self.run_round(Projection {
                                 source: runtime.source.as_ref(), work: meter, custody: &custody,
                                 context, root: &runtime.root, root_identity: runtime.metadata_root.identity(),
@@ -3734,7 +3726,7 @@ struct WindowsRetirementState {
     root_identity: Option<crate::NativeRootIdentity>,
     namespace_detached: bool,
     completed_callback_work: crate::WorkCounters,
-    callback_failure: Option<NativeMountCallbackFailure>,
+    callback_failure: Option<(NativeMountError, crate::WorkCounters)>,
 }
 
 impl WindowsRetirementIngress {
@@ -3897,7 +3889,7 @@ pub(super) struct ProjFsSession {
     root_mark_attempted: bool,
     sdk_stop_confirmed: bool,
     completed_callback_work: crate::WorkCounters,
-    first_callback_failure: Mutex<Option<NativeMountCallbackFailure>>,
+    first_callback_failure: Mutex<Option<(NativeMountError, crate::WorkCounters)>>,
 }
 
 // SAFETY: opaque ProjFS tokens and native owners move only into the same preborn producer.
@@ -3961,7 +3953,7 @@ impl ProjFsSession {
         let sdk_info_credit = physical_materialization.reserve_work(crate::WorkCounters {
             backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(detach_work_error)?;
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(work).map_err(detach_work_error)?;
+        let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(work)).map_err(super::NativeMountStartupAdmissionError::from).map_err(detach_work_error)?;
         let callback_gate = CallbackGate::new(&materialization)?;
         let metadata_root = retained_arc(
             HostRoot::open_with_work(&request.destination, &mut host_work).map_err(detach_work_error)?, meter,
@@ -4112,7 +4104,7 @@ impl ProjFsSession {
                         ingress.wake.notify_all();
                         context
                     }
-                    Err(error) => return Err(take_callback_failure(runtime).map_or(error, |failure| failure.cause)),
+                    Err(error) => return Err(take_callback_failure(runtime).map_or(error, |failure| failure.0)),
                 };
                 let info_credit = session.sdk_info_credit.as_mut().expect("SDK info credit withheld before START");
                 let loan = info_credit.cleanup_loan(materialization.cancellation());
@@ -4125,8 +4117,8 @@ impl ProjFsSession {
                 if instance.InstanceID != guid {
                     return Err(NativeMountError::Lifecycle("SDK instance differs from the original issued namespace"));
                 }
-                if let Some(failure) = take_callback_failure(runtime) { return Err(failure.cause); }
-                let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(work)?;
+                if let Some(failure) = take_callback_failure(runtime) { return Err(failure.0); }
+                let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(work)).map_err(super::NativeMountStartupAdmissionError::from)?;
                 let projection = Projection {
                     source: runtime.source.as_ref(), work: meter, custody: &custody, context,
                     root: &runtime.root, root_identity: runtime.metadata_root.identity(),
@@ -4615,7 +4607,7 @@ impl ProjFsSession {
         })
     }
 
-    pub(super) fn take_callback_failure(&self) -> Option<super::NativeMountCallbackFailure> {
+    pub(super) fn take_callback_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
         if let Some(ingress) = self.ingress.as_ref() {
             let mut state = lock_recover(&ingress.state);
             if let Some(owner) = state.owner.as_ref() {
@@ -6261,7 +6253,7 @@ fn retain_callback_failure(projection: Projection<'_>, error: NativeMountError) 
     let mut failure = lock_recover(projection.captures);
     failure.unreplayable_barrier = true;
     if failure.unreplayable.is_none() {
-        failure.unreplayable = Some(NativeMountCallbackFailure { cause: error, work: projection.work.native_read_meter().lock().work });
+        failure.unreplayable = Some((error, projection.work.native_read_meter().lock().work));
     }
     result
 }
@@ -6315,9 +6307,7 @@ fn record_post_operation_failure(
                 let result = native_hresult(&queue_error);
                 failure.unreplayable_barrier = true;
                 if failure.unreplayable.is_none() {
-                    failure.unreplayable = error.or(Some(queue_error)).map(|cause| NativeMountCallbackFailure {
-                        cause, work: projection.work.native_read_meter().lock().work,
-                    });
+                    failure.unreplayable = error.or(Some(queue_error)).map(|cause| (cause, projection.work.native_read_meter().lock().work));
                 }
                 return result;
             }
@@ -6325,7 +6315,7 @@ fn record_post_operation_failure(
     }
     failure.unreplayable_barrier = true;
     if failure.unreplayable.is_none() {
-        failure.unreplayable = error.map(|cause| NativeMountCallbackFailure { cause, work: projection.work.native_read_meter().lock().work });
+        failure.unreplayable = error.map(|cause| (cause, projection.work.native_read_meter().lock().work));
     }
     result
 }
@@ -6622,7 +6612,7 @@ macro_rules! on_provider_stack {
             let Some((data, runtime)) = (unsafe { runtime($data) }) else { return HR_UNEXPECTED; };
             let authored_write = false $(|| $write)?;
             let invoked = with_callback_meter(runtime, authored_write, |meter| {
-                let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(meter)?;
+                let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(meter)).map_err(super::NativeMountStartupAdmissionError::from)?;
                 let projection = callback_projection(runtime, data, meter, &custody);
                 provider_stack::run_with_meter(Some(meter), || unsafe {
                     $callback($data $(, $argument)*, projection)
@@ -6635,7 +6625,7 @@ macro_rules! on_provider_stack {
             let result = match invoked {
                 Ok(result) => result,
                 Err(error) => {
-                    let result = native_hresult(&error.cause);
+                    let result = native_hresult(&error.0);
                     let mut failures = lock_recover(runtime.post_operation_failure.as_ref());
                     failures.unreplayable_barrier = true;
                     if failures.unreplayable.is_none() { failures.unreplayable = Some(error); }
@@ -7041,7 +7031,7 @@ mod tests {
         };
         let meter = work.clone();
         let result = (|| {
-            let custody = crate::native_mount::NativeMountAllocationCustody::new_with_meter(&meter)?;
+            let custody = crate::native_mount::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&meter)).map_err(super::NativeMountStartupAdmissionError::from)?;
             let captures = Mutex::new(PostOperationFailures::default());
             let staging_custody = Mutex::new(None);
             operation(super::Projection {
