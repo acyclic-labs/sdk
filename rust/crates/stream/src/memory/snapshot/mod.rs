@@ -6,13 +6,13 @@ use std::sync::Arc;
 use crate::OwnedBytes;
 use tokio::sync::watch;
 
-use super::{History, MemoryOutput, MemoryStream, PathState, Replay, Retained, State, recount};
-use crate::wire_codec::{
-    CanonicalWire, WireMeter,
+use super::{
+    History, MemoryStream, NativeStreamOutput, PathState, Replay, Retained, State, recount,
 };
-use crate::{CommitId, Record, StreamError, StreamPath};
 #[cfg(test)]
 use crate::IdempotencyKey;
+use crate::wire_codec::{CanonicalWire, WireMeter};
+use crate::{CommitId, Record, StreamError, StreamPath};
 
 const MAGIC: &[u8] = b"ACYCLIC-STREAM-STATE-V1\0";
 
@@ -22,17 +22,20 @@ const RETAINS_REPLAY: u8 = 1;
 const RETAINS_COMMIT: u8 = 2;
 
 impl MemoryStream {
-
     /// Encodes the state with optional native admission.
     pub(crate) async fn encode_state(
         &self,
         meter: WireMeter<'_>,
-    ) -> std::io::Result<MemoryOutput<Vec<u8>>> {
+    ) -> std::io::Result<NativeStreamOutput<Vec<u8>>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = meter { meter.check()?; }
+        if let Some(meter) = meter {
+            meter.check()?;
+        }
         let state = self.state.read().await;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = meter { meter.check()?; }
+        if let Some(meter) = meter {
+            meter.check()?;
+        }
         encode(&state, meter)
     }
 
@@ -53,8 +56,8 @@ impl MemoryStream {
     }
 }
 
-fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<MemoryOutput<Vec<u8>>> {
-    let mut funding = MemoryOutput::fund(meter);
+fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<NativeStreamOutput<Vec<u8>>> {
+    let mut funding = NativeStreamOutput::fund(meter);
     let mut out = Vec::new();
     write(&mut out, &mut funding, MAGIC)?;
     write_u64(&mut out, &mut funding, state.commits.len() as u64)?;
@@ -69,7 +72,9 @@ fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<MemoryOutput<V
         let mut cursor = path.history.clone();
         while let Some(node) = cursor {
             funding.examine(1)?;
-            if find_node(&indices, Arc::as_ptr(&node), &funding)?.is_ok() { break; }
+            if find_node(&indices, Arc::as_ptr(&node), &funding)?.is_ok() {
+                break;
+            }
             cursor = match node.as_ref() {
                 History::Batch { parent, .. } => parent.clone(),
                 History::Prefix { source, .. } => source.clone(),
@@ -83,7 +88,8 @@ fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<MemoryOutput<V
             let position = find_node(&indices, pointer, &funding)?
                 .expect_err("the canonical chain contains only unseen nodes");
             funding.ensure_vector(&mut indices, 1)?;
-            let shifted = (indices.len() - position) * std::mem::size_of::<(*const History, usize)>();
+            let shifted =
+                (indices.len() - position) * std::mem::size_of::<(*const History, usize)>();
             funding.copy_admission(shifted)?;
             indices.insert(position, (pointer, nodes.len()));
             funding.copy_completed(shifted)?;
@@ -96,7 +102,9 @@ fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<MemoryOutput<V
     for node in &nodes {
         funding.examine(1)?;
         match node.as_ref() {
-            History::Batch { parent, records, .. } => {
+            History::Batch {
+                parent, records, ..
+            } => {
                 write(&mut out, &mut funding, &[NODE_BATCH])?;
                 let reference = node_reference(&indices, parent, &funding)?;
                 write_u64(&mut out, &mut funding, reference as u64)?;
@@ -134,18 +142,37 @@ fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<MemoryOutput<V
     write_u64(&mut out, &mut funding, state.retained.len() as u64)?;
     for retained in &state.retained {
         funding.examine(1)?;
-        let replay = retained.replay.as_ref()
+        let replay = retained
+            .replay
+            .as_ref()
             .and_then(|key| Some((key, state.replays.get(key)?)));
-        let commit = retained.commit.as_ref().and_then(|commit| state.commits.get(commit));
-        write(&mut out, &mut funding, &[
-            if replay.is_some() { RETAINS_REPLAY } else { 0 }
-                | if commit.is_some() { RETAINS_COMMIT } else { 0 },
-        ])?;
+        let commit = retained
+            .commit
+            .as_ref()
+            .and_then(|commit| state.commits.get(commit));
+        write(
+            &mut out,
+            &mut funding,
+            &[if replay.is_some() { RETAINS_REPLAY } else { 0 }
+                | if commit.is_some() { RETAINS_COMMIT } else { 0 }],
+        )?;
         if let Some((key, replay)) = replay {
-            write_message(&mut out, &mut funding, &CanonicalWire::Observation(key, &replay.digest, &replay.result))?;
+            write_message(
+                &mut out,
+                &mut funding,
+                &CanonicalWire::Observation(key, &replay.digest, &replay.result),
+            )?;
         }
         if let Some(envelope) = commit {
-            write_message(&mut out, &mut funding, &CanonicalWire::Envelope(envelope.envelope().expect("a commit index contains an envelope")))?;
+            write_message(
+                &mut out,
+                &mut funding,
+                &CanonicalWire::Envelope(
+                    envelope
+                        .envelope()
+                        .expect("a commit index contains an envelope"),
+                ),
+            )?;
         }
     }
     Ok(funding.map(|_| out))
@@ -154,9 +181,11 @@ fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<MemoryOutput<V
 fn node_reference(
     indices: &[(*const History, usize)],
     node: &Option<Arc<History>>,
-    funding: &MemoryOutput<WireMeter<'_>>,
+    funding: &NativeStreamOutput<WireMeter<'_>>,
 ) -> std::io::Result<usize> {
-    let Some(node) = node else { return Ok(0); };
+    let Some(node) = node else {
+        return Ok(0);
+    };
     match find_node(indices, Arc::as_ptr(node), funding)? {
         Ok(position) => Ok(indices.get(position).expect("a matched memo slot exists").1 + 1),
         Err(_) => Ok(0),
@@ -166,14 +195,16 @@ fn node_reference(
 fn find_node(
     indices: &[(*const History, usize)],
     pointer: *const History,
-    funding: &MemoryOutput<WireMeter<'_>>,
+    funding: &NativeStreamOutput<WireMeter<'_>>,
 ) -> std::io::Result<Result<usize, usize>> {
     let mut low = 0;
     let mut high = indices.len();
     while low < high {
         funding.examine(1)?;
         let middle = low + (high - low) / 2;
-        let known = indices.get(middle).expect("binary search remains inside its memo");
+        let known = indices
+            .get(middle)
+            .expect("binary search remains inside its memo");
         match known.0.cmp(&pointer) {
             std::cmp::Ordering::Less => low = middle + 1,
             std::cmp::Ordering::Greater => high = middle,
@@ -183,7 +214,11 @@ fn find_node(
     Ok(Err(low))
 }
 
-fn write(out: &mut Vec<u8>, funding: &mut MemoryOutput<WireMeter<'_>>, value: &[u8]) -> std::io::Result<()> {
+fn write(
+    out: &mut Vec<u8>,
+    funding: &mut NativeStreamOutput<WireMeter<'_>>,
+    value: &[u8],
+) -> std::io::Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(meter) = funding.value {
         meter.admit_codec(value.len() as u64, value.len() as u64, 0)?;
@@ -198,18 +233,32 @@ fn write(out: &mut Vec<u8>, funding: &mut MemoryOutput<WireMeter<'_>>, value: &[
     Ok(())
 }
 
-fn write_u64(out: &mut Vec<u8>, funding: &mut MemoryOutput<WireMeter<'_>>, value: u64) -> std::io::Result<()> {
+fn write_u64(
+    out: &mut Vec<u8>,
+    funding: &mut NativeStreamOutput<WireMeter<'_>>,
+    value: u64,
+) -> std::io::Result<()> {
     write(out, funding, &value.to_le_bytes())
 }
 
-fn write_bytes(out: &mut Vec<u8>, funding: &mut MemoryOutput<WireMeter<'_>>, value: &[u8]) -> std::io::Result<()> {
+fn write_bytes(
+    out: &mut Vec<u8>,
+    funding: &mut NativeStreamOutput<WireMeter<'_>>,
+    value: &[u8],
+) -> std::io::Result<()> {
     write_u64(out, funding, value.len() as u64)?;
     write(out, funding, value)
 }
 
-fn write_message(out: &mut Vec<u8>, funding: &mut MemoryOutput<WireMeter<'_>>, value: &CanonicalWire<'_>) -> std::io::Result<()> {
+fn write_message(
+    out: &mut Vec<u8>,
+    funding: &mut NativeStreamOutput<WireMeter<'_>>,
+    value: &CanonicalWire<'_>,
+) -> std::io::Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(meter) = funding.value { meter.admit_examination(1, 0)?; }
+    if let Some(meter) = funding.value {
+        meter.admit_examination(1, 0)?;
+    }
     let length = value.encoded_len(None, None)?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(meter) = funding.value {
@@ -247,7 +296,11 @@ fn decode(encoded: &[u8]) -> Option<State> {
     if !input.is_empty() {
         return None;
     }
-    if encode(&state, None).expect("unmetered encoding cannot fail").value != encoded {
+    if encode(&state, None)
+        .expect("unmetered encoding cannot fail")
+        .value
+        != encoded
+    {
         return None;
     }
     for path in state.paths.keys() {
@@ -259,7 +312,8 @@ fn decode(encoded: &[u8]) -> Option<State> {
         }
     }
     if nodes.0.iter().any(|node| match node.as_ref() {
-        History::Batch { records, .. } => records.value
+        History::Batch { records, .. } => records
+            .value
             .iter()
             .any(|record| record.committed_at_micros > last_committed_at_micros),
         History::Prefix { .. } => false,
@@ -286,8 +340,14 @@ fn validate_inventory(state: &State) -> Option<()> {
                 return None;
             }
             match node.as_ref() {
-                History::Batch { parent, records, .. } => {
-                    let fact = (records.value.as_slice(), pointer, parent.as_ref().map(Arc::as_ptr));
+                History::Batch {
+                    parent, records, ..
+                } => {
+                    let fact = (
+                        records.value.as_slice(),
+                        pointer,
+                        parent.as_ref().map(Arc::as_ptr),
+                    );
                     if batches
                         .insert((path, records.value.first()?.commit_id), fact)
                         .is_some()
@@ -429,7 +489,10 @@ fn decode_nodes(input: &mut &[u8]) -> Option<DecodedNodes> {
                 }
                 History::Batch {
                     parent,
-                    records: Arc::new(MemoryOutput { value: records, allocation: Default::default() }),
+                    records: Arc::new(NativeStreamOutput {
+                        value: records,
+                        allocation: Default::default(),
+                    }),
                     _allocation: super::Allocation::default(),
                 }
             }
@@ -496,33 +559,77 @@ fn decode_retained(input: &mut &[u8], state: &mut State) -> Option<()> {
         if flags == 0 || flags & !(RETAINS_REPLAY | RETAINS_COMMIT) != 0 {
             return None;
         }
-        let observation = if flags & RETAINS_REPLAY == 0 { None } else {
-            Some(crate::persistence::decode_observation(read_bytes(input)?, retained_fact_bound()?).ok()?)
+        let observation = if flags & RETAINS_REPLAY == 0 {
+            None
+        } else {
+            Some(
+                crate::persistence::decode_observation(read_bytes(input)?, retained_fact_bound()?)
+                    .ok()?,
+            )
         };
-        let envelope = if flags & RETAINS_COMMIT == 0 { None } else {
-            Some(crate::persistence::decode_envelope(read_bytes(input)?, retained_fact_bound()?).ok()?)
+        let envelope = if flags & RETAINS_COMMIT == 0 {
+            None
+        } else {
+            Some(
+                crate::persistence::decode_envelope(read_bytes(input)?, retained_fact_bound()?)
+                    .ok()?,
+            )
         };
         let commit = envelope.as_ref().map(|envelope| envelope.commit_id);
         let (replay, digest, result, envelope) = match observation {
             Some(observation) => {
-                let envelope = if let crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(canonical)) = &observation.outcome {
-                    if envelope.as_ref() != Some(canonical) { return None; }
+                let envelope = if let crate::IdempotencyOutcome::Commit(
+                    crate::CommitOutcome::Committed(canonical),
+                ) = &observation.outcome
+                {
+                    if envelope.as_ref() != Some(canonical) {
+                        return None;
+                    }
                     None
-                } else { envelope };
-                (Some(observation.idempotency_key.0), observation.request_digest, observation.outcome, envelope)
+                } else {
+                    envelope
+                };
+                (
+                    Some(observation.idempotency_key.0),
+                    observation.request_digest,
+                    observation.outcome,
+                    envelope,
+                )
             }
-            None => (None, [0; 32], crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(envelope?)), None),
+            None => (
+                None,
+                [0; 32],
+                crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(envelope?)),
+                None,
+            ),
         };
-        let cached = Arc::new(Replay { digest, result, envelope, _allocation: super::Allocation::default() });
+        let cached = Arc::new(Replay {
+            digest,
+            result,
+            envelope,
+            _allocation: super::Allocation::default(),
+        });
         if let Some(commit_id) = commit {
-            if state.commits.insert(commit_id, Arc::clone(&cached)).is_some() { return None; }
+            if state
+                .commits
+                .insert(commit_id, Arc::clone(&cached))
+                .is_some()
+            {
+                return None;
+            }
         }
         if let Some(key) = &replay {
-            if replay_commit_id(state, &cached.result)? != commit { return None; }
-            if state.replays.insert(key.clone(), cached).is_some() { return None; }
+            if replay_commit_id(state, &cached.result)? != commit {
+                return None;
+            }
+            if state.replays.insert(key.clone(), cached).is_some() {
+                return None;
+            }
         }
         state.retained.push(Retained {
-            replay, commit, _allocation: super::Allocation::default(),
+            replay,
+            commit,
+            _allocation: super::Allocation::default(),
         });
     }
     Some(())
@@ -557,7 +664,12 @@ fn replay_commit_id(state: &State, result: &crate::IdempotencyOutcome) -> Option
             Some(receipt.commit_id)
         }
         crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(envelope)) => {
-            if state.commits.get(&envelope.commit_id).and_then(|cached| cached.envelope()) != Some(envelope) {
+            if state
+                .commits
+                .get(&envelope.commit_id)
+                .and_then(|cached| cached.envelope())
+                != Some(envelope)
+            {
                 return None;
             }
             Some(envelope.commit_id)
@@ -594,11 +706,17 @@ fn read_array<const N: usize>(input: &mut &[u8]) -> Option<[u8; N]> {
     take(input, N)?.try_into().ok()
 }
 
-fn read_u8(input: &mut &[u8]) -> Option<u8> { Some(read_array::<1>(input)?[0]) }
+fn read_u8(input: &mut &[u8]) -> Option<u8> {
+    Some(read_array::<1>(input)?[0])
+}
 
-fn read_u64(input: &mut &[u8]) -> Option<u64> { Some(u64::from_le_bytes(read_array(input)?)) }
+fn read_u64(input: &mut &[u8]) -> Option<u64> {
+    Some(u64::from_le_bytes(read_array(input)?))
+}
 
-fn read_len(input: &mut &[u8]) -> Option<usize> { usize::try_from(read_u64(input)?).ok() }
+fn read_len(input: &mut &[u8]) -> Option<usize> {
+    usize::try_from(read_u64(input)?).ok()
+}
 
 fn read_bytes<'a>(input: &mut &'a [u8]) -> Option<&'a [u8]> {
     let count = read_len(input)?;

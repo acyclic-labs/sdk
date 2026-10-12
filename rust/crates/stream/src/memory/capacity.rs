@@ -10,14 +10,20 @@ pub(super) struct PreparedCapacity {
 impl PreparedCapacity {
     /// Fails new guarded acceptance after revision exhaustion.
     pub(super) fn advance_revision(&self) {
-        let _ = self.revision.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-            Some(current.checked_add(1).unwrap_or(u64::MAX))
-        });
+        let _ = self
+            .revision
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                Some(current.checked_add(1).unwrap_or(u64::MAX))
+            });
     }
 
     pub(super) fn current_revision(&self) -> Result<u64, StreamError> {
         let revision = self.revision.load(Ordering::Acquire);
-        if revision == u64::MAX { Err(StreamError::Capacity) } else { Ok(revision) }
+        if revision == u64::MAX {
+            Err(StreamError::Capacity)
+        } else {
+            Ok(revision)
+        }
     }
 }
 
@@ -30,7 +36,10 @@ pub(super) struct CommitStateVersion {
 
 impl CommitStateVersion {
     pub(super) fn reserved(capacity: &PreparedCapacity) -> [usize; 2] {
-        [capacity.pending.load(Ordering::Acquire), capacity.payload_bytes.load(Ordering::Acquire)]
+        [
+            capacity.pending.load(Ordering::Acquire),
+            capacity.payload_bytes.load(Ordering::Acquire),
+        ]
     }
 
     pub(super) fn capture(state: &State) -> Result<Self, StreamError> {
@@ -59,7 +68,9 @@ impl Drop for PreparedCapacityReservation {
     fn drop(&mut self) {
         self.capacity.advance_revision();
         self.capacity.pending.fetch_sub(1, Ordering::AcqRel);
-        self.capacity.payload_bytes.fetch_sub(self.bytes, Ordering::AcqRel);
+        self.capacity
+            .payload_bytes
+            .fetch_sub(self.bytes, Ordering::AcqRel);
         // Revision changes bracket the lock-free capacity refund.
         self.capacity.advance_revision();
     }
@@ -72,21 +83,41 @@ pub(super) fn reserve(
     bytes: usize,
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
-    if state.commits.len().saturating_add(state.prepared_capacity.pending.load(Ordering::Acquire)) >= limits.commits
+    if state
+        .commits
+        .len()
+        .saturating_add(state.prepared_capacity.pending.load(Ordering::Acquire))
+        >= limits.commits
         || state.paths.len().saturating_add(paths.len()) > limits.paths
-        || state.path_bytes.saturating_add(paths.iter().map(|path| path.len()).sum()) > limits.path_bytes
-        || state.record_count.saturating_add(state.prepared_capacity.pending.load(Ordering::Acquire))
-            .saturating_add(records) > limits.records
-        || state.payload_bytes.saturating_add(state.prepared_capacity.payload_bytes.load(Ordering::Acquire))
-            .saturating_add(bytes) > limits.payload_bytes
+        || state
+            .path_bytes
+            .saturating_add(paths.iter().map(|path| path.len()).sum())
+            > limits.path_bytes
+        || state
+            .record_count
+            .saturating_add(state.prepared_capacity.pending.load(Ordering::Acquire))
+            .saturating_add(records)
+            > limits.records
+        || state
+            .payload_bytes
+            .saturating_add(
+                state
+                    .prepared_capacity
+                    .payload_bytes
+                    .load(Ordering::Acquire),
+            )
+            .saturating_add(bytes)
+            > limits.payload_bytes
     {
         Err(StreamError::Capacity)
-    } else { Ok(()) }
+    } else {
+        Ok(())
+    }
 }
 
 /// Counts exactly the records and payload bytes the live paths retain, each shared history once.
 pub(super) fn recount(state: &mut State, meter: WireMeter<'_>) -> MemoryResult<()> {
-    let mut seen = MemoryOutput {
+    let mut seen = NativeStreamOutput {
         value: HashSet::new(),
         allocation: allocate(meter, 0)?,
     };
@@ -103,10 +134,17 @@ pub(super) fn recount(state: &mut State, meter: WireMeter<'_>) -> MemoryResult<(
                 record_item(meter)?;
                 break;
             }
-            absorb(&mut seen.allocation, adopt(meter, std::mem::size_of::<*const History>())?)?;
+            absorb(
+                &mut seen.allocation,
+                adopt(meter, std::mem::size_of::<*const History>())?,
+            )?;
             seen.value.insert(pointer);
             cursor = match node.as_ref() {
-                History::Batch { parent, records: batch, .. } => {
+                History::Batch {
+                    parent,
+                    records: batch,
+                    ..
+                } => {
                     records = records.saturating_add(batch.value.len());
                     for record in batch.value.iter() {
                         admit_item(meter)?;
@@ -133,8 +171,13 @@ pub(super) fn admit_replay(
     key: Option<&crate::IdempotencyKey>,
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
-    if key.is_some() && state.replays.len()
-        .saturating_add(state.prepared_capacity.pending.load(Ordering::Acquire)) >= limits.idempotency_results {
+    if key.is_some()
+        && state
+            .replays
+            .len()
+            .saturating_add(state.prepared_capacity.pending.load(Ordering::Acquire))
+            >= limits.idempotency_results
+    {
         Err(StreamError::Capacity)
     } else {
         Ok(())
