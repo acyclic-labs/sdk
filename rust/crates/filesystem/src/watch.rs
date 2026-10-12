@@ -2483,19 +2483,6 @@ impl NativeWatch {
     }
 }
 
-fn admit_watch_work(
-    work: &mut WorkCounters,
-    proposed: WorkCounters,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(), NativeWatchError> {
-    cancellation.check()?;
-    let next = work.checked_add(proposed)?;
-    next.verify(budget)?;
-    *work = next;
-    Ok(())
-}
-
 #[cfg(windows)]
 fn watch_claim_allocation<W: crate::demand::SourceDemandReadWork>(
     bytes: u64, work: &mut W,
