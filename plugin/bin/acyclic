@@ -2,5 +2,18 @@
 # executable (on Windows it installs acyclic.exe and removes this file). It has
 # no interpreter line, so package managers link the `acyclic` command straight
 # to that executable instead of wrapping it in an interpreter.
-echo "acyclic: the native executable is not installed; reinstall @acyclic-labs/plugin with install scripts enabled" >&2
+#
+# The shell only runs this file when the package manager skipped the install
+# script, as npm 12 does for packages it has not been told to trust. The command
+# then finishes the install itself and hands over to the executable.
+self=$0
+case $self in */*) ;; *) self=$(command -v -- "$self") ;; esac
+self=$(node -e 'process.stdout.write(require("fs").realpathSync(process.argv[1]))' -- "$self") \
+  && bin=${self%/*} \
+  && node "$bin/install.js" >&2 \
+  && [ "$(head -c 2 "$bin/acyclic")" != "# " ] \
+  && exec "$bin/acyclic" "$@"
+echo "acyclic: the native executable is not installed and could not be installed now." >&2
+echo "Reinstall with install scripts allowed:" >&2
+echo "  npm install -g --allow-scripts=@acyclic-labs/plugin @acyclic-labs/plugin" >&2
 exit 1

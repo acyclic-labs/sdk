@@ -363,7 +363,8 @@ test("same version cannot be replaced with different bytes", () => {
 });
 
 test("the published package declares the Codex hook MCP server on the installed command", () => {
-  const [packed] = JSON.parse(run("npm pack --dry-run --json --ignore-scripts", plugin));
+  // npm 12 keys the report by package name; earlier npm returns an array.
+  const [packed] = Object.values(JSON.parse(run("npm pack --dry-run --json --ignore-scripts", plugin)));
   const files = packed.files.map(file => file.path.replaceAll("\\", "/"));
   for (const path of [".mcp.json", ".codex-plugin/plugin.json", "hooks/hooks.json", "bin/acyclic"]) {
     assert.ok(files.includes(path), `package omits ${path}`);
@@ -421,7 +422,9 @@ function available(tool) {
 
 const managers = {
   npm: {
-    install: (tarball, home) => `npm install --global --prefix "${home}" --cache "${join(home, "cache")}" "${tarball}"`,
+    // npm 12 runs install scripts only for packages it is told to trust, and
+    // names a tarball by its path.
+    install: (tarball, home) => `npm install --global --prefix "${home}" --cache "${join(home, "cache")}" --allow-scripts="${tarball}" "${tarball}"`,
     remove: home => `npm uninstall --global --prefix "${home}" @acyclic-labs/plugin`,
     bin: home => (process.platform === "win32" ? home : join(home, "bin")),
     root: home => (process.platform === "win32"
@@ -496,3 +499,37 @@ for (const [name, manager] of Object.entries(managers)) {
     }
   });
 }
+
+// npm 12 skips install scripts for packages it has not been told to trust, so
+// the command's first run finishes the install, and later runs are the
+// executable itself.
+test("the acyclic command installs the executable when install scripts were skipped",
+  { skip: process.platform === "win32" || !available("npm") }, () => {
+    const release = packageRelease("9.8.7-test.1");
+    const home = mkdtempSync(join(scratch, "npm-no-scripts-"));
+    try {
+      run(`${managers.npm.install(release.tarball, home)} --ignore-scripts`, home);
+      const bin = join(managers.npm.root(home), "bin");
+      assert.equal(existsSync(join(bin, "installed-binary.json")), false);
+      const commandPath = { PATH: `${managers.npm.bin(home)}:${process.env.PATH}` };
+      assert.equal(run("acyclic --version", home, commandPath).trim(), process.version);
+      assert.equal(digest(join(bin, executableName)), digest(release.source));
+      assert.equal(realpathSync(join(managers.npm.bin(home), "acyclic")), realpathSync(join(bin, executableName)));
+      assert.equal(run("acyclic --version", home, commandPath).trim(), process.version);
+    } finally {
+      for (const path of [release.root, home]) rmSync(path, { recursive: true, force: true });
+    }
+  });
+
+test("the acyclic command explains how to reinstall when it cannot install itself",
+  { skip: process.platform === "win32" }, () => {
+    const value = fixture();
+    try {
+      rmSync(join(value.bin, "platform-binaries.json"));
+      const ran = spawnSync(`"${join(value.bin, "acyclic")}" --version`, { shell: true, encoding: "utf8" });
+      assert.equal(ran.status, 1);
+      assert.match(ran.stderr, /npm install -g --allow-scripts=@acyclic-labs\/plugin @acyclic-labs\/plugin/);
+    } finally {
+      rmSync(value.root, { recursive: true, force: true });
+    }
+  });
