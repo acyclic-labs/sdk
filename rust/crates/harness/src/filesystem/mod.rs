@@ -3074,7 +3074,7 @@ impl<A, O> FilesystemHost<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {
     /// Forks a project workspace from one exact generation into a new project volume.
     async fn fork_project(
         &self,
@@ -3552,7 +3552,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         internal_class: Option<InternalContentClass>,
         expected_generation: Option<&GenerationRef>,
         io: Option<&fork_preparer_io::PreparationIo>,
-        publication_lease: Option<&dyn crate::resource_preparation::CreatedTaskLease>,
+        publication_lease: Option<&Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
         root_allocation: Option<&fork_preparer::FilesystemRootBootstrapAllocation<A, O>>,
     ) -> Result<FileRef> {
         if root_allocation.is_some_and(|allocation| &allocation.request.volume != volume) {
@@ -3566,7 +3566,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(lease) = publication_lease {
             match io {
-                Some(io) => io.verify_publication_lease(lease).await?,
+                Some(io) => io.verify_publication_lease(lease.as_ref()).await?,
                 None => lease.verify().await?,
             }
         }
@@ -3723,15 +3723,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(lease) = publication_lease {
                     if io.original_native_work().is_some() {
-                        let mut before_publication = |original| async move {
-                            lease.verify_with_native_work(original)?.await
+                        let lease = Arc::clone(lease);
+                        let mut before_publication = move |original: &acyclic_fs::NativeMaterializationWork| {
+                            let lease = Arc::clone(&lease);
+                            let original = original.clone();
+                            async move { lease.verify_with_native_work(&original)?.await }
                         };
                         fork_preparer_io::publish_native(
                             self, &workspace, expected_generation, &mutations,
                             idempotency_key, io, &mut before_publication,
                         ).await?
                     } else {
-                        let mut before_publication = || io.verify_publication_lease(lease);
+                        let mut before_publication = || io.verify_publication_lease(lease.as_ref());
                         fork_preparer_io::publish_generation(
                             self, &workspace, expected_generation, &mutations,
                             idempotency_key, Some(io), &mut before_publication,
