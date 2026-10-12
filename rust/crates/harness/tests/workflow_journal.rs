@@ -68,10 +68,10 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let volume = VolumeRef::new(
         provider,
-        "counter-private",
+        "counter-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
-    )?;
+     &mut None)?;
     host.create_volume(&volume).await?;
     let issuer = AuthorityIssuer::new(
         "workflow-e2e",
@@ -82,10 +82,10 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         },
     );
     let scope = issuer.issue("owner", &Capabilities::new([
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(AgentId::from_bytes([4; 16])), None, &mut None).expect("scope proof");
-    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
     let command_payload = host
         .put_content(
             &volume,

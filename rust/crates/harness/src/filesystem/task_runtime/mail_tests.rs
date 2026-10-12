@@ -1,5 +1,6 @@
 //! Real MemoryFS/SDK mailbox controls; no replacement reader or mailbox engine.
 
+use serde_json::json;
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
 

@@ -48,6 +48,7 @@ async fn owned_child_declaration_rechecks_parent_and_recovers_tail_conflict() ->
             gate.release.notify_one();
             result
         };
+        let mut declare_work = None;
         let (attempt, disturbance) = tokio::join!(
             first.declare_operation(
                         &owner,
@@ -56,7 +57,7 @@ async fn owned_child_declaration_rechecks_parent_and_recovers_tail_conflict() ->
                         child.clone(),
                         IdempotencyKey::new("owned-child")?,
                         Some(fence.clone())
-                    , &mut None),
+                    , &mut declare_work),
             disturbance
         );
         disturbance?;
@@ -263,8 +264,9 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
             gate.release.notify_one();
             result
         };
+        let mut resume_work = None;
         let (attempt, disturbance) = tokio::join!(
-            first.resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected), &mut None),
+            first.resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected), &mut resume_work),
             disturbance
         );
         disturbance?;

@@ -389,15 +389,17 @@ async fn session_claim_race<P: StreamProvider>(
     let [one, two] = claims.as_slice() else {
         return Err(Error::Invalid("two budget claims required".into()));
     };
+    let mut left_work = None;
+    let mut right_work = None;
     let (left, right) = tokio::join!(
         first.apply(
             IdempotencyKey::new("budget-one")?,
             one.clone()
-        , &mut None),
+        , &mut left_work),
         second.apply(
             IdempotencyKey::new("budget-two")?,
             two.clone()
-        , &mut None)
+        , &mut right_work)
     );
     assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
     let (winner, key, loser) = if left.is_ok() {

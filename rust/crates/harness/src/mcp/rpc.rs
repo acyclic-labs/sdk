@@ -269,7 +269,7 @@ mod tests {
             "messages":[{"role":"untrusted\u{1}role","content":{"type":"text","text":"external"}}]
         }), Some(&work)).expect_err("invalid role");
         match &failure {
-            Error::NativeDecode { source, custody: Some(custody) } => {
+            Error::NativeDecode { source, custody: Some(custody), .. } => {
                 assert!(source.is_data());
                 assert!(custody.bytes() > 0);
                 assert!(custody.shares_ledger(&original));
