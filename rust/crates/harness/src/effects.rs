@@ -145,20 +145,13 @@ impl Clone for EffectRegistry {
     }
 }
 
-/// The provider observation is dropped before its original allocation custody.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativeEffectObservation {
-    observation: EffectObservation,
-    custody: acyclic_fs::NativeAllocation,
-}
-
 /// Single admission check for a pinned successful JSON result.
 pub(crate) fn validate_result_bytes(schema: &Value, result: &FileRef, bytes: &[u8]) -> Result<()> {
-    result.validate()?;
+    result.validate(&mut None)?;
     if result.descriptor().media_type() != "application/json" {
         return Err(Error::Invalid("effect result must be JSON content".into()));
     }
-    result.descriptor().verify(bytes)?;
+    result.descriptor().verify(bytes, &mut None)?;
     let value: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result is not JSON: {error}")))?;
     crate::contract::validate_json_schema_value(schema, &value, "effect result", None)?;
@@ -167,13 +160,13 @@ pub(crate) fn validate_result_bytes(schema: &Value, result: &FileRef, bytes: &[u
 
 /// Parses one pinned schema and rejects invalid or mismatched bytes before publication.
 pub(crate) fn validate_schema_bytes(reference: &FileRef, bytes: &[u8]) -> Result<Value> {
-    reference.validate()?;
+    reference.validate(&mut None)?;
     if reference.descriptor().media_type() != "application/schema+json" {
         return Err(Error::Invalid(
             "effect result schema must be JSON Schema content".into(),
         ));
     }
-    reference.descriptor().verify(bytes)?;
+    reference.descriptor().verify(bytes, &mut None)?;
     let schema: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result schema is not JSON: {error}")))?;
     crate::contract::compile_json_schema(&schema, "effect result", None)?;
@@ -188,7 +181,7 @@ fn validate_effect_reference(
     if let Some(io) = work.as_deref_mut() {
         io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
     }
-    reference.validate()
+    reference.validate(&mut None)
 }
 
 /// Validates the original schema without letting an unguarded Value escape.
@@ -206,7 +199,7 @@ pub(crate) fn validate_effect_schema_bytes_with_work(
             return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
                 "effect result schema must be JSON Schema content"));
         }
-        reference.descriptor().verify_with_work(bytes, work)?;
+        reference.descriptor().verify(bytes, work)?;
         let original = work.as_deref().and_then(|io| io.original_native_work())
             .ok_or_else(|| Error::Unsupported("effect schema observer has no original native ledger".into()))?;
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
@@ -236,7 +229,7 @@ pub(crate) fn validate_effect_result_bytes_with_work(
             return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
                 "effect result schema must be JSON Schema content"));
         }
-        schema_reference.descriptor().verify_with_work(schema_bytes, work)?;
+        schema_reference.descriptor().verify(schema_bytes, work)?;
         let original = work.as_deref().and_then(|io| io.original_native_work())
             .ok_or_else(|| Error::Unsupported("effect result observer has no original native ledger".into()))?;
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
@@ -483,7 +476,7 @@ impl EffectRegistry {
             Some(io) => io.clone_text(&effect.effect_kind)?, None => effect.effect_kind.clone(),
         };
         custody.adopt(effect_kind.capacity() as u64)?;
-        let request = effect.request.clone_with_work(custody.work())?;
+        let request = effect.request.copy(custody.work())?;
         custody.adopt(request.logical_owned_bytes()?)?;
         let dispatch = EffectDispatch {
             provider, effect_id, attempt_id, effect_kind, request,
@@ -505,7 +498,7 @@ impl EffectRegistry {
             let future = provider.dispatch_with_native_work(dispatch, native)?;
             let (observation, custody) = future.await?;
             return self.attest_native_observation(issuer, effect_id, effect,
-                NativeEffectObservation { observation, custody }, work).await;
+                (observation, custody), work).await;
         }
         if work.is_some() {
             return Err(Error::Unsupported("effect observer has no original native ledger".into()));
@@ -529,7 +522,7 @@ impl EffectRegistry {
             let future = provider.reconcile_with_native_work(attempt_id, native)?;
             return match future.await? {
                 Some((observation, custody)) => Ok(Some(self.attest_native_observation(
-                    issuer, effect_id, effect, NativeEffectObservation { observation, custody },
+                    issuer, effect_id, effect, (observation, custody),
                     work).await?)),
                 None => Ok(None),
             };
@@ -547,21 +540,21 @@ impl EffectRegistry {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     async fn attest_native_observation(
         &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
-        incoming: NativeEffectObservation,
+        incoming: (EffectObservation, acyclic_fs::NativeAllocation),
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectAttestation> {
         if !work.as_deref().and_then(|io| io.original_native_work())
-            .is_some_and(|native| incoming.custody.work().shares_ledger(native))
+            .is_some_and(|native| incoming.1.work().shares_ledger(native))
         {
-            let NativeEffectObservation { observation, custody } = incoming;
+            let (observation, custody) = incoming;
             drop(observation);
             return Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
                 custody: Some(custody),
             });
         }
-        let provider_bytes = incoming.observation.provider.capacity() as u64;
-        let NativeEffectObservation { observation, custody } = incoming;
+        let provider_bytes = incoming.0.provider.capacity() as u64;
+        let (observation, custody) = incoming;
         let result = self.attest_provider_observation(
             issuer, effect_id, effect, observation, work).await;
         match result {
@@ -670,15 +663,7 @@ mod tests {
             &'a self,
             reference: &'a FileRef,
         ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move {
-                let bytes = if reference.descriptor().media_type() == "application/schema+json" {
-                    serde_json::to_vec(&json!({"type": "object", "required": ["receipt"]}))
-                        .map_err(|error| Error::Invalid(error.to_string()))?
-                } else {
-                    br#"{"receipt":"ok"}"#.to_vec()
-                };
-                reference.descriptor().verify(&bytes)
-            })
+            Box::pin(async move { self.read(reference).await.map(drop) })
         }
         fn read<'a>(
             &'a self,
@@ -691,7 +676,7 @@ mod tests {
                 } else {
                     br#"{"receipt":"ok"}"#.to_vec()
                 };
-                reference.descriptor().verify(&bytes)?;
+                reference.descriptor().verify(&bytes, &mut None)?;
                 Ok(bytes.into())
             })
         }

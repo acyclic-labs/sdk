@@ -692,7 +692,7 @@ impl MemoryHarnessStorage {
     pub fn default_tools(&self, limits: Limits, source: Option<Arc<dyn super::RecursiveDefaultToolSource<
         MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend,
     >>>) -> Result<ToolRegistry> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         if limits.file_bytes > self.maximum_file_bytes {
             return Err(Error::Invalid(
                 "tool file limit exceeds the bound storage volume".into(),
@@ -815,10 +815,12 @@ impl MemoryHarnessStorage {
             FilesystemExecutionJournal::new(
                 stream.clone(),
                 Arc::clone(&host),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"), crate::core::SchemaRegistry::new(),
-                scope.clone(),
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &crate::core::SchemaRegistry::new(),
+                &scope,
                 maximum_file_bytes,
+                None,
             )?
             .with_input_verifier(input.clone()),
         );

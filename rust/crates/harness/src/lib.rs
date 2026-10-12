@@ -36,7 +36,6 @@ pub mod filesystem;
 pub mod fork;
 #[cfg(feature = "grpc")]
 pub mod grpc;
-mod handles;
 pub mod interaction;
 pub mod live;
 #[cfg(feature = "machines")]
@@ -76,6 +75,13 @@ mod test_stream;
 pub mod wire_validation;
 pub mod wire_values;
 pub mod workflow;
+
+/// Optional original native work; `None` selects unbounded work.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub type NativeWork<'a> = Option<&'a acyclic_fs::NativeMaterializationWork>;
+/// Optional original native work; `None` selects unbounded work.
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+pub type NativeWork<'a> = Option<&'a ()>;
 
 /// Generated Protobuf packages, nested as their package names are, so the harness messages resolve the shared protocol handshake they import.
 #[allow(
@@ -131,10 +137,9 @@ pub use contract::{
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
 pub use extension::{
-    ExtensionIdentity, ExtensionLease, ExtensionLeases, ExtensionLinker, ExtensionRegistry,
+    ExtensionIdentity, ExtensionLease, ExtensionRegistry,
     ExtensionRuntime, NativeExtension,
 };
-pub use handles::{Agent, Conversation, Session, Task, Turn};
 #[cfg(feature = "filesystem")]
 pub use resource_preparation::ChildScratchCreationProof;
 pub use live::{

@@ -204,11 +204,11 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     ));
     let reader = Arc::new(FilesystemContentVerifier::new(fixture.filesystem.clone(), issuer.verifier(), signed.clone(), 65_536)?);
     let stream_provider = ProviderRef::new("restore", "stream", "2")?;
-    let forks = Arc::new(CompositeForkVerifier::new(vec![
+    let forks = Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536)?),
-        Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-    ])?);
-    let mut history = StreamAggregate::open(&fixture.stream, authority.clone(), issuer.verifier(), SchemaRegistry::new()).await?
+        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+    ], &mut None)?);
+    let mut history = StreamAggregate::open(&fixture.stream, authority.clone(), issuer.verifier(&mut None)?, SchemaRegistry::new()).await?
         .with_content_verifier(reader.clone()).with_fork_verifier(forks.clone());
     history.execute(Command { operation_id: OperationId::from_bytes([133; 16]), idempotency_key: IdempotencyKey::new("restore-bind")?,
         expected_revision: 0, scope: signed.clone(), causal_parent: None, action: Action::BindConversation { agent } }).await?;

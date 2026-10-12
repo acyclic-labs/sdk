@@ -1634,7 +1634,7 @@ impl NativeResolvedFile {
     /// Complete canonical metadata authenticated by the pinned generation.
     #[napi(getter)]
     pub fn metadata_canonical_bytes(&self) -> Result<Buffer> {
-        encode_file_metadata(self.inner.description().metadata)
+        encode_file_metadata(self.inner.description().metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed)
             .map(Buffer::from)
             .map_err(napi_error)
     }
@@ -4911,7 +4911,7 @@ impl NativeCheckout {
             Some(value) => (
                 Some(encode_file_record(value.record)),
                 Some(Buffer::from(
-                    encode_file_metadata(value.metadata).map_err(napi_error)?,
+                    encode_file_metadata(value.metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(napi_error)?,
                 )),
             ),
             None => (None, None),
@@ -4959,7 +4959,7 @@ impl NativeCheckout {
             .await
             .map_err(napi_error)?;
         Ok(NativeMetadataResult {
-            canonical_bytes: Buffer::from(encode_file_metadata(receipt.value).map_err(napi_error)?),
+            canonical_bytes: Buffer::from(encode_file_metadata(receipt.value, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(napi_error)?),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -4979,7 +4979,7 @@ impl NativeCheckout {
             .await
             .map_err(napi_error)?;
         Ok(NativeMetadataResult {
-            canonical_bytes: Buffer::from(encode_file_metadata(receipt.value).map_err(napi_error)?),
+            canonical_bytes: Buffer::from(encode_file_metadata(receipt.value, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(napi_error)?),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -4996,15 +4996,12 @@ impl NativeCheckout {
         canonical_bytes: Buffer,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            native_decode_limits(self.config.limits),
-        )
+        let metadata = decode_file_metadata(canonical_bytes.as_ref(), native_decode_limits(self.config.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
         .map_err(napi_error)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .set_metadata(path, metadata, boundary_budget(), &self.cancellation)
+            .apply_authored_transaction(vec![acyclic_fs::AuthoredMutation::SetMetadata { path, metadata }], boundary_budget(), &self.cancellation)
             .await
             .map_err(napi_error)?;
         native_mutation(None, receipt.work)
@@ -5023,10 +5020,7 @@ impl NativeCheckout {
         canonical_bytes: Buffer,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            native_decode_limits(self.config.limits),
-        )
+        let metadata = decode_file_metadata(canonical_bytes.as_ref(), native_decode_limits(self.config.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
         .map_err(napi_error)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
@@ -5051,10 +5045,7 @@ impl NativeCheckout {
         logical_bytes: Option<BigInt>,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            native_decode_limits(self.config.limits),
-        )
+        let metadata = decode_file_metadata(canonical_bytes.as_ref(), native_decode_limits(self.config.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
         .map_err(napi_error)?;
         let logical_bytes = logical_bytes
             .as_ref()
@@ -5089,10 +5080,7 @@ impl NativeCheckout {
         logical_bytes: Option<BigInt>,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            native_decode_limits(self.config.limits),
-        )
+        let metadata = decode_file_metadata(canonical_bytes.as_ref(), native_decode_limits(self.config.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
         .map_err(napi_error)?;
         let logical_bytes = logical_bytes
             .as_ref()
@@ -5658,7 +5646,7 @@ impl NativeCheckout {
                     name: Buffer::from(entry.name.as_bytes().to_vec()),
                     record: encode_file_record(entry.record),
                     metadata_canonical_bytes: Buffer::from(
-                        encode_file_metadata(entry.metadata).map_err(napi_error)?,
+                        encode_file_metadata(entry.metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(napi_error)?,
                     ),
                 })
             })
@@ -7446,10 +7434,7 @@ fn native_authored_transaction(
         },
         "set-metadata" => AuthoredMutation::SetMetadata {
             path: native_path(&required(path, "path")?, config)?,
-            metadata: decode_file_metadata(
-                &required(canonical_bytes, "canonicalBytes")?,
-                native_decode_limits(limits),
-            )
+            metadata: decode_file_metadata(&required(canonical_bytes, "canonicalBytes")?, native_decode_limits(limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
             .map_err(napi_error)?,
         },
         "resize" => AuthoredMutation::Resize {

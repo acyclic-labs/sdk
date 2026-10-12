@@ -43,8 +43,6 @@ fn core_metadata_validation_rejects_malformed_persisted_values() {
         metadata: Some(wire::ObjectMetadata::default()),
     };
     assert!(response::object_info(&object).is_ok());
-    // Object metadata may describe a completed multipart object larger than a
-    // single PUT/part limit. Selection bounds are checked by get_header.
     object.size = 6 * 1024 * 1024 * 1024;
     assert!(response::object_info(&object).is_ok());
     assert_eq!(

@@ -284,7 +284,8 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
     }
 }
 
-pub(super) async fn read<P: StreamProvider>(
+/// Reads authenticated effect events at a bounded committed cut.
+pub async fn effect_events<P: StreamProvider>(
     client: &StreamClient<P>,
     verifier: &AuthorityVerifier,
     cursor: &HistoryCursor,

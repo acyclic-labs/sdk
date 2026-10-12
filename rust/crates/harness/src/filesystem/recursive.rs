@@ -36,7 +36,7 @@ impl ForkToolArguments {
         &self, caller: TaskId, limits: Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<TaskId> {
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         if let Some(observer) = work.as_deref_mut() {
             observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
@@ -179,7 +179,7 @@ where
         }
         crate::conversation::ContentGrant::verify(&verifier, &signed, volume, VolumeOperation::Read)?;
     }
-    config.limits.validate()?;
+    config.limits.validate(&mut None)?;
     let selected = arguments.source_task(caller, config.limits, &mut None)?;
     let mut request = ForkRequest {
         operation_id, parent: parent.reducer().authority().clone(),
@@ -304,12 +304,12 @@ pub(crate) fn recursive_fork_request_with_native_work(
         crate::resources::ResourceKind::Stream, provider, path, Some(version), &mut observer,
     )?;
     let reference = crate::resources::StreamRef::from_resource_with_work(reference, &mut observer)?;
-    let child_project = allocation.project.clone_with_work(&mut observer)?;
-    let child_private = allocation.private_volume.clone_with_work(&mut observer)?;
-    let child_result = allocation.result_volume.map(|volume| volume.clone_with_work(&mut observer)).transpose()?;
+    let child_project = allocation.project.copy(&mut observer)?;
+    let child_private = allocation.private_volume.copy(&mut observer)?;
+    let child_result = allocation.result_volume.map(|volume| volume.copy(&mut observer)).transpose()?;
     let source_project = source_read.map_or(source.project, |handle| &handle.authorization().project)
-        .clone_with_work(&mut observer)?;
-    let scratch = source.private_volume.clone_with_work(&mut observer)?;
+        .copy(&mut observer)?;
+    let scratch = source.private_volume.copy(&mut observer)?;
     let mut selections = Vec::new();
     let slots = 3 * std::mem::size_of::<crate::fork::ForkSelection>() as u64;
     observer.as_deref_mut().expect("native fork observer").admit_owned(slots)?;
@@ -525,7 +525,7 @@ where
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
         (verifier.copy(&mut observer)?, signed.copy(&mut observer)?,
-            caller_project.clone_with_work(&mut observer)?)
+            caller_project.copy(&mut observer)?)
     };
     let provider = stream_provider.clone_with_io(&io)?;
     let selected_read = match source_read {
@@ -572,7 +572,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     use super::default_tools::{encode, recursive_observe, recursive_reject};
     recursive_observe(io, |work| {
         fork.validate(work)?;
-        command.validate_with_work(work)
+        command.validate(work)
     })?;
     if command.kind != FORK_PREPARE_TASK_COMMAND_KIND
         || fork.operation_id != command.operation_id || command.operation_id == child.operation_id
@@ -768,7 +768,7 @@ impl ResumableMachine for ForkPreparationMachine {
         let io = super::PreparationIo::from_native_work(work)?;
         let state = self.initialize_engine(input, Some(&io))?;
         let custody = io.take_native_custody(
-            super::default_tools::recursive_value_owned_bytes(&state, Some(&io))?,
+            super::default_tools::recursive_value_owned_bytes(&state)?,
         )?;
         Ok((state, custody))
     }
@@ -805,7 +805,7 @@ impl ForkPreparationMachine {
         let state: State = decode(state, io)?;
         let (state, commands, status) = match state {
             State::Ready { command, request_digest } => {
-                recursive_observe(io, |work| command.validate_with_work(work))?;
+                recursive_observe(io, |work| command.validate(work))?;
                 if !input.is_null() || command.kind != FORK_PREPARE_TASK_COMMAND_KIND {
                     return Err(recursive_reject(io, crate::wire::ErrorCode::Invalid, "fork preparation initial trigger changed"));
                 }

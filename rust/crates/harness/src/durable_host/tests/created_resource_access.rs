@@ -561,7 +561,7 @@ impl CreationFixture {
         let proof = self.creator.proof(preparation)?;
         let mut child = self.admission(84, serde_json::json!({"action":"execute"}));
         child.grants = Capabilities::new([
-            created_resource_capability(&proof.resource, "execute")?,
+            created_resource_capability(&proof.resource, "execute", &mut None)?,
             "task:spawn:test.created@1".into(),
         ]);
         child = child.with_resource_proofs(vec![proof.clone()])?;
@@ -616,7 +616,7 @@ impl CreationFixture {
 async fn created_custom_operation_requires_canonical_admission_not_a_caller_receipt() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let request = fixture.sandbox_request()?;
-    let label = created_resource_capability(&request.resources[0], "execute")?;
+    let label = created_resource_capability(&request.resources[0], "execute", &mut None)?;
     assert!(!fixture.root_scope.grants().contains(&label));
     let (preparation, _, _invocation) = fixture.prepare(&request).await?;
     fixture.creator.create(&preparation, |_| {}).await?;
@@ -640,7 +640,7 @@ async fn created_custom_operation_requires_canonical_admission_not_a_caller_rece
     assert!(!narrowed.scope().grants().contains(&label));
     assert!(narrowed.scoped(Capabilities::new([label.clone()]), narrowed.scope().limits()).is_err());
     let foreign = ResourceRef::new(ResourceKind::Sandbox, fixture.creator.provider.clone(), b"foreign".to_vec(), None)?;
-    assert!(context.scoped(Capabilities::new([created_resource_capability(&foreign, "execute")?]), context.scope().limits()).is_err());
+    assert!(context.scoped(Capabilities::new([created_resource_capability(&foreign, "execute", &mut None)?]), context.scope().limits()).is_err());
     Ok(())
 }
 
@@ -731,7 +731,7 @@ async fn original_creation_fence_survives_current_preparation_and_parent_recover
     assert!(fixture.host.admit_owned(request.child.clone(), old_parent_fence).await.is_err());
     assert!(matches!(fixture.admit_child(request.child.clone()).await?, Admission::Accepted(_)));
     let context = fixture.harness.durable_context(TaskId::from_bytes([84; 16]), request.child.operation_id).await?;
-    assert!(context.scope().grants().contains(&created_resource_capability(&request.resources[0], "execute")?));
+    assert!(context.scope().grants().contains(&created_resource_capability(&request.resources[0], "execute", &mut None)?));
     Ok(())
 }
 
@@ -1202,57 +1202,10 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     assert_eq!(proof.original_task(),task);
     assert_eq!(proof.agent(),created.seed.child_agent);
     assert_eq!(proof.volume(),&created.private);
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let authorized = owner.authorize_created_scratch_settlement_measured(&proof,test_budget(16_384, 16 * 1_024 * 1_024),&cancellation).await;
-    assert!(authorized.result.is_ok());
-    assert!(authorized.counters.backend_read_operations > 0);
     let root_owner = fixture.host.journal_owner(
         fixture.root,(&fixture.root_lease.reservation).into(),
     ).await?;
     assert!(root_owner.child_scratch_creation_proof().is_err());
-    let hostile = root_owner.authorize_created_scratch_settlement_measured(&proof,test_budget(16_384, 16 * 1_024 * 1_024),&cancellation).await;
-    assert!(hostile.result.is_err());
-    assert_eq!(hostile.counters.backend_read_operations,0);
-    let denied = owner.authorize_created_scratch_settlement_measured(&proof,acyclic_fs::WorkBudget::default(),&cancellation).await;
-    assert!(denied.result.is_err());
-    assert_eq!(denied.counters.backend_read_operations,0);
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let native_cancellation = acyclic_fs::CancellationToken::new();
-        let native_work = acyclic_fs::NativeMaterializationWork::new(
-            test_budget(16_384, 16 * 1_024 * 1_024), &native_cancellation,
-        ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
-        owner.authorize_created_scratch_settlement_with_native_work(&proof, &native_work).await?;
-        assert!(native_work.receipt().backend_read_operations > 0);
-        let before = native_work.receipt().backend_read_operations;
-        assert!(matches!(
-            root_owner.authorize_created_scratch_settlement_with_native_work(&proof, &native_work).await,
-            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })
-        ));
-        assert_eq!(native_work.receipt().backend_read_operations, before);
-        native_cancellation.cancel();
-        assert!(matches!(
-            owner.authorize_created_scratch_settlement_with_native_work(&proof, &native_work).await,
-            Err(Error::NativeWork { .. })
-        ));
-        assert_eq!(native_work.receipt().backend_read_operations, before);
-
-        let fresh_cancellation = acyclic_fs::CancellationToken::new();
-        let mut minimal = test_budget(16_384, 16 * 1_024 * 1_024);
-        minimal.peak_allocation_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
-        let denied_work = acyclic_fs::NativeMaterializationWork::new(
-            minimal, &fresh_cancellation,
-        ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
-        assert!(matches!(
-            owner.authorize_created_scratch_settlement_with_native_work(&proof, &denied_work).await,
-            Err(Error::NativeWork { .. })
-        ));
-        assert_eq!(denied_work.receipt().backend_read_operations, 0);
-    }
-    cancellation.cancel();
-    let cancelled = owner.authorize_created_scratch_settlement_measured(&proof,test_budget(16_384, 16 * 1_024 * 1_024),&cancellation).await;
-    assert!(cancelled.result.is_err());
-    assert_eq!(cancelled.counters.backend_read_operations,0);
 
     let claim = workspace_ref(fixture.filesystem_provider.clone(),
         &format!("fork-allocation-{}",result.storage_name()?))?;

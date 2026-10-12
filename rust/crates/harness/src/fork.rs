@@ -2,7 +2,7 @@
 
 use crate::conversation::{
     ContentResidencyVerifier, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
-    decode_complete_attachment_manifest,
+    decode_attachment_manifest,
 };
 use crate::core::Authority;
 use crate::resources::{
@@ -91,7 +91,7 @@ impl InheritedConversationPrefix {
                 "inherited attached agents are invalid".into(),
             ));
         }
-        let message_digest = conversation.history_prefix_digest(through_sequence)?;
+        let message_digest = conversation.history_prefix_digest(through_sequence, &mut None)?;
         let attached_bytes = attached_agents.len() as u64 * std::mem::size_of::<AgentId>() as u64;
         if !attached_agents.is_empty() && let Some(observer) = owned.work().as_deref_mut() {
             observer.admit_allocation(attached_bytes)?;
@@ -162,7 +162,7 @@ impl PreparedForkHistory {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         verifier.verify_audience(&self.parent, work)?;
-        let digest = self.conversation.history_prefix_digest_with_work(self.through_sequence(), work)?;
+        let digest = self.conversation.history_prefix_digest(self.through_sequence(), work)?;
         if self.attestation != verifier.fork_history_selection_proof_with_work(
             self.parent_revision, self.through_sequence(), self.conversation.agent, digest, work,
         )? {
@@ -802,20 +802,20 @@ fn decode_fork_manifest(
     owned: &mut CodecQuota<'_, '_>,
 ) -> Result<Vec<crate::conversation::Attachment>> {
     if owned.work().is_none() {
-        return decode_complete_attachment_manifest(reference, bytes);
+        return decode_attachment_manifest(reference, bytes, None, None);
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(native) = owned.work().as_deref().and_then(|io| io.original_native_work()) {
         let io = crate::filesystem::PreparationIo::from_native_work(native)?;
-        let items = crate::conversation::decode_manifest_bounded(
-            reference, bytes, crate::conversation::MAX_LIMIT_ATTACHMENTS, &io)?;
+        let items = crate::conversation::decode_attachment_manifest(
+            reference, bytes, None, Some(&io))?;
         let retained = io.owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         owned.work().as_deref_mut().expect("original manifest observer").absorb_native_custody(custody)?;
         owned.adopt(retained)?;
         return Ok(items);
     }
-    reference.validate()?;
+    reference.validate(&mut None)?;
     if reference.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json" {
         return Err(Error::Invalid("attachment manifest metadata is invalid".into()));
     }
@@ -824,7 +824,7 @@ fn decode_fork_manifest(
     {
         observer.hashed_bytes(bytes.len() as u64)?;
     }
-    reference.descriptor().verify(bytes)?;
+    reference.descriptor().verify(bytes, &mut None)?;
     let maximum = crate::store::default_projection_read_limits().maximum_bytes;
     if bytes.len() as u64 > maximum {
         return Err(Error::Invalid("attachment manifest exceeds finite codec allowance".into()));
@@ -877,7 +877,7 @@ fn decode_fork_manifest(
         return Err(Error::Invalid("attachment count exceeds limit".into()));
     }
     for item in &items {
-        item.validate()?;
+        item.validate(&mut None)?;
     }
     let canonical = crate::contract::json_bytes_bounded(&items, bounds, None, &mut |charge| {
         match charge {
@@ -1150,7 +1150,7 @@ impl ResourceRevision {
                 && generation.as_resource().provider() == volume.provider()
                 && volume.provider().family() == "filesystem" =>
             {
-                volume.validate_with_work(work)?;
+                volume.validate(work)?;
                 generation.validate_with_work(work)?;
                 if paths.len() as u64 > MAX_FORK_RESOURCES as u64 {
                     return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
@@ -1176,7 +1176,7 @@ impl ResourceRevision {
                 if generation.as_resource().provider() == volume.provider()
                     && volume.provider().family() == "filesystem" =>
             {
-                volume.validate_with_work(work)?;
+                volume.validate(work)?;
                 generation.validate_with_work(work)
             }
             Self::Context(value) => value.validate_with_work(work),
@@ -1185,7 +1185,7 @@ impl ResourceRevision {
             }
             Self::Artifact(value) => value.validate_with_work(work),
             Self::SharedVolume(value) if value.class() == VolumeClass::SessionShared => {
-                value.validate_with_work(work)
+                value.validate(work)
             }
             Self::Extension {
                 name,
@@ -1332,8 +1332,8 @@ impl ForkPreparation {
                     "summary fork requires a nonempty logical parent cut"));
             }
         }
-        self.child_project_volume.validate_with_work(work)?;
-        self.child_private_volume.validate_with_work(work)?;
+        self.child_project_volume.validate(work)?;
+        self.child_private_volume.validate(work)?;
         if self.child_private_volume.class() != VolumeClass::AgentPrivate
             || self.child_private_volume.owner() != &VolumeOwner::Agent(child_agent)
             || self.child_project_volume.class() != VolumeClass::Project
@@ -1362,7 +1362,7 @@ fn validate_child_result_volume(
     result: &VolumeRef, scratch: &VolumeRef, child: AgentId,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    result.validate_with_work(work)?;
+    result.validate(work)?;
     if result.class() != VolumeClass::AgentPrivate
         || result.owner() != &VolumeOwner::Agent(child)
         || result.provider() != scratch.provider()
@@ -1527,12 +1527,12 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
     }
 
     pub(super) fn file_capability(&mut self, file: &FileRef) -> Result<String> {
-        file.validate_with_work(self.work())?;
+        file.validate(self.work())?;
         self.capability("file:read:", file)
     }
 
     fn file_digest(&mut self, file: &FileRef) -> Result<[u8; 32]> {
-        file.validate_with_work(self.work())?;
+        file.validate(self.work())?;
         self.digest(file)
     }
 
@@ -1750,9 +1750,9 @@ impl ReferenceGrant {
     pub(crate) fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.file.validate_with_work(work)?;
+        self.file.validate(work)?;
         if let Some(manifest) = &self.attachment_manifest {
-            manifest.validate_with_work(work)?;
+            manifest.validate(work)?;
             if manifest.descriptor().media_type()
                 != "application/vnd.acyclic.harness.attachments+json"
             {
@@ -1775,7 +1775,7 @@ impl SharedGrant {
     pub(crate) fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.volume.validate_with_work(work)?;
+        self.volume.validate(work)?;
         if self.volume.class() != VolumeClass::SessionShared || self.operations.is_empty() {
             return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
                 "invalid fork shared-volume grant"));
@@ -1968,7 +1968,7 @@ impl ForkReport {
                 _ => {}
             }
         }
-        self.child_private_volume.validate_with_work(work.work())?;
+        self.child_private_volume.validate(work.work())?;
         self.child_private_generation.as_resource().validate_with_work(work.work())?;
         if self.child_private_volume.class() != VolumeClass::AgentPrivate
             || self.child_private_volume.provider().family() != "filesystem"
@@ -1980,7 +1980,7 @@ impl ForkReport {
         }
         for file in &self.inherited_context {
             work.checkpoint()?;
-            file.validate_with_work(work.work())?;
+            file.validate(work.work())?;
         }
         for grant in &self.shared_grants {
             work.checkpoint()?;
@@ -1992,7 +1992,7 @@ impl ForkReport {
         }
         for manifest in &self.attachment_manifests {
             work.checkpoint()?;
-            manifest.validate_with_work(work.work())?;
+            manifest.validate(work.work())?;
         }
         Ok(())
     }
@@ -2161,7 +2161,7 @@ impl ForkSeed {
         if attached.len() != self.attached_agents.len() || attached.contains(&self.child_agent) {
             return Err(work.invalid("fork attached agents are not unique"));
         }
-        self.child_private_volume.validate_with_work(work.work())?;
+        self.child_private_volume.validate(work.work())?;
         self.child_private_generation.as_resource().validate_with_work(work.work())?;
         if self.child_private_volume.class() != VolumeClass::AgentPrivate
             || self.child_private_volume.provider().family() != "filesystem"
@@ -2253,7 +2253,7 @@ impl ForkSeed {
         let mut manifest_bytes = 0_u64;
         for manifest in &self.attachment_manifests {
             work.checkpoint()?;
-            manifest.validate_with_work(work.work())?;
+            manifest.validate(work.work())?;
             manifest_bytes = manifest_bytes
                 .checked_add(manifest.descriptor().byte_length())
                 .ok_or_else(|| work.invalid("fork attachment manifest bytes overflow"))?;
@@ -2399,7 +2399,7 @@ impl ForkSeed {
         let mut inherited_paths = BTreeSet::new();
         for file in &self.inherited_context {
             work.checkpoint()?;
-            file.validate_with_work(work.work())?;
+            file.validate(work.work())?;
             if file.volume() != &self.child_private_volume
                 || !file.path().starts_with(".system/inherited-conversation/")
             {
@@ -2799,7 +2799,7 @@ mod tests {
                 if file.volume().provider() != &self.provider {
                     return Err(Error::Unauthorized("wrong manifest provider".into()));
                 }
-                file.descriptor().verify(&self.bytes)
+                file.descriptor().verify(&self.bytes, &mut None)
             })
         }
 

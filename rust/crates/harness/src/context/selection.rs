@@ -185,14 +185,14 @@ impl ContextSelection {
         limits: Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         let native = selection_has_native_work(work);
         if native {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
             }
             match &self.source {
-                ContextSourceValue::File { file } => limits.validate_file_with_work(file, work)?,
+                ContextSourceValue::File { file } => limits.validate_file(file, work)?,
                 ContextSourceValue::Attribute { attribute } => attribute.preflight_source(work)?,
             }
         }
@@ -200,7 +200,7 @@ impl ContextSelection {
         match &self.source {
             ContextSourceValue::File { file } => {
                 if !native {
-                    limits.validate_file_with_work(file, work)?;
+                    limits.validate_file(file, work)?;
                 }
                 if let ContextExtent::Span { start, end } = self.extent
                     && (start >= end || end > file.descriptor().byte_length())
@@ -393,11 +393,11 @@ impl ContextStage for SelectionStage {
         limits: Limits,
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
-            let limits = super::restrict_context_limits(self.limits, limits)?;
-            super::validate_projected_context_with_io(&context, limits, None)?;
+            let limits = super::restrict_context_limits(self.limits, limits, None)?;
+            super::validate_projected_context(&context, limits, None)?;
             self.selection.validate(limits)?;
             if let ContextSourceValue::File { file } = &self.selection.source {
-                limits.validate_file(file)?;
+                limits.validate_file(file, &mut None)?;
                 self.verifier.verify(file).await?;
             }
             let messages = self
@@ -487,8 +487,8 @@ impl ContextStage for SelectionStage {
                 "context renderer has no native capability"));
         }
         crate::NativeFutureBundle::new(work, || async move {
-            let limits = super::restrict_context_limits_native(self.limits, limits, work)?;
-            super::validate_projected_context_with_io(&context.0, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
+            let limits = super::restrict_context_limits(self.limits, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
+            super::validate_projected_context(&context.0, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             self.selection.validate_with_native_work(limits, work)?;
             if let ContextSourceValue::File { file } = &self.selection.source {
                 limits.validate_file_with_native_work(file, work)?;
@@ -514,7 +514,7 @@ pub fn apply_context_projection(
 ) -> Result<Context> {
     let placement = projection_placement(mode, placement);
     let context = place_messages_with_io(context, messages, placement, limits, None)?;
-    super::validate_projected_context_with_io(&context, limits, None)?;
+    super::validate_projected_context(&context, limits, None)?;
     Ok(context)
 }
 
@@ -528,7 +528,7 @@ pub(super) fn apply_context_projection_native(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(Context, acyclic_fs::NativeAllocation)> {
     let context = place_messages_native(context, messages, projection_placement(mode, placement), limits, work)?;
-    super::validate_projected_context_with_io(&context.0, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
+    super::validate_projected_context(&context.0, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
     Ok(context)
 }
 
@@ -649,8 +649,8 @@ fn preflight_context_composition(
     limits: Limits,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Option<u32>> {
-    super::validate_context_projection_with_io(context, limits, io)?;
-    super::validate_context_projection_with_io(contribution, limits, io)?;
+    super::validate_projected_context(context, limits, io)?;
+    super::validate_projected_context(contribution, limits, io)?;
     if context
         .messages
         .len()
@@ -718,7 +718,7 @@ fn preflight_context_composition(
         metadata: JoinedMetadata<'a>,
         current_input_index: Option<u32>,
     }
-    super::validate_context_json_with_io(
+    super::validate_context_json(
         &JoinedContext {
             messages: super::ContextMessages {
                 first,
@@ -746,11 +746,11 @@ fn compose_context_with_io(
     context.metadata.extend(contribution.metadata);
     match placement {
         ContextPlacement::Prepend => {
-            super::append_context_messages_with_io(&mut contribution.messages, &mut context.messages, io)?;
+            super::append_context_messages(&mut contribution.messages, &mut context.messages, io)?;
             context.messages = contribution.messages;
         }
         ContextPlacement::Append => {
-            super::append_context_messages_with_io(&mut context.messages, &mut contribution.messages, io)?;
+            super::append_context_messages(&mut context.messages, &mut contribution.messages, io)?;
         }
     }
     Ok(context)

@@ -28,7 +28,7 @@ pub struct ContextRoot {
 
 impl ContextRoot {
     fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
-        self.volume.validate_with_work(work)?;
+        self.volume.validate(work)?;
         if !self.directory.is_empty() {
             crate::conversation::validate_content_path_with_work(&self.directory, work)?;
         }
@@ -626,7 +626,7 @@ impl DiscoveredContext {
 
     fn validate_with_work(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         for file in &self.instructions {
-            file.validate_with_work(work)?;
+            file.validate(work)?;
         }
         let name_slots = if work.is_some() {
             self.skills.len().checked_mul(std::mem::size_of::<&String>())
@@ -720,7 +720,7 @@ impl DiscoveredContext {
         limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ModelMessage>> {
-        super::validate_context_limits_with_io(limits, io)?;
+        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
         let count = self.instructions.len().checked_add(usize::from(!self.skills.is_empty()))
             .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
                 "discovered context count overflows"))?;
@@ -748,20 +748,20 @@ impl DiscoveredContext {
             if let Some(native) = io.and_then(crate::executor::PreparationIo::original_native_work) {
                 limits.validate_file_with_native_work(file, native)?;
             } else {
-                limits.validate_file(file)?;
+                limits.validate_file(file, &mut None)?;
             }
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            limits.validate_file(file)?;
+            limits.validate_file(file, &mut None)?;
         }
         let messages = self.messages_with_io(io, skill_bytes)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-            super::validate_source_messages_native(&messages, limits, native)?;
+            super::validate_source_messages(&messages, limits, Some(&crate::executor::PreparationIo::from_native_work(native)?))?;
         } else {
-            super::validate_source_messages(&messages, limits)?;
+            super::validate_source_messages(&messages, limits, None)?;
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        super::validate_source_messages(&messages, limits)?;
+        super::validate_source_messages(&messages, limits, None)?;
         Ok(messages)
     }
 
@@ -786,7 +786,7 @@ impl DiscoveredContext {
             .iter()
             .chain(policy.skill_name.iter())
         {
-            validate_content_path(name)?;
+            validate_content_path(name, &mut None)?;
             if name.contains('/') {
                 return Err(Error::Invalid(
                     "discovery entry must be one filename".into(),
@@ -802,7 +802,7 @@ impl DiscoveredContext {
         for scope in instructions {
             scope.root.validate(&mut None)?;
             if !scope.active_directory.is_empty() {
-                validate_content_path(&scope.active_directory)?;
+                validate_content_path(&scope.active_directory, &mut None)?;
             }
             if policy.instruction_names.is_empty() {
                 continue;
