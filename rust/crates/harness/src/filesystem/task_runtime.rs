@@ -1005,7 +1005,7 @@ where
             &witness, query, claim, work,
         )?.await?;
         let mut preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
-        let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64)?;
+        let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64, u64::from((std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
         preparation.native_custody.as_mut().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "native preparation has no original metadata custody",

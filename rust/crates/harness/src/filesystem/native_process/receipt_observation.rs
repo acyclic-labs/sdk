@@ -23,7 +23,7 @@ pub(super) fn receipt_path(
     let path = std::str::from_utf8(&bytes)
         .map_err(|_| boundary(crate::wire::ErrorCode::Storage, "native receipt UUID encoding is invalid"))?;
     work.spent(completed)?;
-    StreamPath::new_native(path, &work.runtime_meter_owner())
+    StreamPath::new_native(path, &work.runtime_meter())
         .map_err(|error| Error::from(work.runtime_error(error)))?
         .map_err(receipt_backend)
 }
@@ -119,7 +119,7 @@ fn decode(bytes: &[u8], io: &super::super::PreparationIo,
 pub(super) async fn read<P: StreamProvider>(
     owner: &TaskJournalOwner<P>, path: &StreamPath, work: &NativeMaterializationWork,
 ) -> Result<Option<(LaunchReceipt<'static>, Option<NativeObservation>, NativeAllocation)>> {
-    let mut custody = work.retain_owned(0)?;
+    let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let client = owner.stream();
     check(work)?;
     let io = super::super::PreparationIo::from_native_work(work)?;

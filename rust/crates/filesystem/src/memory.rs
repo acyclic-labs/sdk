@@ -850,7 +850,7 @@ impl crate::async_storage::AsyncAuthorityStore for MemoryAuthorityStore {
         let mut accounting = AuthorityAccounting::native(original, cancellation)?;
         let plan = self.plan_append(&request, &mut accounting).map_err(|(error, _)| error)?;
         let value = self.publish_append(&request, plan, &mut accounting).map_err(|(error, _)| error)?;
-        let allocation = original.claim_allocation(0, 0, WorkCounters::UNCHARGED)?;
+        let allocation = original.claim(0, 0, WorkCounters::UNCHARGED)?;
         Ok((value, allocation))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -868,7 +868,7 @@ impl crate::async_storage::AsyncAuthorityStore for MemoryAuthorityStore {
         guard(original).await?;
         let value = self.publish_append(&request, plan, &mut accounting)
             .map_err(|(error, _)| E::from(error))?;
-        let allocation = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)
+        let allocation = original.claim(0, 0, crate::WorkCounters::UNCHARGED)
             .map_err(|error| E::from(AuthorityStoreError::from(error)))?;
         Ok((value, allocation))
     }
@@ -880,7 +880,7 @@ impl crate::async_storage::AsyncAuthorityStore for MemoryAuthorityStore {
     ) -> Result<Head, AuthorityStoreError> {
         let mut accounting = AuthorityAccounting::native(work, cancellation)?;
         let head = self.head_accounted(authority_id, &mut accounting).map_err(|(error, _)| error)?;
-        drop(work.claim_allocation(0, 0, WorkCounters::UNCHARGED)?);
+        drop(work.claim(0, 0, WorkCounters::UNCHARGED)?);
         Ok(head)
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -905,7 +905,7 @@ impl crate::async_storage::AsyncAuthorityStore for MemoryAuthorityStore {
     ) -> Result<crate::storage::FenceOutcome, AuthorityStoreError> {
         let mut accounting = AuthorityAccounting::native(work, cancellation)?;
         let outcome = self.fence_accounted(authority_id, expected, &mut accounting).map_err(|(error, _)| error)?;
-        drop(work.claim_allocation(0, 0, WorkCounters::UNCHARGED)?);
+        drop(work.claim(0, 0, WorkCounters::UNCHARGED)?);
         Ok(outcome)
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -917,7 +917,7 @@ impl crate::async_storage::AsyncAuthorityStore for MemoryAuthorityStore {
         let mut accounting = AuthorityAccounting::native(work, cancellation)?;
         let value = self.find_operation_accounted(authority_id, operation_id, &mut accounting)
             .map_err(|(error, _)| error)?;
-        let allocation = work.claim_allocation(0, 0, WorkCounters::UNCHARGED)?;
+        let allocation = work.claim(0, 0, WorkCounters::UNCHARGED)?;
         Ok((value, allocation))
     }
 }
@@ -1049,7 +1049,7 @@ impl<'a> AuthorityAccounting<'a> {
         self.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Self::Native { original, .. } = self {
-            return original.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED)
+            return original.claim(bytes, operations, crate::WorkCounters::UNCHARGED)
                 .map(KernelOwnedAllocation::NativeOriginal).map_err(|error| (error.into(), original.receipt()));
         }
         let (allocations, work, budget) = self.ordinary_parts();
@@ -1178,7 +1178,7 @@ impl<'a> MemoryObjectAccounting<'a> {
         self.admit(allocation)?;
         let mut custody = match self {
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { work, .. } => KernelOwnedAllocation::NativeOriginal(work.claim(requested)?),
+            Self::Native { work, .. } => KernelOwnedAllocation::NativeOriginal(work.claim(requested, u64::from((requested) != 0), crate::WorkCounters::UNCHARGED)?),
             Self::Portable { .. } => {
                 self.record(allocation)?;
                 KernelOwnedAllocation::Standalone

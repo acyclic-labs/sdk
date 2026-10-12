@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
 use acyclic_native_runtime::{NativeReadMeter, NativeOperationKind};
+use crate::memory::TestClock;
 
 #[derive(Debug)]
 pub(crate) struct NativeDenial(pub(crate) &'static str);
@@ -7,12 +8,6 @@ impl std::fmt::Display for NativeDenial {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.0) }
 }
 impl std::error::Error for NativeDenial {}
-
-#[derive(Default)]
-pub(crate) struct TestClock(pub(crate) AtomicU64);
-impl crate::UnixMillisClock for TestClock {
-    fn now_unix_millis(&self) -> u64 { self.0.load(Ordering::SeqCst) }
-}
 
 pub(crate) struct Meter {
     pub(crate) check_on_record: bool,
@@ -254,4 +249,3 @@ impl NativeReadMeter for Meter {
         self.record_write_operations(1)
     }
 }
-

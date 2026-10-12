@@ -231,12 +231,12 @@ pub(super) async fn exercise_streaming<'a>(
     Ok(())
 }
 
-fn bucket() -> Option<wire::BucketRef> {
+pub(super) fn bucket() -> Option<wire::BucketRef> {
     Some(wire::BucketRef {
         name: "customer.inputs".into(),
     })
 }
-fn identity(key: &str) -> Option<wire::MutationIdentity> {
+pub(super) fn identity(key: &str) -> Option<wire::MutationIdentity> {
     Some(wire::MutationIdentity {
         idempotency_key: key.into(),
     })
@@ -248,7 +248,7 @@ fn put(key: &str) -> wire::PutObjectHeader {
         ..Default::default()
     }
 }
-fn get(key: &str) -> wire::GetObjectRequest {
+pub(super) fn get(key: &str) -> wire::GetObjectRequest {
     wire::GetObjectRequest {
         bucket: bucket(),
         object_key: key.into(),
@@ -1157,7 +1157,7 @@ fn native_wire_aliases_keep_original_claim_after_context_retirement()
     let observed = Arc::new(NativeTransportMeter::new());
     let meter: Arc<dyn NativeReadMeter> = observed.clone();
     let errors = super::NativeTransportErrors::new(&meter)?;
-    let controls = super::response::NativeGetControls { meter, errors };
+    let controls = errors;
     let (data, allocation) = controls.copy(b"immutable native wire")?;
     let wire = controls.wire_bytes(data, allocation)?;
     let alias = wire.slice(1..4);

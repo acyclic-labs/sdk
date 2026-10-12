@@ -118,7 +118,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     let detached_source = NativeDemandSource::open(
         std::borrow::Cow::Borrowed(std::path::Path::new(&root)), FilesystemProfile::Portable, VolumeLimits::default(), Some(advanced), None, &work, (&work).cancellation(),
     ).await?;
-    let original = work.runtime_meter_owner();
+    let original = work.runtime_meter();
     let original_weak = Arc::downgrade(&original);
     drop(original);
     work.receipt().verify(budget)?;

@@ -487,7 +487,7 @@ pub(crate) fn owned_bytes_from_retained_vec(
                 return release_owned_after_drop(Err(error), capacity, work);
             },
         };
-        return OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter_owner())
+        return OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter())
             .map(|bytes| (bytes, 0))
             .map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(source) => Error::NativeWork {
@@ -956,7 +956,7 @@ fn original_sdk_metadata_output<T>(
     output: acyclic_stream::NativeStreamOutput<T>,
 ) -> Result<acyclic_stream::NativeStreamOutput<T>> {
     let (value, allocation) = output.into_parts();
-    let same_meter = std::sync::Arc::ptr_eq(allocation.meter(), &original.runtime_meter_owner());
+    let same_meter = std::sync::Arc::ptr_eq(allocation.meter(), &original.runtime_meter());
     let output = acyclic_stream::NativeStreamOutput::new(value, allocation);
     if !same_meter {
         return Err(Error::NativeWork {
@@ -1023,7 +1023,7 @@ async fn native_records_with_work<P: StreamProvider>(
 ) -> Result<std::result::Result<ObservedRecords, SdkCallError>> {
     let result = client.native_read(acyclic_stream::ReadRequest {
         path: path.clone(), from, limit: count,
-    }, original.runtime_meter_owner()).await;
+    }, original.runtime_meter()).await;
     match crate::distributed::native_call_result(original, result)? {
         Ok(output) => Ok(Ok(ObservedRecords::Native(
             original_sdk_metadata_output(original, output)?))),
@@ -1054,7 +1054,7 @@ pub(crate) async fn bounds_with_work<P: StreamProvider>(
 ) -> Result<std::result::Result<acyclic_stream::StreamBounds, SdkCallError>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
-        let result = client.native_bounds(path.clone(), original.runtime_meter_owner()).await;
+        let result = client.native_bounds(path.clone(), original.runtime_meter()).await;
         return crate::distributed::native_call_result(original, result)
             .map(|result| result.map(|output| *output.value()));
     }
@@ -1082,7 +1082,7 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
 ) -> Result<Option<u64>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
-        let result = client.native_tail(path.clone(), original.runtime_meter_owner()).await;
+        let result = client.native_tail(path.clone(), original.runtime_meter()).await;
         let result = crate::distributed::native_call_result(original, result)?;
         return match result {
             Ok(output) => Ok(Some(*output.value())),
@@ -1833,9 +1833,9 @@ mod native_publication_custody_tests {
         let mut publication = IndexedPublication::new(
             &authority, &event, encoded, &mut work)?;
         assert_eq!(publication.bytes.retained_capacity(), Some(original_capacity as usize));
-        assert!(publication.bytes.matches_meter(&native.runtime_meter_owner()));
+        assert!(publication.bytes.matches_meter(&native.runtime_meter()));
         assert!(publication.indexes.iter().all(|(_, _, bytes)|
-            bytes.matches_meter(&native.runtime_meter_owner())));
+            bytes.matches_meter(&native.runtime_meter())));
         let old_snapshot = publication.indexes[0].2.clone();
         let old_snapshot_capacity = old_snapshot.retained_capacity().expect("guarded original index");
         publication.set_effect_position_with_work(3, &mut work)?;
@@ -1862,8 +1862,8 @@ mod native_publication_custody_tests {
         let cached = one_record(&client, &publication.path, 0,
             &mut Some(&mut query_io)).await?.expect("real provider cached event");
         assert_eq!(cached.value, publication.bytes);
-        assert!(cached.value.matches_meter(&native.runtime_meter_owner()));
-        assert!(!cached.value.matches_meter(&query.runtime_meter_owner()));
+        assert!(cached.value.matches_meter(&native.runtime_meter()));
+        assert!(!cached.value.matches_meter(&query.runtime_meter()));
         drop(cached);
         assert_eq!(query_io.into_custody().bytes(), 0);
         assert_eq!(query.live_allocation_bytes(), 0);

@@ -1147,7 +1147,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             self.operation_id(), &mut Some(&mut io),
         )?;
         if operation.phase != crate::scheduler::OperationPhase::Terminal {
-            return Ok((None, work.retain_owned(0)?));
+            return Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?));
         }
         let outcome = operation.outcome.as_ref()
             .ok_or_else(|| Error::Invalid("terminal original task lacks its outcome".into()))?;
@@ -3620,7 +3620,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let root_binding = if input_is_root {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(native) = &native {
-                let slot = native.claim(std::mem::size_of::<RootBootstrapBindingWitness>() as u64)?;
+                let slot = native.claim(std::mem::size_of::<RootBootstrapBindingWitness>() as u64, u64::from((std::mem::size_of::<RootBootstrapBindingWitness>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
                 work.as_deref_mut().expect("original native observer").absorb_native_custody(slot)?;
             }
             Some(Arc::new(RootBootstrapBindingWitness {
@@ -6398,7 +6398,7 @@ pub(crate) mod tests {
                 .or_else(|| input.as_u64().map(serde_json::Number::from))
                 .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "native fixture requires a fixed-width integer input" })?;
-            let custody = work.retain_owned(0)?;
+            let custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             Ok((Value::Number(number), custody))
         }
         fn transition(&self, state: &Value, _input: &Value) -> Result<MachineTransition> {
@@ -6421,7 +6421,7 @@ pub(crate) mod tests {
                 .or_else(|| state.as_u64().map(serde_json::Number::from))
                 .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "native fixture requires a fixed-width integer state" })?;
-            let custody = work.retain_owned(0)?;
+            let custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             Ok((MachineTransition {
                 state: Value::Number(number), commands: Vec::new(), status: MachineStatus::Suspended,
             }, custody))

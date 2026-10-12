@@ -1332,7 +1332,7 @@ impl CaptureTransientCustody {
     pub(crate) fn new_native(
         work: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, crate::NativeTreeMaterializationError> {
-        let header = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let header = work.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(Arc::new(Self {
             retained: std::sync::atomic::AtomicU64::new(0),
             native_header: header,
@@ -3040,7 +3040,7 @@ impl<D> FilteredDemandSource<D> {
         if custody.bytes() < bytes {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        let mut shared_owner = work.claim(std::mem::size_of::<FilteredExcludedPaths>() as u64)?;
+        let mut shared_owner = work.claim(std::mem::size_of::<FilteredExcludedPaths>() as u64, u64::from((std::mem::size_of::<FilteredExcludedPaths>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         custody.absorb(&mut shared_owner)?;
         Ok(Self { inner, excluded: std::sync::Arc::new(excluded) })
     }
@@ -4292,7 +4292,7 @@ pub mod native {
                         .map_err(cancellation_error)?;
                     let worker = work.original_demand_work();
                     work.check()?;
-                    let task_meter = cancellation.runtime_meter_owner();
+                    let task_meter = cancellation.runtime_meter();
                     let spawned = acyclic_native_runtime::run_blocking_io(
                         crate::obs::in_context(crate::obs::caller_context(), move || {
                             let mut work = NativeSourceWork::from_original_work(&worker);
@@ -4558,7 +4558,7 @@ pub mod native {
             };
             let worker_work = original.clone();
             let native_original = work.native_original;
-            let task_meter = work.materialization_work()?.runtime_meter_owner();
+            let task_meter = work.materialization_work()?.runtime_meter();
             let source = self.clone();
             let context = crate::obs::caller_context();
             let spawned = acyclic_native_runtime::run_blocking_io(
@@ -5523,7 +5523,7 @@ pub mod native {
                 { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: capacity, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
                 Some(acyclic_stream::PreparedOwnedBytes::new(
                     std::mem::take(&mut bytes), ownership.take().expect("original source custody"),
-                    original.runtime_meter_owner(),
+                    original.runtime_meter(),
                 ).map_err(|failure| match failure.into_error() {
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
                         crate::native_name::original_name_error(original.runtime_error(error))

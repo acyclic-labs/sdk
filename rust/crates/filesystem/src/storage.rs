@@ -445,7 +445,7 @@ impl HashedObject {
         let payload_allocation = allocation.split_off(capacity)?;
         let payload_original = payload_allocation.work().clone();
         let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
-            std::mem::take(bytes), payload_allocation, payload_original.runtime_meter_owner(),
+            std::mem::take(bytes), payload_allocation, payload_original.runtime_meter(),
         ).map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => payload_original.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized

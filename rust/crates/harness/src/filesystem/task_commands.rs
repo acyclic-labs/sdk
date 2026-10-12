@@ -473,7 +473,7 @@ where
                 let owner = self.runtime.task_host().journal_owner_with_native_work(task, fence, work).await?
                     .into_native_shared(work)?;
                 let mut preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
-                let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64)?;
+                let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64, u64::from((std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
                 preparation.native_custody.as_mut().ok_or_else(|| boundary(Some(io), ErrorCode::Unauthorized,
                     "native preparation has no original metadata custody"))?.absorb(&mut header)
                     .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;

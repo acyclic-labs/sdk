@@ -82,7 +82,7 @@ fn original_retention_refusal_never_produces_unclaimed_bytes()
     let original = crate::NativeMaterializationWork::new(
         WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
     ).map_err(|(error, _)| error)?;
-    let label_guard = original.retain_owned(value.label.capacity() as u64)?;
+    let label_guard = original.claim(value.label.capacity() as u64, 0, crate::WorkCounters::UNCHARGED)?;
     let input = (value, label_guard);
     let before = original.receipt();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
