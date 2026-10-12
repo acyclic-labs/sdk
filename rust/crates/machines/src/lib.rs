@@ -47,7 +47,7 @@ pub const PROTOCOL_MAJOR: u32 = 1;
 pub const PROTOCOL_MINOR: u32 = 1;
 /// Maximum machines returned in one page.
 pub const MAX_PAGE_SIZE: u32 = 256;
-/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
+/// Largest bearer credential accepted by the Machines browser transport.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 /// Maximum children admitted by one fork request.
 pub const MAX_FORK_CHILDREN: u32 = 1_024;
@@ -754,9 +754,6 @@ struct MemoryState {
     checkpoints: BTreeMap<CheckpointId, CheckpointObservation>,
     events: BTreeMap<MachineId, Vec<MachineEvent>>,
     replays: BTreeMap<IdempotencyKey, Replay>,
-    operations: BTreeMap<OperationId, OperationObservation>,
-    /// Live-fork child to its source.
-    fork_sources: BTreeMap<MachineId, MachineId>,
 }
 
 impl Default for MemoryState {
@@ -767,8 +764,6 @@ impl Default for MemoryState {
             checkpoints: BTreeMap::new(),
             events: BTreeMap::new(),
             replays: BTreeMap::new(),
-            operations: BTreeMap::new(),
-            fork_sources: BTreeMap::new(),
         }
     }
 }
@@ -855,14 +850,6 @@ impl SimulatedMachines {
             ));
         }
         let outcome = action(&mut state)?;
-        let operation = Self::operation(key);
-        state.operations.insert(
-            operation,
-            OperationObservation {
-                id: operation,
-                phase: OperationPhase::Succeeded,
-            },
-        );
         state.replays.insert(
             key,
             Replay {
@@ -1177,7 +1164,6 @@ impl MachinesProvider for SimulatedMachines {
                         changed_at_unix_ms: now,
                     };
                     state.machines.insert(id, value.clone());
-                    state.fork_sources.insert(id, machine);
                     event(state, id, EventFact::State(MachineState::Running), now)?;
                     children.push(value);
                 }
@@ -1263,12 +1249,10 @@ impl MachinesProvider for SimulatedMachines {
             if current == MachineState::Destroyed {
                 return Ok(MutationOutcome::MachineDestroyed(machine));
             }
-            let live_children = state.fork_sources.iter().any(|(child, source)| {
-                *source == machine
-                    && state
-                        .machines
-                        .get(child)
-                        .is_some_and(|value| value.state != MachineState::Destroyed)
+            let live_children = state.replays.values().any(|replay| {
+                matches!(&replay.outcome, MutationOutcome::MachineForked { source, children, .. }
+                    if *source == machine && children.iter().any(|child| state.machines.get(&child.id)
+                        .is_some_and(|value| value.state != MachineState::Destroyed)))
             });
             if live_children {
                 return Err(ProviderError::Conflict(
@@ -1385,38 +1369,24 @@ impl MachinesProvider for SimulatedMachines {
             .ok_or_else(|| ProviderError::NotFound(key.to_string()))
     }
     async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
-        let operation = Self::operation(key);
-        self.inspect_operation(operation)
-            .await
-            .map(|value| value.id)
+        if self.state.lock().await.replays.contains_key(&key) {
+            Ok(Self::operation(key))
+        } else {
+            Err(ProviderError::NotFound(key.to_string()))
+        }
     }
     async fn inspect_operation(
         &self,
         operation: OperationId,
     ) -> Result<OperationObservation, ProviderError> {
-        self.state
-            .lock()
-            .await
-            .operations
-            .get(&operation)
-            .copied()
-            .ok_or_else(|| ProviderError::NotFound(operation.to_string()))
+        if self.state.lock().await.replays.keys().any(|key| Self::operation(*key) == operation) {
+            Ok(OperationObservation { id: operation, phase: OperationPhase::Succeeded })
+        } else {
+            Err(ProviderError::NotFound(operation.to_string()))
+        }
     }
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
-        let state = self.state.lock().await;
-        let value = state
-            .operations
-            .get(&operation)
-            .copied()
-            .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
-        if value.phase == OperationPhase::Pending {
-            Ok(OperationObservation {
-                id: operation,
-                phase: OperationPhase::Cancelled,
-            })
-        } else {
-            Ok(value)
-        }
+        self.inspect_operation(operation).await
     }
     async fn watch_operation(
         &self,
