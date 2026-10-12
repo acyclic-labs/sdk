@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
+import { installedNativeFixture } from "./pi-native-fixture.ts";
 import { PiOperatorDriver } from "./pi-operator-driver.ts";
 import { blake3 } from "@noble/hashes/blake3";
 import { openNativeFs, DEFAULT_OBJECT_CACHE_OPTIONS } from "../../../typescript/packages/filesystem/src/native.ts";
@@ -170,7 +170,7 @@ export default function(pi) {
 
 test("required pinned Pi recursively launches original native effects and reopens without repeating work", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-native-recursive-", import.meta.url)));
-  let fixture: InstalledNativeFixture | undefined;
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   const oracleDirectory = join(directory, "native-oracles");
   const ownedServicePids: number[] = [];
   let originalFailure: unknown;
@@ -343,7 +343,7 @@ test("required pinned Pi recursively launches original native effects and reopen
 test("installed Pi retains split spawn, import and cancellation identities across lost replies and extension reload", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-native-cuts-", import.meta.url)));
   const oracleDirectory = join(directory, "native-oracles");
-  let fixture: InstalledNativeFixture | undefined;
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
     mkdirSync(oracleDirectory);
     fixture = await installedNativeFixture(directory, recursiveProvider, {

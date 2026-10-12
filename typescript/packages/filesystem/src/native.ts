@@ -1,5 +1,4 @@
 import { copyBytes, copyOptionalBytes, ownBytes, requireIdentity } from "./binding-values.js";
-import { adaptOperationWindowCoordinator } from "./operation-windows.js";
 import { createRequire } from "node:module";
 import { arch, platform } from "node:process";
 import type {
@@ -46,36 +45,15 @@ import type {
   ObjectCacheStats,
   ResolvableFsJoinPlan,
   ResolvedFile,
-  NativeRawGitCompatRepository,
   NativeRawWorkspaceGraph,
   NativeRawWorkspaceLineageRecord,
   WasmRawJoinResult,
 } from "./contracts.js";
 import type {
-  GenerationIdentity,
-  GitCommitIdentity,
-  GitCompatCommand,
-  GitCompatRepository,
-  CompatibilityWire,
-  OperationIdentity,
-  OperationWindowCoordinator,
   WorkspaceGraph,
-  WorkspaceContextRegistry,
-  WorkspaceIdentity,
   WorkspaceLineageRecord,
 } from "./compat.js";
-import {
-  adaptCompatibilityWire,
-  finishGitCompatOutput,
-  gitCompatSafeTimestamp,
-  parseGitCompatOutputJson,
-  parseGitPendingTransitionJson,
-  stringifyGitFilesystemResult,
-  stringifyGitCompatCommand,
-} from "./compat.js";
-import { nodeWasmBindings } from "./wasm-node.js";
 
-import { adaptWorkspaceContextRegistry } from "./workspace-context.js";
 import { adaptTransaction } from "./transaction-adapter.js";
 import { createGenerationAdapter } from "./generation-adapter.js";
 import { createChangeSetAdapter } from "./change-set-adapter.js";
@@ -198,41 +176,6 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
   );
 }
 
-/** Opens the durable Git-shaped compatibility state machine without invoking system Git. */
-export async function openNativeGitCompatRepository(
-  stateRoot: string,
-  workspaceId: WorkspaceIdentity,
-): Promise<GitCompatRepository> {
-  requireStateRoot(stateRoot, "Git compatibility");
-  const binding = await bindings();
-  return adaptGitCompat(binding.NativeGitCompatRepository.open(stateRoot, workspaceId));
-}
-
-/**
- * Opens the canonical Rust merge/publication wire codec. The codec is pure,
- * so the packaged WASM build serves it without the native companion.
- */
-export async function openNativeCompatibilityWire(): Promise<CompatibilityWire> {
-  return adaptCompatibilityWire(await nodeWasmBindings());
-}
-
-/** Opens the durable agent-neutral multi-root context registry. */
-export async function openNativeWorkspaceContextRegistry(
-  stateRoot: string,
-): Promise<WorkspaceContextRegistry> {
-  requireStateRoot(stateRoot, "workspace context");
-  const binding = await bindings();
-  return adaptWorkspaceContextRegistry(
-    binding.NativeWorkspaceContextRegistry.open(stateRoot),
-  );
-}
-
-function requireStateRoot(stateRoot: string, feature: string): void {
-  if (stateRoot.length === 0) {
-    throw new RangeError(`${feature} state root must be non-empty`);
-  }
-}
-
 function copyWorkspaceLineageRecord(
   record: NativeRawWorkspaceLineageRecord,
 ): WorkspaceLineageRecord {
@@ -250,20 +193,9 @@ function copyWorkspaceLineageRecord(
 
 /** Opens durable recursive-workspace lineage over live native workspace handles. */
 export async function openNativeWorkspaceGraph(stateRoot: string): Promise<WorkspaceGraph> {
-  requireStateRoot(stateRoot, "workspace graph");
+  if (stateRoot.length === 0) throw new RangeError("workspace graph state root must be non-empty");
   const binding = await bindings();
   return adaptWorkspaceGraph(binding.NativeWorkspaceGraph.open(stateRoot));
-}
-
-/** Opens the durable overlapping-tool lease coordinator. */
-export async function openNativeOperationWindowCoordinator(
-  filesystem: NativeFsEngine,
-): Promise<OperationWindowCoordinator> {
-  const handle = fsHandles.get(filesystem);
-  if (handle === undefined) {
-    throw new TypeError("operation windows require a native filesystem opened by this module");
-  }
-  return adaptOperationWindowCoordinator(handle.raw.operationWindows(), workspace => rawWorkspace(workspace, handle.scope), result => parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(result)));
 }
 
 function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
@@ -292,112 +224,6 @@ function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
       return (await raw.ancestors(workspaceId, maximum)).map(copyWorkspaceLineageRecord);
     },
   };
-}
-
-function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository {
-  const projectOutput = (value: string) => parseGitCompatOutputJson(raw.canonicalizeOutputJson(value));
-  const projectPending = (value: string) => parseGitPendingTransitionJson(
-    raw.canonicalizePendingTransitionJson(value),
-  );
-  const repository: GitCompatRepository = {
-    async execute(command: GitCompatCommand, workspaceGeneration: GenerationIdentity) {
-      return projectOutput(
-        await raw.executePublicJson(stringifyGitCompatCommand(command), workspaceGeneration),
-      );
-    },
-    async executeArgv(argv, workspaceGeneration, defaultAuthor, nowSeconds) {
-      gitCompatSafeTimestamp(nowSeconds);
-      return projectOutput(
-        await raw.executeArgvJson(argv, workspaceGeneration, defaultAuthor, nowSeconds.toString()),
-      );
-    },
-    async pendingTransition() {
-      const value = await raw.pendingTransitionJson();
-      return value == null ? undefined : projectPending(value);
-    },
-    async completeTransition(transition, resultingGeneration) {
-      return projectOutput(
-        await raw.completeTransitionJson(transition, resultingGeneration),
-      );
-    },
-    async completeTransitionResult(transition, result) {
-      return projectOutput(
-        await raw.completeTransitionResultJson(transition, stringifyGitFilesystemResult(result)),
-      );
-    },
-    async run(command, workspaceGeneration, executor) {
-      return finishGitCompatOutput(
-        repository,
-        await repository.execute(command, workspaceGeneration),
-        executor,
-      );
-    },
-    async runArgv(argv, workspaceGeneration, defaultAuthor, nowSeconds, executor) {
-      return finishGitCompatOutput(
-        repository,
-        await repository.executeArgv(argv, workspaceGeneration, defaultAuthor, nowSeconds),
-        executor,
-      );
-    },
-    async resume(executor) {
-      const pending = await repository.pendingTransition();
-      if (pending === undefined) return undefined;
-      return finishGitCompatOutput(
-        repository,
-        { Prepared: { transition: pending.id, action: pending.action } },
-        executor,
-      );
-    },
-    abortTransition(transition: OperationIdentity) {
-      return raw.abortTransition(transition);
-    },
-    async registerBranchWorkspace(
-      branch: string,
-      workspaceId: WorkspaceIdentity,
-      head: GitCommitIdentity | undefined,
-      switchToBranch: boolean,
-    ) {
-      return projectOutput(
-        await raw.registerBranchWorkspaceJson(
-          branch,
-          workspaceId,
-          head === undefined ? undefined : gitCommitBytes(head),
-          switchToBranch,
-        ),
-      );
-    },
-    async recordCommit(
-      expectedHead: GitCommitIdentity | undefined,
-      generation: GenerationIdentity,
-      trackedPaths: readonly string[],
-      message: string,
-      author: string,
-      authoredAtSeconds: bigint,
-    ) {
-      gitCompatSafeTimestamp(authoredAtSeconds);
-      return projectOutput(
-        await raw.recordCommitJson(
-          expectedHead === undefined ? undefined : gitCommitBytes(expectedHead),
-          generation,
-          trackedPaths,
-          message,
-          author,
-          authoredAtSeconds.toString(),
-        ),
-      );
-    },
-  };
-  return repository;
-}
-
-function gitCommitBytes(identity: GitCommitIdentity): Uint8Array {
-  if (!/^[0-9a-f]{64}$/.test(identity)) {
-    throw new TypeError("Git compatibility commit ID must be 64 lowercase hexadecimal characters");
-  }
-  return Uint8Array.from(
-    identity.match(/../g) ?? [],
-    (byte) => Number.parseInt(byte, 16),
-  );
 }
 
 function adaptFs(raw: NativeRawFs): NativeFsEngine {

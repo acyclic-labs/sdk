@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { nodeExecutable, pinnedPiCli } from "./pi-fixture.ts";
-import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
+import { installedNativeFixture } from "./pi-native-fixture.ts";
 
 const execute = promisify(execFile);
 const builtinProvider = String.raw`
@@ -196,7 +196,7 @@ interface BuiltinReport {
 test("required pinned CLI model builtins use original held view IO before reading or mutating host paths", async () => {
   assert.equal(VERSION, "1.1.0");
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-builtin-paths-", import.meta.url)));
-  let fixture: InstalledNativeFixture | undefined;
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   let originalFailure: unknown;
   try {
     const outside = join(directory, "outside");

@@ -3,9 +3,8 @@
 <title>Durable browser tool reconciliation</title>
 <pre id="result" data-status="pending">initializing</pre>
 <script type="module">
-import { taskFixture } from "./browser-task-fixture.mjs";
+import { qualifyBrowserTask, taskFixture } from "./browser-task-fixture.mjs";
 import { jsonToolProjectionSchema } from "../generated/wasm/acyclic_harness_wasm.js";
-const result = document.querySelector("#result");
 const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const id = crypto.randomUUID();
@@ -19,7 +18,8 @@ const callRemote = async (method, invocation) => {
 };
 let fixture;
 let runtime;
-try {
+await qualifyBrowserTask(async phase => {
+  try {
   fixture = await taskFixture(id);
   let executions = 0;
   let reconciliations = 0;
@@ -58,7 +58,7 @@ try {
   const admission = await runtime.admit(crypto.randomUUID(), "test.browser", "1", { file, operation: command, kind: "acyclic.tool.v1" });
   assert(admission.kind === "accepted", describe(admission));
   const worker = { id: "tool-worker", available: {}, labels: {} };
-  result.dataset.waiting = "dispatch and retain uncertain effect";
+  phase("dispatch and retain uncertain effect");
   const first = await runtime.workerTick(worker, null, 128, 4);
   assert(first.work?.lease != null, `uncertain work lost original lease: ${describe(first)}`);
   assert(executions === 1, "tool did not execute exactly once");
@@ -66,7 +66,7 @@ try {
   assert(uncertain === null || uncertain.Indeterminate != null, `uncertain effect claimed terminal completion: ${describe(uncertain)}`);
   runtime.free();
   runtime = await fixture.open();
-  result.dataset.waiting = "reconcile original lease after reopen";
+  phase("reconcile original lease after reopen");
   const recovered = await runtime.resume(first.work.lease, 4);
   assert(recovered.kind === "completed", `recovery did not complete: ${describe(recovered)}`);
   assert(executions === 1 && reconciliations === 1 && projections === 1, "recovery redispatched or duplicated result projection");
@@ -79,14 +79,10 @@ try {
     const changed = await fetch(`${remotePath}/reconcile`, { method: "POST", body: JSON.stringify({ operation_id: "changed", arguments: { value: "different" } }) });
     assert(changed.status === 409, "remote receiver accepted changed retry intent");
   }
-  result.dataset.status = "passed";
-  result.textContent = `${remote ? "HTTP" : "local"} pinned tool, lost acknowledgment, reopen, exact reconciliation and duplicate wake passed`;
-} catch (error) {
-  result.dataset.status = "failed";
-  result.textContent = String(error.stack ?? error);
-} finally {
+  } finally {
   runtime?.free();
   fixture?.free();
   localStorage.removeItem(effectKey);
 }
+});
 </script>
