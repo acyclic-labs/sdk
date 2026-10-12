@@ -194,7 +194,7 @@ export class ClientViews<Value, Assumption, Evidence> {
   residency(): readonly [records: number, branches: number, edges: number, bytes: number] {
     this.#live();
     const [bytes, records, branches, edges] = this.#kernel.residency() as [number, number, number, number];
-    return Object.freeze([Number(records), Number(branches), Number(edges), Number(bytes)]);
+    return Object.freeze([records, branches, edges, bytes]);
   }
 
   dispose(): void {

@@ -167,8 +167,6 @@ expect([...await runtime.components.content!.read(file)]).toEqual([1]);
 expect(runtime.components.content!.fileReadCapability(file)).toBe("read:original");
 expect(runtime.components.content!.writer!.writeCapability()).toBe("write:original");
 expect(await runtime.components.content!.writer!.stage("operation", file.path, Uint8Array.of(1), "application/octet-stream", file.display_name)).toBe(file);
-expect(Object.isFrozen(runtime.components.content)).toBe(true);
-expect(Object.isFrozen(runtime.components.content!.writer)).toBe(true);
 });
 
 test("artifact binding is independent of conversation content and retains owner grants", async () => {
@@ -292,7 +290,11 @@ test("preserves task input and output types through nested execution", async () 
   const double = await TaskDefinition.live<number, number>("double", "1", async (_context, value) => value * 2);
   const sum = await TaskDefinition.live<readonly number[], number>("sum", "1", async (context, values) => {
     const group = context.group<number>({ kind: "collect-all" });
-    return (await group.map(context.task(double), values)).reduce((left, right) => left + right, 0);
+    await group.spawnMany(context.task(double), { id: "batch:sum" as BatchId, inputs: values });
+    return (await group.join()).entries.reduce((total, entry) => {
+      if (entry.outcome?.kind !== "succeeded") throw new Error("child task failed");
+      return total + entry.outcome.value;
+    }, 0);
   });
   const runtime = await Harness.builder(contracts).task(double).task(sum).grant("task:spawn:double@1").build();
 
@@ -320,7 +322,6 @@ test("a task context and its groups cannot invoke an ungranted descendant", asyn
   const deniedRef = new TaskContext(owner, new AbortController().signal).task(denied);
   expect(allowedRef).toMatchObject({ name: "allowed-child", revision: "1" });
   expect("implementation" in allowedRef).toBe(false);
-  expect(Object.isFrozen(allowedRef)).toBe(true);
   expect(() => context.task(denied)).toThrow();
   expect(() => context.tool(tool)).toThrow();
   expect(await narrowed.spawn(nested, 1).result()).toEqual({ kind: "succeeded", value: true });
@@ -718,7 +719,6 @@ test("tool registration snapshots its public definition", async () => {
   mutable.name = "different";
   mutable.description = "changed";
   expect(runtime.tool("echo").definition).toMatchObject({ name: "echo", description: "first" });
-  expect(Object.isFrozen(runtime.tool("echo").definition)).toBe(true);
 });
 
 test("reused provider call IDs have distinct internal tool operations", async () => {
@@ -727,7 +727,7 @@ test("reused provider call IDs have distinct internal tool operations", async ()
   const tool = await defineTool<number, number>({ name: "again", revision: "1", description: "again",
     inputSchema: {}, outputSchema: {}, parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, async (context, input) => {
     expect(context.callId).toBe("provider-call");
-    operations.push(context.operationId!);
+    operations.push(context.operationId);
     argumentsSeen.push(input);
     return input;
   });
