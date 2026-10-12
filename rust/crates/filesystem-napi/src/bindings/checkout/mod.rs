@@ -20,7 +20,7 @@ impl NativeCheckout {
     /// Discards the private overlay and returns to its current immutable base.
     #[napi]
     pub async fn discard(&self) -> Result<NativeMutationResult> {
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .discard(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)

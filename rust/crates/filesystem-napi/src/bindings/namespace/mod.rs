@@ -6,7 +6,7 @@ impl NativeCheckout {
     #[napi]
     pub async fn create_file(&self, path: String, bytes: Buffer) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .create(
@@ -30,7 +30,7 @@ impl NativeCheckout {
     #[napi]
     pub async fn create_directory(&self, path: String) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .create(
@@ -57,7 +57,7 @@ impl NativeCheckout {
         target: Buffer,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .create(
@@ -82,7 +82,7 @@ impl NativeCheckout {
     pub async fn create_special(&self, path: String, kind: String) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
         let kind = empty_special_kind(&kind)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .create(
@@ -112,7 +112,7 @@ impl NativeCheckout {
         let minor = minor.into_inner();
         let path = native_path(&path, self.config)?;
         let kind = device_kind(&kind)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .create(
@@ -139,7 +139,7 @@ impl NativeCheckout {
         payload: Buffer,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .create(
@@ -168,7 +168,7 @@ impl NativeCheckout {
             .map(fixed_16)
             .transpose()?
             .map(FileId::from_bytes);
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .mutate(
@@ -197,7 +197,7 @@ impl NativeCheckout {
     ) -> Result<NativeMutationResult> {
         let source = native_path(&source, self.config)?;
         let destination = native_path(&destination, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .mutate(
@@ -223,7 +223,7 @@ impl NativeCheckout {
     ) -> Result<NativeMutationResult> {
         let source = native_path(&source, self.config)?;
         let destination = native_path(&destination, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .mutate(

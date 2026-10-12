@@ -11,7 +11,7 @@ impl NativeCheckout {
         bytes: Buffer,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .change_content(
@@ -41,7 +41,7 @@ impl NativeCheckout {
         bytes: Buffer,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .change_content(
@@ -67,7 +67,7 @@ impl NativeCheckout {
         logical_bytes: BigInt,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .change_content(
@@ -92,7 +92,7 @@ impl NativeCheckout {
         logical_bytes: BigInt,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .change_content(
@@ -120,7 +120,7 @@ impl NativeCheckout {
         extend: bool,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .change_content(
@@ -153,7 +153,7 @@ impl NativeCheckout {
         extend: bool,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .change_content(
@@ -185,7 +185,7 @@ impl NativeCheckout {
         keep_size: bool,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .change_content(
@@ -216,7 +216,7 @@ impl NativeCheckout {
         keep_size: bool,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .change_content(
@@ -254,7 +254,7 @@ impl NativeCheckout {
             destination_offset: bigint_u64(&destination_offset, "destinationOffset")?,
             length: bigint_u64(&length, "length")?,
         };
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .change_content(
@@ -286,7 +286,7 @@ impl NativeCheckout {
     ) -> Result<NativeMutationResult> {
         let source_file_id = FileId::from_bytes(fixed_16(&source_file_id)?);
         let destination_file_id = FileId::from_bytes(fixed_16(&destination_file_id)?);
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .change_content(

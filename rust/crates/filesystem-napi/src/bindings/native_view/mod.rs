@@ -168,7 +168,7 @@ impl NativeCheckout {
         &self,
         options: NativeMaterializeOptions,
     ) -> Result<NativeMaterializationResult> {
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = Box::pin(materialize_checkout(
             &mut checkout,
             &MaterializeOptions {
@@ -212,7 +212,7 @@ impl NativeCheckout {
             .iter()
             .map(|path| native_path(path, self.config))
             .collect::<Result<Vec<_>>>()?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = Box::pin(capture_paths(
             &mut checkout,
@@ -249,7 +249,7 @@ impl NativeCheckout {
 
         let source_root = PathBuf::from(source_root);
         let expected_root_identity = capture_root_identity(&source_root).map_err(napi_error)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = Box::pin(capture_baseline(
             &mut checkout,
@@ -325,7 +325,7 @@ impl NativeWatcher {
         maximum_extent_spans: u32,
     ) -> Result<PendingReconcile> {
         let operation_id = OperationId::new();
-        let mut checkout = self.checkout.lock().await;
+        let mut checkout = Box::pin(self.checkout.lock()).await;
         checkout
             .retain_operation_id(operation_id)
             .map_err(napi_error)?;
@@ -398,7 +398,7 @@ impl NativeWatcher {
             pending
         };
         {
-            let mut checkout = self.checkout.lock().await;
+            let mut checkout = Box::pin(self.checkout.lock()).await;
             checkout
                 .retain_operation_id(pending.operation_id)
                 .map_err(napi_error)?;
@@ -473,7 +473,7 @@ impl NativeWatcher {
             pending
         };
         {
-            let mut checkout = self.checkout.lock().await;
+            let mut checkout = Box::pin(self.checkout.lock()).await;
             checkout
                 .retain_operation_id(pending.operation_id)
                 .map_err(napi_error)?;
@@ -483,7 +483,7 @@ impl NativeWatcher {
         } else {
             let expected_root_identity =
                 lock_state(&self.inner, "native watcher state")?.root_identity();
-            let mut checkout = self.checkout.lock().await;
+            let mut checkout = Box::pin(self.checkout.lock()).await;
             let receipt = Box::pin(capture_watch_batch(
                 &mut checkout,
                 pending.batch,
@@ -505,7 +505,7 @@ impl NativeWatcher {
             receipt
         };
         {
-            let mut checkout = self.checkout.lock().await;
+            let mut checkout = Box::pin(self.checkout.lock()).await;
             checkout
                 .retain_operation_id(pending.operation_id)
                 .map_err(napi_error)?;

@@ -60,7 +60,7 @@ impl NativeCheckout {
             self.config.limits,
         )
         .map_err(napi_error)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .lookup_no_follow(
                 &path,
@@ -94,7 +94,7 @@ impl NativeCheckout {
             .iter()
             .map(|path| native_path(path, self.config))
             .collect::<Result<Vec<_>>>()?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .lookup_batch_no_follow(
                 &paths,
@@ -128,7 +128,7 @@ impl NativeCheckout {
     #[napi]
     pub async fn stat_no_follow(&self, path: String) -> Result<NativeStat> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .lookup_no_follow_with_metadata(
                 &path,
@@ -163,7 +163,7 @@ impl NativeCheckout {
     #[napi]
     pub async fn read_file_record_by_id(&self, file_id: Buffer) -> Result<NativeFileRecordRead> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .read_file_record_by_id(
                 file_id,
@@ -255,7 +255,7 @@ impl NativeCheckout {
             self.config.limits,
         )
         .map_err(napi_error)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .read_file_range(
                 &path,
@@ -283,7 +283,7 @@ impl NativeCheckout {
         length: BigInt,
     ) -> Result<NativeFileRead> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .read_file_range_by_id(
                 file_id,
@@ -306,7 +306,7 @@ impl NativeCheckout {
     #[napi]
     pub async fn read_symbolic_link(&self, path: String) -> Result<NativeFileRead> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .read_symbolic_link(
                 &path,
@@ -325,7 +325,7 @@ impl NativeCheckout {
     #[napi]
     pub async fn read_reparse_point(&self, path: String) -> Result<NativeFileRead> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .read_reparse_point(
                 &path,

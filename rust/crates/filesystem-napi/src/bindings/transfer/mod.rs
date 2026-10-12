@@ -38,7 +38,7 @@ impl NativeCheckout {
     /// Builds a deterministic complete manifest for resumable generation transfer.
     #[napi]
     pub async fn export_manifest(&self) -> Result<NativeExportManifest> {
-        let checkout = self.inner.lock().await;
+        let checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .export_manifest(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await

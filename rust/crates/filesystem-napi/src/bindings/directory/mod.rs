@@ -67,7 +67,7 @@ impl NativeCheckout {
             .as_deref()
             .map(|value| native_name(value, self.config))
             .transpose()?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .list_directory(
                 &path,
@@ -110,7 +110,7 @@ impl NativeCheckout {
             .as_deref()
             .map(|value| native_name(value, self.config))
             .transpose()?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = Box::pin(
             checkout.list_directory_records(
                 &path,

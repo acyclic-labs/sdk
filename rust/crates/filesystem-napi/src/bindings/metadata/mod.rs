@@ -46,7 +46,7 @@ impl NativeCheckout {
     #[napi]
     pub async fn read_metadata(&self, path: String) -> Result<NativeMetadataResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .read_metadata(
                 &path,
@@ -72,7 +72,7 @@ impl NativeCheckout {
     #[napi]
     pub async fn read_metadata_by_id(&self, file_id: Buffer) -> Result<NativeMetadataResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .read_metadata_by_id(
                 file_id,
@@ -108,7 +108,7 @@ impl NativeCheckout {
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(napi_error)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .apply_authored_transaction(
@@ -135,7 +135,7 @@ impl NativeCheckout {
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(napi_error)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .set_attributes_by_id(
@@ -169,7 +169,7 @@ impl NativeCheckout {
             .as_ref()
             .map(|value| bigint_u64(value, "logicalBytes"))
             .transpose()?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .set_attributes(
@@ -203,7 +203,7 @@ impl NativeCheckout {
             .as_ref()
             .map(|value| bigint_u64(value, "logicalBytes"))
             .transpose()?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .set_attributes_by_id(
@@ -228,7 +228,7 @@ impl NativeCheckout {
     ) -> Result<NativeNamedAttributeResult> {
         let path = native_path(&path, self.config)?;
         let name = native_attribute_name(&attribute_class, name.to_vec(), self.config.limits)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = Box::pin(checkout.read_named_attribute(
             &path,
             &name,
@@ -272,7 +272,7 @@ impl NativeCheckout {
                 ));
             }
         };
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = Box::pin(checkout.list_named_attributes(
             &path,
             after.as_ref(),
@@ -310,7 +310,7 @@ impl NativeCheckout {
         let path = native_path(&path, self.config)?;
         let name = native_attribute_name(&attribute_class, name.to_vec(), self.config.limits)?;
         let mode = native_attribute_write_mode(&mode)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = Box::pin(checkout.change_named_attribute(
             path,
@@ -334,7 +334,7 @@ impl NativeCheckout {
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
         let name = native_attribute_name(&attribute_class, name.to_vec(), self.config.limits)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = Box::pin(checkout.change_named_attribute(
             path,

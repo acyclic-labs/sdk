@@ -53,7 +53,7 @@ impl NativeCheckout {
         let maximum_spans = maximum_spans.into_inner();
 
         let path = native_path(&path, self.config)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .plan_file_extents(
                 &path,
@@ -82,7 +82,7 @@ impl NativeCheckout {
         let maximum_spans = maximum_spans.into_inner();
 
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .plan_file_extents_by_id(
                 file_id,
@@ -109,7 +109,7 @@ impl NativeCheckout {
     ) -> Result<NativeExtentSeek> {
         let path = native_path(&path, self.config)?;
         let target = extent_seek_target(&target)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .seek_file_extent(
                 &path,
@@ -136,7 +136,7 @@ impl NativeCheckout {
     ) -> Result<NativeExtentSeek> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let target = extent_seek_target(&target)?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .seek_file_extent_by_id(
                 file_id,

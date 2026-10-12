@@ -121,7 +121,7 @@ impl NativeCheckout {
             &theirs,
             "merge generation identity",
         )?));
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .prepare_merge(
                 theirs,

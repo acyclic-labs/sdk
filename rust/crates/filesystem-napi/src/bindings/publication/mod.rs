@@ -80,7 +80,7 @@ impl NativeCheckout {
     /// Builds an immutable candidate generation without publishing authority.
     #[napi]
     pub async fn checkpoint(&self) -> Result<NativeCheckpointResult> {
-        let checkout = self.inner.lock().await;
+        let checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
             .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
@@ -94,7 +94,7 @@ impl NativeCheckout {
     /// Explicitly advances a clean manual checkout to the authority head.
     #[napi]
     pub async fn refresh_head(&self) -> Result<NativeCheckpointResult> {
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
@@ -106,7 +106,7 @@ impl NativeCheckout {
     /// Explicitly performs observation-safe synchronization for a live checkout.
     #[napi]
     pub async fn refresh_live(&self) -> Result<NativeCheckpointResult> {
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
@@ -124,7 +124,7 @@ impl NativeCheckout {
     ) -> Result<NativeCommitResult> {
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
         let permit = publication_permit(lease.as_ref())?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout
             .retain_operation_id(operation_id)
             .map_err(napi_error)?;
@@ -180,7 +180,7 @@ impl NativeCheckout {
             .map(|operation| native_authored_transaction(operation, self.config))
             .collect::<Result<Vec<_>>>()?;
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         checkout
             .retain_operation_id(operation_id)
@@ -241,7 +241,7 @@ impl NativeCheckout {
         let maximum_conflicts = maximum_conflicts.into_inner();
 
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout
             .retain_operation_id(operation_id)
             .map_err(napi_error)?;
@@ -271,7 +271,7 @@ impl NativeCheckout {
     pub async fn rebase_head(&self, maximum_conflicts: NapiU32) -> Result<NativeRebaseResult> {
         let maximum_conflicts = maximum_conflicts.into_inner();
 
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
             .rebase_head(
