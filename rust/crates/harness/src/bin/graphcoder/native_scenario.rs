@@ -214,7 +214,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let mut aggregate = aggregate(&stream, files.clone(), &owner, &config).await?;
     aggregate.execute(Command { operation_id: OperationId::new(), idempotency_key: IdempotencyKey::new("bind-bootstrap")?,
         expected_revision: 0, scope: owner.scope.clone(), causal_parent: None,
-        action: Action::BindConversation { agent: seed_agent } }).await?;
+        action: Action::BindConversation { agent: seed_agent } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let mut seed = Caller { task: seed_task, binding: owner, project, private, result: None,
         aggregate, lease: seed_lease };
     let mut producer = Producer { root: root.clone(), files, stream, runtime, config, template,
@@ -476,7 +476,7 @@ impl Producer {
                 causal_parent: None, action: Action::AppendConversationMessage {
                     message: Box::new(ConversationMessage { id: uuid::Uuid::new_v4(), sequence,
                         kind: MessageKind::User, content: file, attachments: Default::default(),
-                        reply_to: None, tool_call_id: None, extensions: Default::default() }) } }).await?;
+                        reply_to: None, tool_call_id: None, extensions: Default::default() }) } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
         }
         let project_writer = ContentGrant::verify(&issuer.verifier(), &caller.binding.scope,
             &caller.project, VolumeOperation::Write)?;

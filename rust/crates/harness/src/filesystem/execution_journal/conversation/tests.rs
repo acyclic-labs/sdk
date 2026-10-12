@@ -82,7 +82,7 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
             operation_id: OperationId::new(), idempotency_key: IdempotencyKey::new("bind-durable-10k")?,
             expected_revision: 0, scope: scope.clone(), causal_parent: None,
             action: Action::BindConversation { agent },
-        }).await?;
+        }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     }
     let reader = Arc::new(FilesystemContentVerifier::new(host.clone(), issuer.verifier(),
         scope.clone(), 262_144)?);

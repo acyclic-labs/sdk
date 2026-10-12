@@ -439,7 +439,7 @@ async fn actual_original_native_approval_ledger_requires_exact_conversation_tick
         let mut aggregate = StreamAggregate::open(&stream, audience, issuer.verifier(), SchemaRegistry::new()).await?;
         aggregate.execute(Command { operation_id: OperationId::from_bytes([81 + index as u8; 16]),
             idempotency_key: IdempotencyKey::new(format!("bind-{conversation}"))?, expected_revision: 0, scope: scope.clone(),
-            causal_parent: None, action: Action::BindConversation { agent } }).await?;
+            causal_parent: None, action: Action::BindConversation { agent } }, None, &mut None).await?;
         let journal = FilesystemExecutionJournal::new(stream.clone(), files.clone(), private, issuer.verifier(), scope.clone(), 1_048_576)?;
         journal.open_interaction(approval, Interaction::approval("Run exact pinned native child", command, digest)?).await?;
         let wrong_owner = AuthorityIssuer::new("original-native-policy", [82; 32], issuer.verifier().audience().clone())

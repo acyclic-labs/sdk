@@ -165,7 +165,7 @@ impl WasmBrowserAggregate {
     /// Publishes the event and archived-operation location in one existing commit.
     pub async fn execute(&mut self, command: JsValue) -> Result<JsValue, JsValue> {
         let command: Command = from_js(command)?;
-        to_js(&self.inner.execute(command).await.map_err(js_error)?)
+        to_js(&self.inner.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await.map_err(js_error)?)
     }
 
     /// Reconciles only the exact admitted command; no replacement dispatch is authored.

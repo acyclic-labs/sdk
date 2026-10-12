@@ -259,7 +259,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             .find(|grant| grant.reader == child_agent && grant.file == attachment_file)
             .ok_or_else(|| Error::Invalid("child attachment grant is missing".into()))?
             .capability()?;
-        aggregate.publish_fork_report(report, scope.clone()).await?;
+        aggregate.publish_fork_report(report, scope.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
         let child_head = host
             .resolve(&workspace_ref(
                 provider.clone(),

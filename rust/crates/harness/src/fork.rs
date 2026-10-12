@@ -3427,7 +3427,8 @@ mod physical_clones {
         pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
             self.clone_with_work_and_custody(work).map(|(value, _)| value)
         }
-        pub(crate) fn clone_with_work_and_custody(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
+        /// Copies report fields with bounded work and returns their retained bytes.
+        pub fn clone_with_work_and_custody(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
             if work.is_none() { return Ok((self.clone(), 0)); }
             let mut quota = CodecQuota::new(work, 0)?;
             let value = report(self, &mut quota)?;

@@ -314,7 +314,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             scope: storage.scope.clone(),
             causal_parent: None,
             action: Action::SelectModelContext { selection },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     aggregate.compact_conversation_projection()?;
     let retired = aggregate
@@ -604,7 +604,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             action: Action::PublishFork {
                 seed: Box::new(seed.clone()),
             },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     assert_eq!(aggregate.reducer().fork(&seed.child), Some(&seed));
     assert_summary_child_import(&storage, &aggregate, &seed, &captured, limits).await?;
@@ -665,7 +665,7 @@ async fn assert_summary_child_import(
         Err(Error::Unauthorized(_))
     ));
     child
-        .bind_published_child(parent, seed, scope.clone())
+        .bind_published_child(parent, seed, scope.clone(), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let capture = seed
         .summary
@@ -742,7 +742,7 @@ async fn assert_summary_child_import(
             action: Action::BindConversation {
                 agent: seed.child_agent,
             },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     assert!(matches!(
         unrelated
@@ -947,7 +947,7 @@ async fn append_later_summary_parent_messages(
                         extensions: BTreeMap::new(),
                     }),
                 },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
     }
     Ok(())
@@ -1298,7 +1298,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
             scope: scope.clone(),
             causal_parent: None,
             action: Action::PublishFork { seed: Box::new(changed) },
-        }).await, Err(Error::Invalid(_) | Error::Unauthorized(_))));
+        }, #[cfg(feature = "filesystem")] None, &mut None).await, Err(Error::Invalid(_) | Error::Unauthorized(_))));
         assert_eq!(parent.reducer().revision(), revision);
     }
     let fork_verifier = Arc::new(CompositeForkVerifier::new(vec![
@@ -1317,7 +1317,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     parent.execute(command.clone()).await?;
     let mut reopened = storage.open_conversation(limits).await?
         .with_fork_verifier(fork_verifier);
-    assert!(matches!(reopened.execute(command).await?, crate::core::ApplyResult::Replayed { .. }));
+    assert!(matches!(reopened.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await?, crate::core::ApplyResult::Replayed { .. }));
     let mut count = 0;
     while count < 12 {
         let page = history.inherited_conversation_page(&seed, child_agent, count,

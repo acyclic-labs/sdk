@@ -328,7 +328,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     )?;
     let mut tasks = TaskRegistry::default();
     tasks.register(task_definition)?;
-    let task_definition = tasks.get_version::<u64, u64>("fixture.file_replay", "1")?;
+    let task_definition = tasks.get_version::<u64, u64>("fixture.file_replay", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine)?;
     let stream = StreamClient::new(Arc::new(MemoryStream::default()));

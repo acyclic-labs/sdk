@@ -8504,7 +8504,7 @@ pub(crate) mod tests {
                     action: crate::core::Action::BindConversation {
                         agent: AgentId::from_bytes([1; 16]),
                     },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
             let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
                 host.journal_owner(task_id, fence.clone()).await?,

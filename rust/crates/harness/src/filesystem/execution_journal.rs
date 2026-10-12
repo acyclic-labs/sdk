@@ -2923,7 +2923,7 @@ mod tests {
                 scope: scope.clone(),
                 causal_parent: None,
                 action: Action::BindConversation { agent },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let mut ids = Vec::new();
         let mut references = Vec::new();
@@ -2973,7 +2973,7 @@ mod tests {
                             extensions: Default::default(),
                         }),
                     },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
             ids.push(id);
             references.push(file);
@@ -3004,7 +3004,7 @@ mod tests {
                     scope: scope.clone(),
                     causal_parent: None,
                     action: Action::SelectModelContext { selection },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
         }
         let limits = Limits {

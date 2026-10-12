@@ -1329,7 +1329,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
         }
         child_aggregate
-            .bind_published_child(&aggregate, &seed, child_scope.clone())
+            .bind_published_child(&aggregate, &seed, child_scope.clone(), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let binding = child_aggregate
             .reducer()

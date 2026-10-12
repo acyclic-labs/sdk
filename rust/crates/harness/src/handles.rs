@@ -48,7 +48,7 @@ macro_rules! durable_handle {
 
             /// Plans, durably appends, and applies one command.
             pub async fn execute(&mut self, command: Command) -> Result<ApplyResult> {
-                self.inner.execute(command).await
+                self.inner.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await
             }
         }
     };

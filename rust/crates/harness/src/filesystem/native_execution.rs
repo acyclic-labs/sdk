@@ -2705,7 +2705,9 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider 
     let encoded = acyclic_stream::OwnedBytes::from_vec_with_guard(
         encoded, encoded_custody, work.runtime_meter_owner(),
     ).map_err(|failure| Error::from(work.runtime_error(failure.into_error())))?;
-    let applied = aggregate.0.execute_task_command_with_native_work(command, owner, work).await?;
+    crate::store::history::HistoryIo::retain_owned(
+        &mut io, std::mem::size_of::<crate::core::ApplyResult>() as u64)?;
+    let applied = aggregate.0.execute(command, Some(owner), &mut Some(&mut io)).await?;
     drop(applied);
     Ok(encoded)
 }

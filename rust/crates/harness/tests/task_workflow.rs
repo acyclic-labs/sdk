@@ -876,7 +876,7 @@ async fn worker_restart_with_options(
         input_schema,
         json!({"type":"integer"}),
     )?)?;
-    let definition = tasks.get_version::<Value, u64>("test.restart", "1")?;
+    let definition = tasks.get_version::<Value, u64>("test.restart", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine)?;
     if with_child {
@@ -2189,7 +2189,7 @@ async fn stock_restart_with_publication_fault(
     )?;
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
-    let definition = tasks.get_version::<u64, u64>("test.restart", "1")?;
+    let definition = tasks.get_version::<u64, u64>("test.restart", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine)?;
     let operation = OperationId::from_bytes([3; 16]);
@@ -2740,7 +2740,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
     let definition = machine.definition()?;
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
-    let definition = tasks.get_version::<Value, acyclic_harness::executor::TurnOutput>("acyclic.stock_turn", "1")?;
+    let definition = tasks.get_version::<Value, acyclic_harness::executor::TurnOutput>("acyclic.stock_turn", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine)?;
     let operation = OperationId::new();

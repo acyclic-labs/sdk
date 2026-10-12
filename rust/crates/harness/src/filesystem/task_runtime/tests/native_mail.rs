@@ -45,7 +45,7 @@ impl MailFixture {
             8, 65_536, fixture.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
         ).await?;
         let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(), &fixture.signed, 65_536, None)?;
-        let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1")?;
+        let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         let mut tasks = Vec::new();
         for byte in 190..193 {
             let operation = OperationId::from_bytes([byte; 16]);

@@ -152,7 +152,7 @@ impl Fixture {
         let fence = LeaseFence::from(&lease.reservation);
         let mut aggregate = StreamAggregate::open(&stream, issuer.verifier().audience().clone(), issuer.verifier(), SchemaRegistry::new()).await?;
         aggregate.execute(Command { operation_id: OperationId::from_bytes([26; 16]), idempotency_key: IdempotencyKey::new("pi-native-bind")?,
-            expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }).await?;
+            expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }, None, &mut None).await?;
         let grant = ContentGrant::verify(&issuer.verifier(), &scope, &scratch, VolumeOperation::Write)?;
         let initial = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name()?)?).await?;
         let initial_id = files.open_measured(&initial.workspace, super::super::native_root_source::budget(), &CancellationToken::new()).await

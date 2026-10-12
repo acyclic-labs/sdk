@@ -1557,8 +1557,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
             let report = report.clone_with_work(&mut observer)?;
-            binding.0.parent.publish_fork_report_with_work(
-                report, binding.0.parent_scope, owner.journal_owner.as_ref(), &mut observer).await?;
+            binding.0.parent.publish_fork_report(
+                report, binding.0.parent_scope, Some(owner.journal_owner.as_ref()), &mut observer).await?;
         }
         let seed = binding.0.parent.reducer().fork(&report.request.child).ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Storage,
@@ -1571,8 +1571,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         {
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            binding.0.child_conversation.bind_published_child_with_work(
-                &binding.0.parent, seed, binding.0.child_scope, owner.journal_owner.as_ref(), &mut observer).await?;
+            binding.0.child_conversation.bind_published_child(
+                &binding.0.parent, seed, binding.0.child_scope, Some(owner.journal_owner.as_ref()), &mut observer).await?;
         }
         let value = recursive_encode_with_native_work(seed, work)?;
         Ok((Some(value.0), value.1))
@@ -1708,8 +1708,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         {
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            binding.0.destination.execute_guarded_publication_with_work(
-                command, owner.journal_owner.as_ref(), crate::distributed::JournalWrite::Fresh,
+            binding.0.destination.publish(
+                command, Some(owner.journal_owner.as_ref()), crate::distributed::JournalWrite::Fresh,
                 false, &mut observer).await?;
         }
         let value = recursive_encode_with_native_work(receipt, work)?;
@@ -1829,12 +1829,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 let receipt = receipt.ok_or_else(|| Error::Invalid("merge publication has no provider receipt".into()))?;
                 validate_merge_receipt(merge, receipt, None)?;
                 if receipt.operation_id != context.operation_id() { return Err(Error::Unauthorized("merge receipt belongs to another effect".into())); }
-                binding.destination.execute_guarded_publication_with_work(Command {
+                binding.destination.publish(Command {
                     operation_id: context.operation_id(),
                     idempotency_key: IdempotencyKey::new(format!("recursive-merge-publication:{}", context.operation_id()))?,
                     expected_revision: binding.destination.reducer().revision(), scope: binding.scope, causal_parent: None,
                     action: Action::PublishProjectMerge { receipt: Box::new(receipt.clone()) },
-                }, owner.journal_owner.as_ref(), crate::distributed::JournalWrite::Fresh, false, &mut None).await?;
+                }, Some(owner.journal_owner.as_ref()), crate::distributed::JournalWrite::Fresh, false, &mut None).await?;
                 Ok(Some(encode(receipt, None)?))
             }
             _ => Err(Error::Invalid("recursive command does not match its retained plan".into())),

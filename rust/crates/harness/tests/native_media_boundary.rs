@@ -1352,7 +1352,7 @@ where
     )?;
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
-    let definition = tasks.get_version::<u64, u64>("fixture.native_replay", "1")?;
+    let definition = tasks.get_version::<u64, u64>("fixture.native_replay", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine)?;
     let stream = StreamClient::new(Arc::new(MemoryStream::default()));
@@ -1917,7 +1917,7 @@ where
                 scope: scope.clone(),
                 causal_parent: None,
                 action,
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
     }
     let child_agent = AgentId::new();

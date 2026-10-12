@@ -235,7 +235,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     ));
     assert_eq!(aggregate.reducer().events_after(1, 2)?.len(), 1);
     assert_eq!(
-        aggregate.read_event_at(1).await?.operation_id,
+        aggregate.read_event_at(1, &mut None).await?.0.operation_id,
         OperationId::from_bytes([3; 16])
     );
     let restored_parent = Reducer::restore(
@@ -531,7 +531,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     );
     assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 1);
     aggregate
-        .publish_fork_report(report.clone(), scope.clone())
+        .publish_fork_report(report.clone(), scope.clone(), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let mut later_message = aggregate
         .reducer()

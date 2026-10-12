@@ -818,7 +818,7 @@ impl CreationFixture {
             idempotency_key: IdempotencyKey::new("created-fork-bind")?,
             expected_revision: 0, scope: fork_scope.clone(), causal_parent: None,
             action: Action::BindConversation { agent: parent_agent },
-        }).await?;
+        }, #[cfg(feature = "filesystem")] None, &mut None).await?;
         let project = VolumeRef::new(
             self.filesystem_provider.clone(), "child-project", VolumeClass::Project,
             VolumeOwner::Project("created-project".into()),

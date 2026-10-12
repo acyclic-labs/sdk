@@ -544,7 +544,7 @@ impl HarnessWireApi for NativeSession {
                     Arc::new(StreamHistoryForkVerifier::new(self.config.stream_provider.clone())?),
                 ])?))
                 .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.files.clone())));
-            let (state, error) = match aggregate.execute(command).await {
+            let (state, error) = match aggregate.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await {
                 Ok(_) => (wire::AdmissionState::Accepted, None),
                 Err(error @ Error::Indeterminate(_)) => (wire::AdmissionState::Indeterminate, Some(acyclic_harness::encode_error(&error))),
                 Err(error) => (wire::AdmissionState::Rejected, Some(acyclic_harness::encode_error(&error))),

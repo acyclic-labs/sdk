@@ -343,7 +343,7 @@ impl<I, O> TaskDefinition<I, O> {
                 .ok_or_else(|| task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                     "task definition is not the registered version"))?
         } else {
-            context.harness.tasks.get_version::<I, O>(&self.identity.name, &self.identity.version)?
+            context.harness.tasks.get_version::<I, O>(&self.identity.name, &self.identity.version, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?
         };
         if !Arc::ptr_eq(&registered, self) {
             return Err(task_workflow_error(native, crate::wire::ErrorCode::Conflict,
@@ -6102,7 +6102,7 @@ impl AgentHarness {
     {
         let registered = self
             .tasks
-            .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
+            .get_version::<I, O>(&definition.identity.name, &definition.identity.version, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         if !Arc::ptr_eq(&registered, definition) {
             return Err(Error::Conflict(
                 "task definition is not the registered version".into(),
@@ -6247,7 +6247,7 @@ impl AgentHarness {
     ) -> Result<RuntimeTask<O>> {
         let registered = self
             .tasks
-            .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
+            .get_version::<I, O>(&definition.identity.name, &definition.identity.version, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         if !Arc::ptr_eq(&registered, definition)
             || !matches!(&definition.implementation, TaskImplementation::Resumable(_))
         {
@@ -6539,7 +6539,7 @@ impl AgentHarness {
         self.assert_durable_policy_bindings(None)?;
         let registered = self
             .tasks
-            .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
+            .get_version::<I, O>(&definition.identity.name, &definition.identity.version, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         if !Arc::ptr_eq(&registered, definition) {
             return Err(Error::Conflict(
                 "task definition is not the registered version".into(),

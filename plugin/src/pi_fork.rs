@@ -18,7 +18,7 @@ use acyclic_harness::{AgentId, Capabilities, Error, OperationId, Outcome, Result
     runtime::{DurableTaskHost, TaskAdmissionRecord, task_id_for_admission},
     scheduler::{LeaseFence, ResourceSnapshot},
     source_authorization::{ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider},
-    store::{HistoryReadLimits, StreamAggregate},
+    store::{HistoryIo, HistoryReadLimits, StreamAggregate},
     workflow::WorkflowCommand};
 use acyclic_stream::{LocalStream, StreamClient};
 use serde::{Deserialize, Serialize};
@@ -909,8 +909,12 @@ impl PiForkCoordinator {
             let authority = self.owner.conversation_authority_with_native_work(owner.task_id(),
                 parent_input.0.binding.agent_id, context.scope().grants(), work)?;
             let verifier = authority.0.1.verifier_with_native_work(work)?;
-            let seed = report.clone_with_native_work(work)?;
-            let seed_value = seed.0.into_seed()?;
+            let mut seed_io = acyclic_harness::store::native_work_io(work)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            seed_io.retain_owned(std::mem::size_of::<ForkReport>() as u64)?;
+            let (seed, _) = report.clone_with_work_and_custody(&mut Some(&mut seed_io))?;
+            let seed_value = seed.into_seed()?;
+            let _seed_custody = seed_io.into_custody();
             let capture = self.capture(source, plan.frozen, budget).await?;
             let filesystem: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
                 acyclic_harness::filesystem::FilesystemForkVerifier::new_with_native_work(self.filesystem.clone(),
@@ -924,17 +928,41 @@ impl PiForkCoordinator {
             let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
                 SchemaRegistry::new(), work).await?;
             let mut parent_value = parent.0.with_limits(context.scope().limits())?.with_fork_verifier(forks);
-            let published = parent_value.publish_fork_report_with_native_work(report, &authority.0.2, owner, work).await?;
-            drop(published.0);
-            drop(published.1);
+            {
+                let mut io = acyclic_harness::store::native_work_io(work)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                io.retain_owned(std::mem::size_of::<acyclic_harness::core::ApplyResult>() as u64)?;
+                let (report, report_bytes) = report.clone_with_work_and_custody(&mut Some(&mut io))?;
+                let (scope, scope_custody) = authority.0.2.clone_with_native_work(work)?;
+                let scope_bytes = scope_custody.bytes();
+                io.absorb_native_custody(scope_custody)?;
+                let published = parent_value.publish_fork_report(report, scope, Some(owner), &mut Some(&mut io)).await;
+                let released_report = io.release_owned(report_bytes);
+                let released_scope = io.release_owned(scope_bytes);
+                let published = published?;
+                released_report?;
+                released_scope?;
+                drop(published);
+                drop(io.into_custody());
+            }
             let child_authority = self.owner.conversation_authority_with_native_work(
                 plan.request.child.task_id(), seed_value.child_agent, &plan.request.child.grants, work)?;
             let child_verifier = child_authority.0.1.verifier_with_native_work(work)?;
             let child = StreamAggregate::open_with_native_work(&self.stream, child_authority.0.0, child_verifier.0,
                 SchemaRegistry::new(), work).await?;
             let mut child_value = child.0.with_limits(plan.request.child.limits)?;
-            child_value.bind_published_child_with_native_work(&parent_value, &seed_value,
-                &child_authority.0.2, owner, work).await?;
+            {
+                let mut io = acyclic_harness::store::native_work_io(work)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                let (scope, scope_custody) = child_authority.0.2.clone_with_native_work(work)?;
+                let scope_bytes = scope_custody.bytes();
+                io.absorb_native_custody(scope_custody)?;
+                let bound = child_value.bind_published_child(&parent_value, &seed_value,
+                    scope, Some(owner), &mut Some(&mut io)).await;
+                let released = io.release_owned(scope_bytes);
+                bound?;
+                released?;
+            }
             return Ok(()); }
 
     fn validate_plan(&self, plan: &PiForkPlan, caller: TaskId) -> Result<()> {
