@@ -39,6 +39,66 @@ use acyclic_harness::{
 use acyclic_stream::LocalStream;
 use std::sync::Arc;
 
+pub const HISTORY_LIMITS: HistoryReadLimits = HistoryReadLimits {
+    maximum_events: 256,
+    maximum_bytes: 4 * 1024 * 1024,
+};
+
+pub fn invalid(error: impl std::fmt::Display) -> Error {
+    Error::Invalid(error.to_string())
+}
+
+pub fn storage(error: impl std::fmt::Display) -> Error {
+    Error::Storage(error.to_string())
+}
+
+/// One `KIND-json=VALUE` line the qualification scripts parse.
+pub fn json_line(kind: &str, value: &impl serde::Serialize) -> Result<String> {
+    Ok(format!(
+        "{kind}-json={}\n",
+        serde_json::to_string(value).map_err(invalid)?
+    ))
+}
+
+/// Opens one conversation aggregate with the local content, fork and merge verifiers.
+pub async fn open_aggregate(
+    stream: &Arc<LocalStream>,
+    files: &Arc<Files>,
+    stream_provider: &ProviderRef,
+    binding: &AuthorityBinding,
+) -> Result<StreamAggregate<LocalStream>> {
+    let verifier = binding.verifier()?;
+    let content = FilesystemContentVerifier::new(
+        files.clone(),
+        &verifier,
+        &binding.scope,
+        MAX_FRAME_BYTES as u64,
+        None,
+    )?;
+    let forks = CompositeForkVerifier::new(
+        &[
+            FilesystemForkVerifier::new(files.clone(), MAX_FRAME_BYTES as u64, None, None)?,
+            StreamHistoryForkVerifier::new(stream_provider, &mut None)?,
+        ],
+        &mut None,
+    )?;
+    Ok(StreamAggregate::open(
+        stream,
+        binding.authority.clone(),
+        verifier,
+        SchemaRegistry::new(),
+        None,
+        acyclic_harness::store::default_projection_read_limits(),
+        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+        None,
+        &mut None,
+    )
+    .await?
+    .with_content_verifier(content)
+    .with_fork_verifier(forks)
+    .with_merge_verifier(FilesystemProjectMergeVerifier::new(files.clone(), None)?))
+}
+
 pub(super) type Files = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 pub(super) type Runtime =
     FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
@@ -61,53 +121,39 @@ impl NativeSession {
         let files = FilesystemHost::new(
             acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&config.filesystem_root))
                 .await
-                .map_err(|error| Error::Storage(error.to_string()))?,
+                .map_err(storage)?,
             &config.filesystem_provider,
             None,
         )?;
         let stream = Arc::new(
             LocalStream::open(&config.stream_root, Default::default())
                 .await
-                .map_err(|error| Error::Storage(error.to_string()))?,
+                .map_err(storage)?,
         );
         let runtime = runtime(&config, stream.clone(), files.clone(), verifier).await?;
         let model_provider = Arc::new(crate::provider::Deterministic::new(
             config.deterministic_delay_ms,
             &config.model_invocation_ledger,
         )?);
-        let mut context = std::mem::take(&mut config.context);
-        if context.discovered.is_none() {
-            if let Some(discovery) = &context.discovery {
-                let reader = FilesystemContentVerifier::new(
-                    files.clone(),
-                    &config.owner.verifier()?,
-                    &config.owner.scope,
-                    MAX_FRAME_BYTES as u64,
-                    None,
-                )?;
-                context.discovered = Some(discovery.capture(reader.as_ref()).await?);
-            }
-        }
-        context.pipeline()?;
-        Ok(Self {
+        let context = std::mem::take(&mut config.context);
+        let session = Self {
             config,
             stream,
             files,
             runtime,
-            context: std::sync::RwLock::new(context),
+            context: std::sync::RwLock::new(WorkflowContext::default()),
             model_provider,
-        })
+        };
+        let context = if context.discovered.is_none() {
+            session.discover(context).await?
+        } else {
+            context
+        };
+        context.pipeline()?;
+        *session.context.write().map_err(storage)? = context;
+        Ok(session)
     }
-    pub fn config(&self) -> Config {
-        let mut config = self.config.clone();
-        config.context = self
-            .context
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        config
-    }
-    pub async fn configure_context(&self, mut context: WorkflowContext) -> Result<String> {
+    async fn discover(&self, mut context: WorkflowContext) -> Result<WorkflowContext> {
         if let Some(discovery) = &context.discovery {
             let reader = FilesystemContentVerifier::new(
                 self.files.clone(),
@@ -118,15 +164,22 @@ impl NativeSession {
             )?;
             context.discovered = Some(discovery.capture(reader.as_ref()).await?);
         }
-        context.pipeline()?;
-        let rendered = format!(
-            "context-json={}\n",
-            serde_json::to_string(&context).map_err(|error| Error::Invalid(error.to_string()))?
-        );
-        *self
+        Ok(context)
+    }
+    pub fn config(&self) -> Config {
+        let mut config = self.config.clone();
+        config.context = self
             .context
-            .write()
-            .map_err(|_| Error::Storage("context lock poisoned".into()))? = context;
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        config
+    }
+    pub async fn configure_context(&self, context: WorkflowContext) -> Result<String> {
+        let context = self.discover(context).await?;
+        context.pipeline()?;
+        let rendered = json_line("context", &context)?;
+        *self.context.write().map_err(storage)? = context;
         Ok(rendered)
     }
 }

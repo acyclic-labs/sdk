@@ -325,7 +325,7 @@ where
         );
         if self
             .lazy
-            .state(&mut accounting)
+            .publication_cut(None, &mut accounting)
             .await
             .is_ok_and(|state| state.source == self.lazy.source_reference())
         {
@@ -337,7 +337,7 @@ where
         let result = async {
             self.authored.advance_to_head_async().await?;
             self.lazy
-                .rebind_source(&mut accounting)
+                .state(&mut accounting)
                 .await
                 .map_err(lazy_error)?;
             // Every unauthored node may read differently from the new epoch.

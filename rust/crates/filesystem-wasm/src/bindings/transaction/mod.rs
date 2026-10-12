@@ -99,9 +99,10 @@ impl BrowserTransaction {
     /// Clones one complete regular file without copying its body.
     #[wasm_bindgen]
     pub async fn copy(&mut self, source: String, destination: String) -> Result<(), JsValue> {
-        Box::pin(self.engine.copy(&source, &destination))
-            .await
-            .map_err(js_error)
+        sdk_value!(Box::pin(unbounded_future!(
+            self.engine,
+            copy(&source, &destination)
+        )))
     }
 
     /// Atomically renames one namespace binding inside this transaction.
@@ -139,10 +140,7 @@ impl BrowserTransaction {
 
     /// Changes one regular file's logical length.
     pub async fn resize(&mut self, path: String, logical_bytes: u64) -> Result<(), JsValue> {
-        self.engine
-            .resize(&path, logical_bytes)
-            .await
-            .map_err(js_error)
+        sdk_value!(unbounded_future!(self.engine, resize(&path, logical_bytes)))
     }
 
     /// Punches a hole or installs allocated zeros over one exact range.
@@ -156,10 +154,10 @@ impl BrowserTransaction {
         extend: bool,
     ) -> Result<(), JsValue> {
         let range = ByteRange { offset, length };
-        self.engine
-            .zero_range(&path, range, allocated, extend)
-            .await
-            .map_err(js_error)
+        sdk_value!(unbounded_future!(
+            self.engine,
+            zero_range(&path, range, allocated, extend)
+        ))
     }
 
     /// Preallocates one sparse range without replacing content.
@@ -171,10 +169,10 @@ impl BrowserTransaction {
         keep_size: bool,
     ) -> Result<(), JsValue> {
         let range = ByteRange { offset, length };
-        self.engine
-            .preallocate(&path, range, keep_size)
-            .await
-            .map_err(js_error)
+        sdk_value!(unbounded_future!(
+            self.engine,
+            preallocate(&path, range, keep_size)
+        ))
     }
 
     /// Clones one immutable range without reading file bytes.
@@ -187,16 +185,16 @@ impl BrowserTransaction {
         destination_offset: u64,
         length: u64,
     ) -> Result<(), JsValue> {
-        self.engine
-            .clone_range(
+        sdk_value!(unbounded_future!(
+            self.engine,
+            clone_range(
                 &source,
                 source_offset,
                 &destination,
                 destination_offset,
-                length,
+                length
             )
-            .await
-            .map_err(js_error)
+        ))
     }
 
     /// Publishes the complete candidate through one idempotent head CAS.
@@ -227,12 +225,8 @@ impl BrowserTransaction {
         #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
     ) -> Result<Ts<BrowserTransactionRebase>, JsValue> {
         let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
-        let outcome = self
-            .engine
-            .rebase(maximum_conflicts)
-            .await
-            .map(browser_transaction_rebase)
-            .map_err(js_error)?;
+        let outcome = sdk_value!(unbounded_future!(self.engine, rebase(maximum_conflicts)))
+            .map(browser_transaction_rebase)?;
         ts(outcome)
     }
 }
