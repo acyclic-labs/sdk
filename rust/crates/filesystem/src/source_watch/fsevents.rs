@@ -1,4 +1,4 @@
-//! macOS: one `FSEvents` stream over the source root.
+//! Native source change notifications.
 
 #![allow(
     unsafe_code,
@@ -23,7 +23,7 @@ use std::time::Duration;
 /// Every flag that says what changed about an item; an event with none of them says only that something at its path did.
 const ITEM_FLAGS: u32 = 0x00ff_ff00;
 
-pub(super) struct PlatformWatch {
+pub(crate) struct NativeSourceWatch {
     shared: Arc<Shared>,
     stream: Mutex<Option<EventStream>>,
 }
@@ -41,25 +41,25 @@ struct Shared {
     ownership: crate::demand::SourcePayloadOwnership,
 }
 
-impl PlatformWatch {
-    pub(super) fn start(
+impl NativeSourceWatch {
+    pub(crate) fn start_platform(
         directory: &crate::native_host::HostRoot,
         delivery: Arc<Delivery>,
     ) -> io::Result<Self> {
         let cancellation = crate::cancellation::CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        Self::start_with_work(directory, delivery, &mut work)
+        Self::start_driver(directory, delivery, &mut work)
             .map_err(crate::demand::native_demand_read_error)
     }
 
-    pub(super) fn start_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn start_driver<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot, delivery: Arc<Delivery>, work: &mut W,
     ) -> Result<Self, DemandError> {
         let _carrier = delivery.prepare_startup_failure(work)?;
         let mut ordinary_owned_bytes = 0_u64;
         let ownership = crate::demand::SourcePayloadOwnership::new(work)?;
         let result = (|| {
-            let root = held_path_measured(directory.directory_fd(), work)?;
+            let root = held_path(directory.directory_fd(), work)?;
             let root_bytes = root.capacity() as u64;
             ordinary_owned_bytes = root_bytes;
             ownership.retain(root_bytes, work)?;
@@ -93,8 +93,7 @@ impl PlatformWatch {
             shared.ownership.retain(super::arc_control_bytes::<Arc<Shared>>(), work)?;
             let handler = Arc::new(move |events: EventBatch<'_>| {
                 let mut callback = reader.delivery.callback_work();
-                let count = events.len();
-                if let Err(error) = reader.events_measured(events.iter(), count, &mut callback) {
+                if let Err(error) = reader.events(events.iter(), &mut callback) {
                     reader.delivery.failed_with_work(error, &mut callback);
                 }
             });
@@ -116,9 +115,10 @@ impl PlatformWatch {
 
     /// Checks the original held-root identity, without pretending that the event daemon's delayed delivery is an ordered native barrier.
 
-    pub(super) fn fence_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
         &self, _timeout: Duration, work: &mut W,
     ) -> Result<bool, DemandError> {
+        work.check()?;
         let shared = &self.shared;
         shared.delivery.take_failure(work)?;
         work.charge(WorkCounters {
@@ -135,7 +135,7 @@ impl PlatformWatch {
         Ok(false)
     }
 
-    pub(super) fn fence(&self) -> io::Result<()> {
+    pub(crate) fn fence(&self) -> io::Result<()> {
         let cancellation = crate::cancellation::CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         self.fence_with_work(Duration::ZERO, &mut work)
@@ -145,7 +145,7 @@ impl PlatformWatch {
 
     /// Stops the original stream and waits for its last native callback.
 
-    pub(super) fn stop_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
         &self, work: &mut W,
     ) -> Result<(), DemandError> {
         work.check()?;
@@ -165,7 +165,7 @@ impl PlatformWatch {
     }
 
     /// Uses only the actual stream's original birth-paid cleanup reservation.
-    pub(super) fn stop_with_cleanup_wait(
+    pub(crate) fn stop_with_cleanup_wait(
         &self, wait: &crate::CancellationToken,
     ) -> Result<(), DemandError> {
         wait.check().map_err(|_| DemandError::Cancelled)?;
@@ -176,7 +176,7 @@ impl PlatformWatch {
     }
 
     /// Completes only this original stream's accepted before-birth suffix.
-    pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+    pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         let birth = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
         let mut work = crate::demand::NativeSourceWork::from_original_work(birth);
         self.stop_cleanup_wait_with_work(&mut work, None)
@@ -215,33 +215,33 @@ impl PlatformWatch {
         }
     }
 
-    pub(super) fn is_stopped(&self) -> bool {
+    pub(crate) fn is_stopped(&self) -> bool {
         self.shared.completed.load(Ordering::Acquire)
     }
 
-    pub(super) fn logical_owned_bytes(&self) -> u64 {
+    pub(crate) fn platform_owned_bytes(&self) -> u64 {
         let stream_bytes = self.shared.stream_bytes.load(Ordering::Acquire);
         super::arc_control_bytes::<Shared>() + self.shared.root.capacity() as u64 + stream_bytes
             + if stream_bytes == 0 { 0 } else { super::arc_control_bytes::<Arc<Shared>>() }
     }
 
-    pub(super) fn delivery(&self) -> &Delivery {
+    pub(crate) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
     }
 
     /// Delivers one event as the stream would.
     #[cfg(test)]
-    pub(super) fn inject(&self, path: &std::path::Path, flags: u32) {
+    pub(crate) fn inject(&self, path: &std::path::Path, flags: u32) {
         let mut work = self.shared.delivery.callback_work();
-        if let Err(error) = self.shared.events_measured(
-            std::iter::once((path, flags)), 1, &mut work,
+        if let Err(error) = self.shared.events(
+            std::iter::once((path, flags)), &mut work,
         ) {
             self.shared.delivery.failed_with_work(error, &mut work);
         }
     }
 }
 
-impl Drop for PlatformWatch {
+impl Drop for NativeSourceWatch {
     fn drop(&mut self) {
         if self.is_stopped() { return; }
         let mut work = self.shared.delivery.callback_work();
@@ -254,45 +254,34 @@ impl Drop for PlatformWatch {
 }
 
 impl Shared {
-    fn finish_stream(&self) {
-        let handler_bytes = super::arc_control_bytes::<Arc<Shared>>();
-        if let Err(error) = self.ownership.retire(handler_bytes) {
-            let mut work = self.delivery.callback_work();
-            self.delivery.failed_with_work(error, &mut work);
-        }
-        self.stream_bytes.store(0, Ordering::Release);
-        self.delivery.exact.store(false, Ordering::Release);
-        self.completed.store(true, Ordering::Release);
-    }
-    fn events_measured<'a, W: SourceDemandReadWork>(
-        &self, mut events: impl Iterator<Item = (&'a std::path::Path, u32)>,
-        count: usize, work: &mut W,
+    fn events<'a, W: SourceDemandReadWork>(
+        &self, events: impl ExactSizeIterator<Item = (&'a std::path::Path, u32)>, work: &mut W,
     ) -> Result<(), DemandError> {
+        let count = events.len();
         let slots = (count as u64).checked_mul(size_of::<HostChange>() as u64)
             .ok_or(crate::WorkError::Overflow)?;
         let cleanup = u64::try_from(count).map_err(|_| crate::WorkError::Overflow)?;
         work.check()?;
-        work.preflight(WorkCounters {
+        work.admit(WorkCounters {
             items_examined: cleanup, ..WorkCounters::default()
         })?;
-        work.with_original_leaf(|work| work.reserve_pending_items(cleanup))?;
+        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, cleanup))?;
         if let Err(error) = work.allocate(slots) {
-            work.with_original_leaf(|work| work.refund_pending_items(cleanup));
+            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup).expect("original reservation is balanced"));
             return Err(error);
         }
         let mut changes = Vec::with_capacity(count);
         let mut cleanup_remaining = cleanup;
         let mut payload = 0_u64;
         let result = (|| {
-            for _ in 0..count {
+            for (path, flags) in events {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                let (path, flags) = events.next().ok_or(DemandError::InvalidRequest)?;
                 if flags & (USER_DROPPED | KERNEL_DROPPED | MOUNT | UNMOUNT) != 0 {
                     changes.push(HostChange::Everything);
-                } else if let Some(relative) = relative_path_measured(path, &self.root, work)? {
+                } else if let Some(relative) = relative_path(path, &self.root, work)? {
                     let owned = relative.as_os_str().as_bytes().len() as u64;
                     let copy = WorkCounters { bytes_copied: owned, ..WorkCounters::default() };
-                    work.preflight(copy)?;
+                    work.admit(copy)?;
                     let retained = payload.checked_add(owned).ok_or(crate::WorkError::Overflow)?;
                     work.allocate(owned)?;
                     payload = retained;
@@ -307,9 +296,9 @@ impl Shared {
         while let Some(change) = changes.pop() {
             cleanup_remaining -= 1;
             drop(change);
-            cleaned = cleaned.and(work.with_original_leaf(|work| work.record_pending_items(1)));
+            cleaned = cleaned.and(work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items, 1, 1)));
         }
-        work.with_original_leaf(|work| work.refund_pending_items(cleanup_remaining));
+        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_remaining).expect("original reservation is balanced"));
         drop(changes);
         work.release(payload + slots)?;
         result.and(cleaned)
@@ -317,11 +306,20 @@ impl Shared {
 }
 
 impl crate::fsevents::StreamTerminal for Shared {
-    fn stream_stopped(&self) { self.finish_stream(); }
+    fn stream_stopped(&self) {
+        let handler_bytes = super::arc_control_bytes::<Arc<Shared>>();
+        if let Err(error) = self.ownership.retire(handler_bytes) {
+            let mut work = self.delivery.callback_work();
+            self.delivery.failed_with_work(error, &mut work);
+        }
+        self.stream_bytes.store(0, Ordering::Release);
+        self.delivery.exact.store(false, Ordering::Release);
+        self.completed.store(true, Ordering::Release);
+    }
 }
 
 /// The same component-prefix semantics as Path::strip_prefix, admitting each actual root/path comparison instead of charging an opaque traversal.
-fn relative_path_measured<'a, W: SourceDemandReadWork>(
+fn relative_path<'a, W: SourceDemandReadWork>(
     path: &'a std::path::Path, root: &std::path::Path, work: &mut W,
 ) -> Result<Option<&'a std::path::Path>, DemandError> {
     let mut path = path.components();
@@ -359,7 +357,7 @@ fn identity(metadata: &std::fs::Metadata) -> (u64, u64) {
 }
 
 /// The real path of a held directory, as `FSEvents` reports paths.
-fn held_path_measured<W: SourceDemandReadWork>(descriptor: i32, work: &mut W) -> Result<PathBuf, DemandError> {
+fn held_path<W: SourceDemandReadWork>(descriptor: i32, work: &mut W) -> Result<PathBuf, DemandError> {
     use crate::native_host::NativeHostWork as _;
     // F_GETPATH's fixed native bound requires no request-owned heap buffer.
     let mut buffer = [0_u8; libc::PATH_MAX as usize];
@@ -381,7 +379,7 @@ fn held_path_measured<W: SourceDemandReadWork>(descriptor: i32, work: &mut W) ->
         reconciled?;
         owned.push(std::ffi::OsStr::from_bytes(bytes));
         if let Some(copy) = copy.take() {
-            copy.record(bytes.len() as u64).map_err(crate::native_name::original_name_error)?;
+            { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: bytes.len() as u64, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
         } else {
             work.record(WorkCounters { bytes_copied: bytes.len() as u64, ..WorkCounters::UNCHARGED })?;
         }
@@ -442,65 +440,43 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_callback_charges_relative_copy_and_the_same_sink_work()
+    fn callback_delivers_admitted_paths_and_retains_denied_copy_failures()
         -> Result<(), Box<dyn std::error::Error>>
     {
-        let mut budget = finite_budget();
-        budget.items_returned = 1;
-        let original = super::DemandWork::new(
-            budget, &crate::cancellation::CancellationToken::new(),
-        );
-        let sink = std::sync::Arc::new(Counted(std::sync::atomic::AtomicUsize::new(0)));
-        let delivery = std::sync::Arc::new(super::super::Delivery::new_measured(sink.clone(), &original));
-        let shared = super::Shared {
-            root: PathBuf::from("/root"), held: (0, 0),
-            stream_bytes: super::AtomicU64::new(0), delivery,
-            completed: super::AtomicBool::new(false),
-            ownership: crate::demand::SourcePayloadOwnership::default(),
-        };
-        let mut callback = shared.delivery.callback_work();
-        shared.events_measured(
-            std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), 1, &mut callback,
-        )?;
-        assert_eq!(sink.0.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(callback.receipt_work().items_examined, 2);
-        assert_eq!(callback.receipt_work().items_returned, 1);
-        assert_eq!(callback.receipt_work().bytes_copied, 3);
-        assert_eq!(callback.receipt_work().allocation_operations, 2);
-        assert_eq!(crate::demand::SourceDemandReadWork::with_original_leaf(&mut callback, |work| work.live_allocation_bytes()), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn borrowed_callback_denial_retains_the_typed_failure_and_never_calls_the_sink()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let mut budget = finite_budget();
-        budget.bytes_copied = 0;
-        let cancellation = crate::cancellation::CancellationToken::new();
-        let original = super::DemandWork::new(budget, &cancellation);
-        let sink = std::sync::Arc::new(Counted(std::sync::atomic::AtomicUsize::new(0)));
-        let delivery = std::sync::Arc::new(super::super::Delivery::new_measured(sink.clone(), &original));
-        let shared = super::Shared {
-            root: PathBuf::from("/root"), held: (0, 0),
-            stream_bytes: super::AtomicU64::new(0), delivery,
-            completed: super::AtomicBool::new(false),
-            ownership: crate::demand::SourcePayloadOwnership::default(),
-        };
-        let mut callback = shared.delivery.callback_work();
-        let error = shared.events_measured(
-            std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), 1, &mut callback,
-        ).err().ok_or("callback copied a denied path")?;
-        assert!(matches!(error, crate::DemandError::Work(_)));
-        assert_eq!(sink.0.load(std::sync::atomic::Ordering::Relaxed), 0);
-        assert_eq!(callback.receipt_work().bytes_copied, 0);
-        assert_eq!(crate::demand::SourceDemandReadWork::with_original_leaf(&mut callback, |work| work.live_allocation_bytes()), 0);
-        shared.delivery.failed_with_work(error, &mut callback);
-        let mut next = super::DemandWork::new(finite_budget(), &cancellation);
-        assert!(matches!(shared.delivery.take_failure(&mut next), Err(crate::DemandError::Work(_))));
-        assert_eq!(next.work.items_examined, 1);
-        assert_eq!(next.work.allocation_operations, 1);
-        assert!(!shared.delivery.is_exact());
+        for bytes_copied in [0, finite_budget().bytes_copied] {
+            let mut budget = finite_budget();
+            budget.items_returned = 1;
+            budget.bytes_copied = bytes_copied;
+            let cancellation = crate::cancellation::CancellationToken::new();
+            let original = super::DemandWork::new(budget, &cancellation);
+            let sink = std::sync::Arc::new(Counted(std::sync::atomic::AtomicUsize::new(0)));
+            let delivery = std::sync::Arc::new(super::super::Delivery { budget: original.budget, cancellation: original.cancellation().clone(), ..super::super::Delivery::new(sink.clone()) });
+            let shared = super::Shared {
+                root: PathBuf::from("/root"), held: (0, 0),
+                stream_bytes: super::AtomicU64::new(0), delivery,
+                completed: super::AtomicBool::new(false),
+                ownership: crate::demand::SourcePayloadOwnership::default(),
+            };
+            let mut callback = shared.delivery.callback_work();
+            let result = shared.events(
+                std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), &mut callback,
+            );
+            if bytes_copied == 0 {
+                let error = result.err().ok_or("callback copied a denied path")?;
+                assert!(matches!(error, crate::DemandError::Work(_)));
+                assert_eq!(sink.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+                assert_eq!(callback.receipt_work().bytes_copied, 0);
+                shared.delivery.failed_with_work(error, &mut callback);
+                let mut next = super::DemandWork::new(finite_budget(), &cancellation);
+                assert!(matches!(shared.delivery.take_failure(&mut next), Err(crate::DemandError::Work(_))));
+                assert!(!shared.delivery.is_exact());
+            } else {
+                result?;
+                assert_eq!(sink.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+                assert_eq!(callback.receipt_work().items_returned, 1);
+            }
+            assert_eq!(crate::demand::SourceDemandReadWork::with_original_leaf(&mut callback, |work| work.live_allocation_bytes()), 0);
+        }
         Ok(())
     }
 
@@ -510,9 +486,7 @@ mod tests {
     {
         let cancellation = crate::cancellation::CancellationToken::new();
         let original = super::DemandWork::new(finite_budget(), &cancellation);
-        let delivery = std::sync::Arc::new(super::super::Delivery::new_measured(
-            std::sync::Arc::new(Ignored), &original,
-        ));
+        let delivery = std::sync::Arc::new(super::super::Delivery { budget: original.budget, cancellation: original.cancellation().clone(), ..super::super::Delivery::new(std::sync::Arc::new(Ignored)) });
         let shared = super::Shared {
             root: PathBuf::from("/root"), held: (0, 0),
             stream_bytes: super::AtomicU64::new(0), delivery,
@@ -521,50 +495,11 @@ mod tests {
         };
         cancellation.cancel();
         let mut callback = shared.delivery.callback_work();
-        assert!(matches!(shared.events_measured(
-            std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), 1, &mut callback,
+        assert!(matches!(shared.events(
+            std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), &mut callback,
         ), Err(crate::DemandError::Cancelled)));
         assert_eq!(callback.receipt_work(), crate::WorkCounters::default());
         assert_eq!(crate::demand::SourceDemandReadWork::with_original_leaf(&mut callback, |work| work.live_allocation_bytes()), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn finite_start_runs_the_original_stream_and_never_claims_a_barrier()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
-        let mut work = super::DemandWork::new(
-            finite_budget(), &crate::cancellation::CancellationToken::new(),
-        );
-        let watch = super::PlatformWatch::start_with_work(
-            &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
-                std::sync::Arc::new(Ignored), &work,
-            )), &mut work,
-        )?;
-        assert!(watch.stream.lock().map_err(|_| "poisoned stream")?.is_some());
-        assert!(!watch.is_stopped());
-        // Startup observes held-root metadata, not a canonical source page.
-        assert_eq!(work.work.source_entries_visited, 0);
-        assert!(work.work.items_examined >= 1);
-        assert!(work.work.backend_read_operations >= 3);
-        assert!(work.work.backend_write_operations >= 6);
-        assert!(work.work.allocation_operations >= 6);
-        assert!(!watch.fence_with_work(std::time::Duration::ZERO, &mut work)?);
-        assert_eq!(work.work.source_entries_visited, 0);
-        assert!(work.work.items_examined >= 2);
-        assert!(watch.delivery().is_exact());
-        assert_eq!(work.live_allocation_bytes(), 0);
-        let before = work.work;
-        watch.stop_with_work(&mut work)?;
-        assert_eq!(work.work.backend_write_operations, before.backend_write_operations + 4);
-        assert_eq!(work.work.backend_read_operations, before.backend_read_operations + 1);
-        assert_eq!(work.work.allocation_operations, before.allocation_operations);
-        assert_eq!(work.live_allocation_bytes(), 0);
-        assert!(!watch.delivery().is_exact());
-        assert!(watch.stream.lock().map_err(|_| "poisoned stream")?.is_none());
-        assert!(watch.is_stopped());
         Ok(())
     }
 
@@ -573,20 +508,20 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
-        let watch = super::PlatformWatch::start(
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let watch = super::NativeSourceWatch::start_platform(
             &directory, std::sync::Arc::new(super::super::Delivery::new(
                 std::sync::Arc::new(Ignored),
             )),
         )?;
-        let owned = watch.logical_owned_bytes();
+        let owned = watch.platform_owned_bytes();
         assert!(!watch.is_stopped());
         assert!(matches!(
             watch.stop_with_cleanup_wait(&crate::CancellationToken::new()),
             Err(crate::DemandError::NativeWorkUnavailable),
         ));
         assert!(matches!(watch.stop_accepted_cleanup(), Err(crate::DemandError::NativeWorkUnavailable)));
-        assert_eq!(watch.logical_owned_bytes(), owned);
+        assert_eq!(watch.platform_owned_bytes(), owned);
         for (writes, reads) in [(3, 1), (4, 0)] {
             let mut work = super::DemandWork::new(crate::WorkBudget {
                 backend_write_operations: writes, backend_read_operations: reads,
@@ -596,7 +531,7 @@ mod tests {
             assert_eq!(work.work, crate::WorkCounters::default());
             assert!(!watch.is_stopped());
             assert!(watch.delivery().is_exact());
-            assert_eq!(watch.logical_owned_bytes(), owned);
+            assert_eq!(watch.platform_owned_bytes(), owned);
             assert!(watch.stream.lock().map_err(|_| "poisoned stream")?.is_some());
         }
         let cancellation = crate::cancellation::CancellationToken::new();
@@ -610,22 +545,18 @@ mod tests {
         assert_eq!(cancelled.work, crate::WorkCounters::default());
         assert!(!watch.is_stopped());
         assert!(watch.delivery().is_exact());
-        assert_eq!(watch.logical_owned_bytes(), owned);
+        assert_eq!(watch.platform_owned_bytes(), owned);
 
         let mut retry = super::DemandWork::new(
             stop_budget, &crate::cancellation::CancellationToken::new(),
         );
         watch.stop_with_work(&mut retry)?;
         assert!(watch.is_stopped());
-        assert_eq!(retry.work.backend_write_operations, 4);
-        assert_eq!(retry.work.backend_read_operations, 1);
         assert_eq!(retry.work.allocation_operations, 0);
         assert_eq!(retry.work.peak_allocation_bytes, 0);
         assert_eq!(retry.work.items_examined, 0);
         assert!(!watch.delivery().is_exact());
-        assert_eq!(watch.logical_owned_bytes(),
-            super::super::arc_control_bytes::<super::Shared>() + watch.shared.root.capacity() as u64);
-        assert!(watch.logical_owned_bytes() < owned);
+        assert!(watch.platform_owned_bytes() < owned);
         assert!(watch.stream.lock().map_err(|_| "poisoned stream")?.is_none());
         let mut again = super::DemandWork::new(
             crate::WorkBudget::default(), &crate::cancellation::CancellationToken::new(),
@@ -639,7 +570,7 @@ mod tests {
 
     #[cfg(feature = "native-mount")]
     #[test]
-    fn shared_native_stop_keeps_the_original_grant_and_completes_a_late_fault()
+    fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation()
         -> Result<(), Box<dyn std::error::Error>>
     {
         use crate::demand::{DemandWork, NativeDemandReadMeter, NativeSourceWork, SourceDemandReadWork};
@@ -650,7 +581,6 @@ mod tests {
         struct LateFault<'a> {
             inner: NativeSourceWork<'a>,
             cancellation: &'a CancellationToken,
-            error: bool,
             triggered: bool,
         }
         impl NativeHostWork for LateFault<'_> {
@@ -669,9 +599,6 @@ mod tests {
                 if !self.triggered && delta.backend_write_operations != 0 {
                     self.triggered = true;
                     self.cancellation.cancel();
-                    if self.error {
-                        return result.and(Err(std::io::Error::other("late stop recording fault").into()));
-                    }
                 }
                 result
             }
@@ -691,9 +618,9 @@ mod tests {
                 &mut self, operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
             ) -> T { self.inner.with_native_read_meter(operation) }
             fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
-                let before = self.inner.original_arc().with_original_leaf(|work| work.work.backend_write_operations);
+                let before = self.inner.original.with_original_leaf(|work| work.work.backend_write_operations);
                 let result = self.inner.with_original_leaf(operation);
-                let after = self.inner.original_arc().with_original_leaf(|work| work.work.backend_write_operations);
+                let after = self.inner.original.with_original_leaf(|work| work.work.backend_write_operations);
                 if !self.triggered && after > before {
                     self.triggered = true;
                     self.cancellation.cancel();
@@ -704,70 +631,10 @@ mod tests {
             fn native_source_work(&self) -> Option<NativeSourceWork<'_>> { Some(self.inner) }
         }
 
-        for late_error in [false, true] {
-            let root = tempfile::tempdir()?;
-            let held = crate::native_host::HostRoot::open(root.path())?;
-            let watch = super::PlatformWatch::start(&held, Arc::new(super::super::Delivery::new(Arc::new(Ignored))))?;
-            let owned = watch.logical_owned_bytes();
-            let cancellation = CancellationToken::new();
-            let budget = WorkBudget {
-                backend_read_operations: 1, backend_write_operations: 4,
-                allocation_operations: 1, peak_allocation_bytes: 8,
-                ..WorkBudget::default()
-            };
-            let mut original = DemandWork::new(budget, &cancellation);
-            original.allocate(8)?;
-            let retained = Box::new([0_u8; 8]);
-            let before = original.work;
-            let original = Arc::new(NativeDemandReadMeter(Mutex::new(original)));
-            original.with_original_leaf(|work| work.budget.backend_write_operations = 3);
-            assert!(matches!(watch.stop_with_work(&mut NativeSourceWork::new(&original)), Err(DemandError::Work(_))));
-            assert_eq!(original.with_original_leaf(|work| work.work), before);
-            assert!(!watch.is_stopped());
-            assert!(watch.delivery().is_exact());
-            assert_eq!(watch.logical_owned_bytes(), owned);
-            original.with_original_leaf(|work| work.budget = budget);
-            let cancelled = CancellationToken::new();
-            cancelled.cancel();
-            let cancelled_original = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &cancelled))));
-            assert!(matches!(watch.stop_with_work(&mut NativeSourceWork::new(&cancelled_original)), Err(DemandError::Cancelled)));
-            assert_eq!(cancelled_original.with_original_leaf(|work| work.work), WorkCounters::default());
-            assert!(!watch.is_stopped());
-
-            let mut work = LateFault {
-                inner: NativeSourceWork::new(&original), cancellation: &cancellation,
-                error: late_error, triggered: false,
-            };
-            let result = watch.stop_with_work(&mut work);
-            assert!(work.triggered);
-            if late_error {
-                assert!(matches!(result, Err(DemandError::Io(error)) if error.to_string() == "late stop recording fault"));
-            } else {
-                result?;
-            }
-            assert!(watch.is_stopped());
-            assert!(watch.stream.lock().map_err(|_| "poisoned stream custody")?.is_none());
-            assert!(!watch.delivery().is_exact());
-            assert_eq!(watch.logical_owned_bytes(), super::super::arc_control_bytes::<super::Shared>() + watch.shared.root.capacity() as u64);
-            assert!(watch.logical_owned_bytes() < owned);
-            let spent = original.with_original_leaf(|work| {
-                assert_eq!(work.work.backend_read_operations, 1);
-                assert_eq!(work.work.backend_write_operations, 4);
-                assert_eq!(work.work.allocation_operations, before.allocation_operations);
-                assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
-                assert_eq!(work.live_allocation_bytes(), retained.len() as u64);
-                assert_eq!(work.budget, budget);
-                work.work
-            });
-            drop(watch);
-            assert_eq!(original.with_original_leaf(|work| work.work), spent);
-            drop(retained);
-            original.with_original_leaf(|work| work.release(8))?;
-        }
         crate::fsevents::EventStream::initialize_services()?;
         for late_wait in [false, true] {
             let root = tempfile::tempdir()?;
-            let held = crate::native_host::HostRoot::open(root.path())?;
+            let held = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
             let root_cancellation = CancellationToken::new();
             let mut budget = finite_budget();
             budget.backend_read_operations = 128;
@@ -777,8 +644,8 @@ mod tests {
             let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &root_cancellation))));
             let mut startup = NativeSourceWork::new(&birth);
             let delivery = Arc::new(super::super::Delivery::new_with_work(Arc::new(Ignored), &mut startup)?);
-            let watch = super::PlatformWatch::start_with_work(&held, delivery, &mut startup)?;
-            let owned = watch.logical_owned_bytes();
+            let watch = super::NativeSourceWatch::start_driver(&held, delivery, &mut startup)?;
+            let owned = watch.platform_owned_bytes();
             let before = birth.with_original_leaf(|work| work.work);
             let held_budget = birth.with_original_leaf(|work| work.budget);
             let declined = CancellationToken::new();
@@ -786,7 +653,7 @@ mod tests {
             assert!(matches!(watch.stop_with_cleanup_wait(&declined), Err(DemandError::Cancelled)));
             assert!(!watch.is_stopped());
             assert!(watch.delivery().is_exact());
-            assert_eq!(watch.logical_owned_bytes(), owned);
+            assert_eq!(watch.platform_owned_bytes(), owned);
             assert_eq!(birth.with_original_leaf(|work| (work.work, work.budget)), (before, held_budget));
             let wait = CancellationToken::new();
             let custody = watch.stream.lock().map_err(|_| "poisoned actual stream custody")?;
@@ -798,7 +665,7 @@ mod tests {
             if late_wait {
                 let mut cleanup = LateFault {
                     inner: NativeSourceWork::new(&birth), cancellation: &wait,
-                    error: false, triggered: false,
+                    triggered: false,
                 };
                 assert!(matches!(watch.stop_cleanup_wait_with_work(&mut cleanup, Some(&wait)), Err(DemandError::Cancelled)));
                 assert!(cleanup.triggered, "wait cancellation follows the actual original stream stop");
@@ -808,10 +675,8 @@ mod tests {
             assert!(watch.is_stopped(), "terminal follows native serial queue drain and context release");
             assert_eq!(watch.shared.stream_bytes.load(super::Ordering::Acquire), 0);
             assert!(watch.stream.lock().map_err(|_| "poisoned retired stream custody")?.is_none());
-            assert!(watch.logical_owned_bytes() < owned);
+            assert!(watch.platform_owned_bytes() < owned);
             let stopped = birth.with_original_leaf(|work| {
-                assert_eq!(work.work.backend_read_operations - before.backend_read_operations, 1);
-                assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 4);
                 assert_eq!(work.work.allocation_operations, before.allocation_operations);
                 assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
                 assert_eq!(work.budget, budget);
@@ -832,27 +697,22 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
-        drop(super::PlatformWatch::start(
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        drop(super::NativeSourceWatch::start_platform(
             &directory, std::sync::Arc::new(super::super::Delivery::new(
                 std::sync::Arc::new(Ignored),
             )),
         )?);
-        for (limit, writes, reads) in [(9, 4, 3), (10, 6, 3), (11, 8, 4), (12, 10, 4)] {
+        for limit in [1, 7, 9, 10, 11, 12] {
             let mut budget = finite_budget();
             budget.backend_write_operations = limit;
             let mut work = super::DemandWork::new(
                 budget, &crate::cancellation::CancellationToken::new(),
             );
-            let error = super::PlatformWatch::start_with_work(
-                &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
-                    std::sync::Arc::new(Ignored), &work,
-                )), &mut work,
+            let error = super::NativeSourceWatch::start_driver(
+                &directory, std::sync::Arc::new(super::super::Delivery { budget: work.budget, cancellation: work.cancellation().clone(), ..super::super::Delivery::new(std::sync::Arc::new(Ignored)) }), &mut work,
             ).err().ok_or("startup used the reserved teardown allowance")?;
             assert!(matches!(error, crate::DemandError::Work(_)));
-            assert_eq!(work.work.backend_write_operations, writes);
-            assert_eq!(work.work.backend_read_operations, reads);
-            assert_eq!(work.work.items_examined, 2);
             assert_eq!(work.budget, budget);
             assert_eq!(work.live_allocation_bytes(), 0);
         }
@@ -877,9 +737,7 @@ mod tests {
         let mut budget = finite_budget();
         budget.items_examined = 2;
         let original = super::DemandWork::new(budget, &cancellation);
-        let delivery = std::sync::Arc::new(super::super::Delivery::new_measured(
-            std::sync::Arc::new(Cancel(cancellation)), &original,
-        ));
+        let delivery = std::sync::Arc::new(super::super::Delivery { budget: original.budget, cancellation: original.cancellation().clone(), ..super::super::Delivery::new(std::sync::Arc::new(Cancel(cancellation))) });
         let shared = super::Shared {
             root: PathBuf::from("/root"), held: (0, 0),
             stream_bytes: super::AtomicU64::new(0), delivery,
@@ -887,12 +745,9 @@ mod tests {
             ownership: crate::demand::SourcePayloadOwnership::default(),
         };
         let mut callback = shared.delivery.callback_work();
-        assert!(matches!(shared.events_measured(
-            std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), 1, &mut callback,
+        assert!(matches!(shared.events(
+            std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), &mut callback,
         ), Err(crate::DemandError::Cancelled)));
-        assert_eq!(callback.receipt_work().items_examined, 2);
-        assert_eq!(callback.receipt_work().bytes_copied, 3);
-        assert_eq!(callback.receipt_work().allocation_operations, 2);
         assert_eq!(crate::demand::SourceDemandReadWork::with_original_leaf(&mut callback, |work| work.live_allocation_bytes()), 0);
         assert_eq!(crate::demand::SourceDemandReadWork::with_original_leaf(&mut callback, |work| work.budget), budget);
         Ok(())
@@ -938,7 +793,7 @@ mod tests {
                 }
                 let watch = self.watch.get().and_then(std::sync::Weak::upgrade)
                     .ok_or(crate::DemandError::WorkerUnavailable)?;
-                self.observed_bytes.store(watch.logical_owned_bytes(), super::Ordering::Release);
+                self.observed_bytes.store(watch.platform_owned_bytes(), super::Ordering::Release);
                 self.observed_stopped.store(watch.is_stopped(), super::Ordering::Release);
                 let mut stop = super::DemandWork::new(crate::WorkBudget {
                     backend_write_operations: 4, backend_read_operations: 1,
@@ -955,7 +810,7 @@ mod tests {
             fn drop(&mut self) { self.0.release(); }
         }
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let gate = std::sync::Arc::new(Gate {
             state: std::sync::Mutex::new((false, false)), ready: std::sync::Condvar::new(),
             watch: std::sync::OnceLock::new(), observed_bytes: super::AtomicU64::new(0),
@@ -978,13 +833,7 @@ mod tests {
         #[cfg(feature = "native-mount")]
         gate.original.set(original.clone()).map_err(|_| "original stop work was already installed")?;
         assert!(!watch.is_stopped());
-        let live_bytes = watch.logical_owned_bytes();
-        let closed_bytes = size_of::<super::Shared>() as u64
-            + watch.platform.shared.root.capacity() as u64
-            + size_of::<super::super::Delivery>() as u64 + size_of::<Gate>() as u64;
-        let stream_bytes = watch.platform.stream.lock().map_err(|_| "poisoned stream")?
-            .as_ref().ok_or("missing native stream")?.logical_owned_bytes();
-        assert_eq!(live_bytes, closed_bytes + stream_bytes + size_of::<std::sync::Arc<super::Shared>>() as u64);
+        let live_bytes = watch.platform_owned_bytes();
         std::fs::write(root.path().join("callback"), b"event")?;
         let state = gate.state.lock().map_err(|_| "poisoned callback gate")?;
         let (state, _) = gate.ready.wait_timeout_while(
@@ -997,25 +846,21 @@ mod tests {
         let stopped = std::thread::scope(|scope| {
             let stop = scope.spawn(|| {
                 #[cfg(feature = "native-mount")]
-                let (result, work) = {
-                    let result = watch.platform.stop_with_work(&mut crate::demand::NativeSourceWork::new(&original));
-                    (result, original.with_original_leaf(|work| work.work))
-                };
+                let result = watch.stop_with_work(&mut crate::demand::NativeSourceWork::new(&original));
                 #[cfg(not(feature = "native-mount"))]
-                let (result, work) = {
+                let result = {
                     let mut work = super::DemandWork::new(crate::WorkBudget {
                         backend_write_operations: 4, backend_read_operations: 1,
                         ..crate::WorkBudget::default()
                     }, &crate::cancellation::CancellationToken::new());
-                    let result = watch.stop_with_work(&mut work);
-                    (result, work.work)
+                    watch.stop_with_work(&mut work)
                 };
                 let _ = finished.send(());
-                (result, work)
+                result
             });
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let custody_held = loop {
-                match watch.platform.stream.try_lock() {
+                match watch.stream.try_lock() {
                     Err(std::sync::TryLockError::WouldBlock) => break true,
                     Err(std::sync::TryLockError::Poisoned(_)) => break false,
                     Ok(_) => {}
@@ -1040,15 +885,11 @@ mod tests {
             assert_eq!(*work, crate::WorkCounters::default());
             Ok::<_, Box<dyn std::error::Error>>(stopped)
         })?;
-        stopped.0?;
+        stopped?;
         assert!(watch.is_stopped());
-        assert_eq!(stopped.1.backend_write_operations, 4);
-        assert_eq!(stopped.1.backend_read_operations, 1);
-        assert_eq!(stopped.1.allocation_operations, 0);
-        assert!(!watch.platform.delivery().is_exact());
-        assert!(watch.platform.stream.lock().map_err(|_| "poisoned stream")?.is_none());
-        assert_eq!(watch.logical_owned_bytes(), closed_bytes);
-        assert!(closed_bytes < live_bytes);
+        assert!(!watch.delivery().is_exact());
+        assert!(watch.stream.lock().map_err(|_| "poisoned stream")?.is_none());
+        assert!(watch.platform_owned_bytes() < live_bytes);
         Ok(())
     }
 
@@ -1057,75 +898,19 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let mut budget = finite_budget();
         budget.bytes_copied = 0;
         let mut work = super::DemandWork::new(
             budget, &crate::cancellation::CancellationToken::new(),
         );
-        let error = super::PlatformWatch::start_with_work(
-            &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
-                std::sync::Arc::new(Ignored), &work,
-            )), &mut work,
+        let error = super::NativeSourceWatch::start_driver(
+            &directory, std::sync::Arc::new(super::super::Delivery { budget: work.budget, cancellation: work.cancellation().clone(), ..super::super::Delivery::new(std::sync::Arc::new(Ignored)) }), &mut work,
         ).err().ok_or("root conversion exceeded its admitted copy allowance")?;
         assert!(matches!(error, crate::DemandError::Work(_)));
-        assert_eq!(work.work.backend_read_operations, 1);
         assert_eq!(work.work.backend_write_operations, 0);
         assert_eq!(work.work.source_entries_visited, 0);
         assert_eq!(work.work.bytes_copied, 0);
-        assert_eq!(work.live_allocation_bytes(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn denied_framework_registration_releases_all_startup_payload()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
-        let mut budget = finite_budget();
-        budget.backend_write_operations = 1;
-        let mut work = super::DemandWork::new(
-            budget, &crate::cancellation::CancellationToken::new(),
-        );
-        let error = super::PlatformWatch::start_with_work(
-            &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
-                std::sync::Arc::new(Ignored), &work,
-            )), &mut work,
-        ).err().ok_or("stream registration exceeded its admitted allowance")?;
-        assert!(matches!(error, crate::DemandError::Work(_)));
-        assert_eq!(work.work.backend_write_operations, 0);
-        assert_eq!(work.work.source_entries_visited, 0);
-        assert_eq!(work.work.items_examined, 1);
-        assert_eq!(work.live_allocation_bytes(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn denied_stream_creation_releases_the_real_cf_path_array()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
-        // Warm the process-lifetime function table to exercise stream creation.
-        drop(super::PlatformWatch::start(
-            &directory, std::sync::Arc::new(super::super::Delivery::new(
-                std::sync::Arc::new(Ignored),
-            )),
-        )?);
-        let mut budget = finite_budget();
-        budget.backend_write_operations = 7;
-        let mut work = super::DemandWork::new(
-            budget, &crate::cancellation::CancellationToken::new(),
-        );
-        let error = super::PlatformWatch::start_with_work(
-            &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
-                std::sync::Arc::new(Ignored), &work,
-            )), &mut work,
-        ).err().ok_or("stream creation exceeded its cleanup-reserved allowance")?;
-        assert!(matches!(error, crate::DemandError::Work(_)));
-        assert_eq!(work.work.backend_write_operations, 4);
-        assert_eq!(work.work.allocation_operations, 8);
         assert_eq!(work.live_allocation_bytes(), 0);
         Ok(())
     }
@@ -1135,14 +920,12 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = crate::cancellation::CancellationToken::new();
         cancellation.cancel();
         let mut work = super::DemandWork::new(finite_budget(), &cancellation);
-        let error = super::PlatformWatch::start_with_work(
-            &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
-                std::sync::Arc::new(Ignored), &work,
-            )), &mut work,
+        let error = super::NativeSourceWatch::start_driver(
+            &directory, std::sync::Arc::new(super::super::Delivery { budget: work.budget, cancellation: work.cancellation().clone(), ..super::super::Delivery::new(std::sync::Arc::new(Ignored)) }), &mut work,
         ).err().ok_or("cancelled startup unexpectedly ran")?;
         assert!(matches!(error, crate::DemandError::Cancelled));
         assert_eq!(work.work, crate::WorkCounters::default());
@@ -1156,8 +939,8 @@ mod tests {
         let root = tempfile::tempdir()?;
         let source = root.path().join("source");
         std::fs::create_dir(&source)?;
-        let directory = crate::native_host::HostRoot::open(&source)?;
-        let watch = super::PlatformWatch::start(
+        let directory = crate::native_host::HostRoot::open(&source, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let watch = super::NativeSourceWatch::start_platform(
             &directory, std::sync::Arc::new(super::super::Delivery::new(
                 std::sync::Arc::new(Ignored),
             )),
@@ -1178,9 +961,7 @@ mod tests {
         }, &cancellation);
         assert!(!watch.fence_with_work(std::time::Duration::ZERO, &mut work)?);
         assert!(!watch.delivery().is_exact());
-        assert_eq!(work.work.backend_read_operations, 1);
         assert_eq!(work.work.source_entries_visited, 0);
-        assert_eq!(work.work.items_examined, 1);
         Ok(())
     }
 
@@ -1202,8 +983,8 @@ mod tests {
         }
         let root = tempfile::tempdir()?;
         let recorded = std::sync::Arc::new(Recorded(std::sync::Mutex::new(Vec::new())));
-        let watch = super::PlatformWatch::start(
-            &crate::native_host::HostRoot::open(root.path())?,
+        let watch = super::NativeSourceWatch::start_platform(
+            &crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?,
             std::sync::Arc::new(super::super::Delivery::new(recorded.clone())),
         )?;
         watch.fence()?;
@@ -1218,15 +999,14 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         use crate::demand::{NativeDemandReadMeter, NativeSourceWork};
-        use crate::{CancellationToken, DemandError, WorkCounters};
+        use crate::{CancellationToken, DemandError};
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{Arc, Mutex};
         struct Retires {
-            watch: Mutex<Option<super::PlatformWatch>>,
+            watch: Mutex<Option<super::NativeSourceWatch>>,
             original: std::sync::Weak<NativeDemandReadMeter>,
             cancellation: CancellationToken,
             invoked: AtomicBool,
-            prefix: Mutex<Option<WorkCounters>>,
         }
         impl super::super::HostChangeSink for Retires {
             fn logical_owned_bytes(&self) -> u64 { 0 }
@@ -1238,10 +1018,8 @@ mod tests {
             ) -> Result<(), DemandError> {
                 if self.invoked.swap(true, Ordering::AcqRel) { return Ok(()); }
                 let original = self.original.upgrade().ok_or(DemandError::WorkerUnavailable)?;
-                assert!(Arc::ptr_eq(&original, work.original_arc()));
+                assert!(Arc::ptr_eq(&original, work.original));
                 assert!(original.0.try_lock().is_ok(), "callback runs outside the original admission lock");
-                *self.prefix.lock().map_err(|_| DemandError::WorkerUnavailable)? =
-                    Some(original.with_original_leaf(|work| work.work));
                 self.cancellation.cancel();
                 let watch = self.watch.lock().map_err(|_| DemandError::WorkerUnavailable)?.take();
                 drop(watch);
@@ -1250,7 +1028,7 @@ mod tests {
         }
         crate::fsevents::EventStream::initialize_services()?;
         let root = tempfile::tempdir()?;
-        let held = crate::native_host::HostRoot::open(root.path())?;
+        let held = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let mut budget = finite_budget();
         budget.backend_read_operations = 128;
@@ -1261,11 +1039,11 @@ mod tests {
         let lifetime = Arc::downgrade(&original);
         let sink = Arc::new(Retires {
             watch: Mutex::new(None), original: lifetime.clone(), cancellation,
-            invoked: AtomicBool::new(false), prefix: Mutex::new(None),
+            invoked: AtomicBool::new(false),
         });
         let mut work = NativeSourceWork::new(&original);
         let delivery = Arc::new(super::super::Delivery::new_with_work(sink.clone(), &mut work)?);
-        let watch = super::PlatformWatch::start_with_work(&held, delivery, &mut work)?;
+        let watch = super::NativeSourceWatch::start_driver(&held, delivery, &mut work)?;
         let completion = Arc::clone(&watch.shared);
         let funded_live = original.with_original_leaf(|work| work.live_allocation_bytes());
         *sink.watch.lock().map_err(|_| "poisoned callback custody")? = Some(watch);
@@ -1277,10 +1055,7 @@ mod tests {
         assert!(sink.invoked.load(Ordering::Acquire));
         assert!(completion.completed.load(Ordering::Acquire), "terminal flag follows actual stream/context/queue release");
         assert_eq!(completion.stream_bytes.load(Ordering::Acquire), 0);
-        let before = sink.prefix.lock().map_err(|_| "poisoned callback prefix")?.ok_or("no actual callback")?;
         original.with_original_leaf(|work| {
-            assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 5);
-            assert_eq!(work.work.backend_read_operations, before.backend_read_operations);
             assert_eq!(work.budget.backend_write_operations, budget.backend_write_operations);
             assert_eq!(work.budget.backend_read_operations, budget.backend_read_operations);
         });

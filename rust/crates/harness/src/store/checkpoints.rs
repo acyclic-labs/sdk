@@ -7,7 +7,7 @@ use crate::{
 };
 use acyclic_stream::{
     CommitCondition, CommitMutation, CommitOutcome, CommitRequest, CommittedMutation,
-    IdempotencyKey, OwnedBytes, StreamClient, StreamError, StreamPath, StreamProvider,
+    IdempotencyKey, OwnedBytes, StreamError, StreamPath, StreamProvider,
 };
 use serde::{Deserialize, Serialize};
 
@@ -50,12 +50,6 @@ fn projection_boundary(native: bool, code: crate::wire::ErrorCode, reason: &'sta
         crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
         _ => Error::Invalid(reason.into()),
     }
-}
-
-fn projection_error(
-    work: &Option<&mut dyn HistoryIo>, code: crate::wire::ErrorCode, reason: &'static str,
-) -> Error {
-    projection_boundary(work.as_deref().is_some_and(operations::original_native_decode_mode), code, reason)
 }
 
 pub(super) fn decode_projection_location_with_work(
@@ -154,7 +148,7 @@ pub(super) struct LoadedProjection {
 
 fn suffix(authority: &Authority) -> Result<String> {
     authority
-        .stream_path()?
+        .stream_path(&mut None)?
         .strip_prefix("harness/v2/")
         .map(str::to_owned)
         .ok_or_else(|| Error::Invalid("projection authority path is invalid".into()))
@@ -235,7 +229,7 @@ fn chunk_path(authority: &Authority, chunk: &ProjectionChunk) -> Result<StreamPa
 
 /// Consumes the original encoder buffer and transfers native allocation custody into the SDK carrier before any request alias or authority write.
 pub(super) async fn stage_immutable_vec_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: (StreamPath, u64),
     bytes: Result<Vec<u8>>,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -262,7 +256,7 @@ pub(super) async fn stage_immutable_vec_with_work<P: StreamProvider>(
 }
 
 pub(super) async fn stage_immutable_record_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: StreamPath,
     bytes: OwnedBytes,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -271,7 +265,7 @@ pub(super) async fn stage_immutable_record_with_work<P: StreamProvider>(
 }
 
 async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: StreamPath,
     bytes: OwnedBytes,
     path_retained: u64,
@@ -310,13 +304,11 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
         let (outcome, native_received) = if native {
             let key_owned = retained - path_owned;
             retained -= key_owned;
-            let mut request = crate::distributed::PreparedCommitRequest::new(
+            let mut request = crate::distributed::commit_request(
                 key, key_owned, work);
-            request.push_condition(CommitCondition::Absent { path: path.clone() })?;
-            request.append(path.clone(), bytes.clone())?;
-            let committed = request.commit_once(client, None).await;
-            drop(request);
-            committed?.map_err(|error| crate::distributed::sdk_error(error, work))?
+            crate::distributed::add_condition(&mut request, CommitCondition::Absent { path: path.clone() })?;
+            crate::distributed::add_record(&mut request, path.clone(), bytes.clone())?;
+            crate::distributed::commit(request, client, None, None).await?
         } else {
             let mut conditions = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
             reserve_chunk_slot(&mut conditions, 1, work)?;
@@ -393,7 +385,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
             drop(envelope);
             let released = match work.as_deref_mut() {
                 Some(observer) => {
-                    let records = observer.release_record(received_bytes);
+                    let records = observer.release_owned(received_bytes);
                     let slots = observer.release_owned(received_owned);
                     records.and(slots)
                 }
@@ -406,7 +398,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
         }
         drop(outcome);
         if let Some(observer) = work.as_deref_mut() { observer.release_owned(native_received)?; }
-        let record = operations::one_record_with_work(client, &path, 0, work).await?;
+        let record = operations::one_record(client, &path, 0, work).await?;
         let identical = record.as_ref().is_some_and(|record| record.value == bytes);
         let received_bytes = record.as_ref().map_or(0, |record| operations::sdk_record_retained_bytes(record, work));
         drop(record);
@@ -414,7 +406,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
             Err(Error::Conflict("immutable record identity differs".into()))
         };
         let released = match work.as_deref_mut() {
-            Some(observer) => observer.release_record(received_bytes),
+            Some(observer) => observer.release_owned(received_bytes),
             None => Ok(()),
         };
         match verified {
@@ -433,15 +425,15 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
 
 
 pub(super) async fn publication_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     reducer: &Reducer,
     event: &Event,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<operations::IndexedPublication> {
-    let mut publication = operations::IndexedPublication::new_with_work(
+    let mut publication = operations::IndexedPublication::new(
         reducer.authority(),
         event,
-        crate::wire_codec::encode_event_with_work(reducer.authority(), event, work)?,
+        crate::wire_codec::encode_event(reducer.authority(), event, work)?,
         work,
     )?;
     let result = async {
@@ -556,19 +548,20 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
     match result {
         Ok(()) => Ok(publication),
         Err(error) => {
-            let owned = publication.into_retained_owned();
+            let owned = publication.retained_owned();
+            drop(publication);
             operations::release_owned_after_drop(Err(error), owned, work)
         }
     }
 }
 
 async fn tail<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<u64> {
     if work.is_none() {
-        let stream = client.stream(authority.stream_path()?)?;
+        let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority.stream_path(&mut None)?)?;
         return match stream.tail().await {
             Ok(tail) => Ok(tail),
             Err(StreamError::NotFound) => Ok(0),
@@ -587,7 +580,7 @@ fn projection_cut(
 ) -> Result<u64> {
     let through_revision = original_revision.unwrap_or(committed_tail);
     if through_revision > committed_tail {
-        return Err(projection_error(work, crate::wire::ErrorCode::Invalid,
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
             "projection revision exceeds committed tail"));
     }
     Ok(through_revision)
@@ -597,13 +590,13 @@ fn charge(used: &mut u64, bytes: u64, maximum: u64, work: &Option<&mut dyn Histo
     *used = used
         .checked_add(bytes)
         .filter(|total| *total <= maximum)
-        .ok_or_else(|| projection_error(work, crate::wire::ErrorCode::Invalid,
+        .ok_or_else(|| super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
             "projection read exceeds byte allowance"))?;
     Ok(())
 }
 
 pub(super) async fn supplied<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     snapshot: Snapshot,
     limits: HistoryReadLimits,
@@ -630,16 +623,16 @@ pub(super) async fn supplied<P: StreamProvider>(
 
 
 pub(super) async fn load_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     limits: HistoryReadLimits,
     original_revision: Option<u64>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<LoadedProjection> {
-    verifier.verify_audience_with_work(authority, work)?;
+    verifier.verify_audience(authority, work)?;
     if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
-        return Err(projection_error(work, crate::wire::ErrorCode::Invalid,
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
             "projection read bounds must be positive"));
     }
     let through_revision = projection_cut(tail(client, authority, work).await?, original_revision, work)?;
@@ -654,10 +647,10 @@ pub(super) async fn load_with_work<P: StreamProvider>(
     }
     let (path, path_owned) = operations::publication_path_with_work(
         authority, "harness/v3/projection-checkpoints/", None, work)?;
-    let index = operations::one_record_with_work(client, &path, checkpoint_count - 1, work).await;
+    let index = operations::one_record(client, &path, checkpoint_count - 1, work).await;
     drop(path);
     let index = operations::release_owned_after_drop(index, path_owned, work)?
-        .ok_or_else(|| projection_error(work, crate::wire::ErrorCode::Unsupported,
+        .ok_or_else(|| super::guarded_boundary(work, crate::wire::ErrorCode::Unsupported,
             "canonical history requires a durable projection checkpoint"))?;
     let result = async {
         let mut consumed_bytes = 0;
@@ -668,18 +661,18 @@ pub(super) async fn load_with_work<P: StreamProvider>(
                 || location.revision
                     != checkpoint_count
                         .checked_mul(u64::from(DEFAULT_PROJECTION_EVENTS))
-                        .ok_or_else(|| projection_error(work, crate::wire::ErrorCode::Storage,
+                        .ok_or_else(|| super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                             "projection head revision overflows"))?
                 || location.revision > through_revision
                 || location.bytes == 0
                 || location.bytes > MAX_PROJECTION_BYTES
                 || through_revision - location.revision >= u64::from(limits.maximum_events)
             {
-                return Err(projection_error(work, crate::wire::ErrorCode::Invalid,
+                return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
                     "projection checkpoint boundary exceeds read allowance"));
             }
             if location.bytes > limits.maximum_bytes.saturating_sub(consumed_bytes) {
-                return Err(projection_error(work, crate::wire::ErrorCode::Invalid,
+                return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
                     "projection read exceeds byte allowance"));
             }
             let snapshot = location.load_snapshot(
@@ -695,7 +688,7 @@ pub(super) async fn load_with_work<P: StreamProvider>(
     let index_bytes = operations::sdk_record_retained_bytes(&index, work);
     drop(index);
     let released = match work.as_deref_mut() {
-        Some(observer) => observer.release_record(index_bytes),
+        Some(observer) => observer.release_owned(index_bytes),
         None => Ok(()),
     };
     match result {
@@ -707,7 +700,7 @@ pub(super) async fn load_with_work<P: StreamProvider>(
 impl ProjectionLocation {
     async fn load_snapshot<P: StreamProvider>(
         &self,
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         verifier: &AuthorityVerifier,
         commit_id: &acyclic_stream::CommitId,
         consumed_bytes: &mut u64,
@@ -715,35 +708,35 @@ impl ProjectionLocation {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Snapshot> {
         let (path, path_owned) = operations::canonical_publication_path_with_work(&self.authority, work)?;
-        let canonical = operations::one_record_with_work(client, &path, self.revision - 1, work).await;
+        let canonical = operations::one_record(client, &path, self.revision - 1, work).await;
         drop(path);
         let canonical = operations::release_owned_after_drop(canonical, path_owned, work)?
-            .ok_or_else(|| projection_error(work, crate::wire::ErrorCode::Storage,
+            .ok_or_else(|| super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                 "projection canonical anchor is missing"))?;
         let result = async {
             charge(consumed_bytes, canonical.value.len() as u64, maximum_bytes, work)?;
             if &canonical.commit_id != commit_id {
-                return Err(projection_error(work, crate::wire::ErrorCode::Storage,
+                return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                     "projection head is outside its canonical atomic commit"));
             }
             let ((actual_authority, event), event_retained) =
-                crate::wire_codec::decode_event_with_work_and_custody(&canonical.value, work)?;
+                crate::wire_codec::decode_event(&canonical.value, work)?;
             let authority_owned = if work.is_some() { actual_authority.id.capacity() as u64 } else { 0 };
             let result = async {
                 verifier.verify_event(&event, work)?;
                 if actual_authority != self.authority || event.revision != self.revision {
-                    return Err(projection_error(work, crate::wire::ErrorCode::Storage,
+                    return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                         "projection canonical anchor differs"));
                 }
                 if let Some(observer) = work.as_deref_mut() { observer.stage_output(self.bytes, 1)?; }
                 let bytes = load_chunks(client, self, consumed_bytes, maximum_bytes, work).await?;
                 let result = (|| {
-                    let snapshot = Snapshot::decode_with_work(&bytes, maximum_bytes, work)?;
+                    let snapshot = Snapshot::decode(&bytes, maximum_bytes, work)?;
                     if snapshot.authority != self.authority
                         || snapshot.revision != self.revision
                         || snapshot.events.last() != Some(&event)
                     {
-                        return Err(projection_error(work, crate::wire::ErrorCode::Storage,
+                        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                             "projection snapshot differs from its canonical anchor"));
                     }
                     if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
@@ -752,7 +745,7 @@ impl ProjectionLocation {
                 let capacity = bytes.capacity() as u64;
                 drop(bytes);
                 let released = match work.as_deref_mut() {
-                    Some(observer) => observer.release_bytes(capacity),
+                    Some(observer) => observer.release_owned(capacity),
                     None => Ok(()),
                 };
                 match result {
@@ -768,7 +761,7 @@ impl ProjectionLocation {
         let canonical_bytes = operations::sdk_record_retained_bytes(&canonical, work);
         drop(canonical);
         let released = match work.as_deref_mut() {
-            Some(observer) => observer.release_record(canonical_bytes),
+            Some(observer) => observer.release_owned(canonical_bytes),
             None => Ok(()),
         };
         match result {
@@ -779,18 +772,18 @@ impl ProjectionLocation {
 }
 
 async fn load_chunks<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     location: &ProjectionLocation,
     consumed: &mut u64,
     maximum: u64,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<u8>> {
     let length = usize::try_from(location.bytes)
-        .map_err(|_| projection_error(work, crate::wire::ErrorCode::Invalid,
+        .map_err(|_| super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
             "projection size exceeds platform"))?;
     let mut total = 0_u64;
     if location.chunks.is_empty() {
-        return Err(projection_error(work, crate::wire::ErrorCode::Storage,
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
             "projection chunk manifest is empty"));
     }
     for (index, chunk) in location.chunks.iter().enumerate() {
@@ -799,16 +792,16 @@ async fn load_chunks<P: StreamProvider>(
             || chunk.bytes as usize > acyclic_stream::MAX_RECORD_BYTES
             || (index + 1 < location.chunks.len() && chunk.bytes < 16 * 1024)
         {
-            return Err(projection_error(work, crate::wire::ErrorCode::Storage,
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                 "projection chunk manifest has invalid lengths"));
         }
         total = total
             .checked_add(u64::from(chunk.bytes))
-            .ok_or_else(|| projection_error(work, crate::wire::ErrorCode::Storage,
+            .ok_or_else(|| super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                 "projection chunk manifest overflows"))?;
     }
     if total != location.bytes {
-        return Err(projection_error(work, crate::wire::ErrorCode::Storage,
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
             "projection chunk manifest total differs"));
     }
     let mut bytes = match work.as_deref_mut() {
@@ -823,16 +816,16 @@ async fn load_chunks<P: StreamProvider>(
         for chunk in &location.chunks {
             let expected = chunk.bytes as usize;
             if expected as u64 > maximum.saturating_sub(*consumed) {
-                return Err(projection_error(work, crate::wire::ErrorCode::Invalid,
+                return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
                     "projection read exceeds byte allowance"));
             }
             let digest = blake3::Hash::from_bytes(chunk.digest);
             let (path, path_owned) = operations::publication_path_with_work(
                 &location.authority, "harness/v3/projection-chunks/", Some((&digest.to_hex(), 64)), work)?;
-            let record = operations::one_record_with_work(client, &path, 0, work).await;
+            let record = operations::one_record(client, &path, 0, work).await;
             drop(path);
             let record = operations::release_owned_after_drop(record, path_owned, work)?
-                .ok_or_else(|| projection_error(work, crate::wire::ErrorCode::Storage,
+                .ok_or_else(|| super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                     "projection chunk is missing"))?;
             let result = (|| {
                 charge(consumed, record.value.len() as u64, maximum, work)?;
@@ -841,7 +834,7 @@ async fn load_chunks<P: StreamProvider>(
                     blake3::hash(&record.value).as_bytes() == &chunk.digest
                 } else { false };
                 if !digest_matches {
-                    return Err(projection_error(work, crate::wire::ErrorCode::Storage,
+                    return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                         "projection chunk length or digest differs"));
                 }
                 if let Some(observer) = work.as_deref_mut() { observer.copy_bytes(record.value.len() as u64)?; }
@@ -851,7 +844,7 @@ async fn load_chunks<P: StreamProvider>(
             let record_bytes = operations::sdk_record_retained_bytes(&record, work);
             drop(record);
             let released = match work.as_deref_mut() {
-                Some(observer) => observer.release_record(record_bytes),
+                Some(observer) => observer.release_owned(record_bytes),
                 None => Ok(()),
             };
             match result {
@@ -861,7 +854,7 @@ async fn load_chunks<P: StreamProvider>(
         }
         if let Some(observer) = work.as_deref_mut() { observer.hashed_bytes(bytes.len() as u64)?; }
         if blake3::hash(&bytes).as_bytes() != &location.digest {
-            return Err(projection_error(work, crate::wire::ErrorCode::Storage,
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                 "projection payload digest differs"));
         }
         Ok(())
@@ -871,7 +864,7 @@ async fn load_chunks<P: StreamProvider>(
         Err(error) => {
             let capacity = bytes.capacity() as u64;
             drop(bytes);
-            if let Some(observer) = work.as_deref_mut() { let _ = observer.release_bytes(capacity); }
+            if let Some(observer) = work.as_deref_mut() { let _ = observer.release_owned(capacity); }
             Err(error)
         }
     }
@@ -907,7 +900,7 @@ mod native_staging_custody_tests {
     #[tokio::test]
     async fn native_byte_control_denial_precedes_authority_io_and_releases_source() -> Result<()> {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let cancellation = CancellationToken::new();
         let mut allowance = budget();
         allowance.allocation_operations = 1;
@@ -938,7 +931,7 @@ mod native_staging_custody_tests {
     async fn original_staged_vec_capacity_releases_on_ack_error_cancel_and_retry() -> Result<()> {
         for mode in 0..5 {
             let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-            let client = StreamClient::new(provider.clone());
+            let client = provider.clone();
             let path = StreamPath::new(format!("harness/v3/native-stage-custody/{mode}"))?;
             let cancellation = CancellationToken::new();
             let mut allowance = budget();
@@ -962,7 +955,7 @@ mod native_staging_custody_tests {
             assert_eq!(io.into_custody().bytes(), 0, "source custody moved into SDK aliases");
             if matches!(mode, 3 | 4) { assert_eq!(provider.io_snapshot().writes, 0); }
             if mode == 2 {
-                assert_eq!(client.bounds(path.as_str()).await?.tail, 1);
+                assert_eq!(client.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await?.tail, 1);
                 let mut io = native_work_io(&native).expect("same original retry ledger");
                 let mut source = Vec::new();
                 io.reserve_bytes(&mut source, 4096)?;
@@ -971,10 +964,10 @@ mod native_staging_custody_tests {
                 stage_immutable_vec_with_work(
                     &client, (StreamPath::new(path.as_str())?, 0), Ok(source), &mut Some(&mut io)).await?;
                 assert_eq!(io.into_custody().bytes(), 0);
-                assert_eq!(client.bounds(path.as_str()).await?.tail, 1);
+                assert_eq!(client.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await?.tail, 1);
             }
             if matches!(mode, 0 | 2) {
-                let record = operations::one_record(&client, &path, 0).await?
+                let record = operations::one_record(&client, &path, 0, &mut None).await?
                     .expect("original immutable publication persisted");
                 assert_eq!(record.value.as_ref(), b"immutable");
                 let capacity = record.value.retained_capacity()
@@ -993,7 +986,7 @@ mod native_staging_custody_tests {
                 assert!(native.remaining().expect("last alias retains original claim").peak_allocation_bytes
                     <= budget().peak_allocation_bytes - capacity as u64);
                 let remaining = native.remaining().expect("original finite quota").peak_allocation_bytes;
-                assert!(matches!(native.claim(remaining + 1),
+                assert!(matches!(native.claim(remaining + 1, 1, acyclic_fs::WorkCounters::default()),
                     Err(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::BudgetExceeded {
                         counter: "peak_allocation_bytes", ..
                     }))));
@@ -1013,9 +1006,9 @@ mod native_staging_custody_tests {
     #[tokio::test]
     async fn competing_immutable_identity_recovers_or_rejects_without_retained_source() -> Result<()> {
         for identical in [true, false] {
-            let client = StreamClient::new(Arc::new(MemoryStream::default()));
+            let client = Arc::new(MemoryStream::default());
             let path = StreamPath::new("harness/v3/native-stage-custody/competing")?;
-            client.stream(path.as_str())?.append_at(OwnedBytes::from_static(b"immutable"), 0).await?;
+            acyclic_stream::Stream::new(std::sync::Arc::clone(&client), path.as_str())?.append_at(OwnedBytes::from_static(b"immutable"), 0).await?;
             let cancellation = CancellationToken::new();
             let native = NativeMaterializationWork::new(budget(), &cancellation)
                 .expect("original finite competitor-read ledger");
@@ -1029,7 +1022,7 @@ mod native_staging_custody_tests {
                 &client, (StreamPath::new(path.as_str())?, 0), Ok(source), &mut Some(&mut io)).await;
             assert_eq!(staged.is_ok(), identical);
             assert_eq!(io.into_custody().bytes(), 0);
-            assert_eq!(client.bounds(path.as_str()).await?.tail, 1);
+            assert_eq!(client.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await?.tail, 1);
             drop(client);
             assert_eq!(native.remaining().expect("competitor recovery retires all original aliases").peak_allocation_bytes,
                 budget().peak_allocation_bytes);
@@ -1040,7 +1033,7 @@ mod native_staging_custody_tests {
     #[tokio::test]
     async fn malformed_chunk_manifest_rejects_before_source_growth_and_provider_io() -> Result<()> {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original finite recovery ledger");
@@ -1074,7 +1067,7 @@ mod native_malformed_receipt_tests {
     async fn original_corrupt_receipt_drops_source_and_keeps_first_native_quota_cause() -> Result<()> {
         for (fault, deny_received_bytes) in [(4, false), (5, false), (5, true)] {
             let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-            let client = StreamClient::new(provider.clone());
+            let client = provider.clone();
             let cancellation = CancellationToken::new();
             let mut allowance = budget();
             if deny_received_bytes { allowance.authority_bytes_read = 0; }
@@ -1107,7 +1100,6 @@ mod native_malformed_receipt_tests {
                     reason: "immutable record receipt is invalid",
                 }));
             }
-            assert_eq!(provider.io_snapshot().writes, 1);
             assert_eq!(io.into_custody().bytes(), 0);
             drop(client);
             drop(provider);

@@ -71,8 +71,7 @@ pub struct FilesystemS3Limits {
     pub maximum_multipart_cas_retries: u32,
 }
 
-/// Administrative bounds for discovering active multipart object roots before
-/// immutable-object reclamation.
+/// Administrative bounds for discovering active multipart object roots before immutable-object reclamation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct S3MultipartRetentionLimits {
     /// Largest number of durable upload registry entries examined.
@@ -122,10 +121,6 @@ impl Default for FilesystemS3Limits {
 
 impl FilesystemS3Limits {
     /// Validates every protocol bound before a listener is created.
-    ///
-    /// # Errors
-    ///
-    /// Rejects zero limits and response chunks larger than request bodies.
     pub fn validate(self) -> S3Result<Self> {
         if self.maximum_request_bytes == 0
             || self.response_chunk_bytes == 0
@@ -145,8 +140,7 @@ impl FilesystemS3Limits {
     }
 }
 
-/// Authority adapter that retains filesystem state in the canonical public
-/// hierarchical Stream provider.
+/// Authority adapter that retains filesystem state in the canonical public hierarchical Stream provider.
 pub trait StreamBackedAuthority: AsyncAuthorityStore {
     /// Exact Stream implementation used by this deployment.
     type Stream: acyclic_stream::StreamProvider;
@@ -178,8 +172,7 @@ pub struct FilesystemS3Principal<A, O> {
     pub writable: bool,
 }
 
-/// Deployment-owned credential lookup. Implementations authorize, expire, and
-/// revoke access keys before returning a workspace capability.
+/// Deployment-owned credential lookup.
 #[async_trait]
 pub trait FilesystemS3Resolver<A, O>: Send + Sync + 'static {
     /// Resolves only the signing secret required to authenticate `SigV4`.
@@ -193,8 +186,7 @@ pub trait FilesystemS3Resolver<A, O>: Send + Sync + 'static {
         bucket: &str,
     ) -> S3Result<FilesystemS3Principal<A, O>>;
 
-    /// Creates a bucket backed by a distinct workspace, if this deployment
-    /// exposes bucket administration.
+    /// Creates a bucket backed by a distinct workspace, if this deployment exposes bucket administration.
     async fn create_bucket(
         &self,
         _access_key: &str,
@@ -262,10 +254,6 @@ pub struct FilesystemS3Adapter<R, A, O> {
 
 impl<R, A, O> FilesystemS3Adapter<R, A, O> {
     /// Creates one bounded adapter.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid hard limits.
     pub fn new(resolver: Arc<R>, limits: FilesystemS3Limits) -> S3Result<Self> {
         Ok(Self {
             resolver,
@@ -376,14 +364,7 @@ struct MultipartSnapshot {
     work: crate::WorkCounters,
 }
 
-/// Authenticates and returns every immutable object retained by active
-/// multipart Stream state.
-///
-/// Completed and aborted uploads are excluded:
-/// completed bytes are reachable from the published generation and aborted
-/// bytes are collectible. The operation fails closed if either discovery bound
-/// is reached, a hierarchy entry is malformed, or any upload history is not a
-/// valid canonical state machine.
+/// Authenticates and returns every immutable object retained by active multipart Stream state.
 pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: AsyncObjectStore>(
     provider: &P,
     objects: &O,
@@ -447,8 +428,7 @@ pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: A
     })
 }
 
-/// Reads one multipart upload registry stream to completion, validating and
-/// collecting every referenced upload path and accruing the work it took.
+/// Reads one multipart upload registry stream to completion, validating and collecting every referenced upload path and accruing the work it took.
 async fn collect_registry_upload_paths<P: acyclic_stream::StreamProvider>(
     provider: &P,
     registry: acyclic_stream::StreamPath,
@@ -729,8 +709,7 @@ where
         }
     }
 
-    /// Drives the upload toward a `Completing(requested)` terminal intent,
-    /// retrying CAS conflicts up to the configured bound.
+    /// Drives the upload toward a `Completing(requested)` terminal intent, retrying CAS conflicts up to the configured bound.
     async fn admit_multipart_completion_intent(
         &self,
         workspace: &Workspace<A, O>,
@@ -785,8 +764,7 @@ where
         Err(s3s::s3_error!(SlowDown))
     }
 
-    /// Drives the upload from a `Completing` intent to a `Completed` terminal
-    /// record, retrying CAS conflicts up to the configured bound.
+    /// Drives the upload from a `Completing` intent to a `Completed` terminal record, retrying CAS conflicts up to the configured bound.
     async fn terminalize_multipart_completion(
         &self,
         workspace: &Workspace<A, O>,
@@ -1030,16 +1008,14 @@ where
             return Err(s3s::s3_error!(InvalidArgument));
         }
         let operation = request_operation(&request)?;
-        let transaction = workspace
-            .begin_transaction(operation)
-            .await
+        let transaction = workspace.begin_transaction(operation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let mut source =
             StreamingBodySource::new(request.input.body.take(), expected_crc32.is_some());
         let staged = transaction
-            .stage_content(&mut source, self.limits.maximum_multipart_part_bytes)
-            .await
-            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
+            .stage_content(&mut source, self.limits.maximum_multipart_part_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value)
+            .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?;
         if request
             .input
             .content_length
@@ -1188,9 +1164,7 @@ where
             }
             MultipartCompletionIntent::Admitted(snapshot) => snapshot,
         };
-        let mut transaction = workspace
-            .begin_transaction(operation)
-            .await
+        let mut transaction = workspace.begin_transaction(operation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let staged = requested
             .iter()
@@ -1208,9 +1182,7 @@ where
             .await
             .map_err(|error| s3_error(&error))?;
         let generation = committed_generation(
-            transaction
-                .commit()
-                .await
+            transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| s3_error(&S3Error::Workspace(error)))?,
         )?;
         let terminalized = self
@@ -1338,9 +1310,7 @@ where
         let page = match principal.generation {
             Some(id) => {
                 let generation = principal
-                    .workspace
-                    .generation(id)
-                    .await
+                    .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
                 view.list_objects_at(&generation, options).await
             }
@@ -1457,9 +1427,7 @@ where
         let page = match principal.generation {
             Some(id) => {
                 let generation = principal
-                    .workspace
-                    .generation(id)
-                    .await
+                    .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
                 view.list_objects_at(&generation, options).await
             }
@@ -1568,9 +1536,7 @@ where
         let page = match principal.generation {
             Some(id) => {
                 let generation = principal
-                    .workspace
-                    .generation(id)
-                    .await
+                    .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
                 view.list_objects_at(&generation, options).await
             }
@@ -1642,9 +1608,7 @@ where
         let head = match principal.generation {
             Some(id) => {
                 let generation = principal
-                    .workspace
-                    .generation(id)
-                    .await
+                    .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
                 view.head_object_at(&generation, &request.input.key).await
             }
@@ -1686,14 +1650,10 @@ where
         let view = principal.workspace.s3();
         let generation = match principal.generation {
             Some(id) => principal
-                .workspace
-                .generation(id)
-                .await
+                .workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| s3_error(&S3Error::Workspace(error)))?,
             None => principal
-                .workspace
-                .head()
-                .await
+                .workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| s3_error(&S3Error::Workspace(error)))?,
         };
         let head = view
@@ -1769,16 +1729,14 @@ where
         reject_put_extensions(&request.input)?;
         let expected_crc32 = parse_crc32(request.input.checksum_crc32.as_deref())?;
         let operation = request_operation(&request)?;
-        let mut transaction = workspace
-            .begin_transaction(operation)
-            .await
+        let mut transaction = workspace.begin_transaction(operation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let mut source =
             StreamingBodySource::new(request.input.body.take(), expected_crc32.is_some());
         let staged = transaction
-            .stage_content(&mut source, self.limits.maximum_request_bytes)
-            .await
-            .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
+            .stage_content(&mut source, self.limits.maximum_request_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value)
+            .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?;
         if request
             .input
             .content_length
@@ -1792,9 +1750,7 @@ where
             .write_staged(&mut transaction, &request.input.key, &[staged])
             .await
             .map_err(|error| s3_error(&error))?;
-        let commit = transaction
-            .commit()
-            .await
+        let commit = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| s3_error(&S3Error::Workspace(error)))?;
         let generation = committed_generation(commit)?;
         Ok(S3Response::new(PutObjectOutput {
@@ -2186,8 +2142,7 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
     Ok(snapshot)
 }
 
-/// Decodes and validates the leading `created` record of a multipart record
-/// stream, returning the upload's key and its negotiated part bounds.
+/// Decodes and validates the leading `created` record of a multipart record stream, returning the upload's key and its negotiated part bounds.
 fn decode_multipart_header(
     created: &acyclic_stream::OwnedBytes,
     limits: FilesystemS3Limits,
@@ -2706,21 +2661,21 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn ordinary_http_wire_retains_canonical_allocation_through_last_chunk()
-    -> Result<(), Box<dyn std::error::Error>> {
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let cancellation = CancellationToken::new();
         let work = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
         let baseline = work.live_allocation_bytes();
         let data = b"canonical HTTP chunk".to_vec();
-        let allocation = work.claim(data.capacity() as u64)?;
+        let allocation = { let claim_bytes = data.capacity() as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
         let carrier = acyclic_stream::OwnedBytes::from_vec_with_guard(
-            data, allocation, work.runtime_meter_owner())
+            data, allocation, work.runtime_meter())
             .unwrap_or_else(|failure| panic!("ordinary test carrier: {:?}", failure.into_error()));
         let pointer = carrier.as_slice().as_ptr();
         let retained = work.live_allocation_bytes();
         let mut response = body(Bytes::from_owner(carrier));
         assert_eq!(work.live_allocation_bytes(), retained);
-        let chunk = response.next().await.ok_or("missing wire chunk")??;
+        let chunk = response.next().await.ok_or("missing wire chunk")?.map_err(std::io::Error::other)?;
         assert_eq!(chunk.as_ptr(), pointer);
         assert_eq!(chunk.as_ref(), b"canonical HTTP chunk");
         let alias = chunk.slice(1..);
@@ -2816,8 +2771,8 @@ mod tests {
     ) -> S3Result<FilesystemS3Adapter<Resolver, MemoryAuthorityBackend, MemoryObjectBackend>> {
         let filesystem = Fs::memory();
         let workspace = filesystem
-            .create_workspace("s3-http")
-            .await
+            .create_workspace("s3-http", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|_| s3s::s3_error!(InternalError))?;
         FilesystemS3Adapter::new(
             Arc::new(Resolver {
@@ -3191,9 +3146,7 @@ mod tests {
             .headers
             .insert(IDEMPOTENCY_HEADER, HeaderValue::from_static("old"));
         S3::put_object(&writable, initial).await?;
-        let generation = workspace
-            .head()
-            .await
+        let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|_| s3s::s3_error!(InternalError))?;
 
         let mut replacement = request(PutObjectInput {

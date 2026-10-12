@@ -20,7 +20,6 @@ pub const MAX_DISPLAY_PAGES: usize = 64;
 #[derive(Default)]
 pub struct Scrollback {
     pages: std::collections::VecDeque<String>,
-    bytes: usize,
 }
 
 impl Scrollback {
@@ -28,24 +27,17 @@ impl Scrollback {
         if page.len() > MAX_DISPLAY_BYTES {
             return Err(Error::Invalid("rendered page exceeds display bounds".into()));
         }
-        while self.pages.len() >= MAX_DISPLAY_PAGES
-            || self.bytes.saturating_add(page.len()) > MAX_DISPLAY_BYTES
-        {
-            if let Some(previous) = self.pages.pop_front() {
-                self.bytes -= previous.len();
-            } else {
-                break;
-            }
+        let mut bytes = self.pages.iter().map(String::len).sum::<usize>() + page.len();
+        while self.pages.len() >= MAX_DISPLAY_PAGES || bytes > MAX_DISPLAY_BYTES {
+            bytes -= self.pages.pop_front().expect("admitted page fits an empty scrollback").len();
         }
-        self.bytes += page.len();
         self.pages.push_back(page);
         Ok(())
     }
 
     pub fn page(&self, back: usize) -> Option<&str> {
-        self.pages.len().checked_sub(back + 1)
-            .and_then(|index| self.pages.get(index))
-            .map(String::as_str)
+        let index = self.pages.len().checked_sub(back.checked_add(1)?)?;
+        self.pages.get(index).map(String::as_str)
     }
 }
 
@@ -88,7 +80,7 @@ pub async fn dispatch(
             let control = validate_observe_request(&request)?;
             api.authorize_operation_control(&control).await?;
             let response = api.observe(request.clone()).await?;
-            validate_operation_status(&request, &response)?;
+            validate_operation_status(&request.operation_id, request.owner.as_ref(), &response)?;
             Ok(Some(Response::Status(response)))
         }
         Request::Cancel(request) => {

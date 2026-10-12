@@ -227,34 +227,6 @@ impl Collection {
             .collect()
     }
 
-    fn register(self: &Arc<Self>, held: Held) -> Hold {
-        let mut holds = self.holds.lock().unwrap_or_else(PoisonError::into_inner);
-        let id = if let Some(id) = holds.free {
-            let slot = holds.slots.get_mut(id).expect("free hold slot exists");
-            let next = slot.next_free.take();
-            slot.held = Some(held);
-            holds.free = next;
-            id
-        } else {
-            let id = holds.slots.len();
-            holds.slots.push(Slot { held: Some(held), next_free: None });
-            id
-        };
-        Hold { collection: Arc::clone(self), id, slot_quota: KernelOwnedAllocation::Standalone }
-    }
-
-    fn register_measured(
-        self: &Arc<Self>,
-        held: Held,
-        allocations: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Hold, crate::FsError> {
-        let mut accounting = KernelAccounting::borrowed_standalone(allocations, work, budget, cancellation);
-        self.register_with_accounting(held, &mut accounting)
-    }
-
     fn register_with_accounting(
         self: &Arc<Self>,
         held: Held,
@@ -338,22 +310,7 @@ impl Collection {
             holds.slots.push(Slot { held: Some(held), next_free: None });
             id
         };
-        Ok(Hold { collection: Arc::clone(self), id, slot_quota })
-    }
-
-    pub(crate) fn hold_record_measured(
-        collection: Option<&Arc<Self>>,
-        record: crate::kernel::FileRecord,
-        config: crate::model::VolumeConfig,
-        allocations: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Option<Hold>, crate::FsError> {
-        let mut accounting = KernelAccounting::borrowed_standalone(
-            allocations, work, budget, cancellation,
-        );
-        Self::hold_record_with_accounting(collection, record, config, &mut accounting)
+        Ok(Hold { collection: Arc::clone(self), id, _slot_quota: slot_quota })
     }
 
     pub(crate) fn hold_record_with_accounting(
@@ -368,15 +325,7 @@ impl Collection {
         )).transpose()
     }
 
-    /// Keeps what a detached file's `record` reaches for as long as the
-    /// returned hold lives.
-    pub(crate) fn hold_record(
-        collection: Option<&Arc<Self>>,
-        record: crate::kernel::FileRecord,
-        config: crate::model::VolumeConfig,
-    ) -> Option<Hold> {
-        collection.map(|collection| collection.register(Held::Record { record, config }))
-    }
+
 }
 
 impl Collecting {
@@ -423,7 +372,7 @@ pub(crate) struct Hold {
     collection: Arc<Collection>,
     id: usize,
     // Last: Drop removes the actual held payload before this exclusive quota.
-    slot_quota: KernelOwnedAllocation,
+    _slot_quota: KernelOwnedAllocation,
 }
 
 impl Hold {
@@ -455,7 +404,7 @@ impl Drop for Hold {
 }
 
 /// A checkout's base and working roots, which a collection treats as live.
-/// They change only through [`Self::set`] and [`Self::set_working`], which
+/// They change only through [`Self::set_prepared_root`] and [`Self::set_working`], which
 /// keep the registration exact.
 pub(crate) struct CheckoutRoots {
     base: ObjectId,
@@ -467,29 +416,6 @@ pub(crate) struct CheckoutRoots {
 }
 
 impl CheckoutRoots {
-    pub(crate) fn new(
-        collection: Option<&Arc<Collection>>,
-        config: crate::model::VolumeConfig,
-        base: ObjectId,
-        working: GenerationRoot,
-    ) -> Self {
-        let hold = collection.map(|collection| {
-            collection.register(Held::Checkout(HeldRoots {
-                base,
-                working: working.clone(),
-                config,
-                control: crate::kernel::ProofDataClaim::default(),
-            }))
-        });
-        Self {
-            base,
-            working,
-            config,
-            hold,
-            working_control: crate::kernel::ProofDataClaim::default(),
-        }
-    }
-
     pub(crate) fn new_measured(
         collection: Option<&Arc<Collection>>,
         config: crate::model::VolumeConfig,
@@ -544,17 +470,6 @@ impl CheckoutRoots {
         Ok(Self {
             base, working: working.0, config, hold, working_control: working.1,
         })
-    }
-
-    pub(crate) fn replicate_measured(
-        &self,
-        allocations: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Self, crate::FsError> {
-        let mut accounting = KernelAccounting::borrowed_standalone(allocations, work, budget, cancellation);
-        self.replicate_with_accounting(&mut accounting, None)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -681,22 +596,6 @@ impl CheckoutRoots {
     /// The generation the checkout is based on.
     pub(crate) const fn base(&self) -> ObjectId {
         self.base
-    }
-
-    /// The same roots, registered again for a replica of the checkout.
-    pub(crate) fn replicate(&self) -> Self {
-        Self::new(
-            self.hold.as_ref().map(|hold| &hold.collection),
-            self.config,
-            self.base,
-            self.working.clone(),
-        )
-    }
-
-    /// Rebases the checkout onto `base` with the working tree `working`.
-    pub(crate) fn set(&mut self, base: ObjectId, working: GenerationRoot) {
-        self.base = base;
-        self.set_working(working);
     }
 
     /// Replaces the working tree.
@@ -920,9 +819,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = crate::CancellationToken::new();
         let fs = crate::Fs::memory();
-        let workspace = fs.create_workspace("registered-collection-root-custody").await?;
+        let workspace = fs.create_workspace("registered-collection-root-custody", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/seed", "body").await?;
-        let checkout = workspace.checkout_measured(
+        let checkout = workspace.checkout(
             crate::model::GenerationSelector::Head,
             crate::model::CheckoutMode {
                 access: crate::model::AccessMode::ReadWrite,
@@ -933,7 +832,7 @@ mod tests {
         ).await?.value;
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        let producer = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+        let producer = checkout.private_candidate(&original, &cancellation)?;
         let custody = producer.private_control_custody();
         let meter = original.native_read_meter();
         let baseline = original.live_allocation_bytes();
@@ -948,7 +847,7 @@ mod tests {
         assert_eq!(foreign_token.physical_retained_bytes(), 0);
         assert_eq!(original.live_allocation_bytes(), baseline);
         let collection = Arc::new(Collection::default());
-        let source = CheckoutRoots::new(Some(&collection), roots.config, roots.base, roots.working);
+        let source = CheckoutRoots::new_measured(Some(&collection), roots.config, roots.base, roots.working, &mut AllocationLedger::default(), &mut WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation)?;
         let cancelled = crate::CancellationToken::new();
         cancelled.cancel();
         let mut accounting = KernelAccounting::native(&original, &cancelled);
@@ -990,7 +889,7 @@ mod tests {
         assert_eq!(original.live_allocation_bytes(), baseline,
             "root buffers and exclusive slot quota retire but cached slots remain");
         let Held::Checkout(empty) = checkout_hold() else { unreachable!() };
-        let empty = CheckoutRoots::new(None, empty.config, empty.base, empty.working);
+        let empty = CheckoutRoots::new_measured(None, empty.config, empty.base, empty.working, &mut AllocationLedger::default(), &mut WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation)?;
         assert!(empty.same_original_scope(meter), "actual zero-capacity buffers require no allocation tag");
         Ok(())
     }
@@ -1002,15 +901,11 @@ mod tests {
         let cancellation = crate::CancellationToken::new();
         let Held::Checkout(mut roots) = checkout_hold() else { unreachable!() };
         roots.working.parents = vec![crate::GenerationId::new(object(7).digest)];
-        let original = CheckoutRoots::new(
-            Some(&collection), roots.config, roots.base, roots.working,
-        );
+        let original = CheckoutRoots::new_measured(Some(&collection), roots.config, roots.base, roots.working, &mut AllocationLedger::default(), &mut WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation)?;
         let custody = Arc::new(crate::kernel::ProofDataCustody::default());
         let mut allocations = AllocationLedger::default();
         let mut work = WorkCounters::default();
-        let mut measured = original.replicate_measured(
-            &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
-        )?;
+        let mut measured = original.replicate_with_accounting(&mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), None)?;
         measured.attach_control_custody(&custody);
         let (copied_held, held_bytes) = {
             let holds = collection.holds.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1029,9 +924,7 @@ mod tests {
         assert!(collection.holds.lock().unwrap_or_else(PoisonError::into_inner).slots.capacity() > 0,
             "freed per-handle buffers do not destroy or adopt cached slot backing");
         drop(copied_held);
-        let mut measured = original.replicate_measured(
-            &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
-        )?;
+        let mut measured = original.replicate_with_accounting(&mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation), None)?;
         measured.attach_control_custody(&custody);
         assert!(custody.physical_retained_bytes() > 0);
         measured.set_working(original.working.clone());
@@ -1049,17 +942,13 @@ mod tests {
         let cancellation = crate::CancellationToken::new();
         let mut work = WorkCounters::default();
         let mut allocations = AllocationLedger::default();
-        assert!(collection.register_measured(
-            checkout_hold(), &mut allocations, &mut work, WorkBudget::default(), &cancellation,
-        ).is_err());
+        assert!(collection.register_with_accounting(checkout_hold(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::default(), &cancellation)).is_err());
         assert!(collection.held().is_empty());
         assert_eq!(work, WorkCounters::default());
 
         let mut work = WorkCounters::default();
         let mut allocations = AllocationLedger::default();
-        let held = collection.register_measured(
-            checkout_hold(), &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
-        )?;
+        let held = collection.register_with_accounting(checkout_hold(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation))?;
         assert_eq!(collection.held().len(), 1);
         assert_eq!(work.allocation_operations, 1);
         assert_eq!(held.logical_owned_bytes(), crate::foundation::usize_to_u64(std::mem::size_of::<Slot>()));
@@ -1073,7 +962,7 @@ mod tests {
             if full {
                 break;
             }
-            extra.push(collection.register(checkout_hold()));
+            extra.push(collection.register_with_accounting(checkout_hold(), &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation))?);
         }
         let retained_roots = collection.held().len();
 
@@ -1081,9 +970,7 @@ mod tests {
         limited.bytes_copied = 0;
         let mut failed_work = WorkCounters::default();
         let mut allocations = AllocationLedger::default();
-        assert!(collection.register_measured(
-            checkout_hold(), &mut allocations, &mut failed_work, limited, &cancellation,
-        ).is_err());
+        assert!(collection.register_with_accounting(checkout_hold(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut failed_work, limited, &cancellation)).is_err());
         assert_eq!(collection.held().len(), retained_roots, "failed growth does not unregister old roots");
         assert_eq!(failed_work.allocation_operations, 1, "the attempted backing allocation remains measured");
         drop(held);
@@ -1094,9 +981,7 @@ mod tests {
         let mut allocations = AllocationLedger::default();
         let mut reuse_budget = WorkBudget::UNBOUNDED;
         reuse_budget.allocation_operations = 0;
-        let reused = collection.register_measured(
-            checkout_hold(), &mut allocations, &mut reused_work, reuse_budget, &cancellation,
-        )?;
+        let reused = collection.register_with_accounting(checkout_hold(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut reused_work, reuse_budget, &cancellation))?;
         assert_eq!(reused_work.allocation_operations, 0);
         assert_eq!(collection.held().len(), 1);
         drop(reused);

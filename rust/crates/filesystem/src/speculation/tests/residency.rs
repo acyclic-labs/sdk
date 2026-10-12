@@ -1,7 +1,8 @@
 use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
-use crate::storage::{ObjectId, ObjectKind, ObjectStore, object_digest};
+use crate::storage::{ObjectId, ObjectKind, object_digest};
 use crate::{CachedObjectStore, EmbeddedCapabilities, Fs, ObjectCacheOptions, WorkCounters};
 use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
@@ -10,13 +11,21 @@ fn generation(byte: u8) -> GenerationId {
     GenerationId::new(Digest::from_bytes([byte; 32]))
 }
 
-fn object(store: &MemoryObjectStore, byte: u8) -> Result<ObjectId, Box<dyn std::error::Error>> {
+async fn object(store: &MemoryObjectStore, byte: u8) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let bytes = OwnedBytes::from(vec![byte; 64]);
     let object_id = ObjectId {
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &bytes),
     };
-    ObjectStore::put(store, object_id, bytes, WorkBudget::UNBOUNDED)?;
+    {
+        let __object_args = (
+            object_id, bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object_id)
 }
 
@@ -38,8 +47,8 @@ fn candidate(
     }
 }
 
-#[test]
-fn option_validation_and_all_rejection_classes_are_total() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn option_validation_and_all_rejection_classes_are_total() -> Result<(), Box<dyn std::error::Error>>
 {
     let defaults = ResidencySpeculatorOptions::default();
     for invalid in [
@@ -92,7 +101,7 @@ fn option_validation_and_all_rejection_classes_are_total() -> Result<(), Box<dyn
     }
 
     let store = MemoryObjectStore::default();
-    let object_id = object(&store, 40)?;
+    let object_id = object(&store, 40).await?;
     let volume_id = VolumeId::from_bytes([41; 16]);
     let generation_id = generation(42);
     let mut engine = ResidencySpeculator::new(
@@ -133,12 +142,12 @@ fn option_validation_and_all_rejection_classes_are_total() -> Result<(), Box<dyn
     Ok(())
 }
 
-#[test]
-fn bounded_feedback_windows_discard_only_oldest_samples() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn bounded_feedback_windows_discard_only_oldest_samples() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let first = object(&store, 50)?;
-    let second = object(&store, 51)?;
+    let first = object(&store, 50).await?;
+    let second = object(&store, 51).await?;
     let volume_id = VolumeId::from_bytes([52; 16]);
     let generation_id = generation(53);
     let mut engine = ResidencySpeculator::new(
@@ -175,12 +184,12 @@ fn bounded_feedback_windows_discard_only_oldest_samples() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[test]
-fn admission_is_generation_fenced_bounded_adaptive_and_exact()
+#[tokio::test]
+async fn admission_is_generation_fenced_bounded_adaptive_and_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = object(&store, 1)?;
-    let second = object(&store, 2)?;
+    let first = object(&store, 1).await?;
+    let second = object(&store, 2).await?;
     let volume_id = VolumeId::from_bytes([3; 16]);
     let current = generation(4);
     let options = ResidencySpeculatorOptions {
@@ -253,12 +262,12 @@ fn admission_is_generation_fenced_bounded_adaptive_and_exact()
     Ok(())
 }
 
-#[test]
-fn foreground_preemption_and_generation_replacement_terminalize_every_permit()
+#[tokio::test]
+async fn foreground_preemption_and_generation_replacement_terminalize_every_permit()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = object(&store, 1)?;
-    let second = object(&store, 2)?;
+    let first = object(&store, 1).await?;
+    let second = object(&store, 2).await?;
     let volume_id = VolumeId::from_bytes([3; 16]);
     let current = generation(4);
     let mut engine = ResidencySpeculator::new(
@@ -296,11 +305,11 @@ fn foreground_preemption_and_generation_replacement_terminalize_every_permit()
     Ok(())
 }
 
-#[test]
-fn execution_warms_the_same_authenticated_cache_without_retaining_a_second_body()
+#[tokio::test]
+async fn execution_warms_the_same_authenticated_cache_without_retaining_a_second_body()
 -> Result<(), Box<dyn std::error::Error>> {
     let backend = MemoryObjectStore::default();
-    let object_id = object(&backend, 7)?;
+    let object_id = object(&backend, 7).await?;
     let store = CachedObjectStore::new(
         backend,
         ObjectCacheOptions {
@@ -327,26 +336,24 @@ fn execution_warms_the_same_authenticated_cache_without_retaining_a_second_body(
         return Err("candidate was not admitted".into());
     };
     let cancellation = CancellationToken::new();
-    let first = crate::async_storage::poll_ready(execute_residency(
+    let first = (execute_residency(
         &engine,
         &store,
         permit,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory speculation suspended")??;
+    )).await?;
     assert_eq!(first.value, 64);
     assert_eq!(first.work.backend_read_operations, 1);
     engine.finish(permit.candidate().operation_id, true)?;
 
-    let stale = crate::async_storage::poll_ready(execute_residency(
+    let stale = (execute_residency(
         &engine,
         &store,
         permit,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("stale speculation suspended")?
+    )).await
     .err()
     .ok_or("stale speculation executed")?;
     assert!(matches!(
@@ -355,13 +362,19 @@ fn execution_warms_the_same_authenticated_cache_without_retaining_a_second_body(
     ));
     assert_eq!(*stale.work, WorkCounters::default());
 
-    let warm = crate::async_storage::poll_ready(store.read(
+    let warm = (async {
+        let __object_args = (
         object_id,
         64,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("warm read suspended")??;
+    );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(warm.work.backend_read_operations, 0);
     assert_eq!(warm.work.object_bytes_read, 0);
     assert_eq!(store.stats()?.hits, 1);
@@ -370,11 +383,11 @@ fn execution_warms_the_same_authenticated_cache_without_retaining_a_second_body(
     Ok(())
 }
 
-#[test]
-fn every_accounting_failure_rolls_back_the_complete_residency_transition()
+#[tokio::test]
+async fn every_accounting_failure_rolls_back_the_complete_residency_transition()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let object_id = object(&store, 11)?;
+    let object_id = object(&store, 11).await?;
     let volume_id = VolumeId::from_bytes([3; 16]);
     let generation_id = generation(4);
     let mut engine = ResidencySpeculator::new(
@@ -432,11 +445,11 @@ fn every_accounting_failure_rolls_back_the_complete_residency_transition()
     Ok(())
 }
 
-#[test]
-fn cancelled_residency_execution_is_inert_until_explicit_terminal_feedback()
+#[tokio::test]
+async fn cancelled_residency_execution_is_inert_until_explicit_terminal_feedback()
 -> Result<(), Box<dyn std::error::Error>> {
     let backend = MemoryObjectStore::default();
-    let object_id = object(&backend, 12)?;
+    let object_id = object(&backend, 12).await?;
     let store = CachedObjectStore::new(backend, ObjectCacheOptions::default())?;
     let volume_id = VolumeId::from_bytes([3; 16]);
     let generation_id = generation(4);
@@ -456,14 +469,13 @@ fn cancelled_residency_execution_is_inert_until_explicit_terminal_feedback()
     };
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = crate::async_storage::poll_ready(execute_residency(
+    let failure = (execute_residency(
         &engine,
         &store,
         permit,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("cancelled residency suspended")?
+    )).await
     .err()
     .ok_or("cancelled residency executed")?;
     assert!(matches!(
@@ -478,11 +490,11 @@ fn cancelled_residency_execution_is_inert_until_explicit_terminal_feedback()
     Ok(())
 }
 
-#[test]
-fn embedded_fs_executes_residency_against_its_one_shared_object_backend()
+#[tokio::test]
+async fn embedded_fs_executes_residency_against_its_one_shared_object_backend()
 -> Result<(), Box<dyn std::error::Error>> {
     let backend = Arc::new(MemoryObjectStore::default());
-    let object_id = object(&backend, 13)?;
+    let object_id = object(&backend, 13).await?;
     let store = CachedObjectStore::new(backend, ObjectCacheOptions::default())?;
     let fs = Fs::new(
         MemoryAuthorityStore::default(),
@@ -510,13 +522,12 @@ fn embedded_fs_executes_residency_against_its_one_shared_object_backend()
         Some(permit)
     );
     let cancellation = CancellationToken::new();
-    let receipt = crate::async_storage::poll_ready(fs.execute_residency(
+    let receipt = (fs.execute_residency(
         &engine,
         permit,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("embedded residency suspended")??;
+    )).await?;
     assert_eq!(receipt.value, 64);
     assert_eq!(store.stats()?.resident_entries, 1);
     Ok(())

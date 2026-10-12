@@ -63,11 +63,11 @@ if (unexpected.length > 0 || (packageArgument && !Object.hasOwn(packages, packag
 
 const cargo = cargoArgument || process.env.ACYCLIC_CARGO_BIN || "cargo";
 const capture = (executable, args) => {
-  const result = spawnSync(executable, args, { cwd: root, encoding: "utf8" });
+  const result = spawnSync(executable, args, { cwd: root, encoding: "utf8", windowsHide: true });
   return result.error || result.status !== 0 ? undefined : result.stdout.trim();
 };
 const run = (executable, args) => {
-  const result = spawnSync(executable, args, { cwd: root, stdio: "inherit" });
+  const result = spawnSync(executable, args, { cwd: root, stdio: "inherit", windowsHide: true });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${executable} exited with ${result.status ?? "unknown"}`);
 };
@@ -76,15 +76,13 @@ const run = (executable, args) => {
 const pinned = readFileSync(resolve(root, "Cargo.toml"), "utf8").match(/^wasm-bindgen = "=([^"]+)"/m)?.[1];
 if (!pinned) throw new Error("Cargo.toml no longer pins wasm-bindgen to an exact version");
 const expectedVersion = `wasm-bindgen ${pinned}`;
+const cargoHome = resolve(process.env.CARGO_HOME ?? join(homedir(), ".cargo"));
 const resolveWasmBindgen = () => {
   const explicit = wasmBindgenArgument || process.env.ACYCLIC_WASM_BINDGEN_BIN;
   if (explicit) return explicit;
   if (capture("wasm-bindgen", ["--version"]) === expectedVersion) return "wasm-bindgen";
-  const script = resolve(root, "scripts", "ensure-wasm-bindgen.sh");
-  const gitBash = process.platform === "win32" ? capture("cygpath", ["-w", "/bin/bash.exe"]) : undefined;
-  return gitBash
-    ? capture(gitBash, [capture("cygpath", ["-u", script]) ?? script])
-    : capture("bash", [script.replaceAll("\\", "/")]);
+  if (process.platform === "win32") return resolve(cargoHome, "bin", "wasm-bindgen.exe");
+  return capture("bash", [resolve(root, "scripts", "ensure-wasm-bindgen.sh")]);
 };
 const wasmBindgen = resolveWasmBindgen();
 if (!wasmBindgen || capture(wasmBindgen, ["--version"]) !== expectedVersion) {
@@ -96,7 +94,6 @@ if (!metadata) throw new Error("cargo metadata failed");
 const targetRoot = JSON.parse(metadata).target_directory;
 
 const script = readFileSync(fileURLToPath(import.meta.url));
-const cargoHome = resolve(process.env.CARGO_HOME ?? join(homedir(), ".cargo"));
 
 for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) {
   let { cargo: selection, artifact, outName, postprocess, targetDirectory } = packages[name];

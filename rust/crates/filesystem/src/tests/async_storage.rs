@@ -1,9 +1,8 @@
 use super::*;
-use acyclic_stream::OwnedBytes;
 use crate::foundation::Digest;
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::storage::{AuthorityStoreError, ObjectKind, ObjectStoreError, object_digest};
-use std::task::{Context, Poll, Waker};
+use acyclic_stream::OwnedBytes;
 
 enum ScriptedRead {
     CancelAfterSuccess(CancellationToken),
@@ -23,27 +22,41 @@ impl ScriptedAsyncObjectStore {
 }
 
 impl AsyncObjectStore for ScriptedAsyncObjectStore {
-    fn put(
+    async fn put(
         &self,
         _object_id: ObjectId,
         _bytes: OwnedBytes,
-        _budget: WorkBudget,
-        _cancellation: &CancellationToken,
-    ) -> impl Future<Output = ObjectResult<()>> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let _budget = context.work.remaining(context.budget)?;
+        let _cancellation = context.cancellation;
+        let result = ({
         std::future::ready(Self::unsupported())
+    }).await;
+        context.accept(result)
     }
 
-    fn read(
+    async fn read(
         &self,
         _object_id: ObjectId,
         _maximum_bytes: u64,
-        _budget: WorkBudget,
-        _cancellation: &CancellationToken,
-    ) -> impl Future<Output = ObjectResult<ObjectRead>> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let _budget = context.work.remaining(context.budget)?;
+        let _cancellation = context.cancellation;
+        let result = ({
         let result = match &self.read {
             ScriptedRead::CancelAfterSuccess(cancellation) => {
                 cancellation.cancel();
-                Ok(crate::storage::ObjectReceipt {
+                Ok(crate::OperationReceipt {
                     value: ObjectRead {
                         bytes: OwnedBytes::from_static(b"owned"),
                         retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 5 },
@@ -65,34 +78,48 @@ impl AsyncObjectStore for ScriptedAsyncObjectStore {
             )),
         };
         std::future::ready(result)
+    })
+        .await;
+        context.accept(result)
     }
 
-    fn read_many(
+    async fn read_many(
         &self,
         _requests: &[ObjectReadRequest],
-        _budget: WorkBudget,
-        _cancellation: &CancellationToken,
-    ) -> impl Future<Output = ObjectResult<Vec<ObjectRead>>> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let _budget = context.work.remaining(context.budget)?;
+        let _cancellation = context.cancellation;
+        let result = ({
         std::future::ready(Self::unsupported())
+    }).await;
+        context.accept(result).map(|values| (values, None))
     }
 
-    fn contains(
+    async fn contains(
         &self,
         _object_id: ObjectId,
-        _budget: WorkBudget,
-        _cancellation: &CancellationToken,
-    ) -> impl Future<Output = ObjectResult<bool>> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let _budget = context.work.remaining(context.budget)?;
+        let _cancellation = context.cancellation;
+        let result = ({
         std::future::ready(Self::unsupported())
+    }).await;
+        context.accept(result)
     }
 }
 
-#[test]
-fn poll_ready_reports_an_actual_suspension() {
-    assert!(poll_ready(std::future::pending::<()>()).is_none());
-}
-
-#[test]
-fn sequential_async_batch_preserves_precancel_midbatch_and_nested_overflow_work()
+#[tokio::test]
+async fn sequential_async_batch_preserves_precancel_midbatch_and_nested_overflow_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let object_id = ObjectId {
         kind: ObjectKind::BlobChunk,
@@ -111,15 +138,19 @@ fn sequential_async_batch_preserves_precancel_midbatch_and_nested_overflow_work(
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let pre_cancelled = poll_ready(read_many_sequential_async(
+    let pre_cancelled = {
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled);
+        let result = read_many_sequential(
         &ScriptedAsyncObjectStore {
             read: ScriptedRead::FailWithOverflowingWork,
         },
         &requests,
-        WorkBudget::UNBOUNDED,
-        &cancelled,
-    ))
-    .ok_or("pre-cancelled scripted batch suspended")?
+            &mut work,
+        )
+        .await
+        .map(|(values, _)| values);
+        work.receipt(result)
+    }
     .err()
     .ok_or("pre-cancelled scripted batch succeeded")?;
     assert!(matches!(pre_cancelled.error, ObjectStoreError::Cancelled));
@@ -129,66 +160,46 @@ fn sequential_async_batch_preserves_precancel_midbatch_and_nested_overflow_work(
     );
 
     let midbatch = CancellationToken::new();
-    let failure = poll_ready(read_many_sequential_async(
+    let failure = {
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &midbatch);
+        let result = read_many_sequential(
         &ScriptedAsyncObjectStore {
             read: ScriptedRead::CancelAfterSuccess(midbatch.clone()),
         },
         &requests,
-        WorkBudget::UNBOUNDED,
-        &midbatch,
-    ))
-    .ok_or("mid-batch cancellation suspended")?
+            &mut work,
+        )
+        .await
+        .map(|(values, _)| values);
+        work.receipt(result)
+    }
     .err()
     .ok_or("mid-batch cancellation succeeded")?;
     assert!(matches!(failure.error, ObjectStoreError::Cancelled));
     assert_eq!(failure.work.backend_read_operations, 1);
     assert!(failure.work.peak_allocation_bytes >= 5);
 
-    let overflow = poll_ready(read_many_sequential_async(
+    let overflow = {
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+        let result = read_many_sequential(
         &ScriptedAsyncObjectStore {
             read: ScriptedRead::FailWithOverflowingWork,
         },
         &requests[..1],
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("overflowing nested work suspended")?
+            &mut work,
+        )
+        .await
+        .map(|(values, _)| values);
+        work.receipt(result)
+    }
     .err()
     .ok_or("overflowing nested work succeeded")?;
     assert!(matches!(overflow.error, ObjectStoreError::Work(_)));
     Ok(())
 }
 
-#[test]
-fn cancelled_async_adapter_performs_zero_backend_work() -> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let token = CancellationToken::new();
-    token.cancel();
-    let object = ObjectId {
-        kind: ObjectKind::BlobChunk,
-        digest: object_digest(ObjectKind::BlobChunk, b"absent"),
-    };
-    let mut future = std::pin::pin!(AsyncObjectStore::contains(
-        &store,
-        object,
-        WorkBudget::UNBOUNDED,
-        &token,
-    ));
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
-    let Poll::Ready(result) = future.as_mut().poll(&mut context) else {
-        return Err("synchronous adapter unexpectedly remained pending".into());
-    };
-    let failure = result
-        .err()
-        .ok_or("cancelled asynchronous object probe unexpectedly succeeded")?;
-    assert!(matches!(failure.error, ObjectStoreError::Cancelled));
-    assert_eq!(*failure.work, crate::performance::WorkCounters::default());
-    Ok(())
-}
-
-#[test]
-fn explicitly_immediate_stores_expose_the_complete_async_contract()
+#[tokio::test]
+async fn memory_stores_expose_the_complete_async_contract()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let objects = MemoryObjectStore::default();
@@ -202,41 +213,65 @@ fn explicitly_immediate_stores_expose_the_complete_async_contract()
         kind: ObjectKind::BlobChunk,
         digest: object_digest(ObjectKind::BlobChunk, &second_bytes),
     };
-    poll_ready(AsyncObjectStore::put(
-        &objects,
-        first,
-        first_bytes.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("object put blocked")??;
-    poll_ready(AsyncObjectStore::put(
-        &objects,
-        second,
-        second_bytes.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("second object put blocked")??;
-    assert!(
-        poll_ready(AsyncObjectStore::contains(
-            &objects,
+    (async {
+        let __object_args = (
             first,
+            first_bytes.clone(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("object contains blocked")??
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = AsyncObjectStore::put(
+        &objects,
+            __object_args.0,
+            __object_args.1,
+            &mut __object_work,
+        )
+        .await;
+        __object_work.receipt(__object_result)
+    })
+    .await?;
+    (async {
+        let __object_args = (
+            second,
+            second_bytes.clone(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = AsyncObjectStore::put(
+        &objects,
+            __object_args.0,
+            __object_args.1,
+            &mut __object_work,
+        )
+        .await;
+        __object_work.receipt(__object_result)
+    }).await?;
+    assert!(
+        (async {
+            let __object_args = (first, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result =
+                AsyncObjectStore::contains(
+            &objects, __object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        }).await?
         .value
     );
     assert_eq!(
-        poll_ready(AsyncObjectStore::read(
+        (async {
+            let __object_args = (first, 5, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = AsyncObjectStore::read(
             &objects,
-            first,
-            5,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("object read blocked")??
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }).await?
         .value
         .bytes.as_ref(),
         first_bytes.as_ref()
@@ -251,44 +286,34 @@ fn explicitly_immediate_stores_expose_the_complete_async_contract()
             maximum_bytes: 5,
         },
     ];
-    let batched = poll_ready(AsyncObjectStore::read_many(
-        &objects,
-        &requests,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("object batch blocked")??;
+    let batched = (async {
+        let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::read_many(
+        &objects, __object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(batched.value.len(), 2);
-    let sequential = poll_ready(read_many_sequential_async(
-        &objects,
-        &requests,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("sequential object batch blocked")??;
+    let sequential = {
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let result = read_many_sequential(&objects, &requests, &mut work)
+            .await
+            .map(|(values, _)| values);
+        work.receipt(result)
+    }?;
     assert_eq!(sequential.value.len(), 2);
 
     let authorities = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([0x41; 16]);
-    let created = poll_ready(AsyncAuthorityStore::create_authority(
-        &authorities,
-        authority_id,
-        Epoch::GENESIS,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("authority creation blocked")??;
+    let created = (async { let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::create_authority(&authorities, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) }).await?;
     let CreateAuthorityOutcome::Created(head) = created.value else {
         return Err("authority unexpectedly existed".into());
     };
     assert_eq!(
-        poll_ready(AsyncAuthorityStore::head(
-            &authorities,
-            authority_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("authority head blocked")??
+        (async { let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::head(&authorities, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await?
         .value,
         head
     );
@@ -298,62 +323,25 @@ fn explicitly_immediate_stores_expose_the_complete_async_contract()
         fingerprint: Digest::from_bytes([0x43; 32]),
         payload: bytes::Bytes::from_static(b"payload"),
     };
-    let appended = poll_ready(AsyncAuthorityStore::compare_and_append(
-        &authorities,
-        authority_id,
-        Epoch::GENESIS,
-        head,
-        proposed,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("authority append blocked")??;
+    let appended = (async { let __authority_args = (authority_id, Epoch::GENESIS, head, proposed, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = AsyncAuthorityStore::compare_and_append(&authorities, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await?;
     assert!(matches!(appended.value, AppendOutcome::Committed(_)));
     assert_eq!(
-        poll_ready(AsyncAuthorityStore::replay(
-            &authorities,
-            authority_id,
-            Sequence::GENESIS,
-            ReplayLimit {
+        (async { let __authority_args = (authority_id, Sequence::GENESIS, ReplayLimit {
                 records: 1,
                 payload_bytes: 7,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("authority replay blocked")??
+            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = AsyncAuthorityStore::replay(&authorities, __authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await?
         .value
         .len(),
         1
     );
     assert!(
-        poll_ready(AsyncAuthorityStore::find_operation(
-            &authorities,
-            authority_id,
-            operation_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("operation lookup blocked")??
+        (async { let __authority_args = (authority_id, operation_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::find_operation(&authorities, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await?
         .value
         .is_some()
     );
-    let current = poll_ready(AsyncAuthorityStore::head(
-        &authorities,
-        authority_id,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("authority head before fence blocked")??
+    let current = (async { let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::head(&authorities, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await?
     .value;
-    let fenced = poll_ready(AsyncAuthorityStore::fence(
-        &authorities,
-        authority_id,
-        current,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("authority fence blocked")??;
+    let fenced = (async { let __authority_args = (authority_id, current, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::fence(&authorities, __authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await?;
     assert!(matches!(
         fenced.value,
         FenceOutcome::Advanced(head) if head.epoch.get() == 2
@@ -361,8 +349,8 @@ fn explicitly_immediate_stores_expose_the_complete_async_contract()
     Ok(())
 }
 
-#[test]
-fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_exact_work()
+#[tokio::test]
+async fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_exact_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancelled = CancellationToken::new();
     cancelled.cancel();
@@ -376,64 +364,20 @@ fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_exact_w
         payload: bytes::Bytes::from_static(b"cancelled"),
     };
     let authority_failures = [
-        poll_ready(AsyncAuthorityStore::create_authority(
-            &authority,
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        ))
-        .ok_or("cancelled authority create blocked")?
+        (async { let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancelled,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::create_authority(&authority, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) }).await
         .map(|_| ()),
-        poll_ready(AsyncAuthorityStore::head(
-            &authority,
-            authority_id,
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        ))
-        .ok_or("cancelled authority head blocked")?
+        (async { let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancelled,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::head(&authority, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await
         .map(|_| ()),
-        poll_ready(AsyncAuthorityStore::compare_and_append(
-            &authority,
-            authority_id,
-            Epoch::GENESIS,
-            head,
-            commit,
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        ))
-        .ok_or("cancelled authority append blocked")?
+        (async { let __authority_args = (authority_id, Epoch::GENESIS, head, commit, WorkBudget::UNBOUNDED, &cancelled,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = AsyncAuthorityStore::compare_and_append(&authority, crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await
         .map(|_| ()),
-        poll_ready(AsyncAuthorityStore::replay(
-            &authority,
-            authority_id,
-            Sequence::GENESIS,
-            ReplayLimit {
+        (async { let __authority_args = (authority_id, Sequence::GENESIS, ReplayLimit {
                 records: 1,
                 payload_bytes: 1,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        ))
-        .ok_or("cancelled authority replay blocked")?
+            }, WorkBudget::UNBOUNDED, &cancelled,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = AsyncAuthorityStore::replay(&authority, __authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await
         .map(|_| ()),
-        poll_ready(AsyncAuthorityStore::fence(
-            &authority,
-            authority_id,
-            head,
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        ))
-        .ok_or("cancelled authority fence blocked")?
+        (async { let __authority_args = (authority_id, head, WorkBudget::UNBOUNDED, &cancelled,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::fence(&authority, __authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await
         .map(|_| ()),
-        poll_ready(AsyncAuthorityStore::find_operation(
-            &authority,
-            authority_id,
-            operation_id,
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        ))
-        .ok_or("cancelled operation lookup blocked")?
+        (async { let __authority_args = (authority_id, operation_id, WorkBudget::UNBOUNDED, &cancelled,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::find_operation(&authority, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await
         .map(|_| ()),
     ];
     for failure in authority_failures {
@@ -452,39 +396,65 @@ fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_exact_w
         maximum_bytes: 9,
     };
     let object_failures = [
-        poll_ready(AsyncObjectStore::put(
+        (async {
+            let __object_args = (
+                object_id,
+                OwnedBytes::from_static(b"cancelled"),
+                WorkBudget::UNBOUNDED,
+                &cancelled,
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = AsyncObjectStore::put(
             &objects,
-            object_id,
-            OwnedBytes::from_static(b"cancelled"),
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        ))
-        .ok_or("cancelled object put blocked")?
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        })
+        .await
         .map(|_| ()),
-        poll_ready(AsyncObjectStore::read(
-            &objects,
-            object_id,
-            9,
+        (async {
+            let __object_args = (object_id, 9,
             WorkBudget::UNBOUNDED,
             &cancelled,
-        ))
-        .ok_or("cancelled object read blocked")?
+        );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = AsyncObjectStore::read(
+                &objects,
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }).await
         .map(|_| ()),
-        poll_ready(AsyncObjectStore::read_many(
-            &objects,
-            std::slice::from_ref(&request),
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        ))
-        .ok_or("cancelled object batch blocked")?
+        (async {
+            let __object_args = (
+                std::slice::from_ref(&request),
+                WorkBudget::UNBOUNDED,
+                &cancelled,
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result =
+                AsyncObjectStore::read_many(&objects, __object_args.0, &mut __object_work)
+                    .await
+                    .map(|(values, _allocation)| values);
+            __object_work.receipt(__object_result)
+        })
+        .await
         .map(|_| ()),
-        poll_ready(AsyncObjectStore::contains(
-            &objects,
-            object_id,
-            WorkBudget::UNBOUNDED,
+        (async {
+            let __object_args = (object_id, WorkBudget::UNBOUNDED,
             &cancelled,
-        ))
-        .ok_or("cancelled object probe blocked")?
+        );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result =
+                AsyncObjectStore::contains(&objects, __object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        }).await
         .map(|_| ()),
     ];
     for failure in object_failures {
@@ -494,43 +464,49 @@ fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_exact_w
     }
 
     let active = CancellationToken::new();
-    let empty = poll_ready(read_many_sequential_async(
+    let empty = {
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &active);
+        let result = read_many_sequential(
         &objects,
-        &[],
-        WorkBudget::UNBOUNDED,
-        &active,
-    ))
-    .ok_or("empty sequential batch blocked")?
+        &[], &mut work)
+            .await
+            .map(|(values, _)| values);
+        work.receipt(result)
+    }
     .err()
     .ok_or("empty sequential batch succeeded")?;
     assert!(matches!(empty.error, ObjectStoreError::Rejected(_)));
-    let missing = poll_ready(read_many_sequential_async(
+    let missing = {
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &active);
+        let result = read_many_sequential(
         &objects,
-        std::slice::from_ref(&request),
-        WorkBudget::UNBOUNDED,
-        &active,
-    ))
-    .ok_or("missing sequential batch blocked")?
+        std::slice::from_ref(&request), &mut work)
+            .await
+            .map(|(values, _)| values);
+        work.receipt(result)
+    }
     .err()
     .ok_or("missing sequential batch succeeded")?;
     assert!(matches!(missing.error, ObjectStoreError::Missing));
     let mut denied = WorkBudget::UNBOUNDED;
     denied.items_examined = 0;
-    let over_budget = poll_ready(read_many_sequential_async(
+    let over_budget = {
+        let mut work = crate::AuthorityWork::new(denied, &active);
+        let result = read_many_sequential(
         &objects,
-        std::slice::from_ref(&request),
-        denied,
-        &active,
-    ))
-    .ok_or("over-budget sequential batch blocked")?
+        std::slice::from_ref(&request), &mut work)
+            .await
+            .map(|(values, _)| values);
+        work.receipt(result)
+    }
     .err()
     .ok_or("over-budget sequential batch succeeded")?;
     assert!(matches!(over_budget.error, ObjectStoreError::Work(_)));
     Ok(())
 }
 
-#[test]
-fn default_guarded_fork_preserves_typed_guard_failure_and_retention_prefix()
+#[tokio::test]
+async fn default_guarded_fork_preserves_typed_guard_failure_and_retention_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let fork = WorkspaceForkCommit {
@@ -548,10 +524,10 @@ fn default_guarded_fork_preserves_typed_guard_failure_and_retention_prefix()
             payload: bytes::Bytes::from_static(b"retention"),
         },
     };
-    let baseline = poll_ready(append_first_record(
-        &MemoryAuthorityStore::default(), fork.retention, fork.retained.clone(),
-        WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("retention baseline suspended")??;
+    let baseline_store = MemoryAuthorityStore::default();
+    let mut baseline_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let result = crate::async_storage::first_record(&baseline_store, fork.retention, fork.retained.clone(), &mut baseline_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity));
+    let baseline = baseline_work.receipt(result)?;
     let guard_work = WorkCounters {
         backend_read_operations: 1,
         authority_bytes_read: 13,
@@ -566,24 +542,19 @@ fn default_guarded_fork_preserves_typed_guard_failure_and_retention_prefix()
         )))
     };
     let store = MemoryAuthorityStore::default();
-    let failure = poll_ready(AsyncAuthorityStore::commit_workspace_fork_guarded(
-        &store, fork.clone(), PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED, &cancellation, &mut guard,
-    )).ok_or("guarded fork suspended")?
+    let failure = (async { let __authority_args = (fork.clone(), PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, &mut guard,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::fork_workspace(&store, __authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut (&mut *__authority_args.4))).await.map_err(|error| error.into_error(crate::FsError::from)); __authority_work.receipt(__authority_result) }).await
         .err().ok_or("guarded fork ignored rejection")?;
     assert!(matches!(failure.error, crate::facade::FsError::WorkspaceDeleted));
     assert_eq!(*failure.work, baseline.work.checked_add(guard_work)?);
     assert_eq!(calls, 1);
-    let missing = poll_ready(AsyncAuthorityStore::head(
-        &store, fork.destination, WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("destination head suspended")?
+    let missing = (async { let __authority_args = (fork.destination, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::head(&store, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await
         .err().ok_or("guard rejection published destination")?;
     assert!(matches!(missing.error, AuthorityStoreError::Missing));
     Ok(())
 }
 
-#[test]
-fn default_guarded_fork_rejects_managed_permit_before_retention_or_guard()
+#[tokio::test]
+async fn default_guarded_fork_rejects_managed_permit_before_retention_or_guard()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryAuthorityStore::default();
     let cancellation = CancellationToken::new();
@@ -606,15 +577,11 @@ fn default_guarded_fork_rejects_managed_permit_before_retention_or_guard()
             value: (), work: WorkCounters::default(),
         }))
     };
-    let failure = poll_ready(AsyncAuthorityStore::commit_workspace_fork_guarded(
-        &store, fork.clone(),
-        PublicationPermit::Reservation {
+    let failure = (async { let __authority_args = (fork.clone(), PublicationPermit::Reservation {
             operation_id: [0xb5; 16],
             gate_tail: 1,
             expected: Head::genesis(Epoch::GENESIS),
-        },
-        WorkBudget::UNBOUNDED, &cancellation, &mut guard,
-    )).ok_or("managed fork rejection suspended")?
+        }, WorkBudget::UNBOUNDED, &cancellation, &mut guard,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::fork_workspace(&store, __authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut (&mut *__authority_args.4))).await.map_err(|error| error.into_error(crate::FsError::from)); __authority_work.receipt(__authority_result) }).await
         .err().ok_or("managed fork permit was silently stripped")?;
     assert!(matches!(
         failure.error,
@@ -623,9 +590,7 @@ fn default_guarded_fork_rejects_managed_permit_before_retention_or_guard()
     assert_eq!(*failure.work, WorkCounters::default());
     assert_eq!(calls, 0);
     for authority in [fork.retention, fork.destination] {
-        let failure = poll_ready(AsyncAuthorityStore::head(
-            &store, authority, WorkBudget::UNBOUNDED, &cancellation,
-        )).ok_or("rejected fork authority head suspended")?
+        let failure = (async { let __authority_args = (authority, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::head(&store, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).await
             .err().ok_or("managed rejection created authority")?;
         assert!(matches!(failure.error, AuthorityStoreError::Missing));
     }

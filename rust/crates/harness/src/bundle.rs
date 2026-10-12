@@ -5,10 +5,10 @@ use crate::{
     agent_loop::{AgentInput, AgentLoop, AgentRunOutput},
     context::ContextPipeline,
     conversation::Limits,
-    core::{ExtensionAdmission, OriginalExtensionBinding, Reducer},
-    durable_tool::{ResumableTool, ResumableToolRegistry},
+    core::{ExtensionAdmission, Reducer, SchemaRegistry},
+    durable_tool::ResumableToolRegistry,
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
-    extension::{ExtensionRuntime, NativeExtensionBundle},
+    extension::ExtensionRuntime,
     model::{Model, ModelProvider},
     runtime::{
         AgentHarness, Bindings, DurableTaskHost, ExecutionProvider, InteractionResolver,
@@ -44,16 +44,14 @@ pub struct HarnessBuilder {
     executor: Option<Arc<dyn Executor>>,
     agent_loop: Option<Arc<dyn AgentLoop>>,
     journal: Option<Arc<dyn ExecutionJournal>>,
-    model: Option<Model>,
-    provider: Option<Arc<dyn ModelProvider>>,
+    model: Option<(Model, Arc<dyn ModelProvider>)>,
     context: ContextPipeline,
     compaction: crate::context::CompactionPolicy,
     bindings: Bindings,
     capabilities: Vec<String>,
     limits: Limits,
     bound_scope: Option<RuntimeScope>,
-    extensions: Option<ExtensionAdmission>,
-    original_extensions: Option<OriginalExtensionBinding>,
+    original_extensions: Option<(Option<ExtensionAdmission>, SchemaRegistry)>,
     extension_runtime: Option<Arc<ExtensionRuntime>>,
 }
 
@@ -69,7 +67,6 @@ impl HarnessBuilder {
     pub fn bindings(mut self, value: Bindings) -> Self {
         self.capabilities = value.scope.grants().iter().map(str::to_owned).collect();
         self.limits = value.scope.limits();
-        self.extensions = value.scope.extensions().cloned();
         self.original_extensions = None;
         self.extension_runtime = value.scope.extension_runtime();
         self.bound_scope = Some(value.scope.clone());
@@ -108,8 +105,7 @@ impl HarnessBuilder {
     /// Selects one immutable model and its replaceable provider.
     #[must_use]
     pub fn model(mut self, model: Model, provider: Arc<dyn ModelProvider>) -> Self {
-        self.model = Some(model);
-        self.provider = Some(provider);
+        self.model = Some((model, provider));
         self
     }
 
@@ -125,14 +121,6 @@ impl HarnessBuilder {
     pub fn compaction(mut self, value: crate::context::CompactionPolicy) -> Self {
         self.compaction = value;
         self
-    }
-
-    /// Binds already captured declared instructions and skill metadata through the ordinary context pipeline.
-    pub fn declared_context(mut self, snapshot: crate::context::DiscoveredContext) -> Result<Self> {
-        self.context = self.context.with(Arc::new(
-            snapshot.stage(crate::context::ContextPlacement::Prepend)?,
-        ));
-        Ok(self)
     }
 
     /// Selects the versioned tool registry.
@@ -153,12 +141,6 @@ impl HarnessBuilder {
     pub fn resumable_tools(mut self, value: ResumableToolRegistry) -> Self {
         self.bindings.resumable_tools = value;
         self
-    }
-
-    /// Registers one pinned resumable tool without adding a live fallback.
-    pub fn resumable_tool(mut self, value: ResumableTool) -> Result<Self> {
-        self.bindings.resumable_tools.register(value)?;
-        Ok(self)
     }
 
     /// Selects pinned typed task definitions for the same composition.
@@ -282,12 +264,12 @@ impl HarnessBuilder {
                 "builder already captured its original extension selection".into(),
             ));
         }
-        let original = agent.original_extension_binding()?;
+        let original = (agent.extension_admission()?, agent.schemas().clone());
         if let Some(bound) = self.bound_scope.take() {
-            self.bound_scope = Some(bound.with_original_extensions(original.clone())?);
+            self.bound_scope = Some(bound.with_original_extensions(original)?);
+        } else {
+            self.original_extensions = Some(original);
         }
-        self.extensions = original.admission().cloned();
-        self.original_extensions = Some(original);
         Ok(self)
     }
 
@@ -298,24 +280,9 @@ impl HarnessBuilder {
         self
     }
 
-    /// Links a native bundle into this composition's complete binding surface.
-    pub fn extension_bundle(mut self, bundle: NativeExtensionBundle) -> Result<Self> {
-        let runtime = bundle.into_runtime();
-        if let Some(existing) = &self.extension_runtime
-            && !Arc::ptr_eq(existing, &runtime)
-        {
-            return Err(Error::Conflict(
-                "composition already has another extension runtime".into(),
-            ));
-        }
-        runtime.link_into_bindings(&mut self.bindings)?;
-        self.extension_runtime = Some(runtime);
-        Ok(self)
-    }
-
     /// Validates dependency exclusivity and constructs the immutable runtime binding.
     pub fn build(self) -> Result<HarnessBundle> {
-        self.limits.validate()?;
+        self.limits.validate(&mut None)?;
         let journal = self.journal;
         let name = self.name.unwrap_or_else(|| "harness".into());
         if name.trim().is_empty() {
@@ -323,18 +290,13 @@ impl HarnessBuilder {
         }
         let capabilities = Capabilities::new(self.capabilities);
         let scope = if let Some(bound) = self.bound_scope {
-            if bound.extensions() != self.extensions.as_ref() {
-                return Err(Error::Conflict(
-                    "bound scope extension selection cannot be changed".into(),
-                ));
-            }
             bound.narrow(capabilities.clone(), self.limits)?
         } else {
             let root = RuntimeScope::new(capabilities.clone(), self.limits)?;
             if let Some(original) = self.original_extensions {
                 root.with_original_extensions(original)?
             } else {
-                root.with_replayed_extensions(self.extensions)?
+                root.with_replayed_extensions(None)?
             }
         };
         let scope = if let Some(runtime) = self.extension_runtime {
@@ -353,42 +315,49 @@ impl HarnessBuilder {
                 move |context, input: AgentInput| component.run(context, input),
             )?)?;
         }
-        let tools = bindings.tools.clone();
-        let policy = bindings.policy.clone();
         let stock_task = self.executor.is_none() && agent_loop.is_none();
         let executor = if let Some(executor) = self.executor {
             Some(executor)
         } else if agent_loop.is_some() {
             None
         } else {
-            if journal.is_none() {
-                return Err(Error::Invalid(
-                    "execution journal binding is missing".into(),
-                ));
-            }
-            let model = self
+            let journal = journal.as_ref().ok_or_else(||
+                Error::Invalid("execution journal binding is missing".into()))?;
+            let (model, provider) = self
                 .model
-                .clone()
+                .as_ref()
                 .ok_or_else(|| Error::Invalid("model binding is missing".into()))?;
-            let provider = self
-                .provider
-                .clone()
-                .ok_or_else(|| Error::Invalid("model provider binding is missing".into()))?;
             if !capabilities.contains("model:generate") {
                 return Err(Error::Unauthorized(
                     "stock model loop requires model:generate".into(),
                 ));
             }
-            tools.definitions()?;
-            Some(Arc::new(
-                StockExecutor::new(model, provider, self.context.clone(), tools)
+            bindings.tools.definitions(None)?;
+            let executor = Arc::new(
+                StockExecutor::new(model.clone(), Arc::clone(provider), self.context.clone(), bindings.tools.clone())
                     .with_compaction_policy(self.compaction)
                     .with_limits(self.limits)
-                    .with_tool_authority(scope, policy)?,
-            ) as Arc<dyn Executor>)
+                    .with_tool_authority(scope, bindings.policy.clone())?,
+            ) as Arc<dyn Executor>;
+            let task_executor = Arc::clone(&executor);
+            let task_journal = Arc::clone(journal);
+            bindings.tasks.register(TaskDefinition::live(
+                "acyclic.stock_turn", "2", move |context, input: TurnInput| {
+                    let executor = Arc::clone(&task_executor);
+                    let journal = Arc::clone(&task_journal);
+                    async move {
+                        executor.execute_with_context(&context, input, journal.as_ref()).await
+                    }
+                },
+            )?)?;
+            Some(executor)
         };
-        register_stock_task(&mut bindings, stock_task, &executor, &journal)?;
-        let runtime = bind_runtime(bindings, self.model, self.provider, self.context)?;
+        let runtime = bindings.build()?;
+        let runtime = if let Some((model, provider)) = self.model {
+            runtime.bind_model(model, provider)?
+        } else {
+            runtime
+        }.bind_context(self.context);
         if executor.is_some() && journal.is_none() {
             return Err(Error::Invalid(
                 "execution journal binding is missing".into(),
@@ -410,62 +379,7 @@ impl HarnessBuilder {
     }
 }
 
-fn bind_runtime(
-    bindings: Bindings,
-    model: Option<Model>,
-    provider: Option<Arc<dyn ModelProvider>>,
-    context: ContextPipeline,
-) -> Result<Arc<AgentHarness>> {
-    let runtime = bindings.build()?;
-    let runtime = match (model, provider) {
-        (Some(model), Some(provider)) => runtime.bind_model(model, provider)?,
-        (None, None) => runtime,
-        _ => {
-            return Err(Error::Invalid(
-                "model and provider must be bound together".into(),
-            ));
-        }
-    };
-    Ok(runtime.bind_context(context))
-}
-
-fn register_stock_task(
-    bindings: &mut Bindings,
-    stock_task: bool,
-    executor: &Option<Arc<dyn Executor>>,
-    journal: &Option<Arc<dyn ExecutionJournal>>,
-) -> Result<()> {
-    if stock_task {
-        let executor = executor
-            .clone()
-            .ok_or_else(|| Error::Invalid("stock executor is missing".into()))?;
-        let journal = journal
-            .clone()
-            .ok_or_else(|| Error::Invalid("stock journal is missing".into()))?;
-        bindings.tasks.register(TaskDefinition::live(
-            "acyclic.stock_turn",
-            "2",
-            move |context, input: TurnInput| {
-                let executor = Arc::clone(&executor);
-                let journal = Arc::clone(&journal);
-                async move {
-                    executor
-                        .execute_with_context(&context, input, journal.as_ref())
-                        .await
-                }
-            },
-        )?)?;
-    }
-    Ok(())
-}
-
 impl HarnessBundle {
-    /// Starts a Rust-first composition using the same builder as local presets.
-    #[must_use]
-    pub fn builder() -> HarnessBuilder {
-        HarnessBuilder::new()
-    }
-
     /// Creates a new immutable view pinned to a later parent fork snapshot.
     pub fn at_parent_snapshot(&self, preparer: Arc<dyn crate::fork::ForkPreparer>) -> Result<Self> {
         let mut next = self.clone();
@@ -513,7 +427,7 @@ impl HarnessBundle {
                     "stock turn requires ordinary local task admission".into(),
                 ));
             };
-            return match handle.result_owned().await {
+            return match handle.result().await {
                 crate::Outcome::Succeeded(result) => result,
                 crate::Outcome::Failed { message } => Err(Error::Conflict(message)),
                 crate::Outcome::Cancelled => Err(Error::InteractionRejected(
@@ -549,8 +463,8 @@ impl HarnessBundle {
             return Err(Error::Invalid("agent attachments exceed limit".into()));
         }
         for attachment in &input.attachments {
-            attachment.validate()?;
-            self.limits.validate_file(&attachment.file)?;
+            attachment.validate(&mut None)?;
+            self.limits.validate_file(&attachment.file, &mut None)?;
             self.runtime.verify_readable_file(&attachment.file).await?;
         }
         let definition = self
@@ -568,8 +482,8 @@ impl HarnessBundle {
                 return Err(Error::Invalid("agent output exceeds limits".into()));
             }
             for attachment in &output.attachments {
-                attachment.validate()?;
-                self.limits.validate_file(&attachment.file)?;
+                attachment.validate(&mut None)?;
+                self.limits.validate_file(&attachment.file, &mut None)?;
                 self.runtime.verify_readable_file(&attachment.file).await?;
             }
         }
@@ -588,29 +502,6 @@ impl HarnessBundle {
         self.runtime.clone()
     }
 
-    /// Resolves a lost task admission acknowledgement by its original ID.
-    pub async fn reconcile_admission(
-        &self,
-        operation_id: crate::OperationId,
-    ) -> Result<Option<(crate::TaskId, crate::registry::ComponentIdentity)>> {
-        self.runtime.reconcile_admission(operation_id).await
-    }
-
-    /// Captures selected resources through the bound parent-controlled provider.
-    pub async fn prepare_fork(
-        &self,
-        request: crate::fork::ForkRequest,
-    ) -> Result<crate::fork::ForkReport> {
-        self.runtime.prepare_fork(request).await
-    }
-
-    /// Reconciles an uncertain preparation using its original full request.
-    pub async fn reconcile_fork(
-        &self,
-        request: crate::fork::ForkRequest,
-    ) -> Result<Option<crate::fork::ForkReport>> {
-        self.runtime.reconcile_fork(request).await
-    }
 }
 
 #[cfg(test)]
@@ -733,7 +624,7 @@ mod tests {
             serde_json::from_str(include_str!("../fixtures/v2/fork-request.json"))
                 .map_err(|error: serde_json::Error| Error::Invalid(error.to_string()))?;
         assert!(matches!(
-            bundle.prepare_fork(request).await,
+            bundle.runtime().prepare_fork(request).await,
             Err(Error::Conflict(_))
         ));
         let parent = crate::core::Authority {
@@ -933,10 +824,7 @@ mod tests {
             }))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: crate::model::ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+        fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             async {
                 Err(Error::Unsupported(
@@ -966,7 +854,9 @@ mod tests {
         }
     }
     impl ToolProjection for ForbiddenStockTools {
-        fn project(&self, _: &ToolInvocation, _: &ToolResult) -> Result<Value> {
+        fn project(&self, _: &ToolInvocation, _: &ToolResult,
+            work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+            self.supports_native_projection(work)?;
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Err(Error::Unsupported("stock tool projection forbidden".into()))
         }
@@ -986,16 +876,16 @@ mod tests {
 
         let file = FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("example", "filesystem", "1")?,
-                "custom-turn",
+                ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?,
+                "custom-turn".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes(1_u128.to_be_bytes())),
-            )?,
-            "artifact.txt",
-            "version-1",
-            FileDescriptor::from_bytes(b"custom artifact", "text/plain")?,
-            "artifact.txt",
-        )?;
+             &mut None)?,
+            "artifact.txt".into(),
+            "version-1".into(),
+            FileDescriptor::from_bytes(b"custom artifact", "text/plain", &mut None)?,
+            "artifact.txt".into(),
+         &mut None)?;
         let inputs = (1_u32..=2)
             .map(|index| {
                 let content = ModelContent::Parts(vec![
@@ -1051,7 +941,7 @@ mod tests {
         let tools = Arc::new(ForbiddenStockTools::default());
         let bundle = HarnessBuilder::new()
             .model(
-                Model::new("example", "stock", "1", Value::Null)?,
+                Model::new("example".into(), "stock".into(), "1".into(), Value::Null)?,
                 model.clone(),
             )
             .tool(Tool {
@@ -1094,7 +984,7 @@ mod tests {
     #[tokio::test]
     async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
         assert!(HarnessBuilder::new().build().is_err());
-        let model = Model::new("example", "model", "1", Value::Null)?;
+        let model = Model::new("example".into(), "model".into(), "1".into(), Value::Null)?;
         struct Provider;
         impl ModelProvider for Provider {
             fn generate<'a>(
@@ -1105,12 +995,7 @@ mod tests {
             {
                 Box::pin(futures::stream::empty())
             }
-            fn reconcile<'a>(
-                &'a self,
-                _: crate::model::ModelAttempt,
-            ) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
-                async { Ok(None) }.boxed()
-            }
+
         }
         let bundle = HarnessBuilder::new()
             .name("test")
@@ -1151,7 +1036,7 @@ mod tests {
         let issuer =
             crate::core::AuthorityIssuer::new("builder-owner", [81; 32], authority.clone());
         let mut schemas = crate::core::SchemaRegistry::new();
-        schemas.register_configured(
+        schemas.register(
             "example.builder",
             1,
             json!({"type":"object"}),
@@ -1160,7 +1045,7 @@ mod tests {
             [],
             None,
         )?;
-        let agent = Reducer::new(authority, issuer.verifier(), schemas.clone());
+        let agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schemas.clone());
         let inspect = TaskDefinition::live("example.registry", "1", move |context, (): ()| {
             let expected = schemas.clone();
             async move {
@@ -1168,7 +1053,7 @@ mod tests {
                     .scope()
                     .extension_schema_registry()
                     .ok_or_else(|| Error::Storage("builder lost original registry".into()))?;
-                Ok(original == expected && context.scope().grants().contains("model:generate"))
+                Ok(original == &expected && context.scope().grants().contains("model:generate"))
             }
         })?;
         let captured = HarnessBuilder::new()
@@ -1292,8 +1177,10 @@ mod tests {
     struct EchoProjection;
 
     impl ToolProjection for EchoProjection {
-        fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(json!({"kind":"json","value":{"echo": result.value}}))
+        fn project(&self, _: &ToolInvocation, result: &ToolResult,
+            work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+            self.supports_native_projection(work)?;
+            Ok((json!({"kind":"json","value":{"echo": result.value}}), None))
         }
     }
 
@@ -1317,13 +1204,13 @@ mod tests {
 
     #[tokio::test]
     async fn individually_assembled_tool_preserves_canonical_result_and_projection() -> Result<()> {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         registry.register(example_tool())?;
-        assert_eq!(registry.definitions()?.len(), 1);
+        assert_eq!(registry.definitions(None)?.len(), 1);
         let tool = registry
-            .get("example.echo")
+            .get("example.echo", None)?
             .ok_or_else(|| Error::NotFound("example.echo".into()))?;
-        assert!(registry.get("acyclic.shell").is_none());
+        assert!(registry.get("acyclic.shell", None)?.is_none());
         let invocation = ToolInvocation {
             operation_id: crate::OperationId::new(),
             call_id: "echo".into(),
@@ -1333,8 +1220,8 @@ mod tests {
         let result = tool.executor.execute(invocation.clone()).await?;
         crate::tool::validate_value(&tool.definition.output_schema, &result.value, "echo result", None)?;
         assert_eq!(result.value, json!("original"));
-        let projection = tool.projection.project(&invocation, &result)?;
-        tool.definition.validate_projection(&projection)?;
+        let projection = tool.projection.project(&invocation, &result, None)?.0;
+        tool.definition.validate_projection(&projection, crate::conversation::Limits::default(), None)?;
         assert_eq!(
             projection,
             json!({"kind":"json","value":{"echo":"original"}})

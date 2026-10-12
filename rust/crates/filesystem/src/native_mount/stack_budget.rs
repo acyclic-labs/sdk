@@ -223,7 +223,7 @@ async fn lazy_workspace(
     } else {
         FilesystemProfile::Posix
     };
-    let demand = NativeDemandSource::open(&source_root, profile, VolumeLimits::default(), None, None).await?;
+    let demand = NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()), profile, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let engine = Fs::local(LocalOptions::new(root.join("state"))).await?;
     let lazy = Arc::new(
         LazyWorkspace::attach(
@@ -236,11 +236,9 @@ async fn lazy_workspace(
     );
     let checkout = lazy
         .workspace()
-        .engine_checkout(
+        .checkout(
             GenerationSelector::Head,
-            CheckoutMode::tracking_transaction(),
-        )
-        .await?;
+            CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let config = checkout.volume_config();
     let authored = Arc::new(CheckoutMountSource::new(
         Arc::new(SharedCheckout::with_publication(
@@ -273,17 +271,17 @@ fn measure_common(view: &dyn MountFilesystem, measurements: &mut Measurements) -
         measurements.measure("read-pinned", || view.read_range(&read, 0, CONTENT))?;
     }
     measurements.measure("create", || {
-        view.create_file(&path("created.txt"), FileMetadata::default())
+        view.create_file(&path("created.txt"), FileMetadata::default(), None, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
     })?;
     let created = view.open_file(&path("created.txt"))?;
     measurements.measure("write", || {
         created.write_range(0, Bytes::from_static(b"written"))
     })?;
     measurements.measure("mkdir", || {
-        view.create_directory(&path("made"), FileMetadata::default())
+        view.create_directory(&path("made"), FileMetadata::default(), &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
     })?;
     measurements.measure("rename", || {
-        view.rename(&path("created.txt"), &path("made/created.txt"), false)
+        view.rename(&path("created.txt"), &path("made/created.txt"), false, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
     })?;
     measurements.measure("write-existing", || {
         view.open_file(&path("write.txt"))?
@@ -295,18 +293,18 @@ fn measure_common(view: &dyn MountFilesystem, measurements: &mut Measurements) -
         .ok_or(MountSourceError::NotFound)?
         .metadata;
     measurements.measure("setattr-existing", || {
-        view.set_attributes(&attributes, metadata, Some(1))
+        view.set_attributes(&attributes, metadata, Some(1), &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
     })?;
     measurements.measure("rename-existing", || {
-        view.rename(&path("rename.txt"), &path("renamed.txt"), false)
+        view.rename(&path("rename.txt"), &path("renamed.txt"), false, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
     })?;
-    measurements.measure("remove-existing", || view.remove(&path("remove.txt"), None))?;
+    measurements.measure("remove-existing", || view.remove(&path("remove.txt"), None, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?))?;
     measurements.measure("lookup-deep", || view.lookup(&path(&deep("read.txt"))))?;
     measurements.measure("write-deep", || {
         view.open_file(&path(&deep("write.txt")))?
             .write_range(0, Bytes::from_static(b"written"))
     })?;
-    measurements.measure("flush", || view.flush())?;
+    measurements.measure("flush", || view.flush(&crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?))?;
     Ok(())
 }
 
@@ -356,7 +354,7 @@ const BUDGETS: &[Budget] = &[
 async fn lazy_view_callbacks_fit_their_stack_budgets() -> TestResult {
     let root = tempfile::tempdir()?;
     let (lazy, authored) = lazy_workspace(root.path()).await?;
-    let view = LazyMountSource::new(lazy, authored, "/".to_owned())?;
+    let view = { super::adapter::CallbackRuntime::create()?; let cancellation = authored.cancellation().clone(); let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation); LazyMountSource::new(lazy, authored, "/".to_owned(), super::adapter::NativeDemandCarrier::Borrowed(&mut work), None) }?;
     let mut measurements = Measurements::new("lazy", BUDGETS);
     measure_common(&view, &mut measurements)?;
     measurements.assert_within_budgets();
@@ -377,10 +375,10 @@ async fn checkout_callbacks_fit_their_stack_budgets() -> TestResult {
         for component in parent.components() {
             directory = directory.child(component.clone());
             if authored.lookup(&directory)?.is_none() {
-                authored.create_directory(&directory, FileMetadata::default())?;
+                super::adapter::boundary(authored.cancellation(), |work| authored.create_directory(&directory, FileMetadata::default(), work))?;
             }
         }
-        authored.create_file(&file, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(authored.cancellation(), |work| authored.create_file(&file, FileMetadata::default(), None, work))?;
         authored
             .open_file(&file)?
             .write_range(0, Bytes::from(vec![7_u8; CONTENT as usize]))?;

@@ -1,21 +1,19 @@
 use super::*;
-use crate::async_storage::poll_ready;
 use crate::cancellation::CancellationToken;
 use crate::facade::Fs;
 use crate::model::{CheckoutMode, GenerationSelector, Lifecycle, MutationMode, VolumeConfig};
 use crate::performance::WorkBudget;
 
-fn checkout() -> Result<crate::facade::MemoryCheckout, Box<dyn std::error::Error>> {
+async fn checkout() -> Result<crate::facade::MemoryCheckout, Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::default();
-    let volume = poll_ready(fs.create_volume(
+    let volume = (fs.create_volume(
         VolumeConfig::portable(Lifecycle::Ephemeral),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    )).await?
     .value;
-    Ok(poll_ready(volume.checkout(
+    Ok((volume.checkout(
         GenerationSelector::Head,
         CheckoutMode {
             access: AccessMode::ReadWrite,
@@ -24,46 +22,41 @@ fn checkout() -> Result<crate::facade::MemoryCheckout, Box<dyn std::error::Error
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    )).await?
     .value)
 }
 
-fn same_volume_checkouts(
+async fn same_volume_checkouts(
     count: usize,
 ) -> Result<Vec<crate::facade::MemoryCheckout>, Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::default();
-    let volume = poll_ready(fs.create_volume(
+    let volume = (fs.create_volume(
         VolumeConfig::portable(Lifecycle::Ephemeral),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    )).await?
     .value;
-    (0..count)
-        .map(|_| {
-            poll_ready(volume.checkout(
-                GenerationSelector::Head,
-                CheckoutMode {
-                    access: AccessMode::ReadWrite,
-                    consistency: ConsistencyMode::Pinned,
-                    mutations: MutationMode::PrivateOverlay,
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            ))
-            .ok_or_else(|| "checkout blocked".into())
-            .and_then(|result| result.map(|receipt| receipt.value).map_err(Into::into))
-        })
-        .collect()
+    let mut checkouts = Vec::new();
+    for _ in 0..count {
+        checkouts.push(volume.checkout(
+            GenerationSelector::Head,
+            CheckoutMode {
+                access: AccessMode::ReadWrite,
+                consistency: ConsistencyMode::Pinned,
+                mutations: MutationMode::PrivateOverlay,
+            },
+            WorkBudget::UNBOUNDED, &cancellation,
+        ).await?.value);
+    }
+    Ok(checkouts)
 }
 
-#[test]
-fn routing_owns_checkouts_and_translates_relative_paths() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn routing_owns_checkouts_and_translates_relative_paths() -> Result<(), Box<dyn std::error::Error>>
 {
-    let root = checkout()?;
-    let scratch = checkout()?;
+    let root = checkout().await?;
+    let scratch = checkout().await?;
     let root_volume = root.volume_id();
     let scratch_volume = scratch.volume_id();
     let mut view = MountedView::builder()
@@ -98,22 +91,22 @@ fn routing_owns_checkouts_and_translates_relative_paths() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[test]
-fn duplicate_and_missing_root_paths_are_rejected() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn duplicate_and_missing_root_paths_are_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let duplicate = MountedView::builder()
-        .mount("/", checkout()?)?
-        .mount("/", checkout()?);
+        .mount("/", checkout().await?)?
+        .mount("/", checkout().await?);
     assert!(matches!(duplicate, Err(MountError::DuplicatePath)));
     let missing_root = MountedView::builder()
-        .mount("/scratch", checkout()?)?
+        .mount("/scratch", checkout().await?)?
         .build();
     assert!(matches!(missing_root, Err(MountError::MissingRoot)));
     Ok(())
 }
 
-#[test]
-fn mounted_checkout_accessors_and_snapshot_are_exact() -> Result<(), Box<dyn std::error::Error>> {
-    let root = checkout()?;
+#[tokio::test]
+async fn mounted_checkout_accessors_and_snapshot_are_exact() -> Result<(), Box<dyn std::error::Error>> {
+    let root = checkout().await?;
     let expected_volume = root.volume_id();
     let expected_generation = root.generation_id();
     let mut view = MountedView::builder().mount("/", root)?.build()?;
@@ -158,8 +151,8 @@ fn mounted_checkout_accessors_and_snapshot_are_exact() -> Result<(), Box<dyn std
     Ok(())
 }
 
-#[test]
-fn mount_routing_failures_are_typed_and_non_mutating() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn mount_routing_failures_are_typed_and_non_mutating() -> Result<(), Box<dyn std::error::Error>> {
     let path = PortablePath::parse("/unmapped", crate::model::VolumeLimits::default())?;
     let mut empty: MountedView<crate::MemoryAuthorityStore, crate::MemoryObjectStore> =
         MountedView {
@@ -182,7 +175,7 @@ fn mount_routing_failures_are_typed_and_non_mutating() -> Result<(), Box<dyn std
         Err(MountError::UnmappedPath)
     );
     assert!(matches!(
-        MountedView::builder().mount("relative", checkout()?),
+        MountedView::builder().mount("relative", checkout().await?),
         Err(MountError::InvalidPath(_))
     ));
     for error in [
@@ -196,11 +189,11 @@ fn mount_routing_failures_are_typed_and_non_mutating() -> Result<(), Box<dyn std
     Ok(())
 }
 
-#[test]
-fn every_nested_route_and_rename_pair_is_deterministic_even_for_one_volume()
+#[tokio::test]
+async fn every_nested_route_and_rename_pair_is_deterministic_even_for_one_volume()
 -> Result<(), Box<dyn std::error::Error>> {
     let mount_paths = ["/", "/a", "/a/b", "/a/b/c", "/z"];
-    let checkouts = same_volume_checkouts(mount_paths.len())?;
+    let checkouts = same_volume_checkouts(mount_paths.len()).await?;
     let expected_volume = checkouts.first().ok_or("missing checkout")?.volume_id();
     let mut builder = MountedView::builder();
     for (path, checkout) in mount_paths.iter().zip(checkouts) {

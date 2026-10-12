@@ -1,186 +1,71 @@
 use super::{HostChange, HostChangeSink, NativeSourceWatch};
 use crate::native_host::HostRoot;
-use crate::demand::{DemandError, NativeSourceWork, SourceDemandReadWork};
+use crate::demand::{DemandError, NativeSourceWork};
 use crate::native_host::NativeHostWork;
-use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-#[test]
-fn callback_stop_guard_tracks_nested_owners_and_restores_after_panic() {
-    let first = super::Delivery::new(Arc::new(Recorded::default()));
-    let second = super::Delivery::new(Arc::new(Recorded::default()));
-    let unavailable = |delivery: &super::Delivery| {
-        assert!(matches!(delivery.ensure_stop_available(), Err(crate::demand::DemandError::WorkerUnavailable)));
-    };
-    first.callback(|| {
-        unavailable(&first);
-        assert!(second.ensure_stop_available().is_ok());
-        second.callback(|| {
-            unavailable(&first);
-            unavailable(&second);
-        });
-        unavailable(&first);
-        assert!(second.ensure_stop_available().is_ok());
-    });
-    assert!(first.ensure_stop_available().is_ok());
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        first.callback(|| panic!("a callback unwinds"));
-    }));
-    assert!(panic.is_err());
-    assert!(first.ensure_stop_available().is_ok());
-    assert!(second.ensure_stop_available().is_ok());
-}
-
 /// Every change delivered, in order.
 #[derive(Default)]
-struct Recorded(Mutex<Vec<RecordedChange>>);
-
-enum RecordedChange {
-    Host(HostChange),
-    #[cfg(windows)]
-    Wide { action: u32, path: Vec<u16> },
-}
+struct Recorded(Mutex<Vec<HostChange>>);
 
 impl HostChangeSink for Recorded {
-    fn logical_owned_bytes(&self) -> u64 { 0 } // This is a borrowed test consumer.
+    fn logical_owned_bytes(&self) -> u64 { 0 }
 
-    fn host_changed(
-        &self, changes: &[HostChange], work: &mut crate::demand::DemandWork,
-    ) -> Result<(), crate::demand::DemandError> {
-        for change in changes {
-            work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })?;
-            let payload = match change {
-                HostChange::Rebound(path) | HostChange::Altered(path) => path.as_os_str().len() as u64,
-                _ => 0,
-            };
-            self.push_measured(|| RecordedChange::Host(change.clone()), payload, work)?;
-        }
+    fn host_changed(&self, changes: &[HostChange], work: &mut crate::demand::DemandWork)
+        -> Result<(), DemandError>
+    {
+        work.check()?;
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).extend_from_slice(changes);
         Ok(())
     }
 
-    fn host_changed_with_native_work(
-        &self, changes: &[HostChange], work: &mut NativeSourceWork<'_>,
-    ) -> Result<(), DemandError> {
-        for change in changes {
-            work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })?;
-            let payload = match change {
-                HostChange::Rebound(path) | HostChange::Altered(path) => path.as_os_str().len() as u64,
-                _ => 0,
-            };
-            self.push_measured(|| RecordedChange::Host(change.clone()), payload, work)?;
-        }
+    fn host_changed_with_native_work(&self, changes: &[HostChange], work: &mut NativeSourceWork<'_>)
+        -> Result<(), DemandError>
+    {
+        work.check()?;
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).extend_from_slice(changes);
         Ok(())
     }
 
     #[cfg(windows)]
-    fn host_changed_wide(
-        &self, changes: &[super::HostChangeWide<'_>], work: &mut crate::demand::DemandWork,
-    ) -> Result<(), crate::demand::DemandError> {
-        for change in changes {
-            work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })?;
-            match change {
-                super::HostChangeWide::Path { action, path } => self.push_measured(
-                    || RecordedChange::Wide { action: *action, path: path.to_vec() },
-                    (path.len() as u64).checked_mul(2).ok_or(crate::WorkError::Overflow)?, work,
-                )?,
-                super::HostChangeWide::File(file) => self.push_measured(
-                    || RecordedChange::Host(HostChange::File(*file)), 0, work,
-                )?,
-                super::HostChangeWide::Everything => self.push_measured(
-                    || RecordedChange::Host(HostChange::Everything), 0, work,
-                )?,
-                super::HostChangeWide::Unconfirmed => self.push_measured(
-                    || RecordedChange::Host(HostChange::Unconfirmed), 0, work,
-                )?,
-            }
-        }
+    fn host_changed_wide(&self, changes: &[super::HostChangeWide<'_>], work: &mut crate::demand::DemandWork)
+        -> Result<(), DemandError>
+    {
+        work.check()?;
+        self.record_wide(changes);
         Ok(())
     }
 
     #[cfg(windows)]
-    fn host_changed_wide_with_native_work(
-        &self, changes: &[super::HostChangeWide<'_>], work: &mut NativeSourceWork<'_>,
-    ) -> Result<(), DemandError> {
-        for change in changes {
-            work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::default() })?;
-            match change {
-                super::HostChangeWide::Path { action, path } => self.push_measured(
-                    || RecordedChange::Wide { action: *action, path: path.to_vec() },
-                    (path.len() as u64).checked_mul(2).ok_or(crate::WorkError::Overflow)?, work,
-                )?,
-                super::HostChangeWide::File(file) => self.push_measured(
-                    || RecordedChange::Host(HostChange::File(*file)), 0, work,
-                )?,
-                super::HostChangeWide::Everything => self.push_measured(
-                    || RecordedChange::Host(HostChange::Everything), 0, work,
-                )?,
-                super::HostChangeWide::Unconfirmed => self.push_measured(
-                    || RecordedChange::Host(HostChange::Unconfirmed), 0, work,
-                )?,
-            }
-        }
+    fn host_changed_wide_with_native_work(&self, changes: &[super::HostChangeWide<'_>], work: &mut NativeSourceWork<'_>)
+        -> Result<(), DemandError>
+    {
+        work.check()?;
+        self.record_wide(changes);
         Ok(())
     }
 }
 
 impl Recorded {
-    fn push_measured<W: SourceDemandReadWork>(
-        &self, create: impl FnOnce() -> RecordedChange, payload: u64, work: &mut W,
-    ) -> Result<(), crate::demand::DemandError> {
-        let mut changes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let output = crate::WorkCounters { items_returned: 1, ..crate::WorkCounters::default() };
-        work.check()?;
-        work.admit(output)?;
-        let mut claimed = 0;
-        if changes.len() == changes.capacity() {
-            let count = changes.len().checked_add(1).ok_or(crate::WorkError::Overflow)?;
-            let old = (changes.capacity() as u64).checked_mul(size_of::<RecordedChange>() as u64)
-                .ok_or(crate::WorkError::Overflow)?;
-            let new = (count as u64).checked_mul(size_of::<RecordedChange>() as u64)
-                .ok_or(crate::WorkError::Overflow)?;
-            let copy = crate::WorkCounters { bytes_copied: (changes.len() as u64)
-                .checked_mul(size_of::<RecordedChange>() as u64).ok_or(crate::WorkError::Overflow)?,
-                ..crate::WorkCounters::default() };
-            work.admit(copy)?;
-            work.adopt(old)?;
-            if let Err(error) = work.allocate(new) { work.release(old)?; return Err(error); }
-            work.record(copy)?;
-            let mut replacement = Vec::with_capacity(count);
-            replacement.append(&mut changes);
-            drop(std::mem::replace(&mut *changes, replacement));
-            work.release(old)?;
-            claimed = new;
-        }
-        let result = (|| {
-            let copy = crate::WorkCounters { bytes_copied: payload, ..crate::WorkCounters::default() };
-            work.admit(copy)?;
-            let total = claimed.checked_add(payload).ok_or(crate::WorkError::Overflow)?;
-            work.allocate(payload)?;
-            claimed = total;
-            work.record(copy)?;
-            changes.push(create());
-            work.record(output)?;
-            Ok(())
-        })();
-        work.release(claimed)?;
-        result
+    #[cfg(windows)]
+    fn record_wide(&self, changes: &[super::HostChangeWide<'_>]) {
+        use std::os::windows::ffi::OsStringExt as _;
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).extend(changes.iter().map(|change| match change {
+            super::HostChangeWide::Path { action, path } => {
+                let path = PathBuf::from(std::ffi::OsString::from_wide(path));
+                if *action == 3 { HostChange::Altered(path) } else { HostChange::Rebound(path) }
+            }
+            super::HostChangeWide::File(file) => HostChange::File(*file),
+            super::HostChangeWide::Everything => HostChange::Everything,
+            super::HostChangeWide::Unconfirmed => HostChange::Unconfirmed,
+        }));
     }
 
     fn take(&self) -> Vec<HostChange> {
-        let recorded = std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner));
-        // Ordinary test presentation is deliberately outside the native producer.
-        recorded.into_iter().map(|change| match change {
-            RecordedChange::Host(change) => change,
-            #[cfg(windows)]
-            RecordedChange::Wide { action, path } => {
-                use std::os::windows::ffi::OsStringExt as _;
-                let path = PathBuf::from(std::ffi::OsString::from_wide(&path));
-                if action == 3 { HostChange::Altered(path) } else { HostChange::Rebound(path) }
-            }
-        }).collect()
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     fn reported(changes: &[HostChange], path: &Path) -> bool {
@@ -199,7 +84,6 @@ impl Recorded {
     }
 
     /// Whether a fence reported that changes may be undelivered, which it
-    /// does on macOS instead of proving their delivery.
     fn unconfirmed(changes: &[HostChange]) -> bool {
         #[cfg(any(target_os = "macos", windows))]
         return changes.contains(&HostChange::Unconfirmed);
@@ -212,8 +96,6 @@ impl Recorded {
 }
 
 /// Everything reported until `reported` holds of it, or ten seconds pass. A
-/// fence proves delivery on Linux and Windows; on macOS, where it reports
-/// everything instead, the reports themselves are waited for.
 fn reports_until(
     watch: &NativeSourceWatch,
     recorded: &Recorded,
@@ -231,7 +113,7 @@ fn reports_until(
 
 fn watch(root: &Path) -> Result<(NativeSourceWatch, Arc<Recorded>), Box<dyn std::error::Error>> {
     let recorded = Arc::new(Recorded::default());
-    let watch = NativeSourceWatch::start(&HostRoot::open(root)?, recorded.clone())?;
+    let watch = NativeSourceWatch::start(&HostRoot::open(root, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?, recorded.clone())?;
     Ok((watch, recorded))
 }
 
@@ -244,7 +126,6 @@ fn admit(watch: &NativeSourceWatch, directory: &str) {
 }
 
 /// Every kind of change beneath the root is reported under the names it
-/// touched.
 #[test]
 fn changes_beneath_the_root_are_reported_by_name() -> TestResult {
     let root = tempfile::tempdir()?;
@@ -292,7 +173,6 @@ fn changes_beneath_the_root_are_reported_by_name() -> TestResult {
 }
 
 /// A fence returns only once every change that completed before it has
-/// been delivered: creations, writes in place, and renames alike.
 #[test]
 fn a_fence_delivers_every_change_completed_before_it() -> TestResult {
     let root = tempfile::tempdir()?;
@@ -324,14 +204,13 @@ fn a_fence_delivers_every_change_completed_before_it() -> TestResult {
 }
 
 /// Changes the host could not queue are reported as everything, and the
-/// watch keeps reporting afterwards.
 #[cfg(any(target_os = "linux", windows))]
 #[test]
 fn lost_changes_are_reported_as_everything() -> TestResult {
     let root = tempfile::tempdir()?;
     let (watch, recorded) = watch(root.path())?;
     {
-        let _paused = watch.platform.paused();
+        let _paused = watch.paused();
         // More than the host queues: inotify's default queue holds 16384
         // events; a directory read buffer holds 64 KiB of reports.
         let flood = if cfg!(windows) { 3_000 } else { 20_000 };
@@ -355,7 +234,7 @@ fn lost_changes_are_reported_as_everything() -> TestResult {
     let root = tempfile::tempdir()?;
     let (watch, recorded) = watch(root.path())?;
     for flags in [0x02, 0x04, 0x40, 0x80] {
-        watch.platform.inject(root.path(), flags);
+        watch.inject(root.path(), flags);
         assert!(Recorded::everything(&recorded.take()), "flags {flags:#x}");
     }
     assert!(watch.is_exact());
@@ -363,7 +242,6 @@ fn lost_changes_are_reported_as_everything() -> TestResult {
 }
 
 /// A directory that moves is watched under the name it moved to once the
-/// source reads beneath that name, and changes there are reported by it.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_moved_directory_reports_changes_under_its_new_name() -> TestResult {
@@ -389,7 +267,6 @@ fn a_moved_directory_reports_changes_under_its_new_name() -> TestResult {
 }
 
 /// A root that stops being reported makes the watch inexact for good,
-/// after it reports everything once more.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_removed_root_makes_the_watch_inexact() -> TestResult {
@@ -412,7 +289,6 @@ fn a_removed_root_makes_the_watch_inexact() -> TestResult {
 }
 
 /// While a Windows watch lives, its root's path keeps naming the directory
-/// the source holds: the root cannot be renamed or removed.
 #[cfg(windows)]
 #[test]
 fn a_watched_root_keeps_its_name() -> TestResult {
@@ -428,7 +304,6 @@ fn a_watched_root_keeps_its_name() -> TestResult {
 }
 
 /// A root whose path stops naming it, because a directory on the way moved,
-/// makes the watch inexact, as it makes the source fail closed.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_root_whose_path_moves_makes_the_watch_inexact() -> TestResult {
@@ -494,7 +369,7 @@ fn cleanup_wait_ordinary_wrapper_rejects_before_stop_and_still_delivers() -> Tes
     let mut cleanup = crate::demand::DemandWork::new(
         crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
     );
-    watch.stop_measured(&mut cleanup)?;
+    watch.stop_with_work(&mut cleanup)?;
     assert!(watch.is_stopped());
     Ok(())
 }
@@ -503,7 +378,7 @@ fn cleanup_wait_ordinary_wrapper_rejects_before_stop_and_still_delivers() -> Tes
 fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
-    let host = HostRoot::open(directory.path())?;
+    let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
     let budget = original_watch_budget()?;
     let cancellation = crate::CancellationToken::new();
     let root = crate::NativeMaterializationWork::new(budget, &cancellation)
@@ -511,7 +386,7 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     let scope = root.native_volume_work(budget)?;
     let original = scope.original_demand_work();
     let resource = Arc::downgrade(scope.resource_allowance().ok_or("birth resource absent")?);
-    let meter = Arc::downgrade(original.meter());
+    let meter = Arc::downgrade(&original.state);
     let recorded = Arc::new(Recorded::default());
     let before = scope.receipt();
     let mut work = NativeSourceWork::from_original_work(&original);
@@ -520,18 +395,18 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     assert!(started.backend_read_operations > before.backend_read_operations);
     assert!(started.allocation_operations > before.allocation_operations);
     assert!(!watch.is_stopped());
-    let delivery = watch.platform.delivery();
+    let delivery = watch.delivery();
     let birth = delivery.original.as_ref().ok_or("original delivery absent")?;
-    assert!(Arc::ptr_eq(birth.meter(), original.meter()));
+    assert!(Arc::ptr_eq(&birth.state, &original.state));
     assert!(Arc::ptr_eq(
-        birth.resource_allowance().ok_or("retained resource absent")?,
+        birth.resource.as_ref().ok_or("retained resource absent")?,
         scope.resource_allowance().ok_or("birth resource absent")?,
     ));
 
     let wait = crate::CancellationToken::new();
     wait.cancel();
     let bytes = watch.logical_owned_bytes();
-    let native_bytes = watch.platform.logical_owned_bytes();
+    let native_bytes = watch.platform_owned_bytes();
     original.with_original_leaf(|ledger| {
         let prefix = ledger.receipt();
         assert!(matches!(watch.stop_with_cleanup_wait(&wait), Err(DemandError::Cancelled)));
@@ -565,13 +440,13 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     cleanup_original_watch(&watch, &crate::CancellationToken::new())?;
     assert!(watch.is_stopped());
     assert!(!watch.is_exact());
-    assert!(watch.platform.logical_owned_bytes() < native_bytes,
+    assert!(watch.platform_owned_bytes() < native_bytes,
         "terminal retirement releases native variable payload, not the borrowed control Arc");
-    let terminal = birth.meter().with_original_leaf(crate::demand::DemandWork::receipt);
+    let terminal = birth.state.with_original_leaf(crate::demand::DemandWork::receipt);
     terminal.verify(budget)?;
     let callbacks = recorded.take();
     watch.stop_with_cleanup_wait(&crate::CancellationToken::new())?;
-    assert_eq!(birth.meter().with_original_leaf(crate::demand::DemandWork::receipt), terminal);
+    assert_eq!(birth.state.with_original_leaf(crate::demand::DemandWork::receipt), terminal);
     std::fs::write(directory.path().join("after-terminal"), b"not watched")?;
     assert!(recorded.take().is_empty(), "a terminal watch cannot deliver another callback");
     drop(callbacks);
@@ -592,7 +467,7 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
 fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cancel() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
-    let host = HostRoot::open(directory.path())?;
+    let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
     let budget = original_watch_budget()?;
     let cancellation = crate::CancellationToken::new();
     let root = crate::NativeMaterializationWork::new(budget, &cancellation)
@@ -600,7 +475,7 @@ fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cance
     let scope = root.native_volume_work(budget)?;
     let original = scope.original_demand_work();
     let resource = Arc::downgrade(scope.resource_allowance().ok_or("birth resource absent")?);
-    let meter = Arc::downgrade(original.meter());
+    let meter = Arc::downgrade(&original.state);
     let watch = NativeSourceWatch::start_with_work(
         &host, Arc::new(Recorded::default()), &mut NativeSourceWork::from_original_work(&original),
     )?;
@@ -644,7 +519,7 @@ fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cance
 fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
-    let host = HostRoot::open(directory.path())?;
+    let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
     let budget = original_watch_budget()?;
     let cancellation = crate::CancellationToken::new();
     let root = crate::NativeMaterializationWork::new(budget, &cancellation)

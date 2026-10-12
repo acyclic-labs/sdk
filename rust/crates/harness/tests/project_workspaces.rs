@@ -20,8 +20,8 @@ use std::sync::Arc;
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 async fn project_workspace_binding_uses_parent_forks_published_after_construction() -> Result<()> {
-    let provider = ProviderRef::new("project-workspaces", "filesystem", "2")?;
-    let stream_provider = ProviderRef::new("project-workspaces", "stream", "2")?;
+    let provider = ProviderRef::new("project-workspaces".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("project-workspaces".into(), "stream".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let parent = Authority {
         kind: AggregateKind::Conversation,
@@ -39,72 +39,70 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
     let child_agent = AgentId::from_bytes([2; 16]);
     let project = VolumeRef::new(
         provider.clone(),
-        "parent-project",
+        "parent-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project-owner".into()),
+        &mut None,
     )?;
     let child_project = VolumeRef::new(
         provider.clone(),
-        "published-child-project",
+        "published-child-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project-owner".into()),
+        &mut None,
     )?;
     let child_private = VolumeRef::new(
         provider.clone(),
-        "published-child-private",
+        "published-child-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(child_agent),
+        &mut None,
     )?;
     let parent_private = VolumeRef::new(
         provider.clone(),
-        "parent-private",
+        "parent-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(parent_agent),
+        &mut None,
     )?;
     let issuer = AuthorityIssuer::new("project-workspaces", [7; 32], parent.clone());
-    let scope = issuer.root_for_agent(
-        parent_agent,
-        "parent",
-        Capabilities::new([
+    let scope = issuer.issue("parent", &Capabilities::new([
             "conversation:bind".to_owned(),
             "fork:publish".to_owned(),
             "project:merge".to_owned(),
-            project.capability(VolumeOperation::Read)?,
-            project.capability(VolumeOperation::Write)?,
-            child_project.capability(VolumeOperation::Read)?,
-            parent_private.capability(VolumeOperation::Read)?,
-        ]),
-    );
+            project.capability(VolumeOperation::Read, &mut None)?,
+            project.capability(VolumeOperation::Write, &mut None)?,
+            child_project.capability(VolumeOperation::Read, &mut None)?,
+            parent_private.capability(VolumeOperation::Read, &mut None)?,
+        ]), Some(parent_agent), None, &mut None).expect("scope proof");
 
     let parent_head = host.create_volume(&project).await?;
     let parent_private_head = host.create_volume(&parent_private).await?;
-    let child_scope = issuer.root_for_agent(
-        child_agent,
-        "child",
-        Capabilities::new([child_private.capability(VolumeOperation::Write)?]),
-    );
+    let child_scope = issuer.issue("child", &Capabilities::new([child_private.capability(VolumeOperation::Write, &mut None)?]), Some(child_agent), None, &mut None).expect("scope proof");
     let child_private_head = host
         .fork_volume(
             &parent_private,
             &ContentGrant::verify(
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &scope,
                 &parent_private,
                 VolumeOperation::Read,
+                u64::MAX, &mut None,
             )?,
             &parent_private_head.generation,
             &child_private,
             &ContentGrant::verify(
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &child_scope,
                 &child_private,
                 VolumeOperation::Write,
+                u64::MAX, &mut None,
             )?,
             Some(Vec::new()),
             &IdempotencyKey::new("fork-private")?,
         )
         .await?;
-    let mut reducer = Reducer::new(parent.clone(), issuer.verifier(), SchemaRegistry::new());
+    let mut reducer = Reducer::new(parent.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     reducer.apply(Command {
         operation_id: OperationId::from_bytes([1; 16]),
         idempotency_key: IdempotencyKey::new("bind-parent")?,
@@ -119,7 +117,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
     let workspaces = FilesystemProjectWorkspaces::new(
         &host,
         &reducer,
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         project.clone(),
     )?;
@@ -134,7 +132,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         .await?;
     let history = StreamRef::new(
         stream_provider.clone(),
-        parent.stream_path()?.into_bytes(),
+        parent.stream_path(&mut None)?.into_bytes(),
         Some(reducer.revision().to_string()),
     )?;
     let seed = ForkSeed { history_witness: None, summary: None,
@@ -184,7 +182,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
     reference_grants: Vec::new(),
     attachment_manifests: Vec::new(),
     boundary: None, };
-    seed.validate()?;
+    seed.validate(&mut None)?;
     reducer.apply(Command {
         operation_id: seed.operation_id,
         idempotency_key: IdempotencyKey::new("publish-fork")?,
@@ -206,7 +204,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
                 &host
                     .resolve(&workspace_ref(
                         provider.clone(),
-                        &(child_project).storage_name()?
+                        &(child_project).storage_name(&mut None)?
                     )?)
                     .await?
                     .generation
@@ -224,7 +222,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
                 &host
                     .resolve(&workspace_ref(
                         provider.clone(),
-                        &(child_project).storage_name()?
+                        &(child_project).storage_name(&mut None)?
                     )?)
                     .await?
                     .generation

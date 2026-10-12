@@ -87,7 +87,7 @@ fn sparse_probe(
     crate::native_host::punch_hole(
         &file,
         edge.len() as u64,
-        logical_bytes - 2 * edge.len() as u64,
+        logical_bytes - 2 * edge.len() as u64, None,
     )?;
     file.sync_all()?;
     let allocated_bytes = file.metadata()?.blocks().checked_mul(512).ok_or(

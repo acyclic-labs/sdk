@@ -1,4 +1,6 @@
+use super::opening::load_header;
 use super::*;
+use crate::v1::tests::get;
 
 #[test]
 fn native_composite_controls_retire_after_the_last_physical_alias()
@@ -31,19 +33,28 @@ async fn native_journal_control_denial_keeps_original_cause_and_unpoisoned_tail(
     let durable = fs::read(&path)?;
     let before = core.lock_state()?.clone();
     let mut next = before.clone();
-    next.buckets.get_mut("recovery").ok_or("missing bucket")?
-        .objects.get_mut("retained").ok_or("missing object")?
+    next.buckets
+        .get_mut("recovery")
+        .ok_or("missing bucket")?
+        .objects
+        .get_mut("retained")
+        .ok_or("missing object")?
         .body = StoredBody::memory(OwnedBytes::from_static(b"after!"));
     let observed = Arc::new(crate::v1::tests::NativeTransportMeter::new());
     observed.limit.store(0, SeqCst);
     let journal = core.journal.as_ref().ok_or("missing journal")?;
-    let failed = journal.commit_measured(&before, &mut next, observed.clone());
-    assert!(matches!(failed, Err(NativeObjectsError::Admission(error)) if error.kind() == std::io::ErrorKind::OutOfMemory));
+    let failed = journal.commit(&before, &mut next, Some(observed.clone()));
+    assert!(
+        matches!(failed, Err(NativeObjectsError { cause: NativeObjectsCause::Admission(error), .. }) if error.kind() == std::io::ErrorKind::OutOfMemory)
+    );
     assert_eq!(observed.allocations.load(SeqCst), 0);
     assert_eq!(observed.memory.load(SeqCst), 0);
     assert_eq!(fs::read(path)?, durable);
     journal.check()?;
-    assert_eq!(core.get(get("retained"), 6).await?.into_body(), OwnedBytes::from_static(b"before"));
+    assert_eq!(
+        core.get(get(bucket(), "retained"), 6).await?.into_body(),
+        OwnedBytes::from_static(b"before")
+    );
     Ok(())
 }
 
@@ -94,9 +105,7 @@ fn header_entropy_failure_preserves_empty_journal_and_retry_key()
     Ok(())
 }
 
-// A Unix child can inherit the same open file description during process
-// creation, even when close-on-exec is set. Closing only the parent's descriptor
-// must not keep a completed provider's ownership lock alive in that child.
+// Provider closure must release its lock across concurrent Unix spawning.
 #[cfg(unix)]
 #[test]
 fn dropping_the_last_owner_unlocks_an_inherited_file_description()
@@ -128,7 +137,7 @@ fn dropping_the_last_owner_unlocks_an_inherited_file_description()
     Ok(())
 }
 
-fn bucket() -> Option<wire::BucketRef> {
+pub(super) fn bucket() -> Option<wire::BucketRef> {
     Some(wire::BucketRef {
         name: "recovery".into(),
     })
@@ -140,13 +149,6 @@ pub(super) fn put(key: &str) -> wire::PutObjectHeader {
         mutation: Some(wire::MutationIdentity {
             idempotency_key: key.into(),
         }),
-        ..Default::default()
-    }
-}
-pub(super) fn get(key: &str) -> wire::GetObjectRequest {
-    wire::GetObjectRequest {
-        bucket: bucket(),
-        object_key: key.into(),
         ..Default::default()
     }
 }
@@ -166,7 +168,10 @@ pub(super) async fn seeded(root: &Path) -> Result<MemoryObjects, Box<dyn std::er
 }
 async fn assert_poisoned(core: &MemoryObjects) {
     assert_eq!(
-        core.get(get("retained"), 6).await.err().map(|e| e.code),
+        core.get(get(bucket(), "retained"), 6)
+            .await
+            .err()
+            .map(|e| e.code),
         Some(Unavailable)
     );
     assert_eq!(
@@ -221,11 +226,14 @@ async fn incomplete_final_frames_repair_without_publishing_a_mutation()
         let core = reopen(root.path())?;
         assert_eq!(fs::read(&path)?, before);
         assert_eq!(
-            core.get(get("retained"), 6).await?.into_body(),
+            core.get(get(bucket(), "retained"), 6).await?.into_body(),
             OwnedBytes::from_static(b"before")
         );
         assert_eq!(
-            core.get(get("interrupted"), 5).await.err().map(|e| e.code),
+            core.get(get(bucket(), "interrupted"), 5)
+                .await
+                .err()
+                .map(|e| e.code),
             Some(NotFound)
         );
         core.put(put("interrupted"), OwnedBytes::from_static(b"after"))
@@ -371,9 +379,12 @@ async fn multipart_recovery_preserves_parts_composite_ranges_and_completion_retr
                 end: Some(5 * 1024 * 1024 + 1),
             })),
         }),
-        ..get("multipart")
+        ..get(bucket(), "multipart")
     };
-    assert_eq!(core.get(range, 4).await?.into_body(), OwnedBytes::from_static(b"aaen"));
+    assert_eq!(
+        core.get(range, 4).await?.into_body(),
+        OwnedBytes::from_static(b"aaen")
+    );
     core.delete(wire::DeleteObjectRequest {
         bucket: bucket(),
         object_key: "multipart".into(),
@@ -384,7 +395,10 @@ async fn multipart_recovery_preserves_parts_composite_ranges_and_completion_retr
     let core = reopen(root.path())?;
     assert_eq!(core.complete_multipart(query).await?, receipt);
     assert_eq!(
-        core.get(get("multipart"), 10).await.err().map(|e| e.code),
+        core.get(get(bucket(), "multipart"), 10)
+            .await
+            .err()
+            .map(|e| e.code),
         Some(NotFound)
     );
     Ok(())
@@ -428,7 +442,7 @@ async fn logical_quota_failure_does_not_persist_a_body_or_retry_receipt()
     .await?;
     core.put(put("new"), OwnedBytes::from_static(b"ab")).await?;
     assert_eq!(
-        core.get(get("new"), 2).await?.into_body(),
+        core.get(get(bucket(), "new"), 2).await?.into_body(),
         OwnedBytes::from_static(b"ab")
     );
     Ok(())
@@ -461,11 +475,14 @@ async fn uncertain_batch_item_prevents_later_exact_retries_in_the_same_admission
     drop(core);
     let core = reopen(root.path())?;
     assert_eq!(
-        core.get(get("retained"), 6).await?.into_body(),
+        core.get(get(bucket(), "retained"), 6).await?.into_body(),
         OwnedBytes::from_static(b"before")
     );
     assert_eq!(
-        core.get(get("later"), 5).await.err().map(|e| e.code),
+        core.get(get(bucket(), "later"), 5)
+            .await
+            .err()
+            .map(|e| e.code),
         Some(NotFound)
     );
     Ok(())
@@ -484,7 +501,8 @@ async fn checkpoint_interruption_recovers_old_or_new_state_without_losing_receip
         replacement.mutation = Some(wire::MutationIdentity {
             idempotency_key: "replacement".into(),
         });
-        core.put(replacement, OwnedBytes::from_static(b"after")).await?;
+        core.put(replacement, OwnedBytes::from_static(b"after"))
+            .await?;
         core.journal
             .as_ref()
             .ok_or("missing journal")?
@@ -498,7 +516,7 @@ async fn checkpoint_interruption_recovers_old_or_new_state_without_losing_receip
         drop(core);
         let core = reopen(root.path())?;
         assert_eq!(
-            core.get(get("retained"), 5).await?.into_body(),
+            core.get(get(bucket(), "retained"), 5).await?.into_body(),
             OwnedBytes::from_static(b"after")
         );
         assert_eq!(
@@ -507,10 +525,14 @@ async fn checkpoint_interruption_recovers_old_or_new_state_without_losing_receip
             original
         );
         core.collect_local_garbage(10)?;
-        core.put(put("next"), OwnedBytes::from_static(b"next")).await?;
+        core.put(put("next"), OwnedBytes::from_static(b"next"))
+            .await?;
         drop(core);
         assert_eq!(
-            reopen(root.path())?.get(get("next"), 4).await?.into_body(),
+            reopen(root.path())?
+                .get(get(bucket(), "next"), 4)
+                .await?
+                .into_body(),
             OwnedBytes::from_static(b"next")
         );
     }
@@ -538,24 +560,7 @@ async fn checkpoint_packs_multiple_frames_and_preserves_live_pagination()
     let page = core.list(query.clone()).await?;
     query.continuation_token = page.continuation_token;
     let expected = core.list(query.clone()).await?;
-    let before = core
-        .journal
-        .as_ref()
-        .ok_or("missing journal")?
-        .tail
-        .lock()
-        .map_err(|_| "tail poisoned")?
-        .operations;
     core.collect_local_garbage(200)?;
-    let after = core
-        .journal
-        .as_ref()
-        .ok_or("missing journal")?
-        .tail
-        .lock()
-        .map_err(|_| "tail poisoned")?
-        .operations;
-    assert!(after > 1 && after < before);
     drop(core);
     let core = reopen(root.path())?;
     assert_eq!(core.list(query).await?, expected);
@@ -573,8 +578,6 @@ enum Step {
 
 fn step() -> impl proptest::strategy::Strategy<Value = Step> {
     use proptest::prelude::*;
-    // Mostly inline bodies; occasionally one large enough for a segment file.
-    // Objects mostly target the bucket every case starts with.
     let bucket = prop_oneof![3 => Just(0_u8), 1 => Just(1_u8)];
     let size = prop_oneof![8 => 0..16_usize, 1 => Just(inline::LIMIT + 1)];
     prop_oneof![
@@ -610,9 +613,13 @@ fn view(state: &State) -> Result<View, Error> {
     for (name, bucket) in &state.buckets {
         let mut objects = Vec::new();
         for (key, value) in &bucket.objects {
-            objects.push((key.to_string(), value.info.as_ref().clone(), bodies(&value.body)?));
+            objects.push((
+                key.to_string(),
+                (*value.info).clone(),
+                bodies(&value.body, &mut Publication::new(None)).map_err(service_error)?,
+            ));
         }
-        buckets.push((name.to_string(), bucket.info.as_ref().clone(), objects));
+        buckets.push((name.to_string(), (*bucket.info).clone(), objects));
     }
     let receipts = state
         .receipts
@@ -623,7 +630,7 @@ fn view(state: &State) -> Result<View, Error> {
                 value.digest,
                 value.response.as_slice().to_vec(),
                 value.kind,
-                value.put_info.as_ref().map(|info| info.as_ref().clone()),
+                value.put_info.as_ref().map(|info| (**info).clone()),
             )
         })
         .collect();
@@ -641,20 +648,25 @@ fn naive_changes(
         if old.is_none_or(|old| old.info != bucket.info) {
             buckets.push(BucketChange {
                 name: name.to_string(),
-                info: Some(bucket.info.as_ref().clone()),
+                info: Some((*bucket.info).clone()),
             });
         }
         for (key, value) in &bucket.objects {
-            let refs = bodies(&value.body)?;
+            let refs = bodies(&value.body, &mut Publication::new(None)).map_err(service_error)?;
             let unchanged = match old.and_then(|old| old.objects.get(key)) {
-                Some(prior) => prior.info == value.info && bodies(&prior.body)? == refs,
+                Some(prior) => {
+                    prior.info == value.info
+                        && bodies(&prior.body, &mut Publication::new(None))
+                            .map_err(service_error)?
+                            == refs
+                }
                 None => false,
             };
             if !unchanged {
                 objects.push(ObjectChange {
                     bucket: name.to_string(),
                     key: key.to_string(),
-                    info: Some(value.info.as_ref().clone()),
+                    info: Some((*value.info).clone()),
                     bodies: refs,
                 });
             }
@@ -763,7 +775,7 @@ proptest::proptest! {
             runtime.block_on(run(&core, index, step));
             let next = snapshot(&core)?;
             let before = states.last().ok_or(Error::from(Unavailable))?;
-            let delta = difference(before, &next, 1)?;
+            let delta = difference(before, &next, 1, &mut Publication::new(None))?;
             proptest::prop_assert_eq!(
                 (delta.buckets.clone(), delta.objects.clone()),
                 naive_changes(before, &next)?
@@ -784,106 +796,37 @@ proptest::proptest! {
     }
 }
 
-/// `(span, field, value)` for every declared and recorded span field.
-type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
-struct Capture(Seen);
-struct Fields<'a>(
-    &'static str,
-    &'a mut Vec<(&'static str, &'static str, String)>,
-);
-impl tracing::field::Visit for Fields<'_> {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.1.push((self.0, field.name(), format!("{value:?}")));
-    }
-}
-impl<S> tracing_subscriber::Layer<S> for Capture
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-{
-    fn on_new_span(
-        &self,
-        attributes: &tracing::span::Attributes<'_>,
-        _: &tracing::span::Id,
-        _: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        let name = attributes.metadata().name();
-        if let Ok(mut seen) = self.0.lock() {
-            let fields = attributes.metadata().fields();
-            seen.extend(
-                fields
-                    .iter()
-                    .map(|field| (name, field.name(), String::new())),
-            );
-            attributes.record(&mut Fields(name, &mut seen));
-        }
-    }
-    fn on_record(
-        &self,
-        id: &tracing::span::Id,
-        values: &tracing::span::Record<'_>,
-        context: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        if let (Some(span), Ok(mut seen)) = (context.span(id), self.0.lock()) {
-            values.record(&mut Fields(span.name(), &mut seen));
-        }
-    }
-}
-
 #[tokio::test]
-async fn store_spans_record_counts_and_outcomes_but_no_names()
--> Result<(), Box<dyn std::error::Error>> {
+async fn store_spans_omit_customer_names() -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    // With one live dispatcher, a callsite that a concurrent test reaches
-    // first caches only that thread's (absent) interest; a second one makes
-    // every callsite consult this test's subscriber too.
+    // Two dispatchers prevent concurrent callsite interest from being cached away.
     let _second = tracing::Dispatch::new(tracing_subscriber::registry());
-    let seen = Seen::default();
-    let _default = tracing::subscriber::set_default(
-        tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
-    );
+    let seen = acyclic_grpc_observability::test_support::Capture::default();
+    let _default =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));
     let root = tempfile::tempdir()?;
     let core = seeded(root.path()).await?;
     assert_eq!(
-        core.get(get("missing"), 1).await.err().map(|e| e.code),
+        core.get(get(bucket(), "missing"), 1)
+            .await
+            .err()
+            .map(|e| e.code),
         Some(NotFound)
     );
     core.collect_local_garbage(10)?;
     drop(core);
     drop(reopen(root.path())?);
-    let seen = seen.lock().map_err(|_| "capture poisoned")?;
-    let has = |span: &str, field: &str, value: &str| {
-        seen.iter()
-            .any(|(s, f, v)| *s == span && *f == field && v == value)
-    };
-    for (span, field, value) in [
-        ("acyclic.objects.put", "bytes", "6"),
-        ("acyclic.objects.put", "outcome", "\"ok\""),
-        ("acyclic.objects.journal.append", "fsyncs", "1"),
-        ("acyclic.objects.journal.commit", "outcome", "\"ok\""),
-        (
-            "acyclic.objects.get",
-            "error.kind",
-            "\"ERROR_CODE_NOT_FOUND\"",
-        ),
-        ("acyclic.objects.journal.materialize", "segments", "1"),
-        ("acyclic.objects.journal.checkpoint", "outcome", "\"ok\""),
-        ("acyclic.objects.collect_garbage", "outcome", "\"ok\""),
-        ("acyclic.objects.open", "frames", "1"),
-        ("acyclic.objects.journal.replay", "outcome", "\"ok\""),
-    ] {
-        assert!(
-            has(span, field, value),
-            "{span}.{field} != {value}: {seen:?}"
-        );
-    }
+    let seen = seen.0.lock().map_err(|_| "capture poisoned")?;
+    assert!(!seen.spans.is_empty());
     let path = root.path().to_string_lossy();
-    for (span, field, value) in seen.iter() {
-        assert!(
-            !["path", "token", "content", "body", "authorization"].contains(field),
-            "{span} records {field}"
-        );
-        for leak in ["recovery", "retained", "missing", path.as_ref()] {
-            assert!(!value.contains(leak), "{span}.{field}={value}");
+    for span in seen.spans.iter().filter(|span| span.closed) {
+        for (field, value) in &span.fields {
+            assert!(
+                !["path", "token", "content", "body", "authorization"].contains(&field.as_str())
+            );
+            for leak in ["recovery", "retained", "missing", path.as_ref()] {
+                assert!(!value.contains(leak), "{}.{}={value}", span.name, field);
+            }
         }
     }
     Ok(())

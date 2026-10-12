@@ -2,16 +2,15 @@
 
 use super::{
     PROTOCOL_VERSION,
-    rpc::{NativeWork, initialization, notification,
-        rpc_result},
+    rpc::{initialization, notification, rpc_result},
 };
-use crate::{Error, OperationId, Result};
+use crate::{Error, NativeCustody, NativeWork, OperationId, Result};
 use bytes::BytesMut;
 use rmcp::transport::async_rw::JsonRpcMessageCodec;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, value::RawValue};
 #[cfg(test)]
 use serde_json::json;
+use serde_json::{Value, value::RawValue};
 use tokio_util::codec::{Decoder as _, Encoder as _};
 
 /// The only operations this one-shot client can admit.
@@ -78,168 +77,146 @@ pub struct McpStdioRequest {
 
 impl McpStdioRequest {
     /// Creates transient protocol state and its first write, with no I/O.
-    pub fn exchange(&self) -> Result<(McpStdioExchange, Vec<u8>)> {
-        let (exchange, first) = self.exchange_inner(None)?;
-        Ok((exchange, first.bytes))
-    }
-
-    /// Prepares this same protocol engine on the caller's original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn exchange_with_native_work(
+    pub fn exchange(
         &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(McpStdioExchange, Vec<u8>, acyclic_fs::NativeAllocation)> {
-        let (exchange, first) = self.exchange_inner(Some(work))?;
-        let OwnedWrite { bytes, custody } = first;
-        Ok((exchange, bytes, custody.ok_or_else(|| rejection(Some(work), "missing MCP write custody"))?))
-    }
-
-    fn exchange_inner(&self, work: NativeWork<'_>) -> Result<(McpStdioExchange, OwnedWrite)> {
-        super::services::validate_stdio_params(self.method.as_str(), &self.params, work)?;
-        McpStdioExchange::new_inner(
-            self.initialization, self.operation, self.method.as_str(),
-            &self.params, self.maximum_bytes, work,
-        )
+        work: NativeWork<'_>,
+    ) -> Result<(McpStdioExchange, Vec<u8>, NativeCustody)> {
+        super::services::validate_params(self.method.as_str(), &self.params, work)?;
+        if self.initialization == self.operation || self.maximum_bytes == 0 {
+            return Err(rejection(work, "invalid MCP stdio exchange contract"));
+        }
+        let maximum_bytes = self.maximum_bytes as usize;
+        let first = encode_line(
+            &Envelope {
+                id: self.initialization,
+                jsonrpc: "2.0",
+                method: "initialize",
+                params: InitializeParams {
+                    capabilities: Empty {},
+                    client_info: ClientInfo {
+                        name: "acyclic-harness",
+                        version: env!("CARGO_PKG_VERSION"),
+                    },
+                    protocol_version: PROTOCOL_VERSION,
+                },
+            },
+            maximum_bytes,
+            work,
+        )?;
+        let ready = encode_line(
+            &Initialized {
+                jsonrpc: "2.0",
+                method: "notifications/initialized",
+            },
+            maximum_bytes,
+            work,
+        )?;
+        let request = encode_line(
+            &Envelope {
+                id: self.operation,
+                jsonrpc: "2.0",
+                method: self.method.as_str(),
+                params: &self.params,
+            },
+            maximum_bytes,
+            work,
+        )?;
+        let followup = ready
+            .0
+            .len()
+            .checked_add(request.0.len())
+            .ok_or_else(|| rejection(work, "MCP stdio writes exceed admitted bound"))?;
+        if first
+            .0
+            .len()
+            .checked_add(followup)
+            .filter(|n| *n <= maximum_bytes)
+            .is_none()
+        {
+            return Err(rejection(work, "MCP stdio writes exceed admitted bound"));
+        }
+        let mut combined = ready;
+        reserve_write(&mut combined, followup, work)?;
+        copy_work(work, request.0.len())?;
+        combined.0.extend_from_slice(&request.0);
+        drop(request);
+        #[allow(unused_mut)] // Native-only capacity admission below.
+        let mut custody = native_custody(work)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(guard) = custody.as_mut() {
+            guard
+                .resize_retained(std::mem::size_of::<McpStdioExchange>() as u64)
+                .map_err(native_error)?;
+            guard.grow(maximum_bytes as u64).map_err(native_error)?;
+        }
+        // Cumulative stdout fits the reserved buffer.
+        let line = if work.is_some() {
+            BytesMut::with_capacity(maximum_bytes)
+        } else {
+            BytesMut::new()
+        };
+        Ok((
+            McpStdioExchange {
+                initialization: self.initialization,
+                operation: self.operation,
+                request: Some(combined),
+                failed: false,
+                line,
+                codec: JsonRpcMessageCodec::new_with_max_length(maximum_bytes),
+                received: 0,
+                maximum_bytes,
+                result: None,
+                custody,
+            },
+            first.0,
+            first.1,
+        ))
     }
 
     /// Verifies the complete descriptor without launching or admitting work.
     pub fn validate(&self) -> Result<()> {
-        self.exchange().map(|_| ())
+        self.exchange(None).map(drop)
     }
 
     /// Validates a retained complete transcript without performing its writes.
     pub fn decode_response(&self, stdout: &[u8]) -> Result<Value> {
-        let (mut exchange, _) = self.exchange()?;
-        exchange.push(stdout)?;
-        let value = exchange.finish()?;
-        super::services::validate_result_with_native_work(self.method.as_str(), value, None)
+        let (mut exchange, _, _) = self.exchange(None)?;
+        exchange.push(stdout, None)?;
+        let (value, _) = exchange.finish()?;
+        super::services::validate_result(self.method.as_str(), value, None)
     }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Phase {
-    Initialize,
-    Request,
-    Complete,
-    Failed,
 }
 
 /// Transient parser state for one initialized, one-shot stdio request.
 pub struct McpStdioExchange {
     initialization: OperationId,
     operation: OperationId,
-    request: OwnedWrite,
-    phase: Phase,
+    request: Option<(Vec<u8>, NativeCustody)>,
+    failed: bool,
     line: BytesMut,
     codec: JsonRpcMessageCodec<Box<RawValue>>,
-    scanned: usize,
     received: usize,
     maximum_bytes: usize,
-    result: Option<OwnedValue>,
+    result: Option<(Value, NativeCustody)>,
     // LAST: all parser/control storage is physically dropped before custody.
     custody: NativeCustody,
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-type NativeCustody = Option<acyclic_fs::NativeAllocation>;
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-type NativeCustody = Option<()>;
-
-struct OwnedWrite {
-    bytes: Vec<u8>,
-    custody: NativeCustody,
-}
-struct OwnedValue {
-    value: Value,
-    custody: NativeCustody,
-}
-
 impl McpStdioExchange {
-    /// Creates the same initialized one-shot engine without native accounting.
-    pub fn new(
-        initialization: OperationId, operation: OperationId, method: &str,
-        params: &Value, maximum_bytes: u32,
-    ) -> Result<(Self, Vec<u8>)> {
-        let (exchange, first) = Self::new_inner(initialization, operation, method, params, maximum_bytes, None)?;
-        Ok((exchange, first.bytes))
-    }
-
-    fn new_inner(
-        initialization: OperationId, operation: OperationId, method: &str,
-        params: &Value, maximum_bytes: u32, work: NativeWork<'_>,
-    ) -> Result<(Self, OwnedWrite)> {
-        if initialization == operation || maximum_bytes == 0
-            || !matches!(method, "tools/list" | "tools/call" | "resources/list" |
-                "resources/templates/list" | "resources/read" | "prompts/list" | "prompts/get")
-            || !params.is_object()
-        {
-            return Err(rejection(work, "invalid MCP stdio exchange contract"));
-        }
-        let maximum_bytes = maximum_bytes as usize;
-        let first = encode_line(&Envelope { id: initialization, jsonrpc: "2.0",
-            method: "initialize", params: InitializeParams {
-                capabilities: Empty {}, client_info: ClientInfo {
-                    name: "acyclic-harness", version: env!("CARGO_PKG_VERSION"),
-                }, protocol_version: PROTOCOL_VERSION,
-            } }, maximum_bytes, work)?;
-        let ready = encode_line(&Initialized { jsonrpc: "2.0",
-            method: "notifications/initialized" }, maximum_bytes, work)?;
-        let request = encode_line(&Envelope { id: operation, jsonrpc: "2.0",
-            method, params }, maximum_bytes, work)?;
-        let followup = ready.bytes.len().checked_add(request.bytes.len())
-            .ok_or_else(|| rejection(work, "MCP stdio writes exceed admitted bound"))?;
-        if first.bytes.len().checked_add(followup).filter(|n| *n <= maximum_bytes).is_none() {
-            return Err(rejection(work, "MCP stdio writes exceed admitted bound"));
-        }
-        let mut combined = ready;
-        reserve_write(&mut combined, followup, work)?;
-        copy_work(work, request.bytes.len())?;
-        combined.bytes.extend_from_slice(&request.bytes);
-        drop(request);
-        #[allow(unused_mut)] // Native-only capacity admission below.
-        let mut custody = native_custody(work)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(guard) = custody.as_mut() {
-            guard.resize_retained(std::mem::size_of::<Self>() as u64).map_err(native_error)?;
-            guard.grow(maximum_bytes as u64).map_err(native_error)?;
-        }
-        // One allocation for all cumulative stdout: library split/advance cannot demand growth because total admitted input never exceeds this capacity.
-        let line = if work.is_some() { BytesMut::with_capacity(maximum_bytes) } else { BytesMut::new() };
-        Ok((Self {
-            initialization, operation, request: combined, phase: Phase::Initialize,
-            line, codec: JsonRpcMessageCodec::new_with_max_length(maximum_bytes),
-            scanned: 0, received: 0, maximum_bytes, result: None, custody,
-        }, first))
-    }
-
-    /// Consumes stdout with the ordinary policy.
-    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
-        let write = self.push_inner(bytes, None)?;
-        Ok(write.bytes)
-    }
-
-    /// Consumes stdout on the SAME original ledger and transfers exact writes.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn push_with_native_work(
-        &mut self, bytes: &[u8], work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Vec<u8>, acyclic_fs::NativeAllocation)> {
-        let OwnedWrite { bytes, custody } = self.push_inner(bytes, Some(work))?;
-        Ok((bytes, custody.ok_or_else(|| rejection(Some(work), "missing MCP write custody"))?))
-    }
-
-    fn push_inner(&mut self, bytes: &[u8], work: NativeWork<'_>) -> Result<OwnedWrite> {
+    /// Consumes stdout on the supplied ledger and transfers its writes and custody.
+    pub fn push(&mut self, bytes: &[u8], work: NativeWork<'_>) -> Result<(Vec<u8>, NativeCustody)> {
         let result = (|| {
             self.check_work(work)?;
-            if self.phase == Phase::Failed {
+            if self.failed {
                 return Err(rejection(work, "MCP stdio exchange already failed"));
             }
             self.consume(bytes, work)
         })();
         if result.is_err() {
-            self.phase = Phase::Failed;
+            self.failed = true;
             // Drop actual results and pending writes before their LAST guards.
             self.result = None;
-            self.request = OwnedWrite { bytes: Vec::new(), custody: None };
+            self.request = None;
         }
         result
     }
@@ -249,8 +226,8 @@ impl McpStdioExchange {
         match (&self.custody, work) {
             (None, None) => {}
             (Some(guard), Some(work)) => {
-                let probe = work.retain_owned(0).map_err(native_error)?;
-                if !guard.shares_ledger(&probe) {
+                checkpoint(Some(work))?;
+                if !guard.work().shares_allocation_context(work) {
                     return Err(rejection(Some(work), "MCP stdio original ledger mismatch"));
                 }
             }
@@ -259,19 +236,25 @@ impl McpStdioExchange {
         checkpoint(work)
     }
 
-    fn consume(&mut self, bytes: &[u8], work: NativeWork<'_>) -> Result<OwnedWrite> {
-        let received = self.received.checked_add(bytes.len())
+    fn consume(&mut self, bytes: &[u8], work: NativeWork<'_>) -> Result<(Vec<u8>, NativeCustody)> {
+        let received = self
+            .received
+            .checked_add(bytes.len())
             .filter(|total| *total <= self.maximum_bytes)
             .ok_or_else(|| rejection(work, "MCP stdio stdout exceeds admitted bound"))?;
-        let mut writes = empty_write(work)?;
+        let mut writes = (Vec::new(), None);
+        let mut scanned = self.line.len();
         copy_work(work, bytes.len())?;
         self.line.extend_from_slice(bytes);
         self.received = received;
         loop {
             let mut end = None;
-            for (offset, byte) in self.line[self.scanned..].iter().enumerate() {
+            for (offset, byte) in self.line[scanned..].iter().enumerate() {
                 scan_work(work)?;
-                if *byte == b'\n' { end = Some(self.scanned + offset); break; }
+                if *byte == b'\n' {
+                    end = Some(scanned + offset);
+                    break;
+                }
             }
             let Some(end) = end else { break };
             let body = &self.line[..end];
@@ -280,10 +263,12 @@ impl McpStdioExchange {
             let mut frame_custody = frame_admission(body, self.maximum_bytes, work)?;
             let raw_length = validate_raw(body, work, &mut frame_custody)?;
             copy_work(work, raw_length)?;
-            let raw = self.codec.decode(&mut self.line)
+            let raw = self
+                .codec
+                .decode(&mut self.line)
                 .map_err(|error| codec_error(error, work, &mut frame_custody))?
                 .ok_or_else(|| rejection(work, "missing MCP stdio message"))?;
-            self.scanned = 0;
+            scanned = 0;
             let message: Value = decode_value(raw.get().as_bytes(), work, &mut frame_custody)?;
             drop(raw);
             if message.get("id").is_none() {
@@ -291,110 +276,125 @@ impl McpStdioExchange {
                 drop(message);
                 continue;
             }
-            match self.phase {
-                Phase::Initialize => {
-                    let result = rpc_result(message, self.initialization, work)?;
-                    initialization(&result, work)?;
-                    drop(result);
-                    writes = std::mem::replace(&mut self.request,
-                        OwnedWrite { bytes: Vec::new(), custody: None });
-                    self.phase = Phase::Request;
+            if let Some(request) = self.request.take() {
+                let result = rpc_result(message, self.initialization, work)?;
+                initialization(&result, work)?;
+                drop(result);
+                writes = request;
+            } else if self.result.is_none() {
+                let value = rpc_result(message, self.operation, work)?;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if let Some(guard) = frame_custody.as_mut() {
+                    let retained = value_storage(&value, work)?;
+                    guard.substitute(retained).map_err(native_error)?;
                 }
-                Phase::Request => {
-                    let value = rpc_result(message, self.operation, work)?;
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    if let Some(guard) = frame_custody.as_mut() {
-                        let retained = value_storage(&value, work)?;
-                        guard.substitute(retained).map_err(native_error)?;
-                    }
-                    self.result = Some(OwnedValue { value, custody: frame_custody });
-                    self.phase = Phase::Complete;
-                }
-                Phase::Complete | Phase::Failed => {
-                    return Err(rejection(work, "unexpected MCP stdio response after completion"));
-                }
+                self.result = Some((value, frame_custody));
+            } else {
+                return Err(rejection(
+                    work,
+                    "unexpected MCP stdio response after completion",
+                ));
             }
         }
-        self.scanned = self.line.len();
         Ok(writes)
     }
 
     /// Requires complete newline-terminated responses at process EOF.
-    pub fn finish(mut self) -> Result<Value> {
-        if self.custody.is_some() {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            return Err(rejection(self.custody.as_ref().map(acyclic_fs::NativeAllocation::work),
-                "MCP native result requires custody transfer"));
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            return Err(rejection(None, "MCP native result requires custody transfer"));
+    pub fn finish(mut self) -> Result<(Value, NativeCustody)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(custody) = &self.custody {
+            checkpoint(Some(custody.work()))?;
         }
-        if self.phase != Phase::Complete || !self.line.is_empty() {
+        if !self.line.is_empty() {
             return Err(Error::Indeterminate(self.operation));
         }
-        self.result.take().map(|OwnedValue { value, custody }| {
-            let _ = custody;
-            value
-        }).ok_or(Error::Indeterminate(self.operation))
-    }
-
-    /// Moves the actual result and its original guard, without cloning or releasing result storage.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn finish_with_native_work(mut self) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        let work = self.custody.as_ref().ok_or_else(|| rejection(None, "missing MCP native custody"))?.work();
-        checkpoint(Some(work))?;
-        if self.phase != Phase::Complete || !self.line.is_empty() {
-            return Err(Error::Indeterminate(self.operation));
+        let (value, custody) = self
+            .result
+            .take()
+            .ok_or(Error::Indeterminate(self.operation))?;
+        if self.custody.is_some() && custody.is_none() {
+            return Err(rejection(None, "missing MCP result custody"));
         }
-        let OwnedValue { value, custody } = self.result.take().ok_or(Error::Indeterminate(self.operation))?;
-        Ok((value, custody.ok_or_else(|| rejection(None, "missing MCP result custody"))?))
+        Ok((value, custody))
     }
 
-    /// The process owner still owns termination, drain and durable publication.
-    pub fn is_complete(&self) -> bool { self.phase == Phase::Complete }
+    /// Returns whether the terminal response was received.
+    pub fn is_complete(&self) -> bool {
+        self.result.is_some()
+    }
 }
 
 #[derive(Serialize)]
-struct Envelope<'a, P> { id: OperationId, jsonrpc: &'static str, method: &'a str, params: P }
+struct Envelope<'a, P> {
+    id: OperationId,
+    jsonrpc: &'static str,
+    method: &'a str,
+    params: P,
+}
 #[derive(Serialize)]
 struct Empty {}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct InitializeParams { capabilities: Empty, client_info: ClientInfo, protocol_version: &'static str }
+struct InitializeParams {
+    capabilities: Empty,
+    client_info: ClientInfo,
+    protocol_version: &'static str,
+}
 #[derive(Serialize)]
-struct ClientInfo { name: &'static str, version: &'static str }
+struct ClientInfo {
+    name: &'static str,
+    version: &'static str,
+}
 #[derive(Serialize)]
-struct Initialized { jsonrpc: &'static str, method: &'static str }
+struct Initialized {
+    jsonrpc: &'static str,
+    method: &'static str,
+}
 
 #[cfg(test)]
 fn line(value: &Value) -> Result<Vec<u8>> {
-    Ok(encode_line(value, usize::MAX, None)?.bytes)
+    Ok(encode_line(value, usize::MAX, None)?.0)
 }
 
 fn rejection(work: NativeWork<'_>, reason: &'static str) -> Error {
     let _ = work;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
+        return Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason,
+        };
     }
     Error::Invalid(reason.into())
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork { cause, custody: None }
+    Error::NativeWork {
+        cause,
+        custody: None,
+    }
 }
 
 fn native_custody(work: NativeWork<'_>) -> Result<NativeCustody> {
     let _ = work;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = work { return work.retain_owned(0).map(Some).map_err(native_error); }
+    if let Some(work) = work {
+        return work
+            .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
+            .map(Some)
+            .map_err(native_error);
+    }
     Ok(None)
 }
 
 fn checkpoint(work: NativeWork<'_>) -> Result<()> {
     let _ = work;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = work { work.charge(acyclic_fs::WorkCounters::default()).map_err(native_error)?; }
+    if let Some(work) = work {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(native_error)?;
+    }
     Ok(())
 }
 
@@ -402,8 +402,11 @@ fn copy_work(work: NativeWork<'_>, bytes: usize) -> Result<()> {
     let _ = (work, bytes);
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
-        work.charge(acyclic_fs::WorkCounters { bytes_copied: bytes as u64,
-            ..acyclic_fs::WorkCounters::default() }).map_err(native_error)?;
+        work.charge(acyclic_fs::WorkCounters {
+            bytes_copied: bytes as u64,
+            ..acyclic_fs::WorkCounters::default()
+        })
+        .map_err(native_error)?;
     }
     Ok(())
 }
@@ -412,36 +415,49 @@ fn scan_work(work: NativeWork<'_>) -> Result<()> {
     let _ = work;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
-        work.charge(acyclic_fs::WorkCounters { source_bytes_read: 1,
-            items_examined: 1, ..acyclic_fs::WorkCounters::default() }).map_err(native_error)?;
+        work.charge(acyclic_fs::WorkCounters {
+            source_bytes_read: 1,
+            items_examined: 1,
+            ..acyclic_fs::WorkCounters::default()
+        })
+        .map_err(native_error)?;
     }
     Ok(())
 }
 
-fn empty_write(work: NativeWork<'_>) -> Result<OwnedWrite> {
-    Ok(OwnedWrite { bytes: Vec::new(), custody: native_custody(work)? })
-}
-
-fn reserve_write(write: &mut OwnedWrite, capacity: usize, work: NativeWork<'_>) -> Result<()> {
-    if write.bytes.capacity() >= capacity { return checkpoint(work); }
-    let old = write.bytes.capacity();
+fn reserve_write(
+    write: &mut (Vec<u8>, NativeCustody),
+    capacity: usize,
+    work: NativeWork<'_>,
+) -> Result<()> {
+    if write.0.capacity() >= capacity {
+        return checkpoint(work);
+    }
+    let old = write.0.capacity();
     let _ = old;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(guard) = write.custody.as_mut() {
+    if let Some(guard) = write.1.as_mut() {
         // Reallocation temporarily retains BOTH old and replacement buffers.
         guard.grow(capacity as u64).map_err(native_error)?;
     }
-    write.bytes.try_reserve_exact(capacity - write.bytes.len())
+    write
+        .0
+        .try_reserve_exact(capacity - write.0.len())
         .map_err(|_| rejection(work, "MCP stdio write allocation failed"))?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(guard) = write.custody.as_mut() { guard.release(old as u64).map_err(native_error)?; }
+    if let Some(guard) = write.1.as_mut() {
+        guard.release(old as u64).map_err(native_error)?;
+    }
     Ok(())
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn bounds(maximum: usize) -> crate::JsonBounds {
-    crate::JsonBounds { maximum_bytes: maximum as u64,
-        maximum_items: maximum as u64, maximum_depth: 256 }
+    crate::JsonBounds {
+        maximum_bytes: maximum as u64,
+        maximum_items: maximum as u64,
+        maximum_depth: 256,
+    }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -454,57 +470,122 @@ fn codec_charge(
     use crate::JsonCodecCharge as Charge;
     match event {
         Charge::Release { bytes } => custody.release(bytes).map_err(native_error),
-        Charge::Retain { bytes } => custody.resize_retained(custody.bytes().checked_add(bytes)
-            .ok_or_else(|| rejection(Some(work), "MCP codec custody overflows"))?).map_err(native_error),
-        Charge::Admission { maximum_owned_bytes, .. } => quota.resize_retained(maximum_owned_bytes).map_err(native_error),
-        Charge::CopyAdmission { bytes } => work.admit(acyclic_fs::WorkCounters {
-            bytes_copied: bytes, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
-        Charge::AllocationOperation { .. } => work.charge(acyclic_fs::WorkCounters {
-            allocation_operations: 1, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
-        Charge::Copy { bytes } => work.charge(acyclic_fs::WorkCounters {
-            bytes_copied: bytes, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
-        Charge::Read { bytes } => work.charge(acyclic_fs::WorkCounters {
-            source_bytes_read: bytes, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
-        Charge::Inspect { items } => work.charge(acyclic_fs::WorkCounters {
-            items_examined: items, ..Default::default() }).map_err(native_error),
-        Charge::Work { bytes, items } => work.charge(acyclic_fs::WorkCounters {
-            bytes_encoded: bytes, items_examined: items, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
+        Charge::Retain { bytes } => custody
+            .resize_retained(
+                custody
+                    .bytes()
+                    .checked_add(bytes)
+                    .ok_or_else(|| rejection(Some(work), "MCP codec custody overflows"))?,
+            )
+            .map_err(native_error),
+        Charge::Admission {
+            maximum_owned_bytes,
+            ..
+        } => quota
+            .resize_retained(maximum_owned_bytes)
+            .map_err(native_error),
+        Charge::CopyAdmission { bytes } => work
+            .admit(acyclic_fs::WorkCounters {
+                bytes_copied: bytes,
+                ..acyclic_fs::WorkCounters::default()
+            })
+            .map_err(native_error),
+        Charge::AllocationOperation { .. } => work
+            .charge(acyclic_fs::WorkCounters {
+                allocation_operations: 1,
+                ..acyclic_fs::WorkCounters::default()
+            })
+            .map_err(native_error),
+        Charge::Copy { bytes } => work
+            .charge(acyclic_fs::WorkCounters {
+                bytes_copied: bytes,
+                ..acyclic_fs::WorkCounters::default()
+            })
+            .map_err(native_error),
+        Charge::Read { bytes } => work
+            .charge(acyclic_fs::WorkCounters {
+                source_bytes_read: bytes,
+                ..acyclic_fs::WorkCounters::default()
+            })
+            .map_err(native_error),
+        Charge::Inspect { items } => work
+            .charge(acyclic_fs::WorkCounters {
+                items_examined: items,
+                ..Default::default()
+            })
+            .map_err(native_error),
+        Charge::Work { bytes, items } => work
+            .charge(acyclic_fs::WorkCounters {
+                bytes_encoded: bytes,
+                items_examined: items,
+                ..acyclic_fs::WorkCounters::default()
+            })
+            .map_err(native_error),
     }
 }
 
-fn encode_line<T: Serialize>(value: &T, maximum: usize, work: NativeWork<'_>) -> Result<OwnedWrite> {
+fn encode_line<T: Serialize>(
+    value: &T,
+    maximum: usize,
+    work: NativeWork<'_>,
+) -> Result<(Vec<u8>, NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
-        let mut diagnostic = work.retain_owned(crate::contract::sdk_json_diagnostic_bytes()
-            .max(crate::contract::lexical_json_diagnostic_bytes())).map_err(native_error)?;
-        let mut custody = work.retain_owned(0).map_err(native_error)?;
-        let mut quota = work.retain_owned(0).map_err(native_error)?;
-        let encoded = crate::json_bytes_bounded(value, bounds(maximum.saturating_sub(1)),
-            None, &mut |event| codec_charge(work, &mut custody, &mut quota, event));
+        let mut diagnostic = work
+            .claim(
+                crate::contract::sdk_json_diagnostic_bytes()
+                    .max(crate::contract::lexical_json_diagnostic_bytes()),
+                0,
+                acyclic_fs::WorkCounters::UNCHARGED,
+            )
+            .map_err(native_error)?;
+        let mut custody = work
+            .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
+            .map_err(native_error)?;
+        let mut quota = work
+            .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
+            .map_err(native_error)?;
+        let encoded = crate::json_bytes_bounded(
+            value,
+            bounds(maximum.saturating_sub(1)),
+            None,
+            &mut |event| codec_charge(work, &mut custody, &mut quota, event),
+        );
         let bytes = match encoded {
             Ok(bytes) => bytes,
             Err(Error::Invalid(message)) => {
-                diagnostic.substitute(message.capacity() as u64).map_err(native_error)?;
-                return Err(Error::NativeDiagnostic { code: crate::wire::ErrorCode::Invalid,
-                    message, custody: diagnostic });
+                diagnostic
+                    .substitute(message.capacity() as u64)
+                    .map_err(native_error)?;
+                return Err(Error::NativeDiagnostic {
+                    code: crate::wire::ErrorCode::Invalid,
+                    message,
+                    custody: diagnostic,
+                });
             }
             Err(error) => return Err(error),
         };
         drop(quota);
         drop(diagnostic);
-        let mut write = OwnedWrite { bytes, custody: Some(custody) };
-        let capacity = write.bytes.len().checked_add(1)
+        let mut write = (bytes, Some(custody));
+        let capacity = write
+            .0
+            .len()
+            .checked_add(1)
             .ok_or_else(|| rejection(Some(work), "MCP line length overflows"))?;
         reserve_write(&mut write, capacity, Some(work))?;
         copy_work(Some(work), 1)?;
-        write.bytes.push(b'\n');
+        write.0.push(b'\n');
         return Ok(write);
     }
     let mut bytes = BytesMut::new();
-    JsonRpcMessageCodec::new().encode(value, &mut bytes)
+    JsonRpcMessageCodec::new()
+        .encode(value, &mut bytes)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    if bytes.len() > maximum { return Err(rejection(work, "MCP stdio writes exceed admitted bound")); }
-    Ok(OwnedWrite { bytes: bytes.to_vec(), custody: None })
+    if bytes.len() > maximum {
+        return Err(rejection(work, "MCP stdio writes exceed admitted bound"));
+    }
+    Ok((bytes.to_vec(), None))
 }
 
 fn frame_admission(body: &[u8], maximum: usize, work: NativeWork<'_>) -> Result<NativeCustody> {
@@ -513,25 +594,51 @@ fn frame_admission(body: &[u8], maximum: usize, work: NativeWork<'_>) -> Result<
     let mut custody = native_custody(work)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
-        let per_token = (8 * std::mem::size_of::<Value>()
-            + std::mem::size_of::<(String, Value)>() + 4) as u64;
-        let quota = (body.len() as u64).max(8).checked_mul(per_token)
+        let per_token =
+            (8 * std::mem::size_of::<Value>() + std::mem::size_of::<(String, Value)>() + 4) as u64;
+        let quota = (body.len() as u64)
+            .max(8)
+            .checked_mul(per_token)
             .and_then(|n| n.checked_add(crate::contract::sdk_json_diagnostic_bytes()))
             .ok_or_else(|| rejection(Some(work), "MCP frame quota overflows"))?;
-        if let Some(guard) = custody.as_mut() { guard.resize_retained(quota).map_err(native_error)?; }
+        if let Some(guard) = custody.as_mut() {
+            guard.resize_retained(quota).map_err(native_error)?;
+        }
         // Per-byte original cancellation and item admission before any serde.
-        let mut diagnostic = work.retain_owned(crate::contract::lexical_json_diagnostic_bytes()).map_err(native_error)?;
-        let scanned = crate::contract::admit_json(body, bounds(maximum), &mut |event| match event {
-            crate::JsonCodecCharge::Read { bytes } => work.charge(acyclic_fs::WorkCounters {
-                source_bytes_read: bytes, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
-            crate::JsonCodecCharge::Work { items, .. } | crate::JsonCodecCharge::Inspect { items } => work.charge(acyclic_fs::WorkCounters {
-                items_examined: items, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
-            _ => checkpoint(Some(work)),
-        });
+        let mut diagnostic = work
+            .claim(
+                crate::contract::lexical_json_diagnostic_bytes(),
+                0,
+                acyclic_fs::WorkCounters::UNCHARGED,
+            )
+            .map_err(native_error)?;
+        let scanned =
+            crate::contract::admit_json(body, bounds(maximum), &mut |event| match event {
+                crate::JsonCodecCharge::Read { bytes } => work
+                    .charge(acyclic_fs::WorkCounters {
+                        source_bytes_read: bytes,
+                        ..acyclic_fs::WorkCounters::default()
+                    })
+                    .map_err(native_error),
+                crate::JsonCodecCharge::Work { items, .. }
+                | crate::JsonCodecCharge::Inspect { items } => work
+                    .charge(acyclic_fs::WorkCounters {
+                        items_examined: items,
+                        ..acyclic_fs::WorkCounters::default()
+                    })
+                    .map_err(native_error),
+                _ => checkpoint(Some(work)),
+            });
         match scanned {
             Err(Error::Invalid(message)) => {
-                diagnostic.substitute(message.capacity() as u64).map_err(native_error)?;
-                return Err(Error::NativeDiagnostic { code: crate::wire::ErrorCode::Invalid, message, custody: diagnostic });
+                diagnostic
+                    .substitute(message.capacity() as u64)
+                    .map_err(native_error)?;
+                return Err(Error::NativeDiagnostic {
+                    code: crate::wire::ErrorCode::Invalid,
+                    message,
+                    custody: diagnostic,
+                });
             }
             Err(error) => return Err(error),
             Ok(()) => {}
@@ -540,28 +647,44 @@ fn frame_admission(body: &[u8], maximum: usize, work: NativeWork<'_>) -> Result<
     Ok(custody)
 }
 
-fn serde_error(source: serde_json::Error, work: NativeWork<'_>, custody: &mut NativeCustody) -> Error {
+fn serde_error(
+    source: serde_json::Error,
+    work: NativeWork<'_>,
+    custody: &mut NativeCustody,
+) -> Error {
     let _ = (&work, &custody);
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.is_some() { return Error::NativeDecode { code: crate::wire::ErrorCode::Invalid, source, custody: custody.take() }; }
+    if work.is_some() {
+        return Error::NativeDecode {
+            code: crate::wire::ErrorCode::Invalid,
+            source,
+            custody: custody.take(),
+        };
+    }
     Error::Invalid(format!("invalid MCP stdio JSON: {source}"))
 }
 
 fn validate_raw(body: &[u8], work: NativeWork<'_>, custody: &mut NativeCustody) -> Result<usize> {
     checkpoint(work)?;
     serde_json::from_slice::<&RawValue>(body)
-        .map(|raw| raw.get().len()).map_err(|source| serde_error(source, work, custody))
+        .map(|raw| raw.get().len())
+        .map_err(|source| serde_error(source, work, custody))
 }
 
 fn codec_error(
     source: rmcp::transport::async_rw::JsonRpcMessageCodecError,
-    work: NativeWork<'_>, custody: &mut NativeCustody,
+    work: NativeWork<'_>,
+    custody: &mut NativeCustody,
 ) -> Error {
     match source {
-        rmcp::transport::async_rw::JsonRpcMessageCodecError::Serde(source) => serde_error(source, work, custody),
+        rmcp::transport::async_rw::JsonRpcMessageCodecError::Serde(source) => {
+            serde_error(source, work, custody)
+        }
         other => {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() { return rejection(work, "invalid MCP stdio library frame"); }
+            if work.is_some() {
+                return rejection(work, "invalid MCP stdio library frame");
+            }
             Error::Invalid(format!("invalid MCP stdio message: {other}"))
         }
     }
@@ -571,8 +694,11 @@ fn decode_value(body: &[u8], work: NativeWork<'_>, custody: &mut NativeCustody) 
     checkpoint(work)?;
     let mut decoder = serde_json::Deserializer::from_slice(body);
     decoder.disable_recursion_limit();
-    let value = Value::deserialize(&mut decoder).map_err(|source| serde_error(source, work, custody))?;
-    decoder.end().map_err(|source| serde_error(source, work, custody))?;
+    let value =
+        Value::deserialize(&mut decoder).map_err(|source| serde_error(source, work, custody))?;
+    decoder
+        .end()
+        .map_err(|source| serde_error(source, work, custody))?;
     drop(decoder);
     Ok(value)
 }
@@ -580,20 +706,28 @@ fn decode_value(body: &[u8], work: NativeWork<'_>, custody: &mut NativeCustody) 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn value_storage(value: &Value, work: NativeWork<'_>) -> Result<u64> {
     checkpoint(work)?;
-    let add = |a: u64, b: u64| a.checked_add(b)
-        .ok_or_else(|| rejection(work, "MCP result storage overflows"));
+    let add = |a: u64, b: u64| {
+        a.checked_add(b)
+            .ok_or_else(|| rejection(work, "MCP result storage overflows"))
+    };
     match value {
         Value::String(text) => Ok(text.capacity() as u64),
         Value::Array(values) => {
             let mut bytes = (values.capacity() * std::mem::size_of::<Value>()) as u64;
-            for value in values { scan_work(work)?; bytes = add(bytes, value_storage(value, work)?)?; }
+            for value in values {
+                scan_work(work)?;
+                bytes = add(bytes, value_storage(value, work)?)?;
+            }
             Ok(bytes)
         }
         Value::Object(values) => {
             let mut bytes = (values.len() * std::mem::size_of::<(String, Value)>()) as u64;
             for (key, value) in values {
                 scan_work(work)?;
-                bytes = add(add(bytes, key.capacity() as u64)?, value_storage(value, work)?)?;
+                bytes = add(
+                    add(bytes, key.capacity() as u64)?,
+                    value_storage(value, work)?,
+                )?;
             }
             Ok(bytes)
         }
@@ -702,13 +836,14 @@ mod tests {
         transcript
             .extend(line(&json!({"jsonrpc":"2.0","id":op.to_string(),"result":expected})).unwrap());
         for width in 1..=transcript.len() {
-            let (mut codec, first) = McpStdioExchange::new(
-                init,
-                op,
-                "tools/call",
-                &json!({"name":"echo","arguments":{}}),
-                4096,
-            )
+            let (mut codec, first, _) = McpStdioRequest {
+                initialization: init,
+                operation: op,
+                method: McpStdioMethod::CallTool,
+                params: json!({"name":"echo","arguments":{}}),
+                maximum_bytes: 4096,
+            }
+            .exchange(None)
             .unwrap();
             assert_eq!(
                 serde_json::from_slice::<Value>(&first).unwrap()["method"],
@@ -716,7 +851,7 @@ mod tests {
             );
             let mut writes = Vec::new();
             for chunk in transcript.chunks(width) {
-                writes.extend(codec.push(chunk).unwrap());
+                writes.extend(codec.push(chunk, None).unwrap().0);
             }
             let messages: Vec<Value> = writes
                 .split(|byte| *byte == b'\n')
@@ -726,7 +861,7 @@ mod tests {
             assert_eq!(messages.len(), 2);
             assert_eq!(messages[0]["method"], "notifications/initialized");
             assert_eq!(messages[1]["id"], op.to_string());
-            assert_eq!(codec.finish().unwrap(), expected);
+            assert_eq!(codec.finish().unwrap().0, expected);
         }
     }
 
@@ -735,21 +870,37 @@ mod tests {
         let (init, op) = ids();
         for bytes in [b"not json\n".to_vec(), line(&json!({"jsonrpc":"2.0","id":op.to_string(),"result":{}})).unwrap(),
             line(&json!({"jsonrpc":"2.0","id":init.to_string(),"method":"sampling/createMessage","params":{}})).unwrap()] {
-            let (mut codec,_) = McpStdioExchange::new(init,op,"tools/list",&json!({}),4096).unwrap();
-            assert!(codec.push(&bytes).is_err());
-            assert!(codec.push(&initialized(init)).is_err());
+            let (mut codec,_,_) = McpStdioRequest {
+                initialization: init, operation: op, method: McpStdioMethod::ListTools,
+                params: json!({}), maximum_bytes: 4096,
+            }.exchange(None).unwrap();
+            assert!(codec.push(&bytes, None).is_err());
+            assert!(codec.push(&initialized(init), None).is_err());
             assert!(codec.finish().is_err());
         }
-        let (mut codec, _) =
-            McpStdioExchange::new(init, op, "tools/list", &json!({}), 4096).unwrap();
-        assert!(codec.push(&vec![b' '; 4097]).is_err());
-        let (mut codec, _) =
-            McpStdioExchange::new(init, op, "tools/list", &json!({}), 4096).unwrap();
+        let (mut codec, _, _) = McpStdioRequest {
+            initialization: init,
+            operation: op,
+            method: McpStdioMethod::ListTools,
+            params: json!({}),
+            maximum_bytes: 4096,
+        }
+        .exchange(None)
+        .unwrap();
+        assert!(codec.push(&vec![b' '; 4097], None).is_err());
+        let (mut codec, _, _) = McpStdioRequest {
+            initialization: init,
+            operation: op,
+            method: McpStdioMethod::ListTools,
+            params: json!({}),
+            maximum_bytes: 4096,
+        }
+        .exchange(None)
+        .unwrap();
         let mut truncated = initialized(init);
         truncated.pop();
-        assert!(codec.push(&truncated).unwrap().is_empty());
+        assert!(codec.push(&truncated, None).unwrap().0.is_empty());
         assert!(matches!(codec.finish(), Err(Error::Indeterminate(_))));
-        assert!(McpStdioExchange::new(init, init, "tools/list", &json!({}), 4096).is_err());
     }
 
     #[test]
@@ -763,12 +914,19 @@ mod tests {
                 .as_bytes(),
         );
         for width in [1, 2, 3, 17, transcript.len()] {
-            let (mut codec, _) =
-                McpStdioExchange::new(init, op, "tools/list", &json!({}), 4096).unwrap();
-            for chunk in transcript.chunks(width) {
-                codec.push(chunk).unwrap();
+            let (mut codec, _, _) = McpStdioRequest {
+                initialization: init,
+                operation: op,
+                method: McpStdioMethod::ListTools,
+                params: json!({}),
+                maximum_bytes: 4096,
             }
-            assert_eq!(codec.finish().unwrap(), expected);
+            .exchange(None)
+            .unwrap();
+            for chunk in transcript.chunks(width) {
+                codec.push(chunk, None).unwrap().0;
+            }
+            assert_eq!(codec.finish().unwrap().0, expected);
         }
     }
 
@@ -811,10 +969,17 @@ mod tests {
             );
             logs.0.lock().unwrap().clear();
             let (init, op) = ids();
-            let (mut guarded, _) =
-                McpStdioExchange::new(init, op, "tools/list", &json!({}), 4096).unwrap();
-            assert!(guarded.push(private).is_err());
-            assert!(guarded.push(&initialized(init)).is_err());
+            let (mut guarded, _, _) = McpStdioRequest {
+                initialization: init,
+                operation: op,
+                method: McpStdioMethod::ListTools,
+                params: json!({}),
+                maximum_bytes: 4096,
+            }
+            .exchange(None)
+            .unwrap();
+            assert!(guarded.push(private, None).is_err());
+            assert!(guarded.push(&initialized(init), None).is_err());
             assert!(logs.0.lock().unwrap().is_empty());
         });
     }
@@ -830,7 +995,11 @@ mod tests {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_work() -> acyclic_fs::NativeMaterializationWork {
-        acyclic_fs::NativeMaterializationWork::new(finite_budget(), &acyclic_fs::CancellationToken::new()).unwrap()
+        acyclic_fs::NativeMaterializationWork::new(
+            finite_budget(),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .unwrap()
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -839,48 +1008,89 @@ mod tests {
         let (initialization, operation) = ids();
         for (method, params, expected) in [
             (McpStdioMethod::ListTools, json!({}), json!({"tools":[]})),
-            (McpStdioMethod::CallTool, json!({"name":"echo","arguments":{"n":u64::MAX}}),
-                json!({"content":[{"type":"text","text":"héllo"}],"structuredContent":null})),
-            (McpStdioMethod::ListResources, json!({}), json!({"resources":[]})),
-            (McpStdioMethod::ListResourceTemplates, json!({}), json!({"resourceTemplates":[]})),
-            (McpStdioMethod::ReadResource, json!({"uri":"fixture://binary"}),
-                json!({"contents":[{"uri":"fixture://binary","blob":"AAE="}]})),
-            (McpStdioMethod::ListPrompts, json!({}), json!({"prompts":[]})),
-            (McpStdioMethod::GetPrompt, json!({"name":"fixture","arguments":{}}), json!({"messages":[]})),
+            (
+                McpStdioMethod::CallTool,
+                json!({"name":"echo","arguments":{"n":u64::MAX}}),
+                json!({"content":[{"type":"text","text":"héllo"}],"structuredContent":null}),
+            ),
+            (
+                McpStdioMethod::ListResources,
+                json!({}),
+                json!({"resources":[]}),
+            ),
+            (
+                McpStdioMethod::ListResourceTemplates,
+                json!({}),
+                json!({"resourceTemplates":[]}),
+            ),
+            (
+                McpStdioMethod::ReadResource,
+                json!({"uri":"fixture://binary"}),
+                json!({"contents":[{"uri":"fixture://binary","blob":"AAE="}]}),
+            ),
+            (
+                McpStdioMethod::ListPrompts,
+                json!({}),
+                json!({"prompts":[]}),
+            ),
+            (
+                McpStdioMethod::GetPrompt,
+                json!({"name":"fixture","arguments":{}}),
+                json!({"messages":[]}),
+            ),
         ] {
-            let request = McpStdioRequest { initialization, operation, method, params, maximum_bytes: 4096 };
+            let request = McpStdioRequest {
+                initialization,
+                operation,
+                method,
+                params,
+                maximum_bytes: 4096,
+            };
             let work = native_work();
             let baseline = work.live_allocation_bytes();
-            let probe = work.retain_owned(0).unwrap();
-            let (mut ordinary, ordinary_first) = request.exchange().unwrap();
-            let (mut native, first, first_guard) = request.exchange_with_native_work(&work).unwrap();
+            let probe = work
+                .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
+                .unwrap();
+            let (mut ordinary, ordinary_first, _) = request.exchange(None).unwrap();
+            let (mut native, first, first_guard) = request.exchange(Some(&work)).unwrap();
             assert_eq!(first, ordinary_first);
-            assert!(first_guard.shares_ledger(&probe));
-            assert!(first_guard.bytes() >= first.capacity() as u64);
+            assert!(first_guard.as_ref().unwrap().shares_ledger(&probe));
+            assert!(first_guard.as_ref().unwrap().bytes() >= first.capacity() as u64);
             let mut transcript = initialized(initialization);
             transcript.extend_from_slice(b"\xef\xbb\xbf");
-            let mut result = line(&json!({"jsonrpc":"2.0","id":operation.to_string(),"result":expected})).unwrap();
+            let mut result =
+                line(&json!({"jsonrpc":"2.0","id":operation.to_string(),"result":expected}))
+                    .unwrap();
             result.pop();
             result.extend_from_slice(b"\r\n");
             transcript.extend_from_slice(&result);
             for byte in &transcript {
                 let chunk = std::slice::from_ref(byte);
-                let ordinary_write = ordinary.push(chunk).unwrap();
-                let (write, guard) = native.push_with_native_work(chunk, &work).unwrap();
+                let ordinary_write = ordinary.push(chunk, None).unwrap().0;
+                let (write, guard) = native.push(chunk, Some(&work)).unwrap();
                 assert_eq!(write, ordinary_write);
-                assert!(guard.shares_ledger(&probe));
-                assert!(guard.bytes() >= write.capacity() as u64);
+                if !write.is_empty() {
+                    let guard = guard.as_ref().unwrap();
+                    assert!(guard.shares_ledger(&probe));
+                    assert!(guard.bytes() >= write.capacity() as u64);
+                }
                 drop(write);
                 drop(guard);
             }
-            assert_eq!(ordinary.finish().unwrap(), expected);
+            assert_eq!(ordinary.finish().unwrap().0, expected);
             drop(first);
             drop(first_guard);
-            let (value, guard) = native.finish_with_native_work().unwrap();
+            let (value, guard) = native.finish().unwrap();
             assert_eq!(value, expected);
-            assert!(guard.shares_ledger(&probe));
-            assert_eq!(guard.bytes(), value_storage(&value, None).unwrap());
-            assert_eq!(work.live_allocation_bytes(), baseline + guard.bytes());
+            assert!(guard.as_ref().unwrap().shares_ledger(&probe));
+            assert_eq!(
+                guard.as_ref().unwrap().bytes(),
+                value_storage(&value, None).unwrap()
+            );
+            assert_eq!(
+                work.live_allocation_bytes(),
+                baseline + guard.as_ref().unwrap().bytes()
+            );
             drop(value);
             drop(guard);
             assert_eq!(work.live_allocation_bytes(), baseline);
@@ -893,60 +1103,89 @@ mod tests {
     fn original_native_partial_line_max_denial_and_failed_state_precede_capture() {
         let (initialization, operation) = ids();
         let work = native_work();
-        let request = McpStdioRequest { initialization, operation,
-            method: McpStdioMethod::ListTools, params: json!({}), maximum_bytes: 4096 };
-        let (mut exchange, first, guard) = request.exchange_with_native_work(&work).unwrap();
-        let (empty, empty_guard) = exchange.push_with_native_work(b"{", &work).unwrap();
+        let request = McpStdioRequest {
+            initialization,
+            operation,
+            method: McpStdioMethod::ListTools,
+            params: json!({}),
+            maximum_bytes: 4096,
+        };
+        let (mut exchange, first, guard) = request.exchange(Some(&work)).unwrap();
+        let (empty, empty_guard) = exchange.push(b"{", Some(&work)).unwrap();
         assert!(empty.is_empty());
-        assert_eq!(&exchange.line[..], b"{");
-        assert!(exchange.custody.as_ref().unwrap().bytes() >= 4096);
         drop(empty);
         drop(empty_guard);
         let copied = work.receipt().bytes_copied;
-        assert!(exchange.push_with_native_work(&vec![b' '; 4096], &work).is_err());
+        assert!(exchange.push(&vec![b' '; 4096], Some(&work)).is_err());
         assert_eq!(work.receipt().bytes_copied, copied);
-        assert_eq!(&exchange.line[..], b"{");
-        assert_eq!(exchange.phase, Phase::Failed);
-        assert!(exchange.request.bytes.is_empty());
-        assert!(exchange.push_with_native_work(&initialized(initialization), &work).is_err());
-        assert!(exchange.finish_with_native_work().is_err());
+        assert!(
+            exchange
+                .push(&initialized(initialization), Some(&work))
+                .is_err()
+        );
+        assert!(exchange.finish().is_err());
         drop(first);
         drop(guard);
-        assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
+        assert_eq!(
+            work.live_allocation_bytes(),
+            acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+        );
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
         let (initialization, operation) = ids();
-        let request = McpStdioRequest { initialization, operation,
-            method: McpStdioMethod::ListTools, params: json!({}), maximum_bytes: 4096 };
+        let request = McpStdioRequest {
+            initialization,
+            operation,
+            method: McpStdioMethod::ListTools,
+            params: json!({}),
+            maximum_bytes: 4096,
+        };
         let work = native_work();
-        let (mut exchange, first, guard) = request.exchange_with_native_work(&work).unwrap();
+        let (mut exchange, first, guard) = request.exchange(Some(&work)).unwrap();
         let copied = work.receipt().bytes_copied;
         work.cancellation().cancel();
-        let error = exchange.push_with_native_work(&initialized(initialization), &work).err().unwrap();
-        assert!(matches!(error, Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. }));
+        let error = exchange
+            .push(&initialized(initialization), Some(&work))
+            .err()
+            .unwrap();
+        assert!(matches!(
+            error,
+            Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                ..
+            }
+        ));
         assert_eq!(work.receipt().bytes_copied, copied);
-        assert_eq!(exchange.phase, Phase::Failed);
         assert!(exchange.line.is_empty());
         drop(first);
         drop(guard);
         drop(exchange);
-        assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
+        assert_eq!(
+            work.live_allocation_bytes(),
+            acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+        );
 
         let work = native_work();
         let foreign = native_work();
-        let (mut exchange, first, guard) = request.exchange_with_native_work(&work).unwrap();
-        assert!(exchange.push_with_native_work(&initialized(initialization), &foreign).is_err());
-        assert!(exchange.push_with_native_work(&initialized(initialization), &work).is_err());
+        let (mut exchange, first, guard) = request.exchange(Some(&work)).unwrap();
+        assert!(
+            exchange
+                .push(&initialized(initialization), Some(&foreign))
+                .is_err()
+        );
+        assert!(
+            exchange
+                .push(&initialized(initialization), Some(&work))
+                .is_err()
+        );
         drop(first);
         drop(guard);
         drop(exchange);
-        let (mut exchange, first, guard) = request.exchange_with_native_work(&work).unwrap();
-        assert!(exchange.push(&initialized(initialization)).is_err());
-        assert_eq!(exchange.phase, Phase::Failed);
+        let (mut exchange, first, guard) = request.exchange(Some(&work)).unwrap();
+        assert!(exchange.push(&initialized(initialization), None).is_err());
         drop(first);
         drop(guard);
         drop(exchange);
@@ -956,21 +1195,32 @@ mod tests {
     #[test]
     fn original_native_frame_quota_precedes_trusted_parse_and_preserves_owned_cause() {
         let (initialization, operation) = ids();
-        let request = McpStdioRequest { initialization, operation,
-            method: McpStdioMethod::ListTools, params: json!({}), maximum_bytes: 4096 };
+        let request = McpStdioRequest {
+            initialization,
+            operation,
+            method: McpStdioMethod::ListTools,
+            params: json!({}),
+            maximum_bytes: 4096,
+        };
         let sizing = native_work();
-        let (exchange, first, guard) = request.exchange_with_native_work(&sizing).unwrap();
+        let (exchange, first, guard) = request.exchange(Some(&sizing)).unwrap();
         let preparation_peak = sizing.receipt().peak_allocation_bytes;
         drop(exchange);
         drop(first);
         drop(guard);
         let mut budget = finite_budget();
         budget.peak_allocation_bytes = preparation_peak + 1024;
-        let work = acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new()).unwrap();
-        let (mut exchange, first, guard) = request.exchange_with_native_work(&work).unwrap();
-        let error = exchange.push_with_native_work(&initialized(initialization), &work).err().unwrap();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            budget,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .unwrap();
+        let (mut exchange, first, guard) = request.exchange(Some(&work)).unwrap();
+        let error = exchange
+            .push(&initialized(initialization), Some(&work))
+            .err()
+            .unwrap();
         assert!(matches!(error, Error::NativeWork { .. }));
-        assert_eq!(exchange.phase, Phase::Failed);
         assert!(exchange.result.is_none());
         drop(exchange);
         drop(first);
@@ -978,12 +1228,19 @@ mod tests {
         work.receipt().verify(budget).unwrap();
 
         let work = native_work();
-        let (mut exchange, first, guard) = request.exchange_with_native_work(&work).unwrap();
-        let error = exchange.push_with_native_work(b"{\"jsonrpc\":,\"id\":1}\n", &work).err().unwrap();
+        let (mut exchange, first, guard) = request.exchange(Some(&work)).unwrap();
+        let error = exchange
+            .push(b"{\"jsonrpc\":,\"id\":1}\n", Some(&work))
+            .err()
+            .unwrap();
         match error {
-            Error::NativeDecode { source, custody: Some(custody) } => {
+            Error::NativeDecode {
+                source,
+                custody: Some(custody),
+                ..
+            } => {
                 assert!(source.is_syntax());
-                assert!(custody.shares_ledger(&guard));
+                assert!(custody.shares_ledger(guard.as_ref().unwrap()));
                 work.cancellation().cancel();
                 drop(source);
                 drop(custody);
@@ -993,7 +1250,9 @@ mod tests {
         drop(first);
         drop(guard);
         drop(exchange);
-        assert_eq!(work.live_allocation_bytes(), acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
+        assert_eq!(
+            work.live_allocation_bytes(),
+            acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+        );
     }
-
 }

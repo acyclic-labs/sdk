@@ -17,8 +17,6 @@ impl CommandDispatch {
             #[cfg(not(target_arch = "wasm32"))]
             array_capacity_claimed: 0,
             #[cfg(not(target_arch = "wasm32"))]
-            additional_capacity_claimed: 0,
-            #[cfg(not(target_arch = "wasm32"))]
             additional_custody: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             custody: None,
@@ -82,7 +80,7 @@ impl CommandDispatch {
         #[cfg(not(target_arch = "wasm32"))]
         if let Self::Ready { custody: Some(guard), .. } = self {
             let io = super::super::fork_preparer::bounded_io::PreparationIo::from_native_work(guard.work())?;
-            let bytes = io.encode_json(&envelope, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
+            let bytes = io.encode(&envelope, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
             let within = bytes.len() as u64 <= maximum_bytes;
             drop(bytes);
             return Ok(within);
@@ -115,13 +113,14 @@ impl CommandDispatch {
     #[cfg(not(target_arch = "wasm32"))]
     fn prepare_custody_transfer(&mut self, progress: &TaskCommandProgress) -> Result<()> {
         let TaskCommandProgress::ReadyWithNativeCustody { custody: incoming, .. } = progress else { return Ok(()); };
-        let Self::Ready { custody: Some(primary), additional_custody, additional_capacity_claimed, .. } = self else { return Ok(()); };
+        let Self::Ready { custody: Some(primary), additional_custody, .. } = self else { return Ok(()); };
         if primary.shares_ledger(incoming) {
             primary.bytes().checked_add(incoming.bytes()).ok_or_else(overflow)?;
         } else if let Some(existing) = additional_custody.iter().find(|guard| guard.shares_ledger(incoming)) {
             existing.bytes().checked_add(incoming.bytes()).ok_or_else(overflow)?;
         } else {
-            reserve_native_vec(additional_custody, additional_capacity_claimed, primary)?;
+            let mut claimed = additional_custody.capacity().checked_mul(std::mem::size_of::<acyclic_fs::NativeAllocation>()).ok_or_else(overflow)? as u64;
+            reserve_native_vec(additional_custody, &mut claimed, primary)?;
         }
         Ok(())
     }
@@ -188,7 +187,7 @@ mod tests {
     }
 
     fn result(work: &NativeMaterializationWork, text: &str) -> TaskCommandProgress {
-        let mut custody = work.retain_owned(0).expect("same-ledger custody");
+        let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("same-ledger custody");
         let value = Value::String(native_text(&mut custody, text).expect("admitted actual string"));
         TaskCommandProgress::ReadyWithNativeCustody { value, custody }
     }
@@ -229,7 +228,7 @@ mod tests {
         let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).expect("state allocation only");
         let baseline = work.live_allocation_bytes();
         let progress = TaskCommandProgress::ReadyWithNativeCustody {
-            value: Value::Null, custody: work.retain_owned(0).expect("zero-byte genuine custody"),
+            value: Value::Null, custody: work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("zero-byte genuine custody"),
         };
         let mut ready = CommandDispatch::empty_results();
         let error = ready.push_result(OperationId::from_bytes([1; 16]), progress).err().expect("copy quota");

@@ -1,22 +1,20 @@
-import type { Authority, OperationId } from "./index.js";
-import type { FileRef, ReferencedAttachments } from "./conversation.js";
-import { NativeContracts } from "./native-contracts.js";
-import { isSafeAuthorityId } from "./rust-policy.js";
+import { type Authority, type OperationId } from "./index.js";
+import { type FileRef, type ReferencedAttachments } from "./conversation.js";
+import { type ClientCheckpoint, type OutboxStore, MemoryOutbox, type CursorStore, MemoryCursorStore, type AtomicClientStateStore, ClientCheckpointConflict } from "./client-store.js";
 import { SnapshotStore } from "./client-snapshot.js";
-import { RequestScheduler, requestBound } from "./client-requests.js";
+import { RequestScheduler, requestBound, abortableWait } from "./client-requests.js";
+import { retainedDataBytes, assertOutboxSafe, cloneStructuredValue } from "./client-data.js";
 
 export interface ReplayCursor {
   readonly generation: string;
   readonly revision: bigint;
 }
-
 export interface ClientEvent<Event = unknown> {
   readonly authority: Authority;
   readonly revision: bigint;
   readonly operationId: OperationId;
   readonly event: Event;
 }
-
 export interface Delivery<Event = unknown> {
   readonly authority: Authority;
   readonly generation: string;
@@ -25,8 +23,6 @@ export interface Delivery<Event = unknown> {
   readonly events: readonly ClientEvent<Event>[];
   readonly live: boolean;
 }
-
-/** Only immutable addresses and bounded routing metadata may enter a retry outbox. */
 export interface OfflinePayload {
   readonly content?: FileRef;
   readonly attachments?: ReferencedAttachments;
@@ -35,84 +31,17 @@ export interface OfflinePayload {
   /** Numeric/boolean routing hints only; free-form strings could persist credentials. */
   readonly metadata?: Readonly<Record<string, number | boolean | bigint | null>>;
 }
-
-interface ClientCommandBase {
-  readonly operationId: OperationId;
-  readonly authority: Authority;
-  readonly kind: string;
-}
-
-export type ClientCommand<Payload = unknown> =
-  | (ClientCommandBase & Readonly<{ payload: OfflinePayload; offlineSafe: true }>)
-  | (ClientCommandBase & Readonly<{ payload: Payload; offlineSafe?: false }>);
-
+export type ClientCommand = Readonly<{ operationId: OperationId; authority: Authority; kind: string }> & (
+  | Readonly<{ payload: OfflinePayload; offlineSafe: true }>
+  | Readonly<{ payload: unknown; offlineSafe?: false }>
+);
 export interface Connection<Event = unknown> extends AsyncIterable<Delivery<Event>> {
   send(command: ClientCommand): Promise<void>;
   close(): Promise<void> | void;
 }
-
 export interface Transport<Event = unknown> {
   connect(cursors: ReadonlyMap<string, ReplayCursor>, signal?: AbortSignal): Promise<Connection<Event>>;
 }
-
-export interface OutboxStore {
-  load(): Promise<readonly ClientCommand[]>;
-  /** A fixed enqueue cut prevents an active producer from extending one flush. */
-  loadPage?(afterSequence?: number, throughSequence?: number): Promise<OutboxPage>;
-  put(command: ClientCommand): Promise<void>;
-  delete(operationId: OperationId): Promise<void>;
-}
-
-export interface OutboxPage {
-  readonly commands: readonly ClientCommand[];
-  readonly afterSequence: number;
-  readonly throughSequence: number;
-}
-
-export interface CursorStore {
-  loadCursors(): Promise<ReadonlyMap<string, ReplayCursor>>;
-  putCursor(authority: Authority, cursor: ReplayCursor): Promise<void>;
-  deleteCursor(authority: Authority): Promise<void>;
-}
-
-export interface AtomicClientStateStore extends OutboxStore, CursorStore {
-  commit(authority: Authority, cursor: ReplayCursor, operationId?: OperationId, checkpoint?: ClientCheckpoint,
-    expectedCursor?: ReplayCursor | null, expectedCheckpointVersion?: bigint | null): Promise<bigint>;
-  loadRecovery(): Promise<readonly ClientRecoveryRecord[]>;
-}
-
-/** Data only. The projection adapter validates its exact reducer/schema identity. */
-export interface ClientCheckpoint {
-  readonly identity: string;
-  readonly state: unknown;
-}
-
-export class ClientCheckpointConflict extends Error {}
-
-export interface ClientRecoveryRecord {
-  readonly authority: string;
-  readonly cursor: ReplayCursor;
-  readonly checkpointVersion: bigint;
-  readonly checkpoint?: ClientCheckpoint | undefined;
-}
-
-const clientMetadataKey = "@harness/outbox-sequence";
-interface ClientMetadata {
-  readonly authority: typeof clientMetadataKey;
-  readonly sequence: number;
-  readonly checkpointVersion: bigint;
-}
-
-function clientMetadata(value: unknown): ClientMetadata {
-  retainedDataBytes(value, 4096);
-  const record = value as ClientMetadata;
-  if (record?.authority !== clientMetadataKey || Object.keys(record).length !== 3 ||
-      !Number.isSafeInteger(record.sequence) || record.sequence < 0 ||
-      typeof record.checkpointVersion !== "bigint" || record.checkpointVersion < 0n ||
-      record.checkpointVersion > 0xffff_ffff_ffff_ffffn) throw new Error("invalid client allocation metadata");
-  return record;
-}
-
 export interface ProjectionRecovery<State> {
   readonly authority: Authority;
   /** Includes reducer, schema, adapter and security namespace identities. */
@@ -122,298 +51,11 @@ export interface ProjectionRecovery<State> {
   /** Validate data and its exact authority/generation/revision before restoring. */
   decode(state: unknown, cursor: ReplayCursor): State;
 }
-
 interface RecoveryProjection<Event> {
   checkpoint(): ClientCheckpoint;
   prepare(event: ClientEvent<Event>): { checkpoint: ClientCheckpoint; publish(): void };
   restore(checkpoint: ClientCheckpoint, cursor: ReplayCursor): () => void;
 }
-
-export class MemoryOutbox implements OutboxStore {
-  readonly #commands = new Map<OperationId, ClientCommand>();
-  readonly #sizes = new Map<OperationId, number>();
-  #bytes = 0;
-
-  constructor(readonly maximumCommands = 1024, readonly maximumBytes = 16 * 1024 * 1024) {
-    requestBound(maximumCommands, "maximumCommands");
-    requestBound(maximumBytes, "maximumBytes");
-  }
-
-  async load(): Promise<readonly ClientCommand[]> {
-    return [...this.#commands.values()].map(command => cloneStructuredValue(command, new Set()) as ClientCommand);
-  }
-
-  async put(command: ClientCommand): Promise<void> {
-    const bytes = retainedDataBytes(command, this.maximumBytes);
-    if ((!this.#commands.has(command.operationId) && this.#commands.size >= this.maximumCommands) ||
-        bytes > this.maximumBytes - this.#bytes + (this.#sizes.get(command.operationId) ?? 0)) {
-      throw new RangeError("memory outbox capacity exceeded");
-    }
-    const admitted = await assertOutboxSafe(command);
-    // Validation awaits WASM; another caller may have admitted work meanwhile.
-    const ownedBytes = retainedDataBytes(admitted, this.maximumBytes);
-    if ((!this.#commands.has(admitted.operationId) && this.#commands.size >= this.maximumCommands) ||
-        ownedBytes > this.maximumBytes - this.#bytes + (this.#sizes.get(admitted.operationId) ?? 0)) {
-      throw new RangeError("memory outbox capacity exceeded");
-    }
-    this.#bytes += ownedBytes - (this.#sizes.get(admitted.operationId) ?? 0);
-    this.#sizes.set(admitted.operationId, ownedBytes);
-    this.#commands.set(admitted.operationId, admitted);
-  }
-
-  async delete(operationId: OperationId): Promise<void> {
-    this.#bytes -= this.#sizes.get(operationId) ?? 0;
-    this.#sizes.delete(operationId);
-    this.#commands.delete(operationId);
-  }
-}
-
-export class MemoryCursorStore implements CursorStore {
-  readonly #cursors = new Map<string, ReplayCursor>();
-
-  constructor(readonly maximumCursors = 64) { requestBound(maximumCursors, "maximumCursors"); }
-
-  async loadCursors(): Promise<ReadonlyMap<string, ReplayCursor>> {
-    return new Map(this.#cursors);
-  }
-
-  async putCursor(authority: Authority, cursor: ReplayCursor): Promise<void> {
-    validateCursor(cursor);
-    retainedDataBytes({ authority, cursor }, 4096);
-    if (!this.#cursors.has(authorityKey(authority)) && this.#cursors.size >= this.maximumCursors) {
-      throw new RangeError("cursor capacity exceeded");
-    }
-    this.#cursors.set(authorityKey(authority), Object.freeze({ ...cursor }));
-  }
-
-  async deleteCursor(authority: Authority): Promise<void> {
-    this.#cursors.delete(authorityKey(authority));
-  }
-}
-
-export interface IndexedDbClientStoreOptions {
-  /** Required tenant/application namespace. Never share this name across security boundaries. */
-  readonly databaseName: string;
-  readonly maximumCommands?: number;
-  readonly maximumBytes?: number;
-  /** Separate from encoded storage bytes; accounts retained object metadata. */
-  readonly maximumResidentBytes?: number;
-  readonly maximumCursors?: number;
-  readonly maximumCheckpointBytes?: number;
-  readonly indexedDB?: IDBFactory;
-}
-
-/** Durable browser state with atomic cursor advancement and outbox acknowledgement. */
-export class IndexedDbClientStore implements AtomicClientStateStore {
-  #database: Promise<IDBDatabase> | undefined;
-  readonly #factory: IDBFactory | undefined;
-  readonly #name: string;
-  readonly #maximumCommands: number;
-  readonly #maximumBytes: number;
-  readonly #maximumResidentBytes: number;
-  readonly #maximumCursors: number;
-  readonly #maximumCheckpointBytes: number;
-
-  constructor(options: IndexedDbClientStoreOptions) {
-    this.#maximumCommands = requestBound(options.maximumCommands ?? 1024, "maximumCommands");
-    this.#maximumBytes = requestBound(options.maximumBytes ?? 16 * 1024 * 1024, "maximumBytes");
-    this.#maximumResidentBytes = requestBound(options.maximumResidentBytes ?? 16 * 1024 * 1024, "maximumResidentBytes");
-    this.#maximumCursors = requestBound(options.maximumCursors ?? 64, "maximumCursors");
-    this.#maximumCheckpointBytes = requestBound(options.maximumCheckpointBytes ?? 256 * 1024, "maximumCheckpointBytes");
-    this.#factory = options.indexedDB ?? globalThis.indexedDB;
-    if (options.databaseName.trim() === "") throw new TypeError("databaseName is required");
-    this.#name = options.databaseName;
-  }
-
-  #open(): Promise<IDBDatabase> {
-    if (this.#factory === undefined) return Promise.reject(new Error("IndexedDB is not available"));
-    return this.#database ??= openClientDatabase(this.#factory, this.#name);
-  }
-
-  async load(): Promise<readonly ClientCommand[]> {
-    const commands: ClientCommand[] = [];
-    let after = 0;
-    let through: number | undefined;
-    do {
-      const page = await this.loadPage(after, through);
-      through = page.throughSequence;
-      after = page.afterSequence;
-      commands.push(...page.commands);
-      if (commands.length > this.#maximumCommands) throw new RangeError("outbox capacity exceeded");
-      retainedDataBytes(commands, this.#maximumResidentBytes);
-    } while (after < through);
-    return commands;
-  }
-
-  async loadPage(afterSequence = 0, throughSequence?: number): Promise<OutboxPage> {
-    if (!Number.isSafeInteger(afterSequence) || afterSequence < 0 ||
-        (throughSequence !== undefined && (!Number.isSafeInteger(throughSequence) || throughSequence < afterSequence))) {
-      throw new RangeError("invalid outbox page cut");
-    }
-    const database = await this.#open();
-    const store = database.transaction("outbox").objectStore("outbox");
-    const index = store.index("sequence");
-    const [count, indexedCount, last] = await Promise.all([request(store.count()), request(index.count()), request(index.openCursor(null, "prev"))]);
-    if (count > this.#maximumCommands) throw new RangeError("outbox capacity exceeded");
-    if (count !== indexedCount) throw new Error("outbox contains an unindexed record");
-    const through = throughSequence ?? (last === null ? 0 : outboxRecord(last.value).sequence);
-    if (afterSequence >= through) return { commands: [], afterSequence: through, throughSequence: through };
-    const records: OutboxRecord[] = [];
-    let bytes = 0;
-    let after = afterSequence;
-    await visitOutbox(index, IDBKeyRange.bound(afterSequence, through, true, false), record => {
-      bytes += retainedDataBytes(record.command, this.#maximumResidentBytes - bytes);
-      records.push(record);
-      after = record.sequence;
-      return records.length < Math.min(64, this.#maximumCommands);
-    });
-    // An empty tail (e.g. another tab acknowledged it) completes this fixed cut.
-    if (records.length < Math.min(64, this.#maximumCommands)) after = through;
-    return { commands: await Promise.all(records.map(record => assertOutboxSafe(record.command))),
-      afterSequence: after, throughSequence: through };
-  }
-
-  async put(command: ClientCommand): Promise<void> {
-    retainedDataBytes(command, this.#maximumResidentBytes);
-    const storedCommand = await assertOutboxSafe(command);
-    const residentBytes = retainedDataBytes(storedCommand, this.#maximumResidentBytes);
-    const contracts = await NativeContracts.create();
-    const bytes = contracts.encodeCanonicalJson(cloneStructuredValue(storedCommand, new Set(), false, true)).byteLength;
-    const database = await this.#open();
-    const transaction = database.transaction(["outbox", "cursors"], "readwrite");
-    const store = transaction.objectStore("outbox");
-    const cursors = transaction.objectStore("cursors");
-    const [storedCount, indexedCount, rawMetadata] = await Promise.all([request(store.count()),
-      request(store.index("sequence").count()), request(cursors.get(clientMetadataKey))]);
-    const metadata = clientMetadata(rawMetadata);
-    if (storedCount !== indexedCount || storedCount > this.#maximumCommands) {
-      transaction.abort();
-      throw new Error("invalid outbox record count");
-    }
-    let existing: OutboxRecord | undefined;
-    let count = 0;
-    let retained = residentBytes;
-    let encoded = bytes;
-    let maximum = 0;
-    await visitOutbox(store.index("sequence"), null, record => {
-      count += 1;
-      maximum = record.sequence;
-      const size = retainedDataBytes(record.command, this.#maximumResidentBytes);
-      const encodedSize = contracts.encodeCanonicalJson(cloneStructuredValue(record.command, new Set(), false, true)).byteLength;
-      if (record.bytes !== encodedSize) throw new Error("invalid outbox byte accounting");
-      if (record.operationId === storedCommand.operationId) existing = record;
-      else { retained += size; encoded += encodedSize; }
-      if (count > this.#maximumCommands || retained > this.#maximumResidentBytes || encoded > this.#maximumBytes) {
-        throw new RangeError("IndexedDB outbox capacity exceeded");
-      }
-      return true;
-    });
-    if (count + (existing === undefined ? 1 : 0) > this.#maximumCommands ||
-        retained > this.#maximumResidentBytes || encoded > this.#maximumBytes) {
-      transaction.abort();
-      throw new RangeError("IndexedDB outbox capacity exceeded");
-    }
-    if (metadata.sequence < maximum) { transaction.abort(); throw new Error("outbox allocation watermark regressed"); }
-    const sequence = existing?.sequence ?? metadata.sequence + 1;
-    if (!Number.isSafeInteger(sequence)) { transaction.abort(); throw new RangeError("outbox sequence exhausted"); }
-    store.put({ operationId: storedCommand.operationId, bytes, sequence, command: storedCommand });
-    if (existing === undefined) cursors.put({ ...metadata, sequence });
-    await transactionDone(transaction);
-  }
-
-  async delete(operationId: OperationId): Promise<void> {
-    const database = await this.#open();
-    const transaction = database.transaction("outbox", "readwrite");
-    transaction.objectStore("outbox").delete(operationId);
-    await transactionDone(transaction);
-  }
-
-  async loadCursors(): Promise<ReadonlyMap<string, ReplayCursor>> {
-    return new Map((await this.loadRecovery()).map(record => [record.authority, record.cursor]));
-  }
-
-  async loadRecovery(): Promise<readonly ClientRecoveryRecord[]> {
-    const database = await this.#open();
-    const all = await request<Array<{ authority: string; generation: string; revision: bigint; checkpointVersion: bigint; checkpoint?: ClientCheckpoint }>>(
-      database.transaction("cursors").objectStore("cursors").getAll(undefined, this.#maximumCursors + 2));
-    const metadata = clientMetadata(all.find(record => record.authority === clientMetadataKey));
-    const records = all.filter(record => record.authority !== clientMetadataKey);
-    if (records.length > this.#maximumCursors) throw new RangeError("cursor capacity exceeded");
-    return records.map(record => {
-      validateCursor(record);
-      if (typeof record.checkpointVersion !== "bigint" || record.checkpointVersion <= 0n ||
-          record.checkpointVersion > metadata.checkpointVersion) throw new Error("invalid checkpoint version");
-      retainedDataBytes({ authority: record.authority, generation: record.generation, revision: record.revision }, 4096);
-      if (record.checkpoint !== undefined) retainedDataBytes(record.checkpoint, this.#maximumCheckpointBytes, true);
-      return { authority: record.authority, cursor: { generation: record.generation, revision: record.revision },
-        checkpointVersion: record.checkpointVersion, checkpoint: record.checkpoint };
-    });
-  }
-
-  async putCursor(authority: Authority, cursor: ReplayCursor): Promise<void> {
-    await this.commit(authority, cursor);
-  }
-
-  async deleteCursor(authority: Authority): Promise<void> {
-    const database = await this.#open();
-    const transaction = database.transaction("cursors", "readwrite");
-    transaction.objectStore("cursors").delete(authorityKey(authority));
-    await transactionDone(transaction);
-  }
-
-  async commit(authority: Authority, cursor: ReplayCursor, operationId?: OperationId, checkpoint?: ClientCheckpoint,
-    expectedCursor?: ReplayCursor | null, expectedCheckpointVersion?: bigint | null): Promise<bigint> {
-    validateCursor(cursor);
-    retainedDataBytes({ authority, cursor }, 4096);
-    if (checkpoint !== undefined) retainedDataBytes(checkpoint, this.#maximumCheckpointBytes, true);
-    const ownedCheckpoint = checkpoint === undefined ? undefined : cloneStructuredValue(checkpoint, new Set(), true);
-    const database = await this.#open();
-    const transaction = database.transaction(["outbox", "cursors"], "readwrite");
-    const cursors = transaction.objectStore("cursors");
-    const key = authorityKey(authority);
-    const [count, existing, rawMetadata] = await Promise.all([request(cursors.count()),
-      request<{ generation: string; revision: bigint; checkpointVersion: bigint; checkpoint?: ClientCheckpoint } | undefined>(cursors.get(key)),
-      request(cursors.get(clientMetadataKey))]);
-    const metadata = clientMetadata(rawMetadata);
-    if (expectedCursor !== undefined && (expectedCursor === null ? existing !== undefined :
-      existing?.generation !== expectedCursor.generation || existing.revision !== expectedCursor.revision)) {
-      transaction.abort();
-      throw new ClientCheckpointConflict("durable projection cut changed concurrently");
-    }
-    if (expectedCheckpointVersion !== undefined && (expectedCheckpointVersion === null ? existing !== undefined :
-      existing?.checkpointVersion !== expectedCheckpointVersion)) {
-      transaction.abort();
-      throw new ClientCheckpointConflict("durable checkpoint was replaced concurrently");
-    }
-    if (checkpoint === undefined && existing?.checkpoint !== undefined &&
-        (existing.generation !== cursor.generation || existing.revision !== cursor.revision)) {
-      transaction.abort();
-      throw new ClientCheckpointConflict("cursor advancement requires its projection checkpoint");
-    }
-    if (existing === undefined && count - 1 >= this.#maximumCursors) {
-      transaction.abort();
-      throw new RangeError("cursor capacity exceeded");
-    }
-    if (metadata.checkpointVersion === 0xffff_ffff_ffff_ffffn) {
-      transaction.abort(); throw new RangeError("checkpoint allocation exhausted");
-    }
-    const checkpointVersion = metadata.checkpointVersion + 1n;
-    if (operationId !== undefined) transaction.objectStore("outbox").delete(operationId);
-    cursors.put({
-      authority: key,
-      generation: cursor.generation,
-      revision: cursor.revision,
-      checkpointVersion,
-      checkpoint: ownedCheckpoint ?? existing?.checkpoint,
-    });
-    cursors.put({ ...metadata, checkpointVersion });
-    await transactionDone(transaction);
-    return checkpointVersion;
-  }
-}
-
-export type ClientListener<Event> = (event: ClientEvent<Event>) => void;
-
 export interface ClientAdmissionLimits {
   /** Includes the running mutation and callers waiting for it. */
   readonly requests: number;
@@ -421,7 +63,6 @@ export interface ClientAdmissionLimits {
   readonly commandBytes: number;
 }
 
-/** Framework-neutral external store derived only from authoritative events. */
 export class ProjectionStore<State, Event = unknown> {
   readonly #store: SnapshotStore<State>;
   #unsubscribe: (() => void) | undefined;
@@ -461,10 +102,10 @@ export class ProjectionStore<State, Event = unknown> {
   }
 
   /** React-compatible immutable snapshot accessor. */
-  getSnapshot = (): State => this.#store.getSnapshot();
+  get getSnapshot() { return this.#store.getSnapshot; }
 
   /** Svelte/React-compatible subscription. */
-  subscribe = (listener: () => void): (() => void) => this.#store.subscribe(listener);
+  get subscribe() { return this.#store.subscribe; }
 
   /** Detaches the store from its client. */
   dispose(): void {
@@ -476,11 +117,9 @@ export class ProjectionStore<State, Event = unknown> {
   }
 }
 
-/** Framework-neutral reconnecting client with authoritative cursor validation and a safe outbox. */
 export class HarnessClient<Event = unknown> {
-  readonly #cursors = new Map<string, ReplayCursor>();
-  readonly #checkpointVersions = new Map<string, bigint>();
-  readonly #listeners = new Set<ClientListener<Event>>();
+  readonly #cuts = new Map<string, { cursor?: ReplayCursor; checkpointVersion?: bigint }>();
+  readonly #listeners = new Set<(event: ClientEvent<Event>) => void>();
   readonly #errors = new SnapshotStore<unknown | null>(null);
   /** Latest replay/reconnect failure; retry does not hide it from the host. */
   readonly failure = { getSnapshot: this.#errors.getSnapshot, subscribe: this.#errors.subscribe };
@@ -490,7 +129,6 @@ export class HarnessClient<Event = unknown> {
   readonly #mutations: RequestScheduler;
   readonly admission: ClientAdmissionLimits;
   #replayEpoch = 0;
-  #running = false;
   #disposed = false;
   #runController: AbortController | undefined;
 
@@ -505,9 +143,8 @@ export class HarnessClient<Event = unknown> {
     this.#mutations = new RequestScheduler({ concurrent: 1, requests: admission.requests, bytes: admission.bytes });
   }
 
-
   /** Registers at-least-once projection delivery; callbacks must be idempotent. */
-  subscribe(listener: ClientListener<Event>): () => void {
+  subscribe(listener: (event: ClientEvent<Event>) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
@@ -523,18 +160,17 @@ export class HarnessClient<Event = unknown> {
     if (this.#projections.size >= 64) throw new RangeError("projection capacity exceeded");
     this.#projections.set(key, projection);
     return () => {
-      if (this.#running && !this.#disposed) throw new Error("stop replay before disposing its durable projection");
+      if (this.#runController !== undefined && !this.#disposed) throw new Error("stop replay before disposing its durable projection");
       this.#projections.delete(key);
       this.#cursorsLoaded = false;
-      this.#cursors.clear();
-      this.#checkpointVersions.clear();
+      this.#cuts.clear();
     };
   }
 
   async submit(input: ClientCommand): Promise<void> {
     const bytes = retainedDataBytes(input, this.admission.commandBytes, true);
     let command!: ClientCommand;
-    await this.#serializeState(async () => {
+    await this.#mutations.schedule(bytes, async () => {
       const safelyReplayable = command.offlineSafe && command.kind !== "interaction.resolve.approval";
       const admitted = safelyReplayable ? await assertOutboxSafe(command) : command;
       if (this.#connection !== undefined) {
@@ -552,7 +188,7 @@ export class HarnessClient<Event = unknown> {
         throw new Error("command is not safe for the offline outbox");
       }
       await this.outbox.put(admitted);
-    }, bytes, () => { command = cloneStructuredValue(input, new Set(), true) as ClientCommand; });
+    }, undefined, () => { command = cloneStructuredValue(input, new Set(), true) as ClientCommand; });
   }
 
   /** Installs an authoritative snapshot cursor after synchronously resetting projections. */
@@ -562,21 +198,20 @@ export class HarnessClient<Event = unknown> {
       checkpoint: typeof resetProjections === "function" ? null : resetProjections }, this.admission.commandBytes, true);
     let connection: Connection<Event> | undefined;
     try {
-      await this.#serializeState(async () => {
+      await this.#mutations.schedule(bytes, async () => {
         const recovered = await this.#hydrateCursors(typeof resetProjections === "function" ? undefined : authorityKey(authority));
         this.#replayEpoch += 1;
         connection = this.#connection;
         this.#connection = undefined;
         const key = authorityKey(authority);
-        const previous = this.#cursors.get(key) ?? recovered;
+        const previous = this.#cuts.get(key)?.cursor ?? recovered;
         const projection = this.#projections.get(key);
         if (projection !== undefined) {
           if (typeof resetProjections === "function") throw new Error("durable rebase requires an authoritative checkpoint");
           const publish = projection.restore(resetProjections, cursor);
           const version = await (this.outbox as AtomicClientStateStore).commit(authority, cursor, undefined,
-            resetProjections, previous ?? null, this.#checkpointVersions.get(key) ?? null);
-          this.#checkpointVersions.set(key, version);
-          this.#cursors.set(key, cursor);
+            resetProjections, previous ?? null, this.#cuts.get(key)?.checkpointVersion ?? null);
+          this.#cuts.set(key, { cursor, checkpointVersion: version });
           this.#cursorsLoaded = true;
           publish();
           return;
@@ -593,8 +228,8 @@ export class HarnessClient<Event = unknown> {
           else await this.cursorStore.putCursor(authority, previous);
           throw error;
         }
-        this.#cursors.set(key, cursor);
-      }, bytes, () => {
+        this.#cuts.set(key, { ...this.#cuts.get(key), cursor });
+      }, undefined, () => {
         authority = { ...authority };
         cursor = { ...cursor };
         if (typeof resetProjections !== "function") resetProjections = cloneStructuredValue(resetProjections, new Set(), true) as ClientCheckpoint;
@@ -607,16 +242,14 @@ export class HarnessClient<Event = unknown> {
   /** Runs reconnect/replay until aborted; transport failures use bounded exponential backoff. */
   async run(signal?: AbortSignal): Promise<void> {
     if (this.#disposed) throw new Error("client is disposed");
-    if (this.#running) throw new Error("client replay is already running");
-    this.#running = true;
+    if (this.#runController !== undefined) throw new Error("client replay is already running");
     const controller = new AbortController();
     this.#runController = controller;
     try { await this.#run(signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal])); }
-    finally { this.#running = false; this.#runController = undefined; }
+    finally { this.#runController = undefined; }
   }
 
-  /** Cancel owned interest; started storage/send work retains its reservation
-   * until it settles and may have an indeterminate authoritative outcome. */
+  /** Cancel interest; started storage/send reservations last until settlement. */
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
@@ -626,20 +259,23 @@ export class HarnessClient<Event = unknown> {
     this.#errors.dispose();
   }
 
-  async #run(signal?: AbortSignal): Promise<void> {
-    await this.#serializeState(() => this.#hydrateCursors());
+  async #run(signal: AbortSignal): Promise<void> {
+    await this.#mutations.schedule(256, () => this.#hydrateCursors());
     let delay = 50;
-    while (!signal?.aborted) {
+    while (!signal.aborted) {
       let unreceived: Connection<Event> | undefined;
       try {
-        const { cursors, epoch } = await this.#serializeState(async () => ({
-          cursors: new Map(this.#cursors),
-          epoch: this.#replayEpoch,
-        }));
+        const { cursors, epoch } = await this.#mutations.schedule(256, async () => {
+          const cursors = new Map<string, ReplayCursor>();
+          for (const [key, cut] of this.#cuts) {
+            if (cut.cursor !== undefined) cursors.set(key, cut.cursor);
+          }
+          return { cursors, epoch: this.#replayEpoch };
+        });
         const connection = await this.transport.connect(cursors, signal);
         unreceived = connection;
-        if (signal?.aborted) throw new DOMException("Client replay cancelled", "AbortError");
-        const current = await this.#serializeState(async () => {
+        if (signal.aborted) throw new DOMException("Client replay cancelled", "AbortError");
+        const current = await this.#mutations.schedule(256, async () => {
           if (epoch !== this.#replayEpoch) return false;
           this.#connection = connection;
           return true;
@@ -647,27 +283,30 @@ export class HarnessClient<Event = unknown> {
         if (!current) {
           await connection.close();
           unreceived = undefined;
-          throw new StaleReplayConnectionError();
+          throw new Error();
         }
         unreceived = undefined;
         await this.#flushOutbox(connection, epoch, signal);
         for await (const delivery of connection) {
-          if (signal?.aborted) break;
+          if (signal.aborted) break;
           await this.#accept(delivery, epoch);
         }
         delay = 50;
       } catch (error) {
         this.#errors.publish(error);
-        if (signal?.aborted) break;
+        if (signal.aborted) break;
         if (error instanceof ClientCheckpointConflict) throw error;
         if (error instanceof ReplayError) {
           if (this.#projections.has(authorityKey(error.authority))) throw error;
-          await this.#serializeState(async () => {
+          await this.#mutations.schedule(256, async () => {
             await this.cursorStore.deleteCursor(error.authority);
-            this.#cursors.delete(authorityKey(error.authority));
+            const key = authorityKey(error.authority);
+            const cut = this.#cuts.get(key);
+            if (cut?.checkpointVersion === undefined) this.#cuts.delete(key);
+            else delete cut.cursor;
           });
         }
-        await abortableDelay(delay, signal);
+        await abortableWait(delay, signal);
         delay = Math.min(delay * 2, 5_000);
       } finally {
         const connection = this.#connection ?? unreceived;
@@ -677,18 +316,18 @@ export class HarnessClient<Event = unknown> {
     }
   }
 
-  async #flushOutbox(connection: Connection<Event>, epoch: number, signal?: AbortSignal): Promise<void> {
+  async #flushOutbox(connection: Connection<Event>, epoch: number, signal: AbortSignal): Promise<void> {
     let after = 0;
     let through: number | undefined;
     do {
-      if (signal?.aborted) return;
+      if (signal.aborted) return;
       const page = this.outbox.loadPage === undefined ? undefined : await this.outbox.loadPage(after, through);
       const commands = page?.commands ?? await this.outbox.load();
       for (const command of commands) {
-        await this.#serializeState(async () => {
-          if (signal?.aborted) throw new DOMException("Client replay cancelled", "AbortError");
+        await this.#mutations.schedule(256, async () => {
+          if (signal.aborted) throw new DOMException("Client replay cancelled", "AbortError");
           if (epoch !== this.#replayEpoch || connection !== this.#connection) {
-            throw new StaleReplayConnectionError();
+            throw new Error();
           }
           try {
             await connection.send(command);
@@ -709,76 +348,68 @@ export class HarnessClient<Event = unknown> {
 
   async #accept(delivery: Delivery<Event>, epoch: number): Promise<void> {
     const bytes = retainedDataBytes(delivery, this.admission.commandBytes, true);
-    let admitted!: Delivery<Event>;
-    await this.#serializeState(async () => {
-      if (epoch !== this.#replayEpoch) throw new StaleReplayConnectionError();
-      await this.#acceptSerialized(admitted);
-    }, bytes, () => { admitted = cloneStructuredValue(delivery, new Set(), true) as Delivery<Event>; });
-  }
-
-  async #acceptSerialized(delivery: Delivery<Event>): Promise<void> {
-    const key = authorityKey(delivery.authority);
-    const projection = this.#projections.get(key);
-    if (isAtomicClientStateStore(this.outbox) && this.outbox === this.cursorStore && projection === undefined) {
-      throw new ClientCheckpointConflict("durable delivery requires a registered recoverable projection");
-    }
-    const previous = this.#cursors.get(key);
-    const expected = previous?.revision ?? 0n;
-    if (previous !== undefined && previous.generation !== delivery.generation) {
-      throw new ReplayError(delivery.authority, "replay generation changed");
-    }
-    if (delivery.fromRevision !== expected || delivery.throughRevision < delivery.fromRevision) {
-      throw new ReplayError(delivery.authority, "non-contiguous delivery");
-    }
-    let revision = expected;
-    for (const event of delivery.events) {
-      revision += 1n;
-      if (authorityKey(event.authority) !== key || event.revision !== revision) {
-        throw new ReplayError(delivery.authority, "event authority or revision mismatch");
+    await this.#mutations.schedule(bytes, async () => {
+      if (epoch !== this.#replayEpoch) throw new Error();
+      const key = authorityKey(delivery.authority);
+      const projection = this.#projections.get(key);
+      if (isAtomicClientStateStore(this.outbox) && this.outbox === this.cursorStore && projection === undefined) {
+        throw new ClientCheckpointConflict("durable delivery requires a registered recoverable projection");
       }
-    }
-    if (revision !== delivery.throughRevision) {
-      throw new ReplayError(delivery.authority, "delivery coverage mismatch");
-    }
-    let committed = expected;
-    for (const event of delivery.events) {
-      if (this.#disposed) return;
-      committed = event.revision;
-      const cursor = { generation: delivery.generation, revision: committed };
-      const prepared = projection?.prepare(event);
-      // Legacy listeners retain at-least-once delivery: a callback failure keeps
-      // this event retryable. The staged durable projection is still unpublished.
-      for (const listener of this.#listeners) listener(event);
-      if (isAtomicClientStateStore(this.outbox) && this.outbox === this.cursorStore) {
-        const version = await this.outbox.commit(delivery.authority, cursor, event.operationId, prepared?.checkpoint,
-          prepared === undefined ? undefined : this.#cursors.get(key) ?? null,
-          prepared === undefined ? undefined : this.#checkpointVersions.get(key) ?? null);
-        this.#checkpointVersions.set(key, version);
-      } else {
-        await this.outbox.delete(event.operationId);
-        await this.cursorStore.putCursor(delivery.authority, cursor);
+      const previous = this.#cuts.get(key)?.cursor;
+      const expected = previous?.revision ?? 0n;
+      if (previous !== undefined && previous.generation !== delivery.generation) {
+        throw new ReplayError(delivery.authority, "replay generation changed");
       }
-      this.#cursors.set(key, cursor);
-      if (this.#disposed) return;
-      prepared?.publish();
-    }
-    if (delivery.events.length === 0) {
-      const cursor = { generation: delivery.generation, revision };
-      // Empty delivery cannot erase the checkpoint paired with an unchanged cursor.
-      if (previous?.generation !== cursor.generation || previous.revision !== cursor.revision) {
-        const projection = this.#projections.get(key);
-        if (projection !== undefined) {
-          const version = await (this.outbox as AtomicClientStateStore).commit(delivery.authority, cursor, undefined,
-            projection.checkpoint(), previous ?? null, this.#checkpointVersions.get(key) ?? null);
-          this.#checkpointVersions.set(key, version);
-        } else await this.cursorStore.putCursor(delivery.authority, cursor);
+      if (delivery.fromRevision !== expected || delivery.throughRevision < delivery.fromRevision) {
+        throw new ReplayError(delivery.authority, "non-contiguous delivery");
       }
-      this.#cursors.set(key, cursor);
-    }
+      let revision = expected;
+      for (const event of delivery.events) {
+        revision += 1n;
+        if (authorityKey(event.authority) !== key || event.revision !== revision) {
+          throw new ReplayError(delivery.authority, "event authority or revision mismatch");
+        }
+      }
+      if (revision !== delivery.throughRevision) {
+        throw new ReplayError(delivery.authority, "delivery coverage mismatch");
+      }
+      for (const event of delivery.events) {
+        if (this.#disposed) return;
+        const cursor = { generation: delivery.generation, revision: event.revision };
+        const prepared = projection?.prepare(event);
+        // Listeners run before commit; throwing leaves the event retryable.
+        for (const listener of this.#listeners) listener(event);
+        const cut = { ...this.#cuts.get(key), cursor };
+        if (isAtomicClientStateStore(this.outbox) && this.outbox === this.cursorStore) {
+          cut.checkpointVersion = await this.outbox.commit(delivery.authority, cursor, event.operationId, prepared?.checkpoint,
+            prepared === undefined ? undefined : this.#cuts.get(key)?.cursor ?? null,
+            prepared === undefined ? undefined : this.#cuts.get(key)?.checkpointVersion ?? null);
+        } else {
+          await this.outbox.delete(event.operationId);
+          await this.cursorStore.putCursor(delivery.authority, cursor);
+        }
+        this.#cuts.set(key, cut);
+        if (this.#disposed) return;
+        prepared?.publish();
+      }
+      if (delivery.events.length === 0) {
+        const cursor = { generation: delivery.generation, revision };
+        const cut = { ...this.#cuts.get(key), cursor };
+        // Empty delivery cannot erase the checkpoint paired with an unchanged cursor.
+        if (previous?.generation !== cursor.generation || previous.revision !== cursor.revision) {
+          const projection = this.#projections.get(key);
+          if (projection !== undefined) {
+            cut.checkpointVersion = await (this.outbox as AtomicClientStateStore).commit(delivery.authority, cursor, undefined,
+              projection.checkpoint(), previous ?? null, this.#cuts.get(key)?.checkpointVersion ?? null);
+          } else await this.cursorStore.putCursor(delivery.authority, cursor);
+        }
+        this.#cuts.set(key, cut);
+      }
+    }, undefined, () => { delivery = cloneStructuredValue(delivery, new Set(), true) as Delivery<Event>; });
   }
 
   async #hydrateCursors(replacedAuthority?: string): Promise<ReplayCursor | undefined> {
-    if (this.#cursorsLoaded) return replacedAuthority === undefined ? undefined : this.#cursors.get(replacedAuthority);
+    if (this.#cursorsLoaded) return replacedAuthority === undefined ? undefined : this.#cuts.get(replacedAuthority)?.cursor;
     if (isAtomicClientStateStore(this.outbox) && this.outbox === this.cursorStore) {
       const records = await this.outbox.loadRecovery();
       const publications: (() => void)[] = [];
@@ -790,63 +421,25 @@ export class HarnessClient<Event = unknown> {
       }
       for (const publish of publications) publish();
       for (const record of records) {
-        this.#checkpointVersions.set(record.authority, record.checkpointVersion);
-        if (record.authority !== replacedAuthority) this.#cursors.set(record.authority, record.cursor);
+        this.#cuts.set(record.authority, {
+          ...this.#cuts.get(record.authority),
+          checkpointVersion: record.checkpointVersion,
+          ...(record.authority === replacedAuthority ? {} : { cursor: record.cursor }),
+        });
       }
       // A replacement cut becomes resumable only after its checkpoint commits.
       this.#cursorsLoaded = replacedAuthority === undefined;
       return records.find(record => record.authority === replacedAuthority)?.cursor;
     }
     for (const [key, cursor] of await this.cursorStore.loadCursors()) {
-      if (!this.#cursors.has(key)) this.#cursors.set(key, cursor);
+      if (this.#cuts.get(key)?.cursor === undefined) this.#cuts.set(key, { ...this.#cuts.get(key), cursor });
     }
     this.#cursorsLoaded = true;
   }
 
-  #serializeState<T>(operation: () => Promise<T>, bytes = 256, capture?: () => void): Promise<T> {
-    return this.#mutations.schedule(bytes, operation, undefined, capture);
-  }
 }
 
-/** Conservative retained-data accounting with bounded traversal, before queueing. */
-function retainedDataBytes(value: unknown, maximum: number, allowUndefined = false): number {
-  let bytes = 0;
-  const ancestors = new Set<object>();
-  const charge = (amount: number): void => {
-    if (amount > maximum - bytes) throw new RangeError("client command byte capacity exceeded");
-    bytes += amount;
-  };
-  const visit = (data: unknown, depth: number): void => {
-    if (depth > 64) throw new RangeError("client command nesting exceeded");
-    charge(32);
-    if (data === undefined && allowUndefined) return;
-    if (typeof data === "string") { charge(data.length * 2); return; }
-    if (data === null || typeof data === "boolean" || typeof data === "number") return;
-    if (typeof data === "bigint") { charge(data.toString().length * 2); return; }
-    if (typeof data !== "object") throw new TypeError("command contains a non-data value");
-    if (ancestors.has(data)) throw new TypeError("command contains a cycle");
-    if (data instanceof ArrayBuffer) { charge(data.byteLength); return; }
-    if (ArrayBuffer.isView(data)) { charge(data.buffer.byteLength); return; }
-    if (Array.isArray(data)) charge(data.length * 8);
-    if (!Array.isArray(data) && Object.getPrototypeOf(data) !== Object.prototype && Object.getPrototypeOf(data) !== null) {
-      throw new TypeError("command contains a non-canonical structured value");
-    }
-    ancestors.add(data);
-    try {
-      for (const key in data) {
-        if (!Object.hasOwn(data, key)) continue;
-        charge(32 + key.length * 2);
-        const descriptor = Object.getOwnPropertyDescriptor(data, key)!;
-        if (!("value" in descriptor)) throw new TypeError("command contains an accessor");
-        visit(descriptor.value, depth + 1);
-      }
-    } finally { ancestors.delete(data); }
-  };
-  visit(value, 0);
-  return bytes;
-}
-
-function validateCursor(cursor: ReplayCursor): void {
+export function validateCursor(cursor: ReplayCursor): void {
   if (typeof cursor.generation !== "string" || cursor.generation === "" ||
       typeof cursor.revision !== "bigint" || cursor.revision < 0n || cursor.revision > 0xffff_ffff_ffff_ffffn) {
     throw new RangeError("invalid cursor");
@@ -862,12 +455,9 @@ export class ReplayError extends Error {
   }
 }
 
-/** A command was authoritatively rejected and must never remain retryable. */
 export class TerminalAdmissionError extends Error {}
 
-class StaleReplayConnectionError extends Error {}
-
-function authorityKey(authority: Authority): string {
+export function authorityKey(authority: Authority): string {
   return `${authority.kind}:${authority.id}`;
 }
 
@@ -877,232 +467,4 @@ function isCursorStore(store: OutboxStore): store is OutboxStore & CursorStore {
 
 function isAtomicClientStateStore(store: OutboxStore): store is AtomicClientStateStore {
   return isCursorStore(store) && "commit" in store && "loadRecovery" in store;
-}
-
-/** An offline retry record may carry refs and routing metadata, never a bearer or inline body. */
-async function assertOutboxSafe(command: ClientCommand): Promise<ClientCommand> {
-  const admitted = cloneStructuredValue(command, new Set()) as ClientCommand;
-  if (admitted.offlineSafe !== true || admitted.kind === "interaction.resolve.approval") {
-    throw new TypeError("command is not safe for the offline outbox");
-  }
-  const fields = Object.keys(admitted);
-  if (fields.length !== 5 || fields.some(field => !["operationId", "authority", "kind", "payload", "offlineSafe"].includes(field))) {
-    throw new TypeError("offline outbox command contains an unsupported field");
-  }
-  if (admitted.authority === null || typeof admitted.authority !== "object"
-    || Object.getPrototypeOf(admitted.authority) !== Object.prototype
-    || Object.keys(admitted.authority).length !== 2
-    || !Object.keys(admitted.authority).every(field => field === "kind" || field === "id")) {
-    throw new TypeError("offline outbox authority contains an unsupported field");
-  }
-  if (!(await isSafeAuthorityId(admitted.authority.id))) {
-    throw new TypeError("offline outbox authority contains an unsafe identity");
-  }
-  const forbidden = /(?:token|authorization|credential|secret|password|api[_-]?key|(?:^|[_-])(?:scope|proof|body|text|bytes|base64|data)(?:$|[_-]))/i;
-  const visit = (value: unknown, ancestors: Set<object>): void => {
-    if (value === null || typeof value !== "object") return;
-    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-      throw new TypeError("offline outbox cannot persist inline bytes or credentials");
-    }
-    if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-    ancestors.add(value);
-    try {
-      for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
-        if (!descriptor.enumerable) continue;
-        if (!("value" in descriptor)) throw new TypeError("command contains an accessor");
-        if (forbidden.test(key)) throw new TypeError("offline outbox cannot persist inline bytes or credentials");
-        visit(descriptor.value, ancestors);
-      }
-    } finally { ancestors.delete(value); }
-  };
-  visit(admitted, new Set());
-  const payload = admitted.payload;
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload) ||
-      Object.getPrototypeOf(payload) !== Object.prototype) {
-    throw new TypeError("offline outbox payload must be a ref-only record");
-  }
-  for (const key of Object.keys(payload)) {
-    if (!["content", "attachments", "artifacts", "references", "metadata"].includes(key)) {
-      throw new TypeError("offline outbox payload contains an unsupported field");
-    }
-  }
-  const contracts = await NativeContracts.create();
-  if (payload.content !== undefined) contracts.validate("file_ref", payload.content);
-  if (payload.attachments !== undefined) contracts.validate("attachments", payload.attachments);
-  for (const refs of [payload.artifacts, payload.references]) {
-    if (refs === undefined) continue;
-    if (!Array.isArray(refs)) throw new TypeError("offline outbox references must be a list");
-    for (const reference of refs) contracts.validate("file_ref", reference);
-  }
-  if (payload.metadata !== undefined) {
-    if (payload.metadata === null || typeof payload.metadata !== "object" || Array.isArray(payload.metadata) ||
-        Object.getPrototypeOf(payload.metadata) !== Object.prototype) {
-      throw new TypeError("offline outbox metadata must be a record");
-    }
-    for (const [key, value] of Object.entries(payload.metadata)) {
-      if (forbidden.test(key) || !(value === null || ["number", "boolean", "bigint"].includes(typeof value))) {
-        throw new TypeError("offline outbox metadata contains an unsafe value");
-      }
-    }
-  }
-  return admitted;
-}
-
-function cloneStructuredValue(value: unknown, ancestors: Set<object>, allowUndefined = false, canonical = false): unknown {
-  if (value === undefined && allowUndefined) return value;
-  if (
-    value === null || typeof value === "string" || typeof value === "boolean"
-  ) return value;
-  if (typeof value === "bigint") return canonical ? { $bigint: value.toString() } : value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-      throw new TypeError("command contains a non-finite number or inexact integer");
-    }
-    return value;
-  }
-  if (typeof value !== "object") throw new TypeError("command contains a non-data value");
-  if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-  if (value instanceof ArrayBuffer) return canonical ? { $bytes: [...new Uint8Array(value)] } : value.slice(0);
-  if (value instanceof Uint8Array) return canonical ? { $bytes: [...value] } : value.slice();
-  if (ArrayBuffer.isView(value)) {
-    throw new TypeError("command contains an unsupported binary view");
-  }
-  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
-    throw new TypeError("command contains a non-canonical structured value");
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Reflect.ownKeys(descriptors);
-  if (keys.some(key => typeof key !== "string")) {
-    throw new TypeError("command contains symbol properties");
-  }
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) {
-      const cloned = new Array<unknown>(value.length);
-      for (const key of keys as string[]) {
-        if (key === "length" || descriptors[key]?.enumerable !== true) continue;
-        const index = Number(key);
-        if (!Number.isSafeInteger(index) || index < 0 || index >= value.length || String(index) !== key) {
-          throw new TypeError("command array contains custom properties");
-        }
-        const descriptor = descriptors[key];
-        if (descriptor === undefined || !("value" in descriptor)) {
-          throw new TypeError("command contains an accessor");
-        }
-        cloned[index] = cloneStructuredValue(descriptor.value, ancestors, allowUndefined, canonical);
-      }
-      return cloned;
-    }
-    const cloned: Record<string, unknown> = {};
-    for (const key of keys as string[]) {
-      const descriptor = descriptors[key];
-      if (descriptor?.enumerable !== true) continue;
-      if (!("value" in descriptor)) throw new TypeError("command contains an accessor");
-      Object.defineProperty(cloned, key, { value: cloneStructuredValue(descriptor.value, ancestors, allowUndefined, canonical),
-        enumerable: true, configurable: true, writable: true });
-    }
-    return cloned;
-  } finally {
-    ancestors.delete(value);
-  }
-}
-
-function openClientDatabase(
-  factory: IDBFactory,
-  name: string,
-): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    let unsupportedState: Error | undefined;
-    let rejected = false;
-    const fail = (error: unknown): void => { rejected = true; reject(error); };
-    const opening = factory.open(name, 3);
-    opening.onupgradeneeded = event => {
-      if ((event as IDBVersionChangeEvent).oldVersion !== 0) {
-        unsupportedState = new Error("pre-v2 Harness outbox state is unsupported");
-        opening.transaction?.abort();
-        return;
-      }
-      const database = opening.result;
-      database.createObjectStore("outbox", { keyPath: "operationId" }).createIndex("sequence", "sequence", { unique: true });
-      database.createObjectStore("cursors", { keyPath: "authority" }).put({
-        authority: clientMetadataKey, sequence: 0, checkpointVersion: 0n,
-      });
-    };
-    opening.onsuccess = () => {
-      const database = opening.result;
-      if (rejected) { database.close(); return; }
-      try {
-        const index = database.transaction("outbox").objectStore("outbox").index("sequence");
-        if (index.keyPath !== "sequence" || !index.unique) throw new Error("invalid sequence index");
-        if (!database.objectStoreNames.contains("cursors")) throw new Error("missing cursors store");
-        const reading = database.transaction("cursors").objectStore("cursors").get(clientMetadataKey);
-        reading.onsuccess = () => {
-          try { clientMetadata(reading.result); resolve(database); }
-          catch (error) { database.close(); fail(error); }
-        };
-        reading.onerror = () => { database.close(); fail(reading.error ?? new Error("client metadata read failed")); };
-      } catch {
-        database.close();
-        fail(new Error("Harness outbox sequence index is unsupported"));
-      }
-    };
-    opening.onerror = () => fail(unsupportedState ?? opening.error ?? new Error("IndexedDB open failed"));
-    opening.onblocked = () => fail(new Error("IndexedDB upgrade is blocked"));
-  });
-}
-
-interface OutboxRecord {
-  readonly operationId: string;
-  readonly command: ClientCommand;
-  readonly bytes: number;
-  readonly sequence: number;
-}
-
-function outboxRecord(value: OutboxRecord): OutboxRecord {
-  if (typeof value.operationId !== "string" || value.command?.operationId !== value.operationId ||
-      !Number.isSafeInteger(value.bytes) || value.bytes < 0 ||
-      !Number.isSafeInteger(value.sequence) || value.sequence <= 0) throw new Error("invalid outbox record");
-  return value;
-}
-
-/** Cursor callbacks keep the transaction alive and retain only the caller's page. */
-function visitOutbox(index: IDBIndex, range: IDBKeyRange | null, visit: (record: OutboxRecord) => boolean): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const reading = index.openCursor(range);
-    reading.onerror = () => reject(reading.error ?? new Error("outbox page read failed"));
-    reading.onsuccess = () => {
-      try {
-        const cursor = reading.result;
-        if (cursor === null || !visit(outboxRecord(cursor.value))) { resolve(); return; }
-        cursor.continue();
-      } catch (error) {
-        index.objectStore.transaction.abort();
-        reject(error);
-      }
-    };
-  });
-}
-
-function request<T>(operation: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    operation.onsuccess = () => resolve(operation.result);
-    operation.onerror = () => reject(operation.error ?? new Error("IndexedDB request failed"));
-  });
-}
-
-function transactionDone(transaction: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB transaction aborted"));
-    transaction.onerror = () => reject(transaction.error ?? new Error("IndexedDB transaction failed"));
-  });
-}
-
-async function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) { reject(signal.reason); return; }
-    const aborted = () => { clearTimeout(timeout); reject(signal?.reason); };
-    const timeout = setTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, milliseconds);
-    signal?.addEventListener("abort", aborted, { once: true });
-  });
 }

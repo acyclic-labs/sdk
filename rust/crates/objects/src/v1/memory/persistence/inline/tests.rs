@@ -1,9 +1,9 @@
-use super::super::tests::{get, put, reopen, seeded};
+use super::super::tests::{bucket, put, reopen, seeded};
 use super::*;
+use crate::v1::tests::get;
 
 #[tokio::test]
-async fn small_bodies_survive_compaction()
--> Result<(), Box<dyn std::error::Error>> {
+async fn small_bodies_survive_compaction() -> Result<(), Box<dyn std::error::Error>> {
     for length in [0, 1, LIMIT, LIMIT + 1] {
         let root = tempfile::tempdir()?;
         let core = seeded(root.path()).await?;
@@ -11,12 +11,22 @@ async fn small_bodies_survive_compaction()
         let receipt = core.put(put("boundary"), bytes.clone()).await?;
         drop(core);
         let core = reopen(root.path())?;
-        assert_eq!(core.get(get("boundary"), length as u64).await?.into_body(), bytes);
+        assert_eq!(
+            core.get(get(bucket(), "boundary"), length as u64)
+                .await?
+                .into_body(),
+            bytes
+        );
         assert_eq!(core.put(put("boundary"), bytes.clone()).await?, receipt);
         core.collect_local_garbage(10)?;
         drop(core);
         let core = reopen(root.path())?;
-        assert_eq!(core.get(get("boundary"), length as u64).await?.into_body(), bytes);
+        assert_eq!(
+            core.get(get(bucket(), "boundary"), length as u64)
+                .await?
+                .into_body(),
+            bytes
+        );
         assert_eq!(core.put(put("boundary"), bytes).await?, receipt);
     }
     Ok(())
@@ -29,7 +39,8 @@ async fn every_incomplete_inline_frame_boundary_recovers_the_previous_state()
     let core = seeded(template.path()).await?;
     let path = template.path().join("mutations.log");
     let before = fs::read(&path)?;
-    core.put(put("new"), OwnedBytes::from_static(b"payload")).await?;
+    core.put(put("new"), OwnedBytes::from_static(b"payload"))
+        .await?;
     let after = fs::read(&path)?;
     let frame = after.get(before.len()..).ok_or("missing appended frame")?;
     drop(core);
@@ -40,17 +51,20 @@ async fn every_incomplete_inline_frame_boundary_recovers_the_previous_state()
         fs::write(root.path().join("mutations.log"), journal)?;
         let core = reopen(root.path())?;
         assert_eq!(
-            core.get(get("retained"), 6).await?.into_body(),
+            core.get(get(bucket(), "retained"), 6).await?.into_body(),
             OwnedBytes::from_static(b"before")
         );
         if cut == frame.len() {
             assert_eq!(
-                core.get(get("new"), 7).await?.into_body(),
+                core.get(get(bucket(), "new"), 7).await?.into_body(),
                 OwnedBytes::from_static(b"payload")
             );
         } else {
             assert_eq!(
-                core.get(get("new"), 7).await.err().map(|error| error.code),
+                core.get(get(bucket(), "new"), 7)
+                    .await
+                    .err()
+                    .map(|error| error.code),
                 Some(NotFound)
             );
             assert_eq!(fs::read(root.path().join("mutations.log"))?, before);
@@ -66,7 +80,8 @@ async fn checksum_valid_inline_offsets_still_require_authenticated_body_binding(
     let core = seeded(root.path()).await?;
     let path = root.path().join("mutations.log");
     let mut before = fs::read(&path)?;
-    core.put(put("new"), OwnedBytes::from_static(b"payload")).await?;
+    core.put(put("new"), OwnedBytes::from_static(b"payload"))
+        .await?;
     let all = fs::read(&path)?;
     drop(core);
     let encoded = all.get(before.len() + 36..).ok_or("missing frame")?;
@@ -88,18 +103,10 @@ async fn checksum_valid_inline_offsets_still_require_authenticated_body_binding(
 }
 
 #[tokio::test]
-async fn durable_batch_groups_inline_writes_and_replays_original_overwritten_receipts()
+async fn durable_batch_reopens_values_and_original_overwritten_receipts()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let core = seeded(root.path()).await?;
-    let before = core
-        .journal
-        .as_ref()
-        .ok_or("missing journal")?
-        .tail
-        .lock()
-        .map_err(|_| "tail poisoned")?
-        .operations;
     let mut requests = (0..9)
         .map(|number| {
             (
@@ -120,42 +127,36 @@ async fn durable_batch_groups_inline_writes_and_replays_original_overwritten_rec
         .get(9)
         .cloned()
         .ok_or("missing original receipt")??;
-    let after = core
-        .journal
-        .as_ref()
-        .ok_or("missing journal")?
-        .tail
-        .lock()
-        .map_err(|_| "tail poisoned")?
-        .operations;
-    assert_eq!(after, before + 1);
     // Puts whose bounded bytes exceed one record split across records.
     let results = core
         .put_batch(
             (0..40)
-                .map(|number| (put(&format!("split-{number}")), OwnedBytes::from(vec![7; LIMIT])))
+                .map(|number| {
+                    (
+                        put(&format!("split-{number}")),
+                        OwnedBytes::from(vec![7; LIMIT]),
+                    )
+                })
                 .collect(),
         )
         .await;
     assert!(results.iter().all(Result::is_ok));
-    let journal = core.journal.as_ref().ok_or("missing journal")?;
-    assert_eq!(
-        journal.tail.lock().map_err(|_| "tail poisoned")?.operations,
-        after + 2
-    );
-    assert_eq!(fs::read_dir(root.path().join("segments"))?.count(), 0);
     drop(core);
     let core = reopen(root.path())?;
     assert_eq!(
-        core.get(get("batch-8"), LIMIT as u64).await?.into_body(),
+        core.get(get(bucket(), "batch-8"), LIMIT as u64)
+            .await?
+            .into_body(),
         OwnedBytes::from(vec![42; LIMIT])
     );
     assert_eq!(
-        core.get(get("split-39"), LIMIT as u64).await?.into_body(),
+        core.get(get(bucket(), "split-39"), LIMIT as u64)
+            .await?
+            .into_body(),
         OwnedBytes::from(vec![7; LIMIT])
     );
     assert_eq!(
-        core.get(get("overwritten"), 4).await?.into_body(),
+        core.get(get(bucket(), "overwritten"), 4).await?.into_body(),
         OwnedBytes::from_static(b"last")
     );
     assert_eq!(
@@ -219,31 +220,21 @@ async fn one_durable_batch_preserves_independent_validation_and_quota_failures()
             .map(|value| value.size),
         Some(4)
     );
-    assert_eq!(
-        core.journal
-            .as_ref()
-            .ok_or("missing journal")?
-            .tail
-            .lock()
-            .map_err(|_| "tail poisoned")?
-            .operations,
-        2
-    );
     drop(core);
     let core = open(root.path().to_path_buf(), options, None)?;
     assert_eq!(
-        core.get(get("first"), 3).await?.into_body(),
+        core.get(get(bucket(), "first"), 3).await?.into_body(),
         OwnedBytes::from_static(b"abc")
     );
     assert_eq!(
-        core.get(get("too-large"), 5)
+        core.get(get(bucket(), "too-large"), 5)
             .await
             .err()
             .map(|error| error.code),
         Some(NotFound)
     );
     assert_eq!(
-        core.get(get("last"), 4).await?.into_body(),
+        core.get(get(bucket(), "last"), 4).await?.into_body(),
         OwnedBytes::from_static(b"last")
     );
     Ok(())

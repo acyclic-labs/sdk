@@ -21,7 +21,7 @@ fn provider() -> HostModel {
 fn prepared(revision: &str) -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new("accounting", "model", revision, serde_json::json!({}))?,
+            model: Model::new("accounting".into(), "model".into(), revision.into(), serde_json::json!({}))?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("canonical input".into()),
@@ -54,8 +54,8 @@ fn accounting_callbacks_bind_exact_selection_bytes_and_request() -> Result<()> {
         "const request = JSON.parse(new TextDecoder().decode(bytes)); if(request.model.revision !== 'selected' || request.messages[0].content !== 'canonical input') throw new Error('wrong canonical request'); return {request_digest: digest, fixed_tokens: 2, message_tokens: [3]};",
     ));
     let count = provider.count_tokens(&request)?;
-    assert_eq!(count.validate(&request)?, 5);
-    assert!(count.validate(&prepared("changed")?).is_err());
+    assert_eq!(count.validate(&request, &mut None)?, 5);
+    assert!(count.validate(&prepared("changed")?, &mut None).is_err());
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-//! Windows: `ReadDirectoryChangesExW` over the whole source root.
+//! Native source change notifications.
 
 #![allow(
     unsafe_code,
@@ -8,15 +8,9 @@
 use super::{Delivery, HostChangeWide};
 #[cfg(test)]
 use super::HostChange;
-#[cfg(test)]
-use std::ffi::OsString;
 use std::io;
 use std::mem::size_of;
-#[cfg(test)]
-use std::os::windows::ffi::OsStringExt as _;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, IntoRawHandle as _, OwnedHandle};
-#[cfg(test)]
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -34,8 +28,6 @@ use windows::Win32::Storage::FileSystem::{
     ReadDirectoryChangesExW, ReadDirectoryNotifyExtendedInformation,
     ReadDirectoryNotifyInformation,
 };
-#[cfg(test)]
-use windows::Win32::Storage::FileSystem::FILE_ACTION_MODIFIED;
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::{
     CreateEventW, CreateThread, INFINITE, SetEvent, WaitForSingleObject,
@@ -46,7 +38,7 @@ const BUFFER_WORDS: usize = 64 * 1024 / size_of::<u64>();
 /// How long a fence waits for the reader before it assumes everything changed instead.
 const FENCE_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub(super) struct PlatformWatch {
+pub(crate) struct NativeSourceWatch {
     shared: Arc<Shared>,
     thread: Mutex<Option<OwnedHandle>>,
 }
@@ -69,25 +61,17 @@ struct Shared {
     stopping: AtomicBool,
     stop_completed: AtomicBool,
     ownership: crate::demand::SourcePayloadOwnership,
-    native_cleanup: Mutex<NativeCleanup>,
+    native_cleanup: Mutex<[Option<crate::materializer::NativeWorkReservation>; 2]>,
     native_thread: Mutex<Option<OwnedHandle>>,
     native_ready: AtomicBool,
     native_retiring: AtomicBool,
     native_entered_retirement: AtomicBool,
     native_attempt_finished: AtomicBool,
-    native_resources_retired: AtomicBool,
     native_drop_requested: AtomicBool,
     native_failure: Mutex<Option<DemandError>>,
     #[cfg(test)]
     native_wait_cancellation: Mutex<Option<crate::CancellationToken>>,
-    original_cleanup: bool,
     delivery: Arc<Delivery>,
-}
-
-/// Both partitions come from one accepted original before the first handle (the existing retirement worker) is born.
-struct NativeCleanup {
-    active: Option<crate::materializer::NativeWorkReservation>,
-    terminal: Option<crate::materializer::NativeWorkReservation>,
 }
 
 /// The one read in flight.
@@ -118,18 +102,14 @@ impl WatchHandle {
         self.raw.store(handle.into_raw_handle(), Ordering::Release);
     }
     fn is_open(&self) -> bool { !self.raw.load(Ordering::Acquire).is_null() }
-    fn close_with_record<W: SourceDemandReadWork>(
-        &self, work: &mut W, record: impl FnOnce(&mut W) -> Result<(), DemandError>,
-    ) -> Result<(), DemandError> {
+    fn close(&self) -> windows::core::Result<()> {
         let handle = self.raw.load(Ordering::Acquire);
-        if handle.is_null() { return Ok(()); }
-        // SAFETY: close is serialized after the native reader quiesces.
-        let result = unsafe { CloseHandle(HANDLE(handle)) }
-            .map_err(io::Error::from).map_err(DemandError::from);
-        if result.is_ok() {
+        if !handle.is_null() {
+            // SAFETY: close is serialized after the native reader quiesces.
+            unsafe { CloseHandle(HANDLE(handle)) }?;
             self.raw.store(std::ptr::null_mut(), Ordering::Release);
         }
-        result.and(record(work))
+        Ok(())
     }
 }
 
@@ -141,10 +121,7 @@ impl Drop for WatchHandle {
     fn drop(&mut self) {
         let handle = *self.raw.get_mut();
         assert!(self.ordinary || handle.is_null(), "native handle outlived its physical retirement owner");
-        if !handle.is_null() {
-            // SAFETY: ordinary fallback has no native original accounting grant.
-            let _ = unsafe { CloseHandle(HANDLE(handle)) };
-        }
+        let _ = self.close();
     }
 }
 
@@ -154,7 +131,7 @@ fn reserve_cleanup<W: SourceDemandReadWork>(work: &mut W, reads: u64, writes: u6
     }))
 }
 
-fn close_owned_measured<W: SourceDemandReadWork>(
+fn close_owned<W: SourceDemandReadWork>(
     handle: &mut Option<OwnedHandle>, shared: &Shared, work: &mut W,
 ) -> Result<(), DemandError> {
     let Some(owned) = handle.as_ref() else { return Ok(()); };
@@ -168,7 +145,7 @@ fn close_owned_measured<W: SourceDemandReadWork>(
 }
 
 fn create_reader<W: SourceDemandReadWork>(reader: &Arc<Shared>, work: &mut W) -> Result<OwnedHandle, DemandError> {
-    work.preflight(WorkCounters { backend_read_operations: 1, backend_write_operations: 1, ..WorkCounters::default() })?;
+    work.admit(WorkCounters { backend_read_operations: 1, backend_write_operations: 1, ..WorkCounters::default() })?;
     work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
     let parameter = Arc::into_raw(Arc::clone(reader));
     // SAFETY: success transfers this real Shared to the existing reader.
@@ -186,29 +163,29 @@ fn create_reader<W: SourceDemandReadWork>(reader: &Arc<Shared>, work: &mut W) ->
 // `reads` lock, and the kernel writes them only while a read is pending.
 unsafe impl Send for Reads {}
 
-impl PlatformWatch {
-    pub(super) fn start(
+impl NativeSourceWatch {
+    pub(crate) fn start_platform(
         directory: &crate::native_host::HostRoot, delivery: Arc<Delivery>,
     ) -> io::Result<Self> {
         let cancellation = crate::cancellation::CancellationToken::new();
-        Self::start_with_work(directory, delivery,
+        Self::start_driver(directory, delivery,
             &mut DemandWork::new(WorkBudget::UNBOUNDED, &cancellation)).map_err(ordinary_error)
     }
 
-    pub(super) fn start_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn start_driver<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot, delivery: Arc<Delivery>, work: &mut W,
     ) -> Result<Self, DemandError> {
         Self::start_handle_with_work(directory.directory_handle(), delivery, true, None, true, work)
     }
 
-    pub(super) fn start_directory_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn start_directory_driver<W: SourceDemandReadWork>(
         directory: &cap_std::fs::Dir, delivery: Arc<Delivery>, complete: bool, work: &mut W,
     ) -> Result<Self, DemandError> {
         use std::os::windows::io::AsHandle as _;
         Self::start_handle_with_work(directory.as_handle(), delivery, false, Some(complete), false, work)
     }
 
-    pub(super) fn start_held_root_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn start_held_root_with_work<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot, delivery: Arc<Delivery>,
         complete: bool, recursive: bool, work: &mut W,
     ) -> Result<Self, DemandError> {
@@ -219,7 +196,7 @@ impl PlatformWatch {
         root: std::os::windows::io::BorrowedHandle<'_>, delivery: Arc<Delivery>,
         pin_name: bool, complete: Option<bool>, recursive: bool, work: &mut W,
     ) -> Result<Self, DemandError> {
-        work.preflight(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+        work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
         let carrier = delivery.prepare_startup_failure(work)?;
         let original_budget = work.with_original_leaf(|work| work.budget);
         let native_original = work.is_native_original();
@@ -260,14 +237,14 @@ impl PlatformWatch {
                 reading_changed: Condvar::new(), fenced: Mutex::new(0),
                 fence_delivered: Condvar::new(), stopping: AtomicBool::new(false),
                 stop_completed: AtomicBool::new(false),
-                native_cleanup: Mutex::new(NativeCleanup { active, terminal }),
+                native_cleanup: Mutex::new([active, terminal]),
                 native_thread: Mutex::new(None), native_ready: AtomicBool::new(false),
                 native_retiring: AtomicBool::new(false), native_entered_retirement: AtomicBool::new(false),
-                native_attempt_finished: AtomicBool::new(false), native_resources_retired: AtomicBool::new(false),
+                native_attempt_finished: AtomicBool::new(false),
                 native_drop_requested: AtomicBool::new(false), native_failure: Mutex::new(None),
                 #[cfg(test)]
                 native_wait_cancellation: Mutex::new(None),
-                original_cleanup: native_original, ownership,
+                ownership,
             }));
             let state = shared.as_ref().expect("prepared read state");
             if native_original {
@@ -284,12 +261,12 @@ impl PlatformWatch {
             state.completed.install(unsafe { OwnedHandle::from_raw_handle(event.0) });
             let reader = shared.as_ref().expect("constructed read state");
             let mut reads = reader.lock_reads();
-            if let Err(error) = reader.issue_read(&mut reads, Some(&mut *work)) {
+            if let Err(error) = reader.issue_read(&mut reads, work) {
                 if !matches!(&error, DemandError::Io(error)
                     if error.raw_os_error() == Some(ERROR_INVALID_FUNCTION.to_hresult().0))
                 { return Err(error); }
                 reader.extended.store(false, Ordering::Release);
-                reader.issue_read(&mut reads, Some(&mut *work))?;
+                reader.issue_read(&mut reads, work)?;
             }
             drop(reads);
             let thread = if native_original { None } else { Some(create_reader(reader, work)?) };
@@ -326,22 +303,21 @@ impl PlatformWatch {
         result
     }
 
-    pub(super) fn stop_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
         &self, work: &mut W,
     ) -> Result<(), DemandError> {
         self.stop_engine(work, false, None)
     }
 
     /// Completes an already-owned native cleanup suffix without introducing a caller token, root, resource allowance or namespace authority.
-    pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
-        if !self.shared.original_cleanup { return Err(DemandError::NativeWorkUnavailable); }
+    pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         let birth = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
         let mut work = crate::demand::NativeSourceWork::from_original_work(birth);
         self.stop_engine(&mut work, true, None)
     }
 
     /// Retires only this watch's original birth-paid native suffix.
-    pub(super) fn stop_with_cleanup_wait(
+    pub(crate) fn stop_with_cleanup_wait(
         &self, wait: &crate::CancellationToken,
     ) -> Result<(), DemandError> {
         wait.check().map_err(|_| DemandError::Cancelled)?;
@@ -356,33 +332,16 @@ impl PlatformWatch {
     ) -> Result<(), DemandError> {
         if !retiring { work.check()?; }
         self.shared.delivery.ensure_stop_available()?;
-        if self.shared.original_cleanup { return self.stop_native_engine(work, wait); }
-        let mut thread = if wait.is_some() {
-            match self.thread.try_lock() {
-                Ok(thread) => thread,
-                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => return Err(DemandError::WorkerUnavailable),
-            }
-        } else {
-            self.thread.lock().unwrap_or_else(PoisonError::into_inner)
-        };
-        let mut reads = if wait.is_some() {
-            match self.shared.reads.try_lock() {
-                Ok(reads) => reads,
-                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => return Err(DemandError::WorkerUnavailable),
-            }
-        } else {
-            self.shared.lock_reads()
-        };
+        if self.shared.delivery.original.is_some() { return self.stop_native_engine(work, wait); }
+        let mut thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut reads = self.shared.lock_reads();
         let running = thread.is_some();
         let pending = reads.pending;
         let required_reads = u64::from(pending) + u64::from(running);
         let required_writes = u64::from(pending) + u64::from(running) * 2
             + u64::from(self.shared.directory.is_open()) + u64::from(self.shared.completed.is_open());
-        if wait.is_some() { return Err(DemandError::NativeWorkUnavailable); }
         if !retiring {
-            work.preflight(WorkCounters {
+            work.admit(WorkCounters {
                 backend_write_operations: required_writes, backend_read_operations: required_reads,
                 ..WorkCounters::default()
             })?;
@@ -436,14 +395,14 @@ impl PlatformWatch {
             if let Some(error) = join_error {
                 return result.and(Err(error));
             }
-            result = result.and(close_owned_measured(&mut thread, &self.shared, work));
+            result = result.and(close_owned(&mut thread, &self.shared, work));
         }
         let mut reads = self.shared.lock_reads();
         if reads.pending {
             return result.and(Err(io::Error::from(io::ErrorKind::WouldBlock).into()));
         }
-        result = result.and(self.shared.directory.close_with_record(work, |work| self.shared.record_cleanup(work, 0, 1)));
-        result = result.and(self.shared.completed.close_with_record(work, |work| self.shared.record_cleanup(work, 0, 1)));
+        result = result.and(self.shared.close_watch(&self.shared.directory, work));
+        result = result.and(self.shared.close_watch(&self.shared.completed, work));
         if let Some(buffer) = reads.buffer.take() {
             drop(buffer);
             result = result.and(self.shared.ownership.retire(size_of::<[u64; BUFFER_WORDS]>() as u64));
@@ -454,9 +413,6 @@ impl PlatformWatch {
         if thread.is_none() && !self.shared.directory.is_open() && !self.shared.completed.is_open() {
             self.shared.stop_completed.store(true, Ordering::Release);
         }
-        if let Some(wait) = wait {
-            result = result.and(wait.check().map_err(|_| DemandError::Cancelled));
-        }
         result
     }
 
@@ -465,7 +421,7 @@ impl PlatformWatch {
         &self, work: &mut W, wait: Option<&crate::CancellationToken>,
     ) -> Result<(), DemandError> {
         if let Some(wait) = wait { wait.check().map_err(|_| DemandError::Cancelled)?; }
-        if !self.shared.birth_work(work) { return Err(DemandError::NativeWorkUnavailable); }
+        if !self.shared.delivery.birth_matches(work) { return Err(DemandError::NativeWorkUnavailable); }
         if self.is_stopped() { return Ok(()); }
         let mut reads = if wait.is_some() {
             match self.shared.reads.try_lock() {
@@ -497,7 +453,7 @@ impl PlatformWatch {
             + u64::from(self.shared.directory.is_open()) + u64::from(self.shared.completed.is_open());
         {
             let cleanup = self.shared.native_cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-            let active = cleanup.active.as_ref().ok_or(DemandError::NativeWorkUnavailable)?.remaining_work();
+            let active = cleanup[0].as_ref().ok_or(DemandError::NativeWorkUnavailable)?.remaining_work();
             if active.backend_read_operations < required_reads || active.backend_write_operations < required_writes {
                 return Err(DemandError::NativeWorkUnavailable);
             }
@@ -546,25 +502,25 @@ impl PlatformWatch {
         }
     }
 
-    pub(super) fn is_stopped(&self) -> bool {
+    pub(crate) fn is_stopped(&self) -> bool {
         self.shared.stop_completed.load(Ordering::Acquire)
     }
 
-    pub(super) fn logical_owned_bytes(&self) -> u64 {
+    pub(crate) fn platform_owned_bytes(&self) -> u64 {
         super::arc_control_bytes::<Shared>() + size_of::<OVERLAPPED>() as u64
             + if self.shared.buffer_owned.load(Ordering::Acquire) { size_of::<[u64; BUFFER_WORDS]>() as u64 } else { 0 }
     }
 
-    pub(super) fn fence(&self) -> io::Result<()> {
+    pub(crate) fn fence(&self) -> io::Result<()> {
         self.fence_for(FENCE_TIMEOUT)
     }
 
-    pub(super) fn fence_for(&self, timeout: Duration) -> io::Result<()> {
+    pub(crate) fn fence_for(&self, timeout: Duration) -> io::Result<()> {
         let mut work = self.shared.delivery.callback_work();
         self.fence_with_work(timeout, &mut work).map(|_| ()).map_err(ordinary_error)
     }
 
-    pub(super) fn fence_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
         &self, timeout: Duration, work: &mut W,
     ) -> Result<bool, DemandError> {
         work.check()?;
@@ -583,7 +539,7 @@ impl PlatformWatch {
         let original_budget = work.with_original_leaf(|work| work.budget);
         let result = (|| {
             if reads.pending {
-                work.preflight(WorkCounters {
+                work.admit(WorkCounters {
                     backend_write_operations: 1, backend_read_operations: 1,
                     source_bytes_read: size_of::<[u64; BUFFER_WORDS]>() as u64,
                     ..WorkCounters::default()
@@ -592,9 +548,9 @@ impl PlatformWatch {
                 // SAFETY: completes only the original queue's pending read.
                 let _ = unsafe { CancelIoEx(HANDLE(self.shared.directory.as_raw_handle()),
                     Some(&raw const *reads.overlapped)) };
-                self.shared.finish_read_measured(&mut reads, true, true, work)?;
+                self.shared.finish_read(&mut reads, true, work)?;
             }
-            self.shared.drain_measured(&mut reads, Some((started, timeout)), work)
+            self.shared.drain(&mut reads, Some((started, timeout)), work)
         })();
         work.with_original_leaf(|work| work.budget = original_budget);
         reads.blocked = !matches!(result, Ok(true));
@@ -614,21 +570,21 @@ impl PlatformWatch {
         result
     }
 
-    pub(super) fn delivery(&self) -> &Delivery {
+    pub(crate) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
     }
 
     /// Holds delivery back while the returned guard lives.
     #[cfg(test)]
-    pub(super) fn paused(&self) -> impl Sized + '_ {
+    pub(crate) fn paused(&self) -> impl Sized + '_ {
         self.shared.lock_reads()
     }
 }
 
-impl Drop for PlatformWatch {
+impl Drop for NativeSourceWatch {
     fn drop(&mut self) {
         if self.is_stopped() { return; }
-        if self.shared.original_cleanup {
+        if self.shared.delivery.original.is_some() {
             self.shared.native_drop_requested.store(true, Ordering::Release);
             let terminal_wake = self.shared.native_retiring.swap(true, Ordering::AcqRel);
             self.shared.stopping.store(true, Ordering::Release);
@@ -744,7 +700,6 @@ impl Shared {
                     self.buffer_owned.store(false, Ordering::Release);
                     reads.filled = 0;
                     reads.cursor = 0;
-                    self.native_resources_retired.store(true, Ordering::Release);
                     result = result.and(self.close_native_thread(terminal));
                 }
             }
@@ -752,9 +707,13 @@ impl Shared {
             self.native_attempt_finished.store(true, Ordering::Release);
             self.reading_changed.notify_all();
             self.fence_delivered.notify_all();
-            if self.native_resources_retired.load(Ordering::Acquire) {
+            if !reads.pending && reads.buffer.is_none() && !self.directory.is_open() && !self.completed.is_open() {
                 if self.native_thread.lock().unwrap_or_else(PoisonError::into_inner).is_none() {
-                    self.release_native_cleanup();
+                    let cleanup = {
+                        let mut cleanup = self.native_cleanup.lock().unwrap_or_else(PoisonError::into_inner);
+                        std::mem::replace(&mut *cleanup, [None, None])
+                    };
+                    drop(cleanup);
                     self.stop_completed.store(true, Ordering::Release);
                     self.reading_changed.notify_all();
                     return;
@@ -772,8 +731,7 @@ impl Shared {
             backend_read_operations: reads, backend_write_operations: writes, ..WorkCounters::UNCHARGED
         };
         let mut cleanup = self.native_cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-        let credit = if terminal { &mut cleanup.terminal } else { &mut cleanup.active };
-        let credit = credit.as_mut().ok_or(DemandError::NativeWorkUnavailable)?;
+        let credit = cleanup[usize::from(terminal)].as_mut().ok_or(DemandError::NativeWorkUnavailable)?;
         let remaining = credit.remaining_work();
         if remaining.backend_read_operations < reads || remaining.backend_write_operations < writes {
             return Err(DemandError::NativeWorkUnavailable);
@@ -795,15 +753,16 @@ impl Shared {
         DemandError::Io(error)
     }
 
+    fn close_watch<W: SourceDemandReadWork>(&self, handle: &WatchHandle, work: &mut W) -> Result<(), DemandError> {
+        if !handle.is_open() { return Ok(()); }
+        let closed = handle.close().map_err(io::Error::from).map_err(DemandError::from);
+        closed.and(self.record_cleanup(work, 0, 1))
+    }
+
     fn close_native_watch(&self, handle: &WatchHandle, terminal: bool) -> Result<(), DemandError> {
-        let raw = handle.raw.load(Ordering::Acquire);
-        if raw.is_null() { return Ok(()); }
+        if !handle.is_open() { return Ok(()); }
         self.native_start(terminal, 0, 1)?;
-        // SAFETY: the original worker owns the quiesced handle; no accounting
-        // lock is held over this actual native close.
-        unsafe { CloseHandle(HANDLE(raw)) }.map_err(|error| self.native_os_error(error))?;
-        handle.raw.store(std::ptr::null_mut(), Ordering::Release);
-        Ok(())
+        handle.close().map_err(|error| self.native_os_error(error))
     }
 
     fn close_native_thread(&self, terminal: bool) -> Result<(), DemandError> {
@@ -830,20 +789,8 @@ impl Shared {
         if failure.is_none() { *failure = Some(error); }
     }
 
-    fn release_native_cleanup(&self) {
-        let cleanup = {
-            let mut cleanup = self.native_cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-            (cleanup.active.take(), cleanup.terminal.take())
-        };
-        drop(cleanup);
-    }
-
-    fn birth_work<W: SourceDemandReadWork>(&self, work: &W) -> bool {
-        self.original_cleanup && self.delivery.birth_matches(work)
-    }
-
     fn record_cleanup<W: SourceDemandReadWork>(&self, work: &mut W, reads: u64, writes: u64) -> Result<(), DemandError> {
-        assert!(!self.original_cleanup, "native disposal uses its birth-paid START token");
+        assert!(self.delivery.original.is_none(), "native disposal uses its birth-paid START token");
         work.record(WorkCounters {
             backend_read_operations: reads, backend_write_operations: writes, ..WorkCounters::default()
         })
@@ -854,7 +801,7 @@ impl Shared {
     }
 
     fn run(&self) {
-        if self.original_cleanup {
+        if self.delivery.original.is_some() {
             let mut reads = self.lock_reads();
             while !self.native_ready.load(Ordering::Acquire) && !self.stopping.load(Ordering::Acquire) {
                 reads = self.reading_changed.wait(reads).unwrap_or_else(PoisonError::into_inner);
@@ -883,7 +830,7 @@ impl Shared {
                 return;
             }
             let mut work = self.delivery.callback_work();
-            match self.drain_measured(&mut reads, None, &mut work) {
+            match self.drain(&mut reads, None, &mut work) {
                 Ok(_) => {}
                 Err(error) => {
                     reads.blocked = true;
@@ -893,16 +840,14 @@ impl Shared {
         }
     }
 
-    fn issue_read<W: SourceDemandReadWork>(&self, reads: &mut Reads, work: Option<&mut W>) -> Result<(), DemandError> {
+    fn issue_read<W: SourceDemandReadWork>(&self, reads: &mut Reads, work: &mut W) -> Result<(), DemandError> {
         let Reads { overlapped, buffer, .. } = reads;
         let buffer = buffer.as_mut().ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))?;
         **overlapped = OVERLAPPED {
             hEvent: HANDLE(self.completed.as_raw_handle()),
             ..OVERLAPPED::default()
         };
-        if let Some(work) = work {
-            work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
-        }
+        work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
         // SAFETY: the buffer and OVERLAPPED remain live until completion.
         unsafe {
             ReadDirectoryChangesExW(
@@ -929,27 +874,27 @@ impl Shared {
     }
 
     /// Completes the same OVERLAPPED and preserves its original page cursor.
-    fn finish_read_measured<W: SourceDemandReadWork>(
-        &self, reads: &mut Reads, wait: bool, mandatory: bool, work: &mut W,
+    fn finish_read<W: SourceDemandReadWork>(
+        &self, reads: &mut Reads, wait: bool, work: &mut W,
     ) -> Result<bool, DemandError> {
         if !reads.pending { return Ok(true); }
-        if !mandatory {
-            work.preflight(WorkCounters {
+        if !wait {
+            work.admit(WorkCounters {
                 source_bytes_read: size_of::<[u64; BUFFER_WORDS]>() as u64,
                 ..WorkCounters::default()
             })?;
         }
         let delta = WorkCounters { backend_read_operations: 1, ..WorkCounters::default() };
-        let recorded = if mandatory { Some(work.record(delta)) } else { work.charge(delta)?; None };
+        let recorded = if wait { work.record(delta) } else { work.charge(delta)?; Ok(()) };
         let mut transferred = 0;
         // SAFETY: the original owned buffers stay pinned through completion.
         let result = unsafe { GetOverlappedResult(HANDLE(self.directory.as_raw_handle()),
             &raw const *reads.overlapped, &mut transferred, wait) };
         match result {
-            Err(error) if error.code() == ERROR_IO_INCOMPLETE.to_hresult() => return recorded.unwrap_or(Ok(())).map(|_| false),
+            Err(error) if error.code() == ERROR_IO_INCOMPLETE.to_hresult() => return recorded.map(|_| false),
             Err(error) if error.code() == ERROR_OPERATION_ABORTED.to_hresult() => {
                 reads.pending = false;
-                return recorded.unwrap_or(Ok(())).map(|_| true);
+                return recorded.map(|_| true);
             }
             Err(error) if error.code() == ERROR_NOTIFY_ENUM_DIR.to_hresult() => {
                 reads.loss = true;
@@ -967,11 +912,11 @@ impl Shared {
             }
         }
         reads.pending = false;
-        if let Some(recorded) = recorded { recorded?; }
+        recorded?;
         Ok(true)
     }
 
-    fn drain_measured<W: SourceDemandReadWork>(
+    fn drain<W: SourceDemandReadWork>(
         &self, reads: &mut Reads, deadline: Option<(std::time::Instant, Duration)>, work: &mut W,
     ) -> Result<bool, DemandError> {
         loop {
@@ -982,25 +927,25 @@ impl Shared {
                 self.delivery.deliver_wide_with_work(&[HostChangeWide::Everything], work)?;
                 reads.loss = false;
             }
-            if !self.deliver_page_measured(reads, deadline, work)? { return Ok(false); }
+            if !self.deliver_page(reads, deadline, work)? { return Ok(false); }
             if self.stopping.load(Ordering::Acquire) { return Ok(false); }
             if reads.pending {
-                if !self.finish_read_measured(reads, false, false, work)? {
+                if !self.finish_read(reads, false, work)? {
                     return Ok(self.delivery.is_exact());
                 }
                 continue;
             }
             let budget = work.with_original_leaf(|work| work.budget);
-            if !self.original_cleanup { reserve_cleanup(work, 1, 1)?; }
+            if self.delivery.original.is_none() { reserve_cleanup(work, 1, 1)?; }
             let issued = (|| {
-                work.preflight(WorkCounters {
+                work.admit(WorkCounters {
                     source_bytes_read: size_of::<[u64; BUFFER_WORDS]>() as u64,
                     ..WorkCounters::default()
                 })?;
-                self.issue_read(reads, Some(&mut *work))?;
-                self.finish_read_measured(reads, false, false, work)
+                self.issue_read(reads, work)?;
+                self.finish_read(reads, false, work)
             })();
-            if !self.original_cleanup { work.with_original_leaf(|work| work.budget = budget); }
+            if self.delivery.original.is_none() { work.with_original_leaf(|work| work.budget = budget); }
             match issued {
                 Ok(false) => return Ok(self.delivery.is_exact()),
                 Ok(true) => {}
@@ -1012,17 +957,10 @@ impl Shared {
     }
 
     /// Uses the existing flexible fields, borrowing aligned UTF-16 directly from the original native u64 page instead of constructing an OsString.
-    fn deliver_page_measured<W: SourceDemandReadWork>(
+    fn deliver_page<W: SourceDemandReadWork>(
         &self, reads: &mut Reads, deadline: Option<(std::time::Instant, Duration)>, work: &mut W,
     ) -> Result<bool, DemandError> {
         let extended = self.extended.load(Ordering::Acquire);
-        let (name_offset, length_offset) = if extended {
-            (std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileName),
-                std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileNameLength))
-        } else {
-            (std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileName),
-                std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileNameLength))
-        };
         while reads.cursor < reads.filled {
             if self.stopping.load(Ordering::Acquire) { return Ok(false); }
             if deadline.is_some_and(|(started, timeout)| started.elapsed() >= timeout) { return Ok(false); }
@@ -1031,26 +969,7 @@ impl Shared {
             let buffer = reads.buffer.as_ref().ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))?;
             let bytes = unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), reads.filled) };
             let record = &bytes[reads.cursor..];
-            let field = |at: usize| record.get(at..at + 4)
-                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok()).map(u32::from_le_bytes);
-            let parsed = (|| {
-                let next = field(0)? as usize;
-                let action = field(4)?;
-                let length = field(length_offset)? as usize;
-                let name = record.get(name_offset..name_offset.checked_add(length)?)?;
-                if length % 2 != 0 || name.as_ptr().align_offset(std::mem::align_of::<u16>()) != 0 {
-                    return None;
-                }
-                let file = if extended {
-                    let at = std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileId);
-                    Some(u64::from_le_bytes(record.get(at..at + 8)?.try_into().ok()?))
-                } else { None };
-                if next != 0 && (next < name_offset + length || next > record.len()) { return None; }
-                // SAFETY: native page/name offsets are aligned for UTF-16, and
-                // the checked byte span contains exactly length / 2 units.
-                let path = unsafe { std::slice::from_raw_parts(name.as_ptr().cast::<u16>(), length / 2) };
-                Some((next, action, path, file))
-            })();
+            let parsed = notification(record, extended);
             let Some((next, action, path, file)) = parsed else {
                 self.delivery.deliver_wide_with_work(&[HostChangeWide::Everything], work)?;
                 reads.cursor = reads.filled;
@@ -1124,84 +1043,44 @@ fn ordinary_error(error: DemandError) -> io::Error {
     }
 }
 
-#[cfg(test)]
-/// Turns one read's reports into changes: each names the entry, relative to the root, and, in `extended` reports, the file.
-fn translate(mut bytes: &[u8], extended: bool, changes: &mut Vec<HostChange>) {
+fn notification(record: &[u8], extended: bool) -> Option<(usize, u32, &[u16], Option<u64>)> {
     let (name_offset, length_offset) = if extended {
-        (
-            std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileName),
-            std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileNameLength),
-        )
+        (std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileName),
+        std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileNameLength))
     } else {
-        (
-            std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileName),
-            std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileNameLength),
-        )
+        (std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileName),
+        std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileNameLength))
     };
-    let file = |record: &[u8]| -> Option<u64> {
-        let offset = std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileId);
-        record
-            .get(offset..offset + 8)
-            .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
-            .map(u64::from_le_bytes)
-    };
-    loop {
-        let (Some(next), Some(length)) = (
-            bytes
-                .get(..4)
-                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok()),
-            bytes
-                .get(length_offset..)
-                .and_then(|bytes| bytes.get(..4))
-                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok()),
-        ) else {
-            changes.push(HostChange::Everything);
-            return;
-        };
-        let length = usize::try_from(u32::from_le_bytes(length)).unwrap_or(usize::MAX);
-        let Some(name) = bytes.get(name_offset..name_offset.saturating_add(length)) else {
-            changes.push(HostChange::Everything);
-            return;
-        };
-        let Some(units) = crate::kernel::types::utf16le_units(name) else {
-            changes.push(HostChange::Everything);
-            return;
-        };
-        let units = units.collect::<Vec<_>>();
-        let path = PathBuf::from(OsString::from_wide(&units));
-        let action = bytes
-            .get(4..8)
-            .and_then(|action| <[u8; 4]>::try_from(action).ok())
-            .map_or(0, u32::from_le_bytes);
-        changes.push(if action == FILE_ACTION_MODIFIED.0 {
-            HostChange::Altered(path)
-        } else {
-            HostChange::Rebound(path)
-        });
-        if extended {
-            let Some(file) = file(bytes) else {
-                changes.push(HostChange::Everything);
-                return;
-            };
-            changes.push(HostChange::File(file));
-        }
-        let next = usize::try_from(u32::from_le_bytes(next)).unwrap_or(0);
-        if next == 0 {
-            return;
-        }
-        let Some(rest) = bytes.get(next..) else {
-            changes.push(HostChange::Everything);
-            return;
-        };
-        bytes = rest;
+    let field = |at: usize| record.get(at..at + 4)
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok()).map(u32::from_le_bytes);
+    let next = field(0)? as usize;
+    let action = field(4)?;
+    let length = field(length_offset)? as usize;
+    let name = record.get(name_offset..name_offset.checked_add(length)?)?;
+    if length % 2 != 0 || name.as_ptr().align_offset(std::mem::align_of::<u16>()) != 0 {
+        return None;
     }
+    let file = if extended {
+        let at = std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileId);
+        Some(u64::from_le_bytes(record.get(at..at + 8)?.try_into().ok()?))
+    } else { None };
+    if next != 0 && (next < name_offset + length || next > record.len()) { return None; }
+    // SAFETY: the checked aligned span contains exactly length / 2 units.
+    let path = unsafe { std::slice::from_raw_parts(name.as_ptr().cast::<u16>(), length / 2) };
+    Some((next, action, path, file))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Delivery, DemandError, DemandWork, HostChange, HostChangeWide, OVERLAPPED, Shared, translate};
+    use super::{Delivery, DemandError, DemandWork, HostChange, HostChangeWide, OVERLAPPED, Shared, notification};
     use std::mem::size_of;
-    use std::path::PathBuf;
+
+    struct Quiet;
+    impl super::super::HostChangeSink for Quiet {
+        fn logical_owned_bytes(&self) -> u64 { 0 }
+        fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
+        fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
+    }
 
     /// One report as the file system lays it out: the fixed fields, then the name, padded to the next record.
     fn record(extended: bool, action: u32, file: u64, name: &str, last: bool) -> Vec<u8> {
@@ -1227,150 +1106,85 @@ mod tests {
         bytes
     }
 
-    /// Both report layouts name each entry; only the extended one names its file, and only a modification alters an entry in place.
     #[test]
-    fn reports_translate_in_either_layout() {
+    fn reports_borrow_native_names_and_identity_in_either_layout() {
         for extended in [true, false] {
             let mut bytes = record(extended, 1, 7, r"d\created", false);
             bytes.extend(record(extended, 3, 9, "written", true));
-            let mut changes = Vec::new();
-            translate(&bytes, extended, &mut changes);
-            let mut expected = vec![HostChange::Rebound(PathBuf::from("d").join("created"))];
-            if extended {
-                expected.push(HostChange::File(7));
-            }
-            expected.push(HostChange::Altered(PathBuf::from("written")));
-            if extended {
-                expected.push(HostChange::File(9));
-            }
-            assert_eq!(changes, expected, "extended: {extended}");
+            let (next, action, name, file) = notification(&bytes, extended).expect("created report");
+            assert_eq!(action, 1);
+            assert_eq!(name, r"d\created".encode_utf16().collect::<Vec<_>>());
+            assert_eq!(file, extended.then_some(7));
+            let (next, action, name, file) = notification(&bytes[next..], extended).expect("modified report");
+            assert_eq!(next, 0);
+            assert_eq!(action, 3);
+            assert_eq!(name, "written".encode_utf16().collect::<Vec<_>>());
+            assert_eq!(file, extended.then_some(9));
         }
     }
 
     #[test]
     fn flexible_utf16_notification_names_are_not_scalar_decoded() {
-        use std::os::windows::ffi::OsStrExt as _;
         for extended in [false, true] {
             let mut bytes = vec![0_u8; if extended { 84 } else { 12 }];
             bytes[4..8].copy_from_slice(&3_u32.to_le_bytes());
             let offset = if extended { 80 } else { 8 };
             bytes[offset..offset + 4].copy_from_slice(&2_u32.to_le_bytes());
             bytes.extend_from_slice(&0xD800_u16.to_le_bytes());
-            let mut changes = Vec::new();
-            translate(&bytes, extended, &mut changes);
-            let Some(HostChange::Altered(path)) = changes.first() else {
-                panic!("the ordinary driver must preserve the opaque name");
-            };
-            assert_eq!(path.as_os_str().encode_wide().collect::<Vec<_>>(), vec![0xD800]);
+            let (_, action, name, _) = notification(&bytes, extended).expect("opaque report");
+            assert_eq!(action, 3);
+            assert_eq!(name, &[0xD800]);
         }
-    }
-
-    #[test]
-    fn measured_nonrecursive_startup_admits_real_state_and_native_requests()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use crate::source_watch::{HostChangeSink, NativeSourceWatch};
-        use crate::demand::DemandWork;
-        use crate::{CancellationToken, WorkBudget};
-        use std::sync::Arc;
-        struct Ignored;
-        impl HostChangeSink for Ignored {
-            fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-            fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-        }
-        let root = tempfile::tempdir()?;
-        let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
-        let mut work = DemandWork::new(WorkBudget {
-            backend_read_operations: 8,
-            backend_write_operations: 8,
-            allocation_operations: 4,
-            peak_allocation_bytes: 256 * 1024,
-            bytes_copied: 1024,
-            ..WorkBudget::default()
-        }, &CancellationToken::new());
-        let watch = NativeSourceWatch::start_directory_measured(&held, Arc::new(Ignored), true, &mut work)?;
-        assert!(!watch.platform.shared.recursive);
-        assert_eq!(work.work.allocation_operations, 4);
-        assert_eq!(work.work.peak_allocation_bytes, watch.owned_bytes());
-        assert!(work.work.backend_read_operations >= 2);
-        assert_eq!(work.work.backend_write_operations, 2);
-        assert_eq!(work.work.bytes_copied, 0, "native startup has no owned thread-name or closure buffer");
-        let before = work.work.backend_write_operations;
-        let before_reads = work.work.backend_read_operations;
-        watch.stop_with_work(&mut work)?;
-        assert_eq!(work.work.backend_read_operations, before_reads + 2);
-        assert_eq!(work.work.backend_write_operations, before + 5);
-        assert!(!watch.is_exact());
-        assert_eq!(watch.logical_owned_bytes(), super::super::arc_control_bytes::<Shared>()
-            + size_of::<OVERLAPPED>() as u64 + super::super::arc_control_bytes::<Delivery>());
-        let stopped = work.work;
-        watch.stop_with_work(&mut work)?;
-        assert_eq!(work.work, stopped, "retired handles cannot perform native cleanup twice");
-        drop(watch);
-        assert_eq!(work.work, stopped);
-        Ok(())
     }
 
     #[test]
     fn short_startup_budget_denies_the_resident_cleanup_suffix_before_native_io()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::source_watch::{HostChangeSink, NativeSourceWatch};
+        use crate::source_watch::NativeSourceWatch;
         use crate::demand::{DemandError, DemandWork};
         use crate::{CancellationToken, WorkBudget};
         use std::sync::Arc;
-        struct Ignored;
-        impl HostChangeSink for Ignored {
-            fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-            fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-        }
         let root = tempfile::tempdir()?;
         let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
         let mut work = DemandWork::new(WorkBudget {
             backend_read_operations: 1,
             ..WorkBudget::UNBOUNDED
         }, &CancellationToken::new());
-        let failure = NativeSourceWatch::start_directory_measured(&held, Arc::new(Ignored), true, &mut work)
+        let failure = NativeSourceWatch::start_directory_with_work(&held, Arc::new(Quiet), true, &mut work)
             .err().ok_or("startup unexpectedly exceeded its finite native allowance")?;
         assert!(matches!(failure, DemandError::Work(_)));
         assert_eq!(work.work.backend_read_operations, 0, "the complete native cleanup suffix precedes the first handle request");
         assert_eq!(work.work.backend_write_operations, 0, "denied shutdown custody creates no native event or directory handle");
-        assert_eq!(work.work.allocation_operations, 1, "only the common delivery control exists before suffix admission");
         Ok(())
     }
 
     #[test]
     fn stop_denial_and_cancellation_retain_the_same_native_owner()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::source_watch::{HostChangeSink, NativeSourceWatch};
+        use crate::source_watch::NativeSourceWatch;
         use crate::{CancellationToken, WorkBudget, WorkCounters};
         use std::os::windows::io::AsRawHandle as _;
         use std::sync::Arc;
-        struct Quiet;
-        impl HostChangeSink for Quiet {
-            fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-            fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-        }
         let root = tempfile::tempdir()?;
         let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
         let mut startup = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let watch = NativeSourceWatch::start_directory_measured(&held, Arc::new(Quiet), true, &mut startup)?;
-        let directory = watch.platform.shared.directory.as_raw_handle();
-        let completed = watch.platform.shared.completed.as_raw_handle();
-        let owned = watch.logical_owned_bytes();
+        let watch = NativeSourceWatch::start_directory_with_work(&held, Arc::new(Quiet), true, &mut startup)?;
+        assert!(!watch.shared.recursive);
+        let directory = watch.shared.directory.as_raw_handle();
+        let completed = watch.shared.completed.as_raw_handle();
+        let owned = watch.platform_owned_bytes();
         assert!(!watch.is_stopped());
         assert!(matches!(
-            watch.platform.stop_with_cleanup_wait(&CancellationToken::new()),
+            watch.stop_with_cleanup_wait(&CancellationToken::new()),
             Err(DemandError::NativeWorkUnavailable),
         ));
-        assert!(matches!(watch.platform.stop_accepted_cleanup(), Err(DemandError::NativeWorkUnavailable)));
-        assert_eq!(watch.logical_owned_bytes(), owned);
-        let reads = watch.platform.shared.lock_reads();
+        assert!(matches!(watch.stop_accepted_cleanup(), Err(DemandError::NativeWorkUnavailable)));
+        assert_eq!(watch.platform_owned_bytes(), owned);
+        let reads = watch.shared.lock_reads();
         let observed = std::thread::scope(|scope| {
             let (sender, receiver) = std::sync::mpsc::channel();
             let watch = &watch;
-            scope.spawn(move || { let _ = sender.send(watch.logical_owned_bytes()); });
+            scope.spawn(move || { let _ = sender.send(watch.platform_owned_bytes()); });
             let observed = receiver.recv_timeout(std::time::Duration::from_secs(1));
             drop(reads);
             observed
@@ -1389,18 +1203,16 @@ mod tests {
         assert_eq!(denied.work, WorkCounters::default());
         assert!(!watch.is_stopped());
         assert!(watch.is_exact());
-        assert_eq!(watch.platform.shared.directory.as_raw_handle(), directory);
-        assert_eq!(watch.platform.shared.completed.as_raw_handle(), completed);
-        assert_eq!(watch.logical_owned_bytes(), owned);
+        assert_eq!(watch.shared.directory.as_raw_handle(), directory);
+        assert_eq!(watch.shared.completed.as_raw_handle(), completed);
+        assert_eq!(watch.platform_owned_bytes(), owned);
         let mut admitted = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
         watch.stop_with_work(&mut admitted)?;
-        assert_eq!(admitted.work.backend_read_operations, 2);
-        assert_eq!(admitted.work.backend_write_operations, 5);
         assert_eq!(admitted.work.allocation_operations, 0);
-        assert_eq!(watch.logical_owned_bytes(), owned - size_of::<[u64; super::BUFFER_WORDS]>() as u64);
-        assert!(!watch.platform.shared.directory.is_open());
-        assert!(!watch.platform.shared.completed.is_open());
-        assert!(watch.platform.thread.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
+        assert_eq!(watch.platform_owned_bytes(), owned - size_of::<[u64; super::BUFFER_WORDS]>() as u64);
+        assert!(!watch.shared.directory.is_open());
+        assert!(!watch.shared.completed.is_open());
+        assert!(watch.thread.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none());
         assert!(!watch.is_exact());
         assert!(watch.is_stopped());
         Ok(())
@@ -1408,140 +1220,13 @@ mod tests {
 
     #[cfg(feature = "native-mount")]
     #[test]
-    fn shared_native_stop_keeps_the_original_grant_and_completes_a_late_fault()
+    fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::demand::{NativeDemandReadMeter, NativeSourceWork, SourceDemandReadWork};
         use crate::native_host::NativeHostWork;
         use crate::{CancellationToken, WorkBudget, WorkCounters};
         use std::sync::{Arc, Mutex};
 
-        struct Quiet;
-        impl super::super::HostChangeSink for Quiet {
-            fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], work: &mut DemandWork)
-                -> Result<(), DemandError> { work.check() }
-            fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork)
-                -> Result<(), DemandError> { work.check() }
-        }
-        struct LateFault<'a> {
-            inner: NativeSourceWork<'a>,
-            cancellation: &'a CancellationToken,
-            error: bool,
-            triggered: bool,
-        }
-        impl NativeHostWork for LateFault<'_> {
-            type Error = DemandError;
-            type Allocation = u64;
-            type CleanupWrite = u64;
-            fn io_error_kind(error: &DemandError) -> Option<std::io::ErrorKind> {
-                <DemandWork as NativeHostWork>::io_error_kind(error)
-            }
-            fn allocation_failed(error: std::collections::TryReserveError) -> DemandError { DemandError::Allocation(error) }
-            fn check(&self) -> Result<(), DemandError> { self.inner.check() }
-            fn admit(&mut self, delta: WorkCounters) -> Result<(), DemandError> { self.inner.admit(delta) }
-            fn started_io(&mut self, delta: WorkCounters) -> Result<(), DemandError> { self.inner.started_io(delta) }
-            fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-                let result = self.inner.record(delta);
-                if !self.triggered && delta.backend_write_operations != 0 {
-                    self.triggered = true;
-                    self.cancellation.cancel();
-                    if self.error {
-                        return result.and(Err(std::io::Error::other("late stop recording fault").into()));
-                    }
-                }
-                result
-            }
-            fn claim(&mut self, bytes: u64) -> Result<u64, DemandError> { self.inner.claim(bytes) }
-            fn release(&mut self, bytes: u64) -> Result<(), DemandError> { self.inner.release(bytes) }
-            fn reserve_opaque_decode(&mut self, maximum: u64) -> Result<u64, DemandError> { self.inner.reserve_opaque_decode(maximum) }
-            fn reconcile_allocation(&mut self, allocation: &mut u64, actual: u64) -> Result<(), DemandError> { self.inner.reconcile_allocation(allocation, actual) }
-            fn reserve_cleanup_write(&mut self) -> Result<u64, DemandError> { self.inner.reserve_cleanup_write() }
-            fn cancel_cleanup_write(&mut self, reservation: u64) { self.inner.cancel_cleanup_write(reservation); }
-            fn attempt_cleanup_write<T>(&mut self, reservation: u64, operation: impl FnOnce() -> T)
-                -> (T, Result<(), DemandError>) {
-                self.inner.attempt_cleanup_write(reservation, operation)
-            }
-        }
-        impl SourceDemandReadWork for LateFault<'_> {
-            fn with_native_read_meter<T>(
-                &mut self, operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
-            ) -> T { self.inner.with_native_read_meter(operation) }
-            fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
-                let before = self.inner.original_arc().with_original_leaf(|work| work.work.backend_write_operations);
-                let result = self.inner.with_original_leaf(operation);
-                let after = self.inner.original_arc().with_original_leaf(|work| work.work.backend_write_operations);
-                if !self.triggered && after > before {
-                    self.triggered = true;
-                    self.cancellation.cancel();
-                }
-                result
-            }
-            fn is_native_original(&self) -> bool { true }
-            fn native_source_work(&self) -> Option<NativeSourceWork<'_>> { Some(self.inner) }
-        }
-
-        for late_error in [false, true] {
-            let root = tempfile::tempdir()?;
-            let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
-            let mut startup = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-            let watch = super::PlatformWatch::start_directory_with_work(
-                &held, Arc::new(Delivery::new_measured(Arc::new(Quiet), &startup)), true, &mut startup,
-            )?;
-            let owned = watch.logical_owned_bytes();
-            let cancellation = CancellationToken::new();
-            let budget = WorkBudget {
-                backend_read_operations: 2, backend_write_operations: 5,
-                allocation_operations: 1, peak_allocation_bytes: 8,
-                ..WorkBudget::default()
-            };
-            let mut original = DemandWork::new(budget, &cancellation);
-            original.allocate(8)?;
-            let retained = Box::new([0_u8; 8]);
-            let before = original.work;
-            let original = Arc::new(NativeDemandReadMeter(Mutex::new(original)));
-            original.with_original_leaf(|work| work.budget.backend_write_operations = 4);
-            assert!(matches!(watch.stop_with_work(&mut NativeSourceWork::new(&original)), Err(DemandError::Work(_))));
-            assert_eq!(original.with_original_leaf(|work| work.work), before);
-            assert!(!watch.is_stopped());
-            assert_eq!(watch.logical_owned_bytes(), owned);
-            original.with_original_leaf(|work| work.budget = budget);
-            let cancelled = CancellationToken::new();
-            cancelled.cancel();
-            let cancelled_original = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &cancelled))));
-            assert!(matches!(watch.stop_with_work(&mut NativeSourceWork::new(&cancelled_original)), Err(DemandError::Cancelled)));
-            assert_eq!(cancelled_original.with_original_leaf(|work| work.work), WorkCounters::default());
-            assert!(!watch.is_stopped());
-
-            let mut work = LateFault {
-                inner: NativeSourceWork::new(&original), cancellation: &cancellation,
-                error: late_error, triggered: false,
-            };
-            let result = watch.stop_with_work(&mut work);
-            assert!(work.triggered);
-            if late_error {
-                assert!(matches!(result, Err(DemandError::Io(error)) if error.to_string() == "late stop recording fault"));
-            } else {
-                result?;
-            }
-            assert!(watch.is_stopped());
-            assert!(!watch.shared.directory.is_open());
-            assert!(!watch.shared.completed.is_open());
-            assert!(watch.thread.lock().map_err(|_| "poisoned thread custody")?.is_none());
-            assert_eq!(watch.logical_owned_bytes(), owned - size_of::<[u64; super::BUFFER_WORDS]>() as u64);
-            let spent = original.with_original_leaf(|work| {
-                assert_eq!(work.work.backend_read_operations, 2);
-                assert_eq!(work.work.backend_write_operations, 5);
-                assert_eq!(work.work.allocation_operations, before.allocation_operations);
-                assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
-                assert_eq!(work.live_allocation_bytes(), retained.len() as u64);
-                assert_eq!(work.budget, budget);
-                work.work
-            });
-            drop(watch);
-            assert_eq!(original.with_original_leaf(|work| work.work), spent);
-            drop(retained);
-            original.with_original_leaf(|work| work.release(8))?;
-        }
         for late_wait in [false, true] {
             let root = tempfile::tempdir()?;
             let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
@@ -1555,10 +1240,10 @@ mod tests {
             let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &root_cancellation))));
             let mut startup = NativeSourceWork::new(&birth);
             let delivery = Arc::new(Delivery::new_with_work(Arc::new(Quiet), &mut startup)?);
-            let watch = super::PlatformWatch::start_directory_with_work(
+            let watch = super::NativeSourceWatch::start_directory_driver(
                 &held, delivery, true, &mut startup,
             )?;
-            let owned = watch.logical_owned_bytes();
+            let owned = watch.platform_owned_bytes();
             let before = birth.with_original_leaf(|work| work.work);
             let held_budget = birth.with_original_leaf(|work| work.budget);
             let wait = CancellationToken::new();
@@ -1568,7 +1253,7 @@ mod tests {
             assert!(!watch.is_stopped());
             assert!(watch.shared.directory.is_open());
             assert!(watch.shared.completed.is_open());
-            assert_eq!(watch.logical_owned_bytes(), owned);
+            assert_eq!(watch.platform_owned_bytes(), owned);
             assert_eq!(birth.with_original_leaf(|work| (work.work, work.budget)), (before, held_budget));
             let paused = watch.paused();
             assert!(matches!(watch.stop_with_cleanup_wait(&wait), Err(DemandError::WorkerUnavailable)));
@@ -1589,8 +1274,6 @@ mod tests {
             assert!(!watch.shared.completed.is_open());
             assert!(watch.shared.native_thread.lock().map_err(|_| "poisoned native thread custody")?.is_none());
             let stopped = birth.with_original_leaf(|work| {
-                assert_eq!(work.work.backend_read_operations - before.backend_read_operations, 1);
-                assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 5);
                 assert_eq!(work.work.allocation_operations, before.allocation_operations);
                 assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
                 assert_eq!(work.budget, budget);
@@ -1647,7 +1330,7 @@ mod tests {
         let mut work = NativeSourceWork::new(&birth);
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(NativeQuiet), &mut work)?);
         let delivery_lifetime = Arc::downgrade(&delivery);
-        assert!(matches!(super::PlatformWatch::start_directory_with_work(
+        assert!(matches!(super::NativeSourceWatch::start_directory_driver(
             &held, delivery, true, &mut work,
         ), Err(DemandError::Work(_))));
         assert!(delivery_lifetime.upgrade().is_none(), "no native worker/handle was born");
@@ -1673,10 +1356,9 @@ mod tests {
             let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &cancellation))));
             let mut work = NativeSourceWork::new(&birth);
             let delivery = Arc::new(Delivery::new_with_work(Arc::new(NativeQuiet), &mut work)?);
-            let watch = super::PlatformWatch::start_directory_with_work(&held, delivery, true, &mut work)?;
+            let watch = super::NativeSourceWatch::start_directory_driver(&held, delivery, true, &mut work)?;
             let completion = Arc::clone(&watch.shared);
             let reads = completion.lock_reads();
-            let pending = u64::from(reads.pending);
             let before = birth.with_original_leaf(|work| work.work);
             let live = birth.with_original_leaf(|work| work.live_allocation_bytes());
             cancellation.cancel();
@@ -1697,8 +1379,6 @@ mod tests {
             assert!(completion.native_thread.lock().map_err(|_| "poisoned native thread custody")?.is_none());
             assert!(!completion.buffer_owned.load(super::Ordering::Acquire));
             birth.with_original_leaf(|work| {
-                assert_eq!(work.work.backend_read_operations - before.backend_read_operations, pending);
-                assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 4 + pending);
                 assert_eq!(work.work.allocation_operations, before.allocation_operations);
                 assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
                 assert_eq!(work.budget, budget);
@@ -1743,11 +1423,10 @@ mod tests {
             backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
         })?.ok_or("missing original test-control credit")?;
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(NativeQuiet), &mut work)?);
-        let watch = super::PlatformWatch::start_directory_with_work(&held, delivery, true, &mut work)?;
+        let watch = super::NativeSourceWatch::start_directory_driver(&held, delivery, true, &mut work)?;
         let completion = Arc::clone(&watch.shared);
         let owner = Arc::downgrade(&watch.shared);
         let reads = completion.lock_reads();
-        let pending = u64::from(reads.pending);
         let directory = completion.directory.as_raw_handle();
         let cursor = reads.cursor;
         unsafe { SetHandleInformation(HANDLE(directory), HANDLE_FLAG_PROTECT_FROM_CLOSE.0,
@@ -1779,8 +1458,6 @@ mod tests {
             assert_eq!(exit, STILL_ACTIVE.0 as u32, "the original worker genuinely parks with its same Shared/root/G");
         }
         birth.with_original_leaf(|work| {
-            assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 3 + pending);
-            assert_eq!(work.work.backend_read_operations - before.backend_read_operations, 1 + pending);
             assert!(matches!(work.check(), Err(DemandError::OriginalWorkPoisoned)));
             assert_eq!(work.work.allocation_operations, before.allocation_operations);
             assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
@@ -1797,8 +1474,6 @@ mod tests {
         assert!(!completion.buffer_owned.load(super::Ordering::Acquire));
         assert!(completion.native_thread.lock().map_err(|_| "poisoned retired native thread")?.is_none());
         birth.with_original_leaf(|work| {
-            assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 5 + pending);
-            assert_eq!(work.work.backend_read_operations - before.backend_read_operations, 1 + pending);
             assert_eq!(work.budget, budget);
             assert!(work.live_allocation_bytes() > 0, "actual Shared/G data still has its funded owner after the flag");
         });
@@ -1813,26 +1488,19 @@ mod tests {
     #[test]
     fn startup_denies_handle_cleanup_before_opening_the_directory()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::source_watch::{HostChangeSink, NativeSourceWatch};
+        use crate::source_watch::NativeSourceWatch;
         use crate::{CancellationToken, WorkBudget};
         use std::sync::Arc;
-        struct Quiet;
-        impl HostChangeSink for Quiet {
-            fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-            fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-        }
         let root = tempfile::tempdir()?;
         let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
         let mut work = DemandWork::new(WorkBudget {
             backend_write_operations: 0, ..WorkBudget::UNBOUNDED
         }, &CancellationToken::new());
-        assert!(matches!(NativeSourceWatch::start_directory_measured(
+        assert!(matches!(NativeSourceWatch::start_directory_with_work(
             &held, Arc::new(Quiet), true, &mut work,
         ), Err(DemandError::Work(_))));
         assert_eq!(work.work.backend_read_operations, 0);
         assert_eq!(work.work.backend_write_operations, 0);
-        assert_eq!(work.work.allocation_operations, 1, "only the admitted Delivery frame exists");
         Ok(())
     }
     #[test]
@@ -1875,7 +1543,7 @@ mod tests {
         });
         let cancellation = CancellationToken::new();
         let mut startup = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let watch = Arc::new(NativeSourceWatch::start_directory_measured(
+        let watch = Arc::new(NativeSourceWatch::start_directory_with_work(
             &held, sink.clone(), true, &mut startup,
         )?);
         assert!(sink.watch.set(Arc::downgrade(&watch)).is_ok());

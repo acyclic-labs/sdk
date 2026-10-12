@@ -58,10 +58,6 @@ pub enum DependencyRegion {
 
 impl DependencyRegion {
     /// Validates range arithmetic and directory cursor ordering.
-    ///
-    /// # Errors
-    ///
-    /// Rejects empty/overflowing content ranges and inverted directory windows.
     pub fn validate(&self) -> Result<(), DependencyError> {
         match self {
             Self::ContentRange { offset, length, .. } => {
@@ -116,7 +112,6 @@ pub enum DependencyUse {
 }
 
 impl DependencyUse {
-    /// The use of a region used both ways.
     fn with(self, other: Self) -> Self {
         if self == other {
             self
@@ -132,7 +127,6 @@ struct CapturedState {
     usage: DependencyUse,
 }
 
-/// Owner-local logical DATA and admitted primitive custody; never holds a map.
 #[derive(Debug, Default)]
 pub(crate) struct ProofDataCustody {
     retained: AtomicU64,
@@ -158,9 +152,6 @@ struct ProofDataWorkReport {
 }
 
 impl ProofDataCustody {
-    /// Registers this token with exactly one original native invocation before
-    /// its constructor admits any directly owned primitive. No borrowed ledger
-    /// can replace that binding, including after the original weak owner dies.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn bind_native_original(
         &self, original: &Arc<crate::demand::NativeDemandReadMeter>,
@@ -175,7 +166,6 @@ impl ProofDataCustody {
         }
     }
 
-    /// Pure original-binding identity, never registration or borrowed custody.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_native_original(
         &self, original: &Arc<crate::demand::NativeDemandReadMeter>,
@@ -184,16 +174,12 @@ impl ProofDataCustody {
             .is_some_and(|bound| bound.as_ptr() == Arc::as_ptr(original))
     }
 
-    /// Exact cumulative original-owned DATA/control events, not a graph footprint.
-    /// Native reconciliation alone releases these original allocation claims.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn native_control_events(&self) -> (u128, u128) {
         let completed = self.completed_data_work.lock();
         (completed.native_control_born, completed.native_control_retired)
     }
 
-    /// Separates directly original-admitted primitives from imported SDK DATA
-    /// and child-operation controls, without a racy independent event snapshot.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn non_native_retained_payload_bytes(&self) -> u64 {
         let completed = self.completed_data_work.lock();
@@ -207,14 +193,10 @@ impl ProofDataCustody {
         self.retained.load(Ordering::Acquire)
     }
 
-    /// Actual admitted proof-control and root-vector payloads, excluding DATA
-    /// and this token's separately admitted allocation.
     pub(crate) fn physical_retained_bytes(&self) -> u64 {
         self.physical_retained.load(Ordering::Acquire)
     }
 
-    /// Payload custody reconciled by the original operation's retained root.
-    /// Token metadata is a separate, one-time constructor admission.
     pub(crate) fn retained_payload_bytes(&self) -> u64 {
         self.retained_bytes().checked_add(self.physical_retained_bytes())
             .expect("admitted proof payloads fit their original allocation ledger")
@@ -250,8 +232,6 @@ impl ProofDataCustody {
         Ok(())
     }
 
-    /// One reached producer's completed receipt or scalar charge, never a
-    /// global work delta. Cache/frame standing bytes are the same live buffers.
     pub(crate) fn record_completed_leaf_work(&self, mut work: WorkCounters) -> Result<(), WorkError> {
         let mut completed = self.completed_data_work.lock();
         let data = self.retained_payload_bytes()
@@ -295,7 +275,6 @@ impl ProofDataCustody {
         self.completed_data_work.lock().live_cache_bytes
     }
 
-    /// Exact same-operation cache backing/owned buffers, not proof custody.
     pub(crate) fn add_operation_cache_bytes(&self, bytes: u64) -> Result<(), WorkError> {
         let mut completed = self.completed_data_work.lock();
         completed.live_cache_bytes = completed.live_cache_bytes.checked_add(bytes)
@@ -309,8 +288,6 @@ impl ProofDataCustody {
             .expect("operation cache retirement follows actual buffer destruction");
     }
 
-    /// Only the canonical heap primitive reports these known physical frames.
-    /// They are work, never proof DATA or retained adoption bytes.
     pub(crate) fn record_heap_future_event(
         &self,
         event: crate::heap_future::HeapFutureEvent,
@@ -351,7 +328,6 @@ impl ProofDataCustody {
         Ok(0)
     }
 
-    /// A receipt-report cache only; operative work and allocation custody stay intact.
     pub(crate) fn take_completed_data_work(&self) -> WorkCounters {
         let mut completed = self.completed_data_work.lock();
         let generation = completed.delivery_generation.checked_add(1)
@@ -363,8 +339,6 @@ impl ProofDataCustody {
     }
 }
 
-/// Lives beside the actual owned key; a weak-only map move moves this claim,
-/// while a deep clone deliberately starts without the original owner's claim.
 #[derive(Default)]
 pub(crate) struct ProofDataClaim {
     owner: Weak<ProofDataCustody>,
@@ -407,15 +381,10 @@ impl ProofDataClaim {
         }
     }
 
-    /// Attaches to a primitive already admitted by the containing constructor.
-    /// Its owner destroys the actual payload before destroying this tag.
     pub(crate) fn control(owner: &Arc<ProofDataCustody>, bytes: u64) -> Self {
         Self::control_claim(owner, bytes, true)
     }
 
-    /// Tags an exact primitive admitted directly by the already registered
-    /// original native ledger. Ordinary and child-SDK control tags never emit
-    /// these events or retain permission to release that original allocation.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn native_control(
         owner: &Arc<ProofDataCustody>,
@@ -436,8 +405,6 @@ impl ProofDataClaim {
         claim
     }
 
-    /// Certifies only this exact paid physical primitive, not token lineage or
-    /// a retained-footprint estimate. A default tag certifies no allocation.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_native_original(
         &self, original: &Arc<crate::demand::NativeDemandReadMeter>, known_bytes: u64,
@@ -449,8 +416,6 @@ impl ProofDataClaim {
             && self.native_original.as_ref().is_some_and(|paid| Arc::ptr_eq(paid, original))
     }
 
-    /// The actual name/path buffer was admitted by this registered original
-    /// ledger, not imported from a child SDK receipt. It stays DATA custody.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn native_data(
         owner: &Arc<ProofDataCustody>,
@@ -477,8 +442,6 @@ impl ProofDataClaim {
         }
     }
 
-    /// A reached SDK operation has just admitted this new primitive. Its
-    /// original producer imports the completed receipt before marking it standing.
     pub(crate) fn pending_control(owner: &Arc<ProofDataCustody>, bytes: u64) -> Self {
         Self::control_claim(owner, bytes, false)
     }
@@ -566,8 +529,6 @@ impl std::ops::DerefMut for CapturedValue {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.state }
 }
 
-/// The exact shared map Arc payload. Keys retire their DATA claims before
-/// the final control tag retires this known primitive's admitted payload.
 #[derive(Clone, Debug, Default)]
 struct CapturedMap {
     entries: BTreeMap<DependencyRegion, CapturedValue>,
@@ -590,11 +551,6 @@ impl std::ops::DerefMut for CapturedMap {
 }
 
 /// Validated, sorted, and deduplicated checkout dependency proof.
-///
-/// Construction pays normalization cost once. Equal-generation refresh can
-/// therefore return in constant work regardless of dependency count. Copies
-/// share one proof until either side changes it, so snapshotting a proof for
-/// classification is constant work too.
 #[derive(Clone, Debug)]
 pub struct CheckoutDependencies {
     captured: Arc<CapturedMap>,
@@ -620,20 +576,14 @@ fn dependency_name_bytes(region: &DependencyRegion, cloned: bool) -> u64 {
 }
 
 impl CheckoutDependencies {
-    /// Arc payload allocated by construction of an empty dependency proof,
-    /// excluding allocator and Arc headers.
     pub(crate) const fn empty_logical_owned_bytes() -> usize {
         std::mem::size_of::<CapturedMap>()
     }
 
-    /// Tags only the unique empty map just admitted by its constructor.
-    /// Shared authority proofs are never copied or adopted by this attachment.
     pub(crate) fn attach_fresh_control_custody(&mut self, owner: &Arc<ProofDataCustody>) -> bool {
         self.attach_fresh_control_with(owner, ProofDataClaim::control)
     }
 
-    /// Moves an already-paid constructor tag only into its unique empty map.
-    /// Refusal leaves the caller's tag intact beside the actual buffer owner.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn attach_fresh_paid_control(&mut self, control: &mut ProofDataClaim) -> bool {
         let Some(captured) = Arc::get_mut(&mut self.captured) else { return false; };
@@ -658,25 +608,11 @@ impl CheckoutDependencies {
         true
     }
 
-    /// Visits retained name buffers, not opaque BTree node/entry storage.
-    pub(crate) fn logical_data_with_step<E: From<WorkError>>(
-        &self,
-        mut step: impl FnMut() -> Result<(), E>,
-    ) -> Result<(usize, u64, u64), E> {
-        step()?;
-        Ok(self.logical_data())
-    }
-
-    /// Cancellation-independent observation of already completed owned data.
     pub(crate) fn logical_data(&self) -> (usize, u64, u64) {
         (Arc::as_ptr(&self.captured) as usize, self.data_generation, self.name_data_bytes)
     }
 
     /// Validates and normalizes exact observations and mutation preconditions.
-    ///
-    /// # Errors
-    ///
-    /// Rejects excessive, malformed, or contradictory dependencies.
     pub fn new(
         observations: impl IntoIterator<Item = Dependency>,
         mutations: impl IntoIterator<Item = Dependency>,
@@ -749,9 +685,6 @@ impl CheckoutDependencies {
             .expect("proof allocation generation exhausted");
     }
 
-    /// Whether an observation of `region` is already part of the proof.
-    /// Observing it again against the same or a safely rebased base adds
-    /// exactly the dependency the proof already holds.
     pub(crate) fn observes(&self, region: &DependencyRegion) -> bool {
         self.captured.get(region).is_some_and(|state| {
             matches!(
@@ -807,8 +740,6 @@ impl CheckoutDependencies {
         self.prepare(dependencies, maximum_dependencies, DependencyUse::Observation)
     }
 
-    /// Validates mutation preconditions without applying them, so a caller
-    /// commits them only once its mutation has succeeded.
     pub(crate) fn prepare_mutations(
         &self,
         dependencies: Vec<Dependency>,
@@ -817,15 +748,12 @@ impl CheckoutDependencies {
         self.prepare(dependencies, maximum_dependencies, DependencyUse::Mutation)
     }
 
-    /// Applies an extension prepared against this unchanged proof.
     pub(crate) fn commit(&mut self, extension: DependencyExtension) {
         self.commit_with_data_admission::<WorkError>(
             extension, |_, _, _, _| Ok(()),
         ).expect("live dependency data fits the addressable memory space");
     }
 
-    /// Admits actual COW buffers and moved key/value data in the existing
-    /// commit engine. Opaque BTree node layout is not a logical payload.
     pub(crate) fn commit_with_data_admission<E: From<WorkError>>(
         &mut self,
         extension: DependencyExtension,
@@ -847,9 +775,6 @@ impl CheckoutDependencies {
         )
     }
 
-    /// Moves paid staged keys and admits only the actual COW map constructor
-    /// on the same original ledger. The caller commits this prepared proof
-    /// only after every candidate root replacement has also succeeded.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn commit_with_original_data_custody(
         &mut self,
@@ -874,7 +799,7 @@ impl CheckoutDependencies {
                 let delta = WorkCounters { bytes_copied: copied, items_examined: items,
                     ..WorkCounters::UNCHARGED };
                 if operations != 0 || copied != 0 {
-                    let allocation = original.claim_allocation_with_work(bytes, operations, delta)?;
+                    let allocation = original.claim(bytes, operations, delta)?;
                     let previous = copied_allocation.replace(Some(allocation));
                     debug_assert!(previous.as_ref().is_none_or(|guard| guard.bytes() == 0));
                     drop(previous);
@@ -980,9 +905,6 @@ impl CheckoutDependencies {
         Ok(())
     }
 
-    /// The proof of both this proof's and `other`'s operations over the same
-    /// base generation, or `None` when they captured one region in
-    /// different states.
     #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn merged(&self, other: &Self) -> Option<Self> {
         let mut work = WorkCounters::default();
@@ -1001,8 +923,6 @@ impl CheckoutDependencies {
         ).ok().flatten()
     }
 
-    /// The same merge engine, admitting each owned name before cloning it.
-    /// Inline entries and opaque BTree nodes are not logical DATA buffers.
     #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn merged_with_data_admission<E: From<WorkError>>(
         &self,
@@ -1017,8 +937,6 @@ impl CheckoutDependencies {
         )
     }
 
-    /// Projects this same merge on the operative accounting carrier. Native
-    /// buffers keep their original paid tickets in the actual key/map tags.
     #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn merged_with_accounting(
         &self,
@@ -1146,7 +1064,6 @@ impl CheckoutDependencies {
         }))
     }
 
-    /// An allocation-free seal: holding its Arc makes any later write COW.
     #[cfg(feature = "native-mount")]
     pub(crate) fn same_capture(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.captured, &other.captured)
@@ -1206,7 +1123,6 @@ impl CheckoutDependencies {
     }
 }
 
-/// Dependencies validated against a proof but not yet applied to it.
 #[must_use]
 pub(crate) struct DependencyExtension {
     staged: BTreeMap<DependencyRegion, DependencyState>,
@@ -1235,19 +1151,11 @@ impl DependencyExtension {
 }
 
 /// Backend-independent exact-region resolver.
-///
-/// Implementations must derive `DependencyState` from canonical authenticated
-/// generation objects, not from mutable projections or cache presence.
 pub trait RebaseProbe {
     /// Stable backend-specific failure.
     type Error: std::error::Error;
 
-    /// Resolves one exact semantic region in one immutable generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a backend-specific failure with exact work performed before the
-    /// region could be authenticated.
+    /// Authenticates one dependency region.
     fn probe(
         &self,
         generation: GenerationId,
@@ -1261,7 +1169,7 @@ pub trait AsyncRebaseProbe {
     /// Stable backend-specific failure.
     type Error: std::error::Error;
 
-    /// Resolves one exact semantic region without blocking the calling runtime.
+    /// Authenticates one dependency region asynchronously.
     fn probe_async(
         &self,
         generation: GenerationId,
@@ -1340,14 +1248,6 @@ pub enum RebaseError<E: std::error::Error> {
 }
 
 /// Compares only captured regions against a candidate generation.
-///
-/// Equal roots return with zero work and no probes. Otherwise each distinct
-/// dependency is resolved once; untouched volume regions are never enumerated.
-///
-/// # Errors
-///
-/// Fails with retained work when conflict bounds, probe execution, or work
-/// admission fail.
 pub fn classify_rebase<P: RebaseProbe>(
     probe: &P,
     base: GenerationId,
@@ -1417,13 +1317,7 @@ pub fn classify_rebase<P: RebaseProbe>(
     Ok(RebaseReceipt { decision, work })
 }
 
-/// Nonblocking safe-rebase classification over the same exact dependencies as
-/// [`classify_rebase`].
-///
-/// # Errors
-///
-/// Fails with retained exact work on cancellation, probe failure, invalid
-/// conflict bounds, or work-budget exhaustion.
+/// Nonblocking safe-rebase classification over the same exact dependencies as [`classify_rebase`].
 pub async fn classify_rebase_async<P: AsyncRebaseProbe>(
     probe: &P,
     base: GenerationId,
@@ -1454,8 +1348,6 @@ pub async fn classify_rebase_async<P: AsyncRebaseProbe>(
     }
 }
 
-/// Exact-region provider for the canonical classification engine. Native
-/// implementations borrow the original journal at each authenticated leaf.
 pub(crate) trait AccountingRebaseProbe {
     type Error;
     fn probe_with_accounting(
@@ -1523,9 +1415,6 @@ fn retain_standalone_probe_work(
     Ok(())
 }
 
-/// Classifies the borrowed proof without copying its shared captured map.
-/// The returned guard follows the decision and owns precisely its conflict
-/// vector and copied names; neither generation's unrelated regions are read.
 pub(crate) async fn classify_rebase_with_accounting<P: AccountingRebaseProbe>(
     probe: &P,
     base: GenerationId,
@@ -1535,7 +1424,7 @@ pub(crate) async fn classify_rebase_with_accounting<P: AccountingRebaseProbe>(
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(RebaseDecision, super::allocation::KernelOwnedAllocation), ClassifyRebaseFailure<P::Error>> {
-    use super::persistent_point::{Owned, absorb};
+    use super::persistent_point::Owned;
     accounting.check().map_err(ClassifyRebaseFailure::Accounting)?;
     if base == candidate {
         let allocation = accounting.claim_owned(0, 0).map_err(ClassifyRebaseFailure::Accounting)?;
@@ -1559,9 +1448,9 @@ pub(crate) async fn classify_rebase_with_accounting<P: AccountingRebaseProbe>(
             }
             conflicts.ensure_for_push(maximum_conflicts as usize, accounting)
                 .map_err(ClassifyRebaseFailure::Accounting)?;
-            let (region, allocation, bytes) = clone_conflict_region(region, accounting)
+            let (region, mut allocation, bytes) = clone_conflict_region(region, accounting)
                 .map_err(ClassifyRebaseFailure::Accounting)?;
-            if let Err(error) = absorb(&mut conflicts.allocation, allocation) {
+            if let Err(error) = conflicts.allocation.absorb(&mut allocation) {
                 drop(region);
                 return Err(ClassifyRebaseFailure::Accounting(error));
             }

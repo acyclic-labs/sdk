@@ -1,16 +1,19 @@
 use super::*;
+use crate::async_storage;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{
-    AttributeChild, AttributeClass, AttributeEntry, BlobChild, BlobChunkRef, BlobPage, Extent,
-    ExtentChild, FileKind, FileMetadata, FileTableChild, InlineFileData, NameEncoding, TreeChild,
+    AttributeClass, AttributeEntry, BlobChild, BlobChunkRef, BlobPage, Extent,
+    ExtentChild, FileKind, FileMetadata, InlineFileData, NameEncoding,
     encode_attribute_page, encode_blob_page, encode_extent_page, encode_file_metadata,
     encode_file_table_page, encode_generation_root, encode_tree_page,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectStore, object_digest};
+use crate::storage::object_digest;
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
 
+use crate::kernel::Child;
 fn limits() -> ClosureLimits {
     ClosureLimits {
         decode: DecodeLimits::default(),
@@ -41,7 +44,7 @@ fn metadata() -> FileMetadata {
     }
 }
 
-fn put(
+async fn put(
     store: &MemoryObjectStore,
     kind: ObjectKind,
     bytes: Vec<u8>,
@@ -50,41 +53,52 @@ fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    store.put(object, acyclic_stream::OwnedBytes::from(bytes), WorkBudget::UNBOUNDED)?;
+    {
+        let __object_args = (
+            object,
+            acyclic_stream::OwnedBytes::from(bytes),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object)
 }
 
-fn minimal_generation(
+async fn minimal_generation(
     store: &MemoryObjectStore,
     file_table: Option<ObjectId>,
 ) -> Result<(ObjectId, FileId, ObjectId), Box<dyn std::error::Error>> {
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_file_id = FileId::from_bytes([1; 16]);
     let table = match file_table {
         Some(table) => table,
-        None => put(
+        None => {
+            put(
             store,
             ObjectKind::FileTablePage,
-            encode_file_table_page(
-                &FileTablePage::Leaf(vec![FileRecord {
+            encode_file_table_page(&FileTablePage::Leaf(vec![FileRecord {
                     file_id: root_file_id,
                     kind: FileKind::Directory,
                     link_count: 1,
                     metadata,
                     payload: FilePayload::Directory { entries: tree },
-                }]),
-                8,
-            )?,
-        )?,
+                }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+        ).await?
+        }
     };
     let generation = put(
         store,
@@ -95,12 +109,12 @@ fn minimal_generation(
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
-    )?;
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     Ok((generation, root_file_id, metadata))
 }
 
-fn generation_with_records(
+async fn generation_with_records(
     store: &MemoryObjectStore,
     root_file_id: FileId,
     records: Vec<FileRecord>,
@@ -108,8 +122,8 @@ fn generation_with_records(
     let table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(records), 16)?,
-    )?;
+        encode_file_table_page(&FileTablePage::Leaf(records), 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     put(
         store,
         ObjectKind::GenerationRoot,
@@ -119,8 +133,8 @@ fn generation_with_records(
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
-    )
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await
 }
 
 fn directory_record(
@@ -138,7 +152,7 @@ fn directory_record(
     }
 }
 
-fn generation_with_regular_extent(
+async fn generation_with_regular_extent(
     store: &MemoryObjectStore,
     extent_kind: ExtentKind,
     logical_bytes: u64,
@@ -146,34 +160,28 @@ fn generation_with_regular_extent(
     let metadata_id = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let child_id = FileId::from_bytes([2; 16]);
     let entries = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: LogicalName::new(NameEncoding::Utf8, b"file".to_vec(), 255)?,
                 file_id: child_id,
                 kind: FileKind::Regular,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let extents = put(
         store,
         ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Leaf(vec![Extent {
+        encode_extent_page(&ExtentPage::Leaf(vec![Extent {
                 offset: 0,
                 length: logical_bytes,
                 kind: extent_kind,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     generation_with_records(
         store,
         root_id,
@@ -190,19 +198,18 @@ fn generation_with_regular_extent(
                 },
             },
         ],
-    )
+    ).await
 }
 
-fn blob_with_bytes(
+async fn blob_with_bytes(
     store: &MemoryObjectStore,
     bytes: &'static [u8],
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let chunk = put(store, ObjectKind::BlobChunk, bytes.to_vec())?;
+    let chunk = put(store, ObjectKind::BlobChunk, bytes.to_vec()).await?;
     put(
         store,
         ObjectKind::Blob,
-        encode_blob_page(
-            &BlobPage {
+        encode_blob_page(&BlobPage {
                 first_offset: 0,
                 end_offset: u64::try_from(bytes.len())?,
                 node: BlobNode::Leaf(vec![BlobChunkRef {
@@ -210,20 +217,17 @@ fn blob_with_bytes(
                     end_offset: u64::try_from(bytes.len())?,
                     chunk,
                 }]),
-            },
-            8,
-        )?,
-    )
+            }, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await
 }
 
-fn internal_blob(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let first_chunk = put(store, ObjectKind::BlobChunk, b"ab".to_vec())?;
-    let second_chunk = put(store, ObjectKind::BlobChunk, b"cd".to_vec())?;
+async fn internal_blob(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    let first_chunk = put(store, ObjectKind::BlobChunk, b"ab".to_vec()).await?;
+    let second_chunk = put(store, ObjectKind::BlobChunk, b"cd".to_vec()).await?;
     let first = put(
         store,
         ObjectKind::Blob,
-        encode_blob_page(
-            &BlobPage {
+        encode_blob_page(&BlobPage {
                 first_offset: 0,
                 end_offset: 2,
                 node: BlobNode::Leaf(vec![BlobChunkRef {
@@ -231,15 +235,12 @@ fn internal_blob(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::err
                     end_offset: 2,
                     chunk: first_chunk,
                 }]),
-            },
-            8,
-        )?,
-    )?;
+            }, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let second = put(
         store,
         ObjectKind::Blob,
-        encode_blob_page(
-            &BlobPage {
+        encode_blob_page(&BlobPage {
                 first_offset: 2,
                 end_offset: 4,
                 node: BlobNode::Leaf(vec![BlobChunkRef {
@@ -247,15 +248,12 @@ fn internal_blob(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::err
                     end_offset: 4,
                     chunk: second_chunk,
                 }]),
-            },
-            8,
-        )?,
-    )?;
+            }, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     put(
         store,
         ObjectKind::Blob,
-        encode_blob_page(
-            &BlobPage {
+        encode_blob_page(&BlobPage {
                 first_offset: 0,
                 end_offset: 4,
                 node: BlobNode::Internal(vec![
@@ -270,10 +268,8 @@ fn internal_blob(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::err
                         page: second,
                     },
                 ]),
-            },
-            8,
-        )?,
-    )
+            }, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await
 }
 
 fn attribute_name(value: &str) -> Result<AttributeName, Box<dyn std::error::Error>> {
@@ -284,12 +280,12 @@ fn attribute_name(value: &str) -> Result<AttributeName, Box<dyn std::error::Erro
     )?)
 }
 
-#[test]
-fn minimal_generation_has_a_complete_authenticated_closure()
+#[tokio::test]
+async fn minimal_generation_has_a_complete_authenticated_closure()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, _, _) = minimal_generation(&store, None)?;
-    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    let (generation, _, _) = minimal_generation(&store, None).await?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.file_count, 1);
     assert_eq!(proof.logical_file_bytes, 0);
     assert_eq!(proof.object_count, 4);
@@ -297,33 +293,32 @@ fn minimal_generation_has_a_complete_authenticated_closure()
     Ok(())
 }
 
-#[test]
-fn authenticated_generation_counts_sparse_logical_bytes() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn authenticated_generation_counts_sparse_logical_bytes() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let generation = generation_with_regular_extent(&store, ExtentKind::Hole, 4096)?;
-    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    let generation = generation_with_regular_extent(&store, ExtentKind::Hole, 4096).await?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.file_count, 2);
     assert_eq!(proof.logical_file_bytes, 4096);
     Ok(())
 }
 
-#[test]
-fn authenticated_generation_counts_hardlinked_inline_file_once()
+#[tokio::test]
+async fn authenticated_generation_counts_hardlinked_inline_file_once()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
         &store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let file_id = FileId::from_bytes([2; 16]);
     let entries = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![
+        encode_tree_page(&TreePage::Leaf(vec![
                 TreeEntry {
                     name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
                     file_id,
@@ -334,10 +329,8 @@ fn authenticated_generation_counts_hardlinked_inline_file_once()
                     file_id,
                     kind: FileKind::Regular,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let generation = generation_with_records(
         &store,
         root_id,
@@ -351,58 +344,49 @@ fn authenticated_generation_counts_hardlinked_inline_file_once()
                 payload: FilePayload::InlineRegular(InlineFileData::new(b"hello")?),
             },
         ],
-    )?;
-    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    ).await?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.logical_file_bytes, 5);
     Ok(())
 }
 
-#[test]
-fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
+#[tokio::test]
+async fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let value = internal_blob(&store)?;
+    let value = internal_blob(&store).await?;
     let first_leaf = put(
         &store,
         ObjectKind::AttributePage,
-        encode_attribute_page(
-            &AttributePage::Leaf(vec![AttributeEntry {
+        encode_attribute_page(&AttributePage::Leaf(vec![AttributeEntry {
                 name: attribute_name("a")?,
                 value_bytes: 4,
                 value,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let second_leaf = put(
         &store,
         ObjectKind::AttributePage,
-        encode_attribute_page(
-            &AttributePage::Leaf(vec![AttributeEntry {
+        encode_attribute_page(&AttributePage::Leaf(vec![AttributeEntry {
                 name: attribute_name("z")?,
                 value_bytes: 4,
                 value,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let attributes = put(
         &store,
         ObjectKind::AttributePage,
-        encode_attribute_page(
-            &AttributePage::Internal(vec![
-                AttributeChild {
-                    first_name: attribute_name("a")?,
+        encode_attribute_page(&AttributePage::Internal(vec![
+                Child {
+                    first: attribute_name("a")?,
                     page: first_leaf,
                 },
-                AttributeChild {
-                    first_name: attribute_name("z")?,
+                Child {
+                    first: attribute_name("z")?,
                     page: second_leaf,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let mut complete_metadata = metadata();
     complete_metadata.named_attributes = MetadataField::Value(attributes);
     complete_metadata.acl = MetadataField::Value(value);
@@ -410,20 +394,20 @@ fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
     let metadata_id = put(
         &store,
         ObjectKind::Metadata,
-        encode_file_metadata(complete_metadata)?,
-    )?;
+        encode_file_metadata(complete_metadata, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let tree = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let generation = generation_with_records(
         &store,
         root_id,
         vec![directory_record(root_id, 1, metadata_id, tree)],
-    )?;
-    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    ).await?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.file_count, 1);
     assert!(proof.object_count >= 12);
     assert_eq!(
@@ -444,33 +428,31 @@ fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
         },
     )?;
     let cancellation = CancellationToken::new();
-    let cached_proof = async_storage::poll_ready(prove_generation_closure_async(
+    let cached_proof = (prove_generation_closure(
         &cached,
         generation,
         limits(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("cache-backed closure proof suspended")??;
+    )).await?;
     assert_eq!(cached_proof.objects, proof.objects);
-    let warm = async_storage::poll_ready(prove_generation_closure_async(
+    let warm = (prove_generation_closure(
         &cached,
         generation,
         limits(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("warm cache-backed closure proof suspended")??;
+    )).await?;
     assert_eq!(warm.objects, proof.objects);
     assert_eq!(warm.work.backend_read_operations, 0);
     Ok(())
 }
 
-#[test]
-fn cached_closure_proves_sparse_extent_and_blob_without_duplicate_backend_reads()
+#[tokio::test]
+async fn cached_closure_proves_sparse_extent_and_blob_without_duplicate_backend_reads()
 -> Result<(), Box<dyn std::error::Error>> {
     let backend = MemoryObjectStore::default();
-    let blob = blob_with_bytes(&backend, b"data")?;
+    let blob = blob_with_bytes(&backend, b"data").await?;
     let generation = generation_with_regular_extent(
         &backend,
         ExtentKind::Content {
@@ -478,7 +460,7 @@ fn cached_closure_proves_sparse_extent_and_blob_without_duplicate_backend_reads(
             object_offset: 0,
         },
         4,
-    )?;
+    ).await?;
     let cached = CachedObjectStore::new(
         backend,
         ObjectCacheOptions {
@@ -489,66 +471,61 @@ fn cached_closure_proves_sparse_extent_and_blob_without_duplicate_backend_reads(
         },
     )?;
     let cancellation = CancellationToken::new();
-    let cold = async_storage::poll_ready(prove_generation_closure_async(
+    let cold = (prove_generation_closure(
         &cached,
         generation,
         limits(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("cache-backed sparse closure proof suspended")??;
+    )).await?;
     assert_eq!(cold.file_count, 2);
     assert!(cold.work.backend_read_operations > 0);
-    let warm = async_storage::poll_ready(prove_generation_closure_async(
+    let warm = (prove_generation_closure(
         &cached,
         generation,
         limits(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("warm cache-backed sparse closure proof suspended")??;
+    )).await?;
     assert_eq!(warm.objects, cold.objects);
     assert_eq!(warm.work.backend_read_operations, 0);
     assert_eq!(warm.work.object_bytes_read, 0);
     Ok(())
 }
 
-#[test]
-fn attribute_value_length_mismatch_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn attribute_value_length_mismatch_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let value = blob_with_bytes(&store, b"data")?;
+    let value = blob_with_bytes(&store, b"data").await?;
     let attributes = put(
         &store,
         ObjectKind::AttributePage,
-        encode_attribute_page(
-            &AttributePage::Leaf(vec![AttributeEntry {
+        encode_attribute_page(&AttributePage::Leaf(vec![AttributeEntry {
                 name: attribute_name("wrong-length")?,
                 value_bytes: 5,
                 value,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let mut complete_metadata = metadata();
     complete_metadata.named_attributes = MetadataField::Value(attributes);
     let metadata_id = put(
         &store,
         ObjectKind::Metadata,
-        encode_file_metadata(complete_metadata)?,
-    )?;
+        encode_file_metadata(complete_metadata, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let tree = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let generation = generation_with_records(
         &store,
         root_id,
         vec![directory_record(root_id, 1, metadata_id, tree)],
-    )?;
+    ).await?;
     assert!(matches!(
-        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED),
+        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(OperationFailure {
             error: ClosureError::BlobLengthMismatch,
             ..
@@ -557,24 +534,23 @@ fn attribute_value_length_mismatch_fails_closed() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-#[test]
-fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
+#[tokio::test]
+async fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
         &store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
-    let payload = blob_with_bytes(&store, b"data")?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
+    let payload = blob_with_bytes(&store, b"data").await?;
     let root_id = FileId::from_bytes([1; 16]);
     let symlink_id = FileId::from_bytes([2; 16]);
     let reparse_id = FileId::from_bytes([3; 16]);
     let tree = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![
+        encode_tree_page(&TreePage::Leaf(vec![
                 TreeEntry {
                     name: LogicalName::new(NameEncoding::Utf8, b"link".to_vec(), 255)?,
                     file_id: symlink_id,
@@ -585,10 +561,8 @@ fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
                     file_id: reparse_id,
                     kind: FileKind::ReparsePoint,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let records = |symlink_bytes, reparse_bytes| {
         vec![
             directory_record(root_id, 1, metadata_id, tree),
@@ -614,10 +588,10 @@ fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
             },
         ]
     };
-    let generation = generation_with_records(&store, root_id, records(4, 4))?;
+    let generation = generation_with_records(&store, root_id, records(4, 4)).await?;
     let mut windows = limits();
     windows.profile = FilesystemProfile::Windows;
-    let proof = prove_generation_closure(&store, generation, windows, WorkBudget::UNBOUNDED)?;
+    let proof = prove_generation_closure(&store, generation, windows, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.file_count, 3);
     assert_eq!(
         proof
@@ -628,29 +602,28 @@ fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
         1
     );
 
-    let mismatch = generation_with_records(&store, root_id, records(5, 4))?;
-    let failure = prove_generation_closure(&store, mismatch, windows, WorkBudget::UNBOUNDED)
+    let mismatch = generation_with_records(&store, root_id, records(5, 4)).await?;
+    let failure = prove_generation_closure(&store, mismatch, windows, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("wrong-length symbolic link closure succeeded")?;
     assert!(matches!(failure.error, ClosureError::BlobLengthMismatch));
 
-    let mismatch = generation_with_records(&store, root_id, records(4, 5))?;
-    let failure = prove_generation_closure(&store, mismatch, windows, WorkBudget::UNBOUNDED)
+    let mismatch = generation_with_records(&store, root_id, records(4, 5)).await?;
+    let failure = prove_generation_closure(&store, mismatch, windows, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("wrong-length reparse-point closure succeeded")?;
     assert!(matches!(failure.error, ClosureError::BlobLengthMismatch));
     Ok(())
 }
 
-#[test]
-fn blob_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn blob_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn std::error::Error>> {
     let blob_store = MemoryObjectStore::default();
-    let chunk = put(&blob_store, ObjectKind::BlobChunk, b"ab".to_vec())?;
+    let chunk = put(&blob_store, ObjectKind::BlobChunk, b"ab".to_vec()).await?;
     let leaf = put(
         &blob_store,
         ObjectKind::Blob,
-        encode_blob_page(
-            &BlobPage {
+        encode_blob_page(&BlobPage {
                 first_offset: 0,
                 end_offset: 2,
                 node: BlobNode::Leaf(vec![BlobChunkRef {
@@ -658,15 +631,12 @@ fn blob_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn s
                     end_offset: 2,
                     chunk,
                 }]),
-            },
-            8,
-        )?,
-    )?;
+            }, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let aliased_blob = put(
         &blob_store,
         ObjectKind::Blob,
-        encode_blob_page(
-            &BlobPage {
+        encode_blob_page(&BlobPage {
                 first_offset: 0,
                 end_offset: 4,
                 node: BlobNode::Internal(vec![
@@ -681,30 +651,28 @@ fn blob_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn s
                         page: leaf,
                     },
                 ]),
-            },
-            8,
-        )?,
-    )?;
+            }, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let mut blob_metadata = metadata();
     blob_metadata.acl = MetadataField::Value(aliased_blob);
     let metadata_id = put(
         &blob_store,
         ObjectKind::Metadata,
-        encode_file_metadata(blob_metadata)?,
-    )?;
+        encode_file_metadata(blob_metadata, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let empty_tree = put(
         &blob_store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let generation = generation_with_records(
         &blob_store,
         root_id,
         vec![directory_record(root_id, 1, metadata_id, empty_tree)],
-    )?;
+    ).await?;
     assert!(matches!(
-        prove_generation_closure(&blob_store, generation, limits(), WorkBudget::UNBOUNDED,),
+        prove_generation_closure(&blob_store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(OperationFailure {
             error: ClosureError::RoutingAlias,
             ..
@@ -713,65 +681,60 @@ fn blob_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn s
     Ok(())
 }
 
-#[test]
-fn attribute_page_aliases_cannot_enter_a_generation_closure()
+#[tokio::test]
+async fn attribute_page_aliases_cannot_enter_a_generation_closure()
 -> Result<(), Box<dyn std::error::Error>> {
     let attribute_store = MemoryObjectStore::default();
-    let value = blob_with_bytes(&attribute_store, b"x")?;
+    let value = blob_with_bytes(&attribute_store, b"x").await?;
     let attribute_leaf = put(
         &attribute_store,
         ObjectKind::AttributePage,
-        encode_attribute_page(
-            &AttributePage::Leaf(vec![AttributeEntry {
+        encode_attribute_page(&AttributePage::Leaf(vec![AttributeEntry {
                 name: attribute_name("a")?,
                 value_bytes: 1,
                 value,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let aliased_attributes = put(
         &attribute_store,
         ObjectKind::AttributePage,
-        encode_attribute_page(
-            &AttributePage::Internal(vec![
-                AttributeChild {
-                    first_name: attribute_name("a")?,
+        encode_attribute_page(&AttributePage::Internal(vec![
+                Child {
+                    first: attribute_name("a")?,
                     page: attribute_leaf,
                 },
-                AttributeChild {
-                    first_name: attribute_name("z")?,
+                Child {
+                    first: attribute_name("z")?,
                     page: attribute_leaf,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let mut attribute_metadata = metadata();
     attribute_metadata.named_attributes = MetadataField::Value(aliased_attributes);
     let metadata_id = put(
         &attribute_store,
         ObjectKind::Metadata,
-        encode_file_metadata(attribute_metadata)?,
-    )?;
+        encode_file_metadata(attribute_metadata, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let empty_tree = put(
         &attribute_store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let generation = generation_with_records(
         &attribute_store,
         root_id,
         vec![directory_record(root_id, 1, metadata_id, empty_tree)],
-    )?;
+    ).await?;
     assert!(matches!(
         prove_generation_closure(
             &attribute_store,
             generation,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::RoutingAlias,
             ..
@@ -780,49 +743,43 @@ fn attribute_page_aliases_cannot_enter_a_generation_closure()
     Ok(())
 }
 
-#[test]
-fn file_table_page_aliases_cannot_enter_a_generation_closure()
+#[tokio::test]
+async fn file_table_page_aliases_cannot_enter_a_generation_closure()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
         &store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let empty_tree = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let leaf = put(
         &store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![directory_record(root_id, 1, metadata_id, empty_tree)]),
-            8,
-        )?,
-    )?;
+        encode_file_table_page(&FileTablePage::Leaf(vec![directory_record(root_id, 1, metadata_id, empty_tree)]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let table = put(
         &store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Internal(vec![
-                FileTableChild {
-                    first_file_id: root_id,
+        encode_file_table_page(&FileTablePage::Internal(vec![
+                Child {
+                    first: root_id,
                     page: leaf,
                 },
-                FileTableChild {
-                    first_file_id: FileId::from_bytes([2; 16]),
+                Child {
+                    first: FileId::from_bytes([2; 16]),
                     page: leaf,
                 },
-            ]),
-            8,
-        )?,
-    )?;
-    let generation = minimal_generation(&store, Some(table))?.0;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
+    let generation = minimal_generation(&store, Some(table)).await?.0;
     assert!(matches!(
-        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED),
+        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(OperationFailure {
             error: ClosureError::RoutingAlias,
             ..
@@ -831,46 +788,40 @@ fn file_table_page_aliases_cannot_enter_a_generation_closure()
     Ok(())
 }
 
-#[test]
-fn directory_page_aliases_cannot_enter_a_generation_closure()
+#[tokio::test]
+async fn directory_page_aliases_cannot_enter_a_generation_closure()
 -> Result<(), Box<dyn std::error::Error>> {
     let tree_store = MemoryObjectStore::default();
     let metadata_id = put(
         &tree_store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let child_id = FileId::from_bytes([2; 16]);
     let tree_leaf = put(
         &tree_store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
                 file_id: child_id,
                 kind: FileKind::Regular,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let aliased_tree = put(
         &tree_store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Internal(vec![
-                TreeChild {
-                    first_name: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
+        encode_tree_page(&TreePage::Internal(vec![
+                Child {
+                    first: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
                     page: tree_leaf,
                 },
-                TreeChild {
-                    first_name: LogicalName::new(NameEncoding::Utf8, b"z".to_vec(), 255)?,
+                Child {
+                    first: LogicalName::new(NameEncoding::Utf8, b"z".to_vec(), 255)?,
                     page: tree_leaf,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let generation = generation_with_records(
         &tree_store,
         root_id,
@@ -884,9 +835,9 @@ fn directory_page_aliases_cannot_enter_a_generation_closure()
                 payload: FilePayload::InlineRegular(InlineFileData::new(b"x")?),
             },
         ],
-    )?;
+    ).await?;
     assert!(matches!(
-        prove_generation_closure(&tree_store, generation, limits(), WorkBudget::UNBOUNDED),
+        prove_generation_closure(&tree_store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(OperationFailure {
             error: ClosureError::RoutingAlias,
             ..
@@ -895,46 +846,39 @@ fn directory_page_aliases_cannot_enter_a_generation_closure()
     Ok(())
 }
 
-#[test]
-fn extent_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn extent_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn std::error::Error>>
 {
     let extent_store = MemoryObjectStore::default();
     let metadata_id = put(
         &extent_store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let child_id = FileId::from_bytes([2; 16]);
     let namespace = put(
         &extent_store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: LogicalName::new(NameEncoding::Utf8, b"file".to_vec(), 255)?,
                 file_id: child_id,
                 kind: FileKind::Regular,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let extent_leaf = put(
         &extent_store,
         ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Leaf(vec![Extent {
+        encode_extent_page(&ExtentPage::Leaf(vec![Extent {
                 offset: 0,
                 length: 1,
                 kind: ExtentKind::Hole,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let aliased_extents = put(
         &extent_store,
         ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Internal(vec![
+        encode_extent_page(&ExtentPage::Internal(vec![
                 ExtentChild {
                     first_offset: 0,
                     end_offset: 1,
@@ -945,10 +889,8 @@ fn extent_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn
                     end_offset: 2,
                     page: extent_leaf,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let generation = generation_with_records(
         &extent_store,
         root_id,
@@ -965,9 +907,9 @@ fn extent_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn
                 },
             },
         ],
-    )?;
+    ).await?;
     assert!(matches!(
-        prove_generation_closure(&extent_store, generation, limits(), WorkBudget::UNBOUNDED,),
+        prove_generation_closure(&extent_store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(OperationFailure {
             error: ClosureError::RoutingAlias,
             ..
@@ -976,88 +918,72 @@ fn extent_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn
     Ok(())
 }
 
-#[test]
-fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_unrelated_data()
+#[tokio::test]
+async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_unrelated_data()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
         &store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let first_id = FileId::from_bytes([2; 16]);
     let second_id = FileId::from_bytes([3; 16]);
     let first_tree_leaf = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
                 file_id: first_id,
                 kind: FileKind::Regular,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let second_tree_leaf = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: LogicalName::new(NameEncoding::Utf8, b"z".to_vec(), 255)?,
                 file_id: second_id,
                 kind: FileKind::Regular,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let tree = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Internal(vec![
-                TreeChild {
-                    first_name: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
+        encode_tree_page(&TreePage::Internal(vec![
+                Child {
+                    first: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
                     page: first_tree_leaf,
                 },
-                TreeChild {
-                    first_name: LogicalName::new(NameEncoding::Utf8, b"z".to_vec(), 255)?,
+                Child {
+                    first: LogicalName::new(NameEncoding::Utf8, b"z".to_vec(), 255)?,
                     page: second_tree_leaf,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let first_extent_leaf = put(
         &store,
         ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Leaf(vec![Extent {
+        encode_extent_page(&ExtentPage::Leaf(vec![Extent {
                 offset: 0,
                 length: 2,
                 kind: ExtentKind::Hole,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let second_extent_leaf = put(
         &store,
         ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Leaf(vec![Extent {
+        encode_extent_page(&ExtentPage::Leaf(vec![Extent {
                 offset: 2,
                 length: 2,
                 kind: ExtentKind::AllocatedZero,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let extents = put(
         &store,
         ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Internal(vec![
+        encode_extent_page(&ExtentPage::Internal(vec![
                 ExtentChild {
                     first_offset: 0,
                     end_offset: 2,
@@ -1068,10 +994,8 @@ fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_unrelat
                     end_offset: 4,
                     page: second_extent_leaf,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let records = [
         directory_record(root_id, 1, metadata_id, tree),
         FileRecord {
@@ -1095,30 +1019,27 @@ fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_unrelat
     let first_table_leaf = put(
         &store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(records[..1].to_vec()), 8)?,
-    )?;
+        encode_file_table_page(&FileTablePage::Leaf(records[..1].to_vec()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let second_table_leaf = put(
         &store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(records[1..].to_vec()), 8)?,
-    )?;
+        encode_file_table_page(&FileTablePage::Leaf(records[1..].to_vec()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let table = put(
         &store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Internal(vec![
-                FileTableChild {
-                    first_file_id: root_id,
+        encode_file_table_page(&FileTablePage::Internal(vec![
+                Child {
+                    first: root_id,
                     page: first_table_leaf,
                 },
-                FileTableChild {
-                    first_file_id: first_id,
+                Child {
+                    first: first_id,
                     page: second_table_leaf,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let generation = put(
         &store,
         ObjectKind::GenerationRoot,
@@ -1128,20 +1049,20 @@ fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_unrelat
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
-    )?;
-    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.file_count, 3);
     assert!(proof.work.page_reads >= 8);
     Ok(())
 }
 
-#[test]
-fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
+#[tokio::test]
+async fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, _, metadata) = minimal_generation(&store, None)?;
-    let wrong_kind = prove_generation_closure(&store, metadata, limits(), WorkBudget::UNBOUNDED)
+    let (generation, _, metadata) = minimal_generation(&store, None).await?;
+    let wrong_kind = prove_generation_closure(&store, metadata, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("metadata object was admitted as a generation")?;
     assert!(matches!(wrong_kind.error, ClosureError::WrongObjectKind));
@@ -1150,7 +1071,7 @@ fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
     let mut object_limited = limits();
     object_limited.maximum_objects = 0;
     let too_many_objects =
-        prove_generation_closure(&store, generation, object_limited, WorkBudget::UNBOUNDED)
+        prove_generation_closure(&store, generation, object_limited, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
             .err()
             .ok_or("zero-object closure limit succeeded")?;
     assert!(matches!(
@@ -1165,7 +1086,7 @@ fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
     let mut byte_limited = limits();
     byte_limited.maximum_object_bytes = 0;
     let too_many_bytes =
-        prove_generation_closure(&store, generation, byte_limited, WorkBudget::UNBOUNDED)
+        prove_generation_closure(&store, generation, byte_limited, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
             .err()
             .ok_or("zero-byte closure limit succeeded")?;
     assert!(matches!(
@@ -1177,7 +1098,7 @@ fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
     let mut file_limited = limits();
     file_limited.maximum_files = 0;
     let too_many_files =
-        prove_generation_closure(&store, generation, file_limited, WorkBudget::UNBOUNDED)
+        prove_generation_closure(&store, generation, file_limited, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
             .err()
             .ok_or("zero-file closure limit succeeded")?;
     assert!(matches!(
@@ -1191,8 +1112,8 @@ fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
     Ok(())
 }
 
-#[test]
-fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
+#[tokio::test]
+async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
 -> Result<(), Box<dyn std::error::Error>> {
     let root_file_id = FileId::from_bytes([1; 16]);
     let child_file_id = FileId::from_bytes([2; 16]);
@@ -1201,13 +1122,13 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
     let metadata_id = put(
         &missing_root_store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let empty_tree = put(
         &missing_root_store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let missing_root = generation_with_records(
         &missing_root_store,
         root_file_id,
@@ -1220,14 +1141,15 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
                 entries: empty_tree,
             },
         }],
-    )?;
+    ).await?;
     assert!(matches!(
         prove_generation_closure(
             &missing_root_store,
             missing_root,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::MissingRootFile,
             ..
@@ -1238,8 +1160,8 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
     let metadata_id = put(
         &non_directory_store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let non_directory = generation_with_records(
         &non_directory_store,
         root_file_id,
@@ -1250,14 +1172,15 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
             metadata: metadata_id,
             payload: FilePayload::InlineRegular(InlineFileData::new(b"root")?),
         }],
-    )?;
+    ).await?;
     assert!(matches!(
         prove_generation_closure(
             &non_directory_store,
             non_directory,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::RootIsNotDirectory,
             ..
@@ -1268,21 +1191,18 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
     let metadata_id = put(
         &absent_child_store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let child_name = LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?;
     let dangling_tree = put(
         &absent_child_store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: child_name.clone(),
                 file_id: child_file_id,
                 kind: FileKind::Regular,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let absent_child = generation_with_records(
         &absent_child_store,
         root_file_id,
@@ -1295,14 +1215,15 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
                 entries: dangling_tree,
             },
         }],
-    )?;
+    ).await?;
     assert!(matches!(
         prove_generation_closure(
             &absent_child_store,
             absent_child,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::MissingFileRecord(actual),
             ..
@@ -1313,20 +1234,17 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
     let metadata_id = put(
         &mismatched_store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let mismatched_tree = put(
         &mismatched_store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: child_name,
                 file_id: child_file_id,
                 kind: FileKind::Directory,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let mismatched = generation_with_records(
         &mismatched_store,
         root_file_id,
@@ -1348,14 +1266,15 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
                 payload: FilePayload::InlineRegular(InlineFileData::new(b"child")?),
             },
         ],
-    )?;
+    ).await?;
     assert!(matches!(
         prove_generation_closure(
             &mismatched_store,
             mismatched,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::NamespaceKindMismatch(actual),
             ..
@@ -1364,34 +1283,30 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
     Ok(())
 }
 
-#[test]
-fn closure_rejects_kinds_outside_the_declared_volume_profile()
+#[tokio::test]
+async fn closure_rejects_kinds_outside_the_declared_volume_profile()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata = put(
         &store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_file_id = FileId::from_bytes([1; 16]);
     let fifo_file_id = FileId::from_bytes([2; 16]);
     let tree = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: LogicalName::new(NameEncoding::Utf8, b"fifo".to_vec(), 255)?,
                 file_id: fifo_file_id,
                 kind: FileKind::Fifo,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let table = put(
         &store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![
+        encode_file_table_page(&FileTablePage::Leaf(vec![
                 FileRecord {
                     file_id: root_file_id,
                     kind: FileKind::Directory,
@@ -1406,10 +1321,8 @@ fn closure_rejects_kinds_outside_the_declared_volume_profile()
                     metadata,
                     payload: FilePayload::Empty,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let generation = put(
         &store,
         ObjectKind::GenerationRoot,
@@ -1419,9 +1332,9 @@ fn closure_rejects_kinds_outside_the_declared_volume_profile()
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
-    )?;
-    let failure = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
+    let failure = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("portable FIFO closure unexpectedly proved")?;
     assert!(matches!(
@@ -1431,8 +1344,8 @@ fn closure_rejects_kinds_outside_the_declared_volume_profile()
     Ok(())
 }
 
-#[test]
-fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
+#[tokio::test]
+async fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
 -> Result<(), Box<dyn std::error::Error>> {
     let missing_store = MemoryObjectStore::default();
     let missing_blob = ObjectId {
@@ -1446,13 +1359,14 @@ fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
             object_offset: 0,
         },
         4,
-    )?;
+    ).await?;
     let missing = prove_generation_closure(
         &missing_store,
         missing_generation,
         limits(),
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("missing extent blob unexpectedly proved")?;
     assert!(matches!(
@@ -1462,7 +1376,7 @@ fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
     assert!(missing.work.object_probes > 0);
 
     let outside_store = MemoryObjectStore::default();
-    let four_bytes = blob_with_bytes(&outside_store, b"data")?;
+    let four_bytes = blob_with_bytes(&outside_store, b"data").await?;
     let outside_generation = generation_with_regular_extent(
         &outside_store,
         ExtentKind::Content {
@@ -1470,14 +1384,15 @@ fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
             object_offset: 3,
         },
         2,
-    )?;
+    ).await?;
     assert!(matches!(
         prove_generation_closure(
             &outside_store,
             outside_generation,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::BlobSpanOutsideObject,
             ..
@@ -1486,7 +1401,7 @@ fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
 
     for sparse_kind in [ExtentKind::Hole, ExtentKind::AllocatedZero] {
         let sparse_store = MemoryObjectStore::default();
-        let sparse_generation = generation_with_regular_extent(&sparse_store, sparse_kind, 4)?;
+        let sparse_generation = generation_with_regular_extent(&sparse_store, sparse_kind, 4).await?;
         let mut dense_limits = limits();
         dense_limits.sparse_files = false;
         assert!(matches!(
@@ -1495,7 +1410,8 @@ fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
                 sparse_generation,
                 dense_limits,
                 WorkBudget::UNBOUNDED,
-            ),
+                &CancellationToken::new(),
+            ).await,
             Err(OperationFailure {
                 error: ClosureError::UnsupportedVolumeSemantics,
                 ..
@@ -1505,33 +1421,20 @@ fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
     Ok(())
 }
 
-#[test]
-fn async_and_sync_closure_proofs_are_identical_and_cancellable()
+#[tokio::test]
+async fn pre_cancelled_closure_does_no_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, _, _) = minimal_generation(&store, None)?;
-    let synchronous =
-        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
-    let asynchronous = async_storage::poll_ready(prove_generation_closure_async(
-        &store,
-        generation,
-        limits(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous closure unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
-
+    let (generation, _, _) = minimal_generation(&store, None).await?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = async_storage::poll_ready(prove_generation_closure_async(
+    let failure = (prove_generation_closure(
         &store,
         generation,
         limits(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("cancelled asynchronous closure unexpectedly blocked")?
+    )).await
     .err()
     .ok_or("cancelled asynchronous closure unexpectedly succeeded")?;
     assert!(matches!(
@@ -1542,19 +1445,18 @@ fn async_and_sync_closure_proofs_are_identical_and_cancellable()
     Ok(())
 }
 
-#[test]
-fn owned_generation_closure_reads_release_all_retained_backend_bytes()
+#[tokio::test]
+async fn owned_generation_closure_reads_release_all_retained_backend_bytes()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = OwnedReadObjectStore::default();
-    let (generation, _, _) = minimal_generation(&store.inner, None)?;
-    let proof = async_storage::poll_ready(prove_generation_closure_async(
+    let (generation, _, _) = minimal_generation(&store.inner, None).await?;
+    let proof = (prove_generation_closure(
         &store,
         generation,
         limits(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ))
-    .ok_or("owned closure proof blocked")??;
+    )).await?;
     assert_eq!(proof.file_count, 1);
     assert_eq!(proof.object_count, 4);
     assert!(proof.work.bytes_copied > 0);
@@ -1562,48 +1464,42 @@ fn owned_generation_closure_reads_release_all_retained_backend_bytes()
     Ok(())
 }
 
-#[test]
-fn forged_file_table_lower_bound_fails_before_publication() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn forged_file_table_lower_bound_fails_before_publication() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
         &store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let tree = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let leaf = put(
         &store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![FileRecord {
+        encode_file_table_page(&FileTablePage::Leaf(vec![FileRecord {
                 file_id: FileId::from_bytes([1; 16]),
                 kind: FileKind::Directory,
                 link_count: 1,
                 metadata: metadata_id,
                 payload: FilePayload::Directory { entries: tree },
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let forged = put(
         &store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Internal(vec![FileTableChild {
-                first_file_id: FileId::from_bytes([0; 16]),
+        encode_file_table_page(&FileTablePage::Internal(vec![Child {
+                first: FileId::from_bytes([0; 16]),
                 page: leaf,
-            }]),
-            8,
-        )?,
-    )?;
-    let (generation, _, _) = minimal_generation(&store, Some(forged))?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
+    let (generation, _, _) = minimal_generation(&store, Some(forged)).await?;
     assert!(matches!(
-        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED),
+        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(OperationFailure {
             error: ClosureError::RoutingBoundsMismatch,
             ..
@@ -1612,8 +1508,8 @@ fn forged_file_table_lower_bound_fails_before_publication() -> Result<(), Box<dy
     Ok(())
 }
 
-#[test]
-fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let missing = ObjectId {
         kind: ObjectKind::Metadata,
@@ -1622,24 +1518,21 @@ fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn std::
     let tree = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let table = put(
         &store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![FileRecord {
+        encode_file_table_page(&FileTablePage::Leaf(vec![FileRecord {
                 file_id: FileId::from_bytes([1; 16]),
                 kind: FileKind::Directory,
                 link_count: 1,
                 metadata: missing,
                 payload: FilePayload::Directory { entries: tree },
-            }]),
-            8,
-        )?,
-    )?;
-    let (generation, _, _) = minimal_generation(&store, Some(table))?;
-    let failure = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
+    let (generation, _, _) = minimal_generation(&store, Some(table)).await?;
+    let failure = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("missing metadata unexpectedly proved")?;
     assert!(matches!(
@@ -1650,38 +1543,34 @@ fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn std::
     Ok(())
 }
 
-#[test]
-fn shared_regular_data_and_metadata_are_authenticated_once()
+#[tokio::test]
+async fn shared_regular_data_and_metadata_are_authenticated_once()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
         &store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
-    let blob = blob_with_bytes(&store, b"body")?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
+    let blob = blob_with_bytes(&store, b"body").await?;
     let extents = put(
         &store,
         ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Leaf(vec![Extent {
+        encode_extent_page(&ExtentPage::Leaf(vec![Extent {
                 offset: 0,
                 length: 4,
                 kind: ExtentKind::Content {
                     object: blob,
                     object_offset: 0,
                 },
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_id = FileId::from_bytes([1; 16]);
     let child_ids = [FileId::from_bytes([2; 16]), FileId::from_bytes([3; 16])];
     let tree = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![
+        encode_tree_page(&TreePage::Leaf(vec![
                 TreeEntry {
                     name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
                     file_id: child_ids[0],
@@ -1692,10 +1581,8 @@ fn shared_regular_data_and_metadata_are_authenticated_once()
                     file_id: child_ids[1],
                     kind: FileKind::Regular,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let mut records = vec![directory_record(root_id, 1, metadata_id, tree)];
     for file_id in child_ids {
         records.push(FileRecord {
@@ -1709,8 +1596,8 @@ fn shared_regular_data_and_metadata_are_authenticated_once()
             },
         });
     }
-    let generation = generation_with_records(&store, root_id, records.clone())?;
-    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    let generation = generation_with_records(&store, root_id, records.clone()).await?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.file_count, 3);
     assert_eq!(proof.object_count, 7);
     assert_eq!(proof.work.object_probes, 7);
@@ -1721,16 +1608,16 @@ fn shared_regular_data_and_metadata_are_authenticated_once()
         logical_bytes: 5,
         extents,
     };
-    let conflicting = generation_with_records(&store, root_id, records)?;
+    let conflicting = generation_with_records(&store, root_id, records).await?;
     assert!(matches!(
-        prove_generation_closure(&store, conflicting, limits(), WorkBudget::UNBOUNDED),
+        prove_generation_closure(&store, conflicting, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(failure) if matches!(failure.error, ClosureError::RoutingBoundsMismatch)
     ));
     Ok(())
 }
 
-#[test]
-fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
+#[tokio::test]
+async fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
 -> Result<(), Box<dyn std::error::Error>> {
     let root_id = FileId::from_bytes([1; 16]);
     let child_id = FileId::from_bytes([2; 16]);
@@ -1739,20 +1626,17 @@ fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
     let metadata_id = put(
         &mismatch_store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_tree = put(
         &mismatch_store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
                 file_id: child_id,
                 kind: FileKind::Regular,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let mismatch = generation_with_records(
         &mismatch_store,
         root_id,
@@ -1766,14 +1650,15 @@ fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
                 payload: FilePayload::InlineRegular(InlineFileData::new(b"child")?),
             },
         ],
-    )?;
+    ).await?;
     assert!(matches!(
         prove_generation_closure(
             &mismatch_store,
             mismatch,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::LinkCountMismatch(actual),
             ..
@@ -1784,18 +1669,17 @@ fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
     let metadata_id = put(
         &hard_link_store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let empty_tree = put(
         &hard_link_store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_tree = put(
         &hard_link_store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![
+        encode_tree_page(&TreePage::Leaf(vec![
                 TreeEntry {
                     name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
                     file_id: child_id,
@@ -1806,10 +1690,8 @@ fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
                     file_id: child_id,
                     kind: FileKind::Directory,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let hard_link = generation_with_records(
         &hard_link_store,
         root_id,
@@ -1817,14 +1699,15 @@ fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
             directory_record(root_id, 1, metadata_id, root_tree),
             directory_record(child_id, 2, metadata_id, empty_tree),
         ],
-    )?;
+    ).await?;
     assert!(matches!(
         prove_generation_closure(
             &hard_link_store,
             hard_link,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::DirectoryHardLink(actual),
             ..
@@ -1835,39 +1718,33 @@ fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
     let metadata_id = put(
         &disconnected_store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_tree = put(
         &disconnected_store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let first_id = FileId::from_bytes([2; 16]);
     let second_id = FileId::from_bytes([3; 16]);
     let first_tree = put(
         &disconnected_store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
                 file_id: second_id,
                 kind: FileKind::Directory,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let second_tree = put(
         &disconnected_store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
                 file_id: first_id,
                 kind: FileKind::Directory,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let disconnected = generation_with_records(
         &disconnected_store,
         root_id,
@@ -1876,14 +1753,15 @@ fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
             directory_record(first_id, 1, metadata_id, first_tree),
             directory_record(second_id, 1, metadata_id, second_tree),
         ],
-    )?;
+    ).await?;
     assert!(matches!(
         prove_generation_closure(
             &disconnected_store,
             disconnected,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::UnreachableFileRecords,
             ..
@@ -1896,8 +1774,8 @@ fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
 fn authenticated_routing_bound_helpers_are_total() -> Result<(), Box<dyn std::error::Error>> {
     let file_a = FileId::from_bytes([1; 16]);
     let file_b = FileId::from_bytes([2; 16]);
-    let file_children = vec![FileTableChild {
-        first_file_id: file_b,
+    let file_children = vec![Child {
+        first: file_b,
         page: ObjectId {
             kind: ObjectKind::FileTablePage,
             digest: Digest::ZERO,
@@ -1929,8 +1807,8 @@ fn authenticated_routing_bound_helpers_are_total() -> Result<(), Box<dyn std::er
         validate_tree_bounds(&tree_entries, None, Some(&b)),
         Err(ClosureError::RoutingBoundsMismatch)
     ));
-    let tree_children = vec![TreeChild {
-        first_name: b.clone(),
+    let tree_children = vec![Child {
+        first: b.clone(),
         page: ObjectId {
             kind: ObjectKind::TreePage,
             digest: Digest::ZERO,
@@ -1977,8 +1855,8 @@ fn authenticated_routing_bound_helpers_are_total() -> Result<(), Box<dyn std::er
         validate_attribute_bounds(&attribute_entries, None, Some(&attr_b)),
         Err(ClosureError::RoutingBoundsMismatch)
     ));
-    let attribute_children = vec![AttributeChild {
-        first_name: attr_b.clone(),
+    let attribute_children = vec![Child {
+        first: attr_b.clone(),
         page: ObjectId {
             kind: ObjectKind::AttributePage,
             digest: Digest::ZERO,

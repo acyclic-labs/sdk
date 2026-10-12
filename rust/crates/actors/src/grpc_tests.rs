@@ -4,9 +4,9 @@
     reason = "bounded generated-client counterexamples"
 )]
 use crate::{grpc::*, wire};
+use acyclic_grpc_observability::test_support::Capture;
 use std::{
     pin::Pin,
-    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 use tonic::Status;
@@ -14,14 +14,7 @@ use tonic::{
     body::Body,
     codegen::{Bytes, Service, http},
 };
-use tracing_subscriber::{
-    layer::{Context as LayerContext, SubscriberExt},
-    registry::LookupSpan,
-};
-
-mod tls {
-    include!("grpc_tls_tests.rs");
-}
+use tracing_subscriber::layer::SubscriberExt as _;
 
 struct Data(std::collections::VecDeque<http_body::Frame<Bytes>>);
 impl http_body::Body for Data {
@@ -53,52 +46,12 @@ impl Service<http::Request<Body>> for Transport {
             .unwrap()))
     }
 }
-type Log = Arc<Mutex<Vec<(String, String, String)>>>;
-struct Capture(Log);
-struct Fields<'a>(&'a str, Log);
-impl tracing::field::Visit for Fields<'_> {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.1.lock().unwrap().push((
-            self.0.into(),
-            field.name().into(),
-            format!("{value:?}").trim_matches('"').into(),
-        ));
-    }
-}
-impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for Capture {
-    fn on_new_span(
-        &self,
-        attrs: &tracing::span::Attributes<'_>,
-        _: &tracing::span::Id,
-        _: LayerContext<'_, S>,
-    ) {
-        attrs.record(&mut Fields(attrs.metadata().name(), self.0.clone()));
-    }
-    fn on_record(
-        &self,
-        id: &tracing::span::Id,
-        record: &tracing::span::Record<'_>,
-        ctx: LayerContext<'_, S>,
-    ) {
-        record.record(&mut Fields(ctx.span(id).unwrap().name(), self.0.clone()));
-    }
-    fn on_close(&self, id: tracing::span::Id, ctx: LayerContext<'_, S>) {
-        self.0.lock().unwrap().push((
-            ctx.span(&id).unwrap().name().into(),
-            "closed".into(),
-            "1".into(),
-        ));
-    }
-}
 #[tokio::test]
 async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
     for case in 0..5 {
-        let log = Log::default();
-        let _guard = tracing::subscriber::set_default(
-            tracing_subscriber::registry().with(Capture(log.clone())),
-        );
-        // Valid gRPC frame envelope, invalid protobuf payload; the other
-        // case has no unary response message despite transport status OK.
+        let log = Capture::default();
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
         let body = if case == 0 {
             Body::empty()
         } else {
@@ -123,7 +76,7 @@ async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
             Body::new(Data(frames))
         };
         let transport =
-            acyclic_grpc_observability::TracedChannel::<_, CallSpan>::new(Transport(Some(body)));
+            acyclic_grpc_observability::TracedChannel::new(Transport(Some(body)), transport_span);
         let mut client = wire::actors_service_client::ActorsServiceClient::new(transport);
         let result = client
             .inspect_actor(wire::InspectActorRequest::default())
@@ -137,14 +90,9 @@ async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
         } else {
             assert!(result.is_ok());
         }
-        let seen = log.lock().unwrap();
+        let seen = log.0.lock().unwrap();
         for name in ["acyclic.actors.grpc.call", "acyclic.actors.grpc.transport"] {
-            assert_eq!(
-                seen.iter()
-                    .filter(|(n, k, _)| n == name && k == "closed")
-                    .count(),
-                1
-            );
+            assert_eq!(seen.closes.iter().filter(|n| *n == name).count(), 1);
         }
         for (name, field, value) in [
             (
@@ -175,14 +123,22 @@ async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
             ),
         ] {
             assert!(
-                seen.iter()
-                    .any(|(n, k, v)| (n.as_str(), k.as_str(), v.as_str()) == (name, field, value)),
-                "{name} {field} {value}: {seen:?}"
+                seen.spans
+                    .iter()
+                    .any(|span| span.name == name
+                        && span.fields.get(field).is_some_and(|v| v == value)),
+                "{name} {field} {value}: {:?}",
+                seen.spans
             );
         }
-        assert!(!seen.iter().any(|(n, k, v)| n == "acyclic.actors.grpc.call"
-            && k == "outcome"
-            && v == if case < 2 { "ok" } else { "err" }));
+        assert!(
+            !seen
+                .records
+                .iter()
+                .any(|(n, k, v)| n == "acyclic.actors.grpc.call"
+                    && k == "outcome"
+                    && v.trim_matches('"') == if case < 2 { "ok" } else { "err" })
+        );
     }
 }
 
@@ -219,9 +175,8 @@ impl Service<http::Request<Body>> for TlsService {
 #[tokio::test]
 async fn authenticated_tls_generated_call_closes_typed_and_wire_spans()
 -> Result<(), Box<dyn std::error::Error>> {
-    let log = Log::default();
-    let _guard =
-        tracing::subscriber::set_default(tracing_subscriber::registry().with(Capture(log.clone())));
+    let log = Capture::default();
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
     let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])?;
     let pem = certificate.cert.pem();
     let identity =
@@ -238,7 +193,7 @@ async fn authenticated_tls_generated_call_closes_typed_and_wire_spans()
             }),
     );
     let result = async {
-        let mut client = connect_with_ca_certificate(
+        let mut client = connect(
             &format!("https://{address}"),
             "private-token",
             Some(pem.as_bytes()),
@@ -253,27 +208,26 @@ async fn authenticated_tls_generated_call_closes_typed_and_wire_spans()
     let _ = shutdown.send(());
     server.await??;
     result?;
-    let seen = log.lock().unwrap();
+    let seen = log.0.lock().unwrap();
     for name in ["acyclic.actors.grpc.call", "acyclic.actors.grpc.transport"] {
         assert!(
-            seen.iter()
-                .any(|(n, k, v)| n == name && k == "rpc" && v == "InspectActor")
+            seen.spans.iter().any(|span| span.name == name
+                && span.fields.get("rpc").is_some_and(|v| v == "InspectActor"))
         );
-        assert_eq!(
-            seen.iter()
-                .filter(|(n, k, _)| n == name && k == "closed")
-                .count(),
-            1
+        assert_eq!(seen.closes.iter().filter(|n| *n == name).count(), 1);
+        assert!(
+            seen.spans
+                .iter()
+                .any(|span| span.name == name
+                    && span.fields.get("outcome").is_some_and(|v| v == "ok"))
         );
         assert!(
-            seen.iter()
-                .any(|(n, k, v)| n == name && k == "outcome" && v == "ok")
-        );
-        assert!(
-            seen.iter()
-                .any(|(n, k, v)| n == name && k == "rpc.code" && v == "0")
+            seen.spans
+                .iter()
+                .any(|span| span.name == name
+                    && span.fields.get("rpc.code").is_some_and(|v| v == "0"))
         );
     }
-    assert!(!format!("{seen:?}").contains("private-token"));
+    assert!(!format!("{:?}{:?}", seen.spans, seen.records).contains("private-token"));
     Ok(())
 }

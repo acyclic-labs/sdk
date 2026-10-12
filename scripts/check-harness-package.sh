@@ -63,13 +63,17 @@ install -m 0644 typescript/packages/harness/package.json typescript/packages/har
 cp -R typescript/packages/harness/dist "$npm_stage/dist"
 cp -R typescript/packages/harness/generated/proto "$npm_stage/generated/proto"
 cp -R "$wasm_output" "$npm_stage/generated/wasm"
+observer_stage="$work/observer-package"
+bash "$root/scripts/stage-npm-package.sh" "$root/typescript/packages/actors" "$observer_stage"
+(cd "$observer_stage" && bun pm pack --ignore-scripts --filename acyclic-observe.tgz --quiet)
+mv "$observer_stage/acyclic-observe.tgz" "$work/acyclic-observe.tgz"
 cd "$npm_stage"
 bun pm pack --ignore-scripts --filename "$bun_archive" --quiet
 
 mkdir "$work/consumer"
 protobuf_version="$(bun -e 'console.log(require(process.argv[1]).dependencies["@bufbuild/protobuf"])' "$root/typescript/packages/harness/package.json")"
 cat >"$work/consumer/package.json" <<EOF
-{"private":true,"type":"module","dependencies":{"@acyclic-labs/harness":"file:$bun_archive_url","@bufbuild/protobuf":"$protobuf_version","fake-indexeddb":"6.2.4"}}
+{"private":true,"type":"module","overrides":{"@acyclic-labs/actors":"file:../acyclic-observe.tgz"},"dependencies":{"@acyclic-labs/harness":"file:$bun_archive_url","@bufbuild/protobuf":"$protobuf_version","fake-indexeddb":"6.2.4"}}
 EOF
 cd "$work/consumer"
 bun install --ignore-scripts
@@ -90,6 +94,17 @@ for source_test in client wire-transport; do
 done
 install -m 0644 "$root/conformance/vectors/harness/native-wasm-event-v2.json" native-wasm-event-v2.json
 bun test test 2>&1 | tee "$work/typescript-package-test.log"
+framework_versions=()
+for framework in react react-dom svelte; do
+  version="$(bun -e 'console.log(require(process.argv[1]).devDependencies[process.argv[2]])' "$root/typescript/packages/harness/package.json" "$framework")"
+  framework_versions+=("$framework@$version")
+done
+bun add --ignore-scripts "${framework_versions[@]}"
+install -m 0644 "$root/typescript/packages/harness/test/client-frameworks.browser.ts" \
+  "$root/typescript/packages/harness/test/client-frameworks.svelte" .
+bun_consumer="$work/consumer"
+[[ "$bun_platform" != "win32" ]] || bun_consumer="$(bash "$root/scripts/native-tool-path.sh" "$bun_consumer")"
+bun "$root/typescript/packages/harness/test/client-framework-browser.mjs" "$bun_consumer"
 
 cd "$root"
 # Stage the public Harness dependency closure from the same source as receipt

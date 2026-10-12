@@ -47,16 +47,12 @@ impl ContextAttribute {
             value: serde_json::to_value(value)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
-        attribute.validate()?;
+        attribute.validate(&mut None)?;
         Ok(attribute)
     }
 
     /// Validates type identity, revision and state using the existing schema boundary.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    fn validate_with_work(
+    pub fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -94,7 +90,7 @@ impl ContextAttribute {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         crate::contract::validate_trusted_json_byte_bound(
-            self, crate::model::MAX_MODEL_REQUEST_BYTES, work,
+            self, u64::MAX, work,
         )?;
         self.validate_identity(work)?;
         crate::contract::validate_json_schema_value_with_work(
@@ -102,16 +98,6 @@ impl ContextAttribute {
         )
     }
 
-    /// Validates the same pinned state using the original admitted native work.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn validate_with_native_work(
-        &self,
-        native: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut work = crate::store::history::native_work_io(native)
-            .map_err(super::native_context_work_error)?;
-        self.validate_with_work(&mut Some(&mut work))
-    }
 }
 
 /// A pinned input; a file reference conveys no read authority.
@@ -176,23 +162,19 @@ pub struct ContextSelection {
 
 impl ContextSelection {
     /// Validates structure without granting authority or executing a renderer.
-    pub fn validate(&self, limits: Limits) -> Result<()> {
-        self.validate_with_work(limits, &mut None)
-    }
-
-    fn validate_with_work(
+    pub fn validate(
         &self,
         limits: Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         let native = selection_has_native_work(work);
         if native {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
             }
             match &self.source {
-                ContextSourceValue::File { file } => limits.validate_file_with_work(file, work)?,
+                ContextSourceValue::File { file } => limits.validate_file(file, work)?,
                 ContextSourceValue::Attribute { attribute } => attribute.preflight_source(work)?,
             }
         }
@@ -200,7 +182,7 @@ impl ContextSelection {
         match &self.source {
             ContextSourceValue::File { file } => {
                 if !native {
-                    limits.validate_file_with_work(file, work)?;
+                    limits.validate_file(file, work)?;
                 }
                 if let ContextExtent::Span { start, end } = self.extent
                     && (start >= end || end > file.descriptor().byte_length())
@@ -220,18 +202,6 @@ impl ContextSelection {
         Ok(())
     }
 
-    /// Validates structure without granting new authority on the original ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn validate_with_native_work(
-        &self,
-        limits: Limits,
-        native: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut work = crate::store::history::native_work_io(native)
-            .map_err(super::native_context_work_error)?;
-        self.validate_with_work(limits, &mut Some(&mut work))
-    }
-
 }
 
 fn selection_has_native_work(
@@ -249,7 +219,7 @@ fn selection_boundary(
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if selection_has_native_work(work) {
-        return super::native_context_boundary(crate::wire::ErrorCode::Invalid, reason);
+        return crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
     }
     let _ = work;
     Error::Invalid(reason.into())
@@ -293,44 +263,15 @@ pub enum ContextRenderMode {
 
 /// Replaceable typed renderer; transformations compose as ordinary later stages.
 pub trait ContextRenderer: acyclic_stream::ProviderPlatform {
-    /// Immutable implementation identity included in execution admission.
-    fn contract(&self) -> Value;
-    /// Renders a host-approved selection; must honor supplied finite limits.
-    fn render<'a>(
-        &'a self,
-        selection: &'a ContextSelection,
-        mode: ContextRenderMode,
-        input: &'a ContextInput,
-        limits: Limits,
-    ) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
-
-    /// Explicit capability; ordinary renderers are rejected before a callback or box.
+    /// Immutable implementation identity retained by the optional ledger.
+    fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value>;
+    /// Renders a selection under admitted limits and the optional original ledger.
+    fn render<'a>(&'a self, selection: &'a ContextSelection, mode: ContextRenderMode,
+        input: &'a ContextInput, limits: Limits, io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>>;
+    /// Reports original-ledger support before a stage invokes the renderer.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self) -> bool { false }
-
-    /// Constructs the same immutable identity with its actual native custody.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn contract_with_native_work(
-        &self,
-        _: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        Err(super::native_context_boundary(crate::wire::ErrorCode::Unsupported,
-            "context renderer has no native contract capability"))
-    }
-
-    /// Renders the same selection after funding the concrete future frame.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn render_native<'a>(
-        &'a self,
-        _: &'a ContextSelection,
-        _: ContextRenderMode,
-        _: &'a ContextInput,
-        _: Limits,
-        _: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<ModelMessage>, acyclic_fs::NativeAllocation)>> {
-        Err(super::native_context_boundary(crate::wire::ErrorCode::Unsupported,
-            "context renderer has no native capability"))
-    }
 }
 
 /// Selection/renderer adapter, reusing the existing stage engine and content verifier.
@@ -356,8 +297,8 @@ impl SelectionStage {
         limits: Limits,
     ) -> Result<Self> {
         crate::contract::validate_component_label(&name, "selection stage")?;
-        selection.validate(limits)?;
-        if !renderer.contract().is_object() {
+        selection.validate(limits, &mut None)?;
+        if !renderer.contract(None)?.is_object() {
             return Err(Error::Invalid(
                 "context renderer contract must be an object".into(),
             ));
@@ -379,128 +320,81 @@ impl ContextStage for SelectionStage {
         &self.name
     }
 
-    fn contract(&self) -> Value {
-        serde_json::json!({"name": self.name, "selection": self.selection,
-            "renderer": self.renderer.contract(), "mode": self.mode,
-            "placement": match self.placement { ContextPlacement::Prepend => "prepend", ContextPlacement::Append => "append" },
-            "limits": self.limits})
+    fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+            self.validate(io)?;
+            work.remaining()?;
+            let before = io.expect("native ledger").owned_bytes()?;
+            let renderer_hold;
+            let renderer = self.renderer.contract(io)?;
+            if !renderer.is_object() {
+                return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context renderer contract must be an object"));
+            }
+            let retained = io.expect("native ledger").owned_bytes()?.checked_sub(before)
+                .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "renderer contract released outer custody"))?;
+            renderer_hold = io.expect("native ledger").guard_owned(retained)?;
+            crate::executor::with_history_io(io, |work| observe_selection_value(&renderer, work))?;
+            #[derive(Serialize)]
+            struct Contract<'a> { name: &'a str, selection: &'a ContextSelection, renderer: &'a Value,
+                mode: ContextRenderMode, placement: &'a str, limits: Limits }
+            let placement = match self.placement { ContextPlacement::Prepend => "prepend", ContextPlacement::Append => "append" };
+            let (value, custody) = super::context_contract_native(&Contract { name: &self.name,
+                selection: &self.selection, renderer: &renderer, mode: self.mode, placement, limits: self.limits }, work)?;
+            drop(renderer);
+            drop(renderer_hold);
+            io.expect("native ledger").absorb_native_custody(custody)?;
+            return Ok(value);
+        }
+        let _ = io;
+        Ok(serde_json::json!({"name": self.name, "selection": self.selection, "renderer": self.renderer.contract(None)?,
+            "mode": self.mode, "placement": self.placement, "limits": self.limits}))
     }
 
-    fn apply<'a>(
-        &'a self,
-        input: &'a ContextInput,
-        context: Context,
-        limits: Limits,
-    ) -> BoxFuture<'a, Result<Context>> {
-        Box::pin(async move {
-            let limits = super::restrict_context_limits(self.limits, limits)?;
-            validate_projected_context(&context, limits)?;
-            self.selection.validate(limits)?;
+    fn apply<'a>(&'a self, input: &'a ContextInput, context: Context, limits: Limits,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if io.and_then(crate::executor::PreparationIo::original_native_work).is_some() {
+            self.validate(io)?;
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let limits = super::restrict_context_limits(self.limits, limits, io)?;
+            super::validate_projected_context(&context, limits, io)?;
+            crate::executor::with_history_io(io, |work| self.selection.validate(limits, work))?;
             if let ContextSourceValue::File { file } = &self.selection.source {
-                limits.validate_file(file)?;
-                self.verifier.verify(file).await?;
+                crate::executor::with_history_io(io, |work| limits.validate_file(file, work))?;
+                self.verifier.verify(file, limits.file_bytes, io)?.await?;
             }
-            let messages = self
-                .renderer
-                .render(&self.selection, self.mode, input, limits)
-                .await?;
-            apply_context_projection(context, messages, self.mode, self.placement, limits)
+            let messages = self.renderer.render(&self.selection, self.mode, input, limits, io)?.await?;
+            let context = place_messages_with_io(context, messages,
+                projection_placement(self.mode, self.placement), limits, io)?;
+            super::validate_projected_context(&context, limits, io)?;
+            Ok(context)
         })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self) -> bool { self.renderer.supports_native() }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn contract_with_native_work(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        self.validate_native(work)?;
-        work.remaining().map_err(super::native_context_work_error)?;
-        let renderer = self.renderer.contract_with_native_work(work)?;
-        if !renderer.0.is_object() {
-            return Err(super::native_context_boundary(crate::wire::ErrorCode::Invalid,
-                "context renderer contract must be an object"));
-        }
-        let mut source_io = crate::store::history::native_work_io(work)
-            .map_err(super::native_context_work_error)?;
-        observe_selection_value(&renderer.0, &mut Some(&mut source_io))?;
-        #[derive(Serialize)]
-        struct Contract<'a> {
-            name: &'a str,
-            selection: &'a ContextSelection,
-            renderer: &'a Value,
-            mode: ContextRenderMode,
-            placement: &'a str,
-            limits: Limits,
-        }
-        let placement = match self.placement {
-            ContextPlacement::Prepend => "prepend",
-            ContextPlacement::Append => "append",
-        };
-        // Borrow the renderer's actual guarded payload until the funded copy finishes.
-        let contract = super::context_contract_native(&Contract {
-            name: &self.name,
-            selection: &self.selection,
-            renderer: &renderer.0,
-            mode: self.mode,
-            placement,
-            limits: self.limits,
-        }, work)?;
-        drop(renderer);
-        Ok(contract)
-    }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn validate_native(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.remaining().map_err(super::native_context_work_error)?;
-        if !crate::is_valid_component_label(&self.name) {
-            return Err(super::native_context_boundary(crate::wire::ErrorCode::Invalid,
-                "selection stage identity is invalid"));
-        }
-        if !self.renderer.supports_native() {
-            return Err(super::native_context_boundary(crate::wire::ErrorCode::Unsupported,
-                "context renderer has no native capability"));
-        }
-        self.selection.validate_with_native_work(self.limits, work)
-    }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn apply_native<'a>(
-        &'a self,
-        input: &'a ContextInput,
-        context: (Context, acyclic_fs::NativeAllocation),
-        limits: Limits,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Context, acyclic_fs::NativeAllocation)>> {
-        work.remaining().map_err(super::native_context_work_error)?;
+
+
+
+    fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         if !crate::is_valid_component_label(&self.name) {
-            return Err(super::native_context_boundary(crate::wire::ErrorCode::Invalid,
-                "selection stage identity is invalid"));
+            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "selection stage identity is invalid"));
         }
-        if !self.renderer.supports_native() {
-            return Err(super::native_context_boundary(crate::wire::ErrorCode::Unsupported,
-                "context renderer has no native capability"));
-        }
-        crate::NativeFutureBundle::new(work, || async move {
-            let limits = super::restrict_context_limits_native(self.limits, limits, work)?;
-            super::validate_projected_context_native(&context.0, limits, work)?;
-            self.selection.validate_with_native_work(limits, work)?;
-            if let ContextSourceValue::File { file } = &self.selection.source {
-                limits.validate_file_with_native_work(file, work)?;
-                work.remaining().map_err(super::native_context_work_error)?;
-                self.verifier.verify_with_native_work(file, limits.file_bytes, work)?.await?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+            work.remaining()?;
+            if !self.renderer.supports_native() {
+                return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Unsupported, "context renderer has no native capability"));
             }
-            work.remaining().map_err(super::native_context_work_error)?;
-            let messages = self.renderer.render_native(
-                &self.selection, self.mode, input, limits, work,
-            )?.await?;
-            apply_context_projection_native(context, messages, self.mode, self.placement, limits, work)
-        })
+            return crate::executor::with_history_io(io, |work| self.selection.validate(self.limits, work));
+        }
+        Ok(())
     }
 }
 
@@ -514,23 +408,11 @@ pub fn apply_context_projection(
 ) -> Result<Context> {
     let placement = projection_placement(mode, placement);
     let context = place_messages_with_io(context, messages, placement, limits, None)?;
-    validate_projected_context(&context, limits)?;
+    super::validate_projected_context(&context, limits, None)?;
     Ok(context)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn apply_context_projection_native(
-    context: (Context, acyclic_fs::NativeAllocation),
-    messages: (Vec<ModelMessage>, acyclic_fs::NativeAllocation),
-    mode: ContextRenderMode,
-    placement: ContextPlacement,
-    limits: Limits,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Context, acyclic_fs::NativeAllocation)> {
-    let context = place_messages_native(context, messages, projection_placement(mode, placement), limits, work)?;
-    super::validate_projected_context_native(&context.0, limits, work)?;
-    Ok(context)
-}
+
 
 fn projection_placement(mode: ContextRenderMode, placement: ContextPlacement) -> ContextPlacement {
     if mode == ContextRenderMode::Update { ContextPlacement::Append } else { placement }
@@ -550,78 +432,25 @@ pub(super) fn place_context(
     contribution: Context,
     placement: ContextPlacement,
     limits: Limits,
-    io: Option<&super::ContextPreparationIo>,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Context> {
     let marker = preflight_context_composition(&context, &contribution, placement, limits, io)?;
     compose_context_with_io(context, contribution, placement, marker, io)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn place_messages_native(
-    context: (Context, acyclic_fs::NativeAllocation),
-    messages: (Vec<ModelMessage>, acyclic_fs::NativeAllocation),
-    placement: ContextPlacement,
-    limits: Limits,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Context, acyclic_fs::NativeAllocation)> {
-    place_context_native(context, (Context { messages: messages.0, ..Context::default() }, messages.1),
-        placement, limits, work)
-}
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn place_context_native(
-    context: (Context, acyclic_fs::NativeAllocation),
-    contribution: (Context, acyclic_fs::NativeAllocation),
-    placement: ContextPlacement,
-    limits: Limits,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Context, acyclic_fs::NativeAllocation)> {
-    let io = super::ContextPreparationIo::from_native_work(work)?;
-    let context_data = context.0;
-    let contribution_data = contribution.0;
-    io.absorb_native_custody(context.1)?;
-    io.absorb_native_custody(contribution.1)?;
-    let result = place_context(context_data, contribution_data, placement, limits, Some(&io))?;
-    let retained = io.owned_bytes()?;
-    Ok((result, io.into_native_custody(retained)?))
-}
 
-pub(super) fn place_snapshot(
-    context: Context,
-    snapshot: &Context,
-    placement: ContextPlacement,
-    limits: Limits,
+
+
+pub(super) fn place_snapshot(context: Context, snapshot: &Context,
+    placement: ContextPlacement, limits: Limits, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Context> {
-    let marker = preflight_context_composition(&context, snapshot, placement, limits, None)?;
-    // Clone only after the complete message/metadata composition fits.
-    compose_context_with_io(
-        context,
-        snapshot.clone(),
-        placement,
-        marker,
-        None,
-    )
+    let marker = preflight_context_composition(&context, snapshot, placement, limits, io)?;
+    let snapshot = super::copy_context(snapshot, io)?;
+    compose_context_with_io(context, snapshot, placement, marker, io)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn place_snapshot_native(
-    context: (Context, acyclic_fs::NativeAllocation),
-    snapshot: &Context,
-    placement: ContextPlacement,
-    limits: Limits,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Context, acyclic_fs::NativeAllocation)> {
-    let io = super::ContextPreparationIo::from_native_work(work)?;
-    let context_data = context.0;
-    io.absorb_native_custody(context.1)?;
-    let marker = preflight_context_composition(&context_data, snapshot, placement, limits, Some(&io))?;
-    // Preflight the borrowed pinned source before funding and copying any source payload.
-    let (snapshot, guard) = super::clone_context_native(snapshot, work)?;
-    io.absorb_native_custody(guard)?;
-    let result = compose_context_with_io(context_data, snapshot, placement, marker, Some(&io))?;
-    let retained = io.owned_bytes()?;
-    Ok((result, io.into_native_custody(retained)?))
-}
+
 
 struct JoinedMetadata<'a>(
     &'a std::collections::BTreeMap<String, FileRef>,
@@ -647,10 +476,10 @@ fn preflight_context_composition(
     contribution: &Context,
     placement: ContextPlacement,
     limits: Limits,
-    io: Option<&super::ContextPreparationIo>,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Option<u32>> {
-    super::validate_context_projection_with_io(context, limits, io)?;
-    super::validate_context_projection_with_io(contribution, limits, io)?;
+    super::validate_projected_context(context, limits, io)?;
+    super::validate_projected_context(contribution, limits, io)?;
     if context
         .messages
         .len()
@@ -662,7 +491,7 @@ fn preflight_context_composition(
             .checked_add(contribution.metadata.len())
             .is_none_or(|count| count > limits.attachments)
     {
-        return Err(super::context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
+        return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
             "context composition exceeds declared count bounds"));
     }
     if contribution
@@ -670,7 +499,7 @@ fn preflight_context_composition(
         .keys()
         .any(|name| context.metadata.contains_key(name))
     {
-        return Err(super::context_boundary_with_io(io, crate::wire::ErrorCode::Conflict,
+        return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Conflict,
             "context composition repeats a metadata key"));
     }
     let current_input_index = match (
@@ -678,7 +507,7 @@ fn preflight_context_composition(
         contribution.current_input_index,
     ) {
         (Some(_), Some(_)) => {
-            return Err(super::context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
+            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
                 "context composition has two active inputs"));
         }
         (Some(index), None) if placement == ContextPlacement::Prepend => Some(
@@ -686,7 +515,7 @@ fn preflight_context_composition(
                 .ok()
                 .and_then(|count| index.checked_add(count))
                 .ok_or_else(|| {
-                    super::context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
+                    crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
                         "current input index exceeds portable count")
                 })?,
         ),
@@ -695,7 +524,7 @@ fn preflight_context_composition(
                 .ok()
                 .and_then(|count| index.checked_add(count))
                 .ok_or_else(|| {
-                    super::context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
+                    crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
                         "current input index exceeds portable count")
                 })?,
         ),
@@ -718,7 +547,7 @@ fn preflight_context_composition(
         metadata: JoinedMetadata<'a>,
         current_input_index: Option<u32>,
     }
-    super::validate_context_json_with_io(
+    crate::executor::with_history_io(io, |work| crate::contract::validate_trusted_json_byte_bound(
         &JoinedContext {
             messages: super::ContextMessages {
                 first,
@@ -729,8 +558,8 @@ fn preflight_context_composition(
             current_input_index,
         },
         limits.render_bytes,
-        io,
-    )?;
+        work,
+    ))?;
     Ok(current_input_index)
 }
 
@@ -739,42 +568,21 @@ fn compose_context_with_io(
     mut contribution: Context,
     placement: ContextPlacement,
     marker: Option<u32>,
-    io: Option<&super::ContextPreparationIo>,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Context> {
     context.current_input_index = marker;
     // Payloads and logical map entries move under their existing custody; opaque std nodes are excluded.
     context.metadata.extend(contribution.metadata);
     match placement {
         ContextPlacement::Prepend => {
-            super::append_context_messages_with_io(&mut contribution.messages, &mut context.messages, io)?;
+            super::append_context_messages(&mut contribution.messages, &mut context.messages, io)?;
             context.messages = contribution.messages;
         }
         ContextPlacement::Append => {
-            super::append_context_messages_with_io(&mut context.messages, &mut contribution.messages, io)?;
+            super::append_context_messages(&mut context.messages, &mut contribution.messages, io)?;
         }
     }
     Ok(context)
-}
-
-/// Validates finite projected context bounds, never silently omitting mandatory data.
-pub fn validate_projected_context(context: &Context, limits: Limits) -> Result<()> {
-    limits.validate()?;
-    context.validate_current_input()?;
-    if context.messages.len() > limits.context_messages
-        || context.metadata.len() > limits.attachments
-    {
-        return Err(Error::Invalid(
-            "context projection exceeded declared bounds".into(),
-        ));
-    }
-    crate::contract::validate_json_byte_bound(context, limits.render_bytes)?;
-    for message in &context.messages {
-        message.content.validate_limits(limits)?;
-    }
-    for file in context.metadata.values() {
-        limits.validate_file(file)?;
-    }
-    Ok(())
 }
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
@@ -804,17 +612,13 @@ mod native_source_tests {
             state_revision: "1".into(),
             value,
         };
-        // The new finite native API does not narrow the original ordinary API.
-        attribute.validate().expect("ordinary deep attribute remains legal");
+        attribute.validate(&mut None).expect("ordinary deep attribute remains legal");
         let work = NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
-        let before = work.receipt();
         let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
-        assert!(attribute.validate_with_work(&mut Some(&mut observer)).is_err());
-        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
-        assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+        assert!(attribute.validate(&mut Some(&mut observer)).is_err());
         attribute.value = Value::Array(vec![Value::Null]);
         let control = NativeMaterializationWork::new(budget, &cancellation).expect("control ledger");
         let mut observer = crate::store::history::native_work_io(&control).expect("control observer");
-        attribute.validate_with_work(&mut Some(&mut observer)).expect("bounded source is valid");
+        attribute.validate(&mut Some(&mut observer)).expect("bounded source is valid");
     }
 }

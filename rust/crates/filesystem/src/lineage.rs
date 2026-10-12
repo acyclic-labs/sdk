@@ -54,13 +54,13 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
     ) {
         (None, None) => record.fork_generation == record.initial_generation,
         (Some(parent_id), Some(parent_name)) => {
-            parent_id != record.workspace_id && crate::WorkspaceName::new(parent_name).is_ok()
+            parent_id != record.workspace_id && crate::WorkspaceName::new(parent_name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).is_ok()
         }
         _ => false,
     };
     record.version == LINEAGE_VERSION
         && record.revision > 0
-        && crate::WorkspaceName::new(&record.workspace_name).is_ok()
+        && crate::WorkspaceName::new(&record.workspace_name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).is_ok()
         && parent_shape
 }
 
@@ -142,11 +142,11 @@ impl LineageRegistrationWork<'_> {
             KernelAccounting::native(original, cancellation).record_completed(copied).map_err(lineage_filesystem_failure)?;
         }
         if let Some(parent_name) = &source.parent_workspace_name {
-            let mut parent_owner = self.copy_name(parent_name)?;
+            let parent_owner = self.copy_name(parent_name)?;
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(incoming) = &mut parent_owner.1 {
+            if let Some(mut incoming) = parent_owner.1 {
                 owned.allocation.as_mut().expect("native metadata retains its name guard")
-                    .absorb(incoming).map_err(|error| lineage_filesystem_failure(error.into()))?;
+                    .absorb(&mut incoming).map_err(|error| lineage_filesystem_failure(error.into()))?;
             }
             owned.record.parent_workspace_name = Some(parent_owner.0);
         }
@@ -160,7 +160,7 @@ impl LineageRegistrationWork<'_> {
             Self::Ordinary(_) => Ok(lineage_shape_is_valid(record)),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, cancellation } => {
-                let valid_name = |name: &str| match crate::WorkspaceName::new_with_native_work(name, original, cancellation) {
+                let valid_name = |name: &str| match crate::WorkspaceName::new(name, *original, cancellation) {
                     Ok(_) => Ok(true),
                     Err(WorkspaceError::Name(crate::WorkspaceNameError::Empty
                         | crate::WorkspaceNameError::Reserved | crate::WorkspaceNameError::TooLong
@@ -362,11 +362,11 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             return Err((WorkspaceLineageError::ConflictingRegistration, None));
         }
         let generation = match control {
-            LineageRegistrationWork::Ordinary(_) => workspace.head().await
+            LineageRegistrationWork::Ordinary(_) => workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| (WorkspaceLineageError::Workspace(error), None))?,
             #[cfg(not(target_arch = "wasm32"))]
             LineageRegistrationWork::Native { original, cancellation } =>
-                workspace.head_with_native_work(original, cancellation).await
+                workspace.head(*original, cancellation).await.map_err(|error| (error, None))
                     .map_err(|(error, allocation)| (WorkspaceLineageError::Workspace(error), allocation))?,
         };
         let (workspace_name, allocation) = control.copy_name(workspace.name().as_str())?;
@@ -402,11 +402,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         crate::obs::outcome_on(
             &span,
             crate::obs::in_span(&span, async move {
-                let destination = crate::WorkspaceName::new(destination.as_ref())
-                    .map_err(WorkspaceError::from)?;
-                let generation = parent.head().await?;
+                let destination = crate::WorkspaceName::new(destination.as_ref(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+                let generation = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let child_id = parent
-                    .fork_workspace_id(destination.as_str())
+                    .volume.fs.workspace_id(destination.as_str())
                     .map_err(WorkspaceError::from)?;
                 let planned = WorkspaceLineageRecord {
                     version: LINEAGE_VERSION,
@@ -424,9 +423,9 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                     .fork(
                         destination.as_str(),
                         ForkOptions::from_generation(generation.clone(), idempotency_key),
-                    )
-                    .await?;
-                let initial_generation = child.head().await?;
+                    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+                let initial_generation = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 if child.id() != child_id {
                     return Err(WorkspaceLineageError::ConflictingRegistration);
                 }
@@ -454,7 +453,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         child: &Workspace<A, O>,
         fork_generation: crate::GenerationId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        let initial_generation = child.head().await?.id();
+        let initial_generation = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         self.register_existing_child_at_generation(
             parent,
             child,
@@ -479,15 +478,15 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         // Do not let a metadata adapter manufacture publication authority.
         // The child's authenticated initial generation must be the generation
         // root produced by an SDK fork from the claimed parent generation.
-        parent.generation(fork_generation).await?;
-        let initial = child.generation(initial_generation).await?;
+        parent.generation(fork_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let initial = child.generation(initial_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let expected_child = parent
-            .fork_workspace_id(child.name().as_str())
+            .volume.fs.workspace_id(child.name().as_str())
             .map_err(WorkspaceError::from)?;
         if child.id() != expected_child {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
         }
-        if initial.parents().await?.as_slice() != [fork_generation] {
+        if initial.parents(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_slice() != [fork_generation] {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
         }
         self.register(WorkspaceLineageRecord {
@@ -526,6 +525,18 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         workspace: WorkspaceId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
         self.required(workspace).await
+    }
+
+    /// Reopens one durable workspace and checks its exact identity.
+    pub async fn workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &self, fs: &crate::Fs<A, O>, workspace_id: WorkspaceId,
+        budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
+    ) -> Result<Workspace<A, O>, WorkspaceLineageError<S::Error>> {
+        let record = self.resolve(workspace_id).await?;
+        let workspace = fs.open_workspace(&record.workspace_name, budget, cancellation).await
+            .map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        if workspace.id() != workspace_id { return Err(WorkspaceLineageError::IncompatibleState); }
+        Ok(workspace)
     }
 
     /// Returns the direct-parent chain, nearest parent first.
@@ -692,10 +703,10 @@ impl MemoryWorkspaceLineageStore {
 
     fn compare_and_swap_engine(
         &self, workspace_id: WorkspaceId, expected_revision: u64,
-        replacement: LineageOwnedRecord, control: &mut LineageRegistrationWork<'_>,
+        replacement: LineageOwnedRecord, _control: &mut LineageRegistrationWork<'_>,
     ) -> Result<bool, LineageFailure<MemoryWorkspaceLineageStoreError>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let LineageRegistrationWork::Native { original, cancellation } = control {
+        if let LineageRegistrationWork::Native { original, cancellation } = _control {
             let allocation = replacement.allocation.as_ref()
                 .ok_or_else(|| lineage_filesystem_failure(crate::NativeTreeMaterializationError::InvalidLayout.into()))?;
             let actual = replacement.record.workspace_name.capacity().checked_add(
@@ -716,7 +727,7 @@ impl MemoryWorkspaceLineageStore {
         let mut entry_allocation = None;
         #[cfg(not(target_arch = "wasm32"))]
         if !records.contains_key(&workspace_id) {
-            if let LineageRegistrationWork::Native { original, cancellation } = control {
+            if let LineageRegistrationWork::Native { original, cancellation } = _control {
                 // Logical entry storage is known; opaque B-tree nodes are not guessed.
                 let allocation = KernelAccounting::native(original, cancellation).claim_owned(
                     std::mem::size_of::<(WorkspaceId, MemoryLineageRecord)>() as u64, 0,
@@ -802,7 +813,7 @@ mod tests {
     use crate::{Digest, Fs, WorkspaceName};
 
     fn workspace(name: &str) -> WorkspaceId {
-        WorkspaceId::derive([9; 16], &WorkspaceName::new(name).expect("valid name"))
+        WorkspaceId::derive([9; 16], &WorkspaceName::new(name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid name").value, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded workspace identity").value
     }
 
     fn generation(byte: u8) -> GenerationId {
@@ -900,12 +911,12 @@ mod tests {
     #[tokio::test]
     async fn a_durable_planned_child_is_completed_by_retry_after_a_crash() {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("root").await.expect("root");
+        let parent = fs.create_workspace("root", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("root");
         let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
         graph.register_root(&parent).await.expect("register root");
-        let parent_head = parent.head().await.expect("parent head");
+        let parent_head = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head");
         let child_id = parent
-            .fork_workspace_id("child")
+            .volume.fs.workspace_id("child")
             .expect("derived child identity");
         let planned = WorkspaceLineageRecord {
             version: LINEAGE_VERSION,
@@ -934,7 +945,7 @@ mod tests {
         assert_eq!(recovered.parent_workspace_id, Some(parent.id()));
         assert_eq!(
             recovered.initial_generation,
-            child.head().await.expect("head").id()
+            child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("head").id()
         );
     }
 }

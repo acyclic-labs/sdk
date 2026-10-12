@@ -6,11 +6,11 @@ use acyclic_harness::{
     AgentId, Capabilities, Error, IdempotencyKey, Result,
     context::{
         ContextDiscovery, ContextDiscoveryLimits, ContextDiscoveryPolicy, ContextInput,
-        ContextPipeline, ContextPlacement, ContextReloadPolicy, ContextRoot, InstructionScope,
-        parse_skill_metadata,
+        ContextPipeline, ContextPlacement, ContextReloadPolicy, ContextRoot, ContextSource,
+        InstructionScope, parse_skill_metadata,
     },
     conversation::{
-        ContentGrant, ContentResidencyVerifier, VolumeClass, VolumeOperation, VolumeOwner,
+        ContentGrant, ContentResidencyVerifier, Limits, VolumeClass, VolumeOperation, VolumeOwner,
         VolumeRef,
     },
     core::{AggregateKind, Authority, AuthorityIssuer},
@@ -40,10 +40,15 @@ fn executor(
     provider: Arc<CapturingModel>,
 ) -> Result<acyclic_harness::executor::StockExecutor> {
     Ok(acyclic_harness::executor::StockExecutor::new(
-        acyclic_harness::model::Model::new("test", "model", "1", serde_json::Value::Null)?,
+        acyclic_harness::model::Model::new(
+            "test".into(),
+            "model".into(),
+            "1".into(),
+            serde_json::Value::Null,
+        )?,
         provider,
         ContextPipeline::default().with(Arc::new(snapshot.stage(ContextPlacement::Prepend)?)),
-        acyclic_harness::tool::ToolRegistry::new(),
+        acyclic_harness::tool::ToolRegistry::default(),
     )
     .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled))
 }
@@ -84,14 +89,6 @@ impl acyclic_harness::model::ModelProvider for CapturingModel {
             },
         )]))
     }
-
-    fn reconcile<'a>(
-        &'a self,
-        _: acyclic_harness::model::ModelAttempt,
-    ) -> futures::future::BoxFuture<'a, Result<Option<Vec<acyclic_harness::model::ModelEvent>>>>
-    {
-        Box::pin(async { Ok(None) })
-    }
 }
 
 struct Fixture {
@@ -106,48 +103,62 @@ impl Fixture {
     async fn journal_volume(&self) -> Result<(VolumeRef, acyclic_harness::core::Scope)> {
         let private = VolumeRef::new(
             self.volume.provider().clone(),
-            "journal",
+            "journal".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+            &mut None,
         )?;
         self.host.create_volume(&private).await?;
-        let scope = self.issuer.root_for_agent(
-            AgentId::from_bytes([1; 16]),
-            "journal",
-            Capabilities::new([
-                private.capability(VolumeOperation::Read)?,
-                private.capability(VolumeOperation::Write)?,
-                self.volume.capability(VolumeOperation::Read)?,
-            ]),
-        );
+        let scope = self
+            .issuer
+            .issue(
+                "journal",
+                &Capabilities::new([
+                    private.capability(VolumeOperation::Read, &mut None)?,
+                    private.capability(VolumeOperation::Write, &mut None)?,
+                    self.volume.capability(VolumeOperation::Read, &mut None)?,
+                ]),
+                Some(AgentId::from_bytes([1; 16])),
+                None,
+                &mut None,
+            )
+            .expect("scope proof");
         Ok((private, scope))
     }
 
     fn journal(
         &self,
-        stream: acyclic_stream::StreamClient<acyclic_stream::MemoryStream>,
+        stream: std::sync::Arc<acyclic_stream::MemoryStream>,
         private: VolumeRef,
         scope: acyclic_harness::core::Scope,
     ) -> Result<TestJournal> {
         Ok(TestJournal::new(
             stream,
             self.host.clone(),
-            private,
-            self.issuer.verifier(),
-            scope,
+            &private,
+            &self.issuer.verifier(&mut None).expect("verifier copy"),
+            &acyclic_harness::core::SchemaRegistry::new(),
+            &scope,
             32_768,
+            None,
         )?
         .with_input_verifier(self.reader.clone()))
     }
     async fn new() -> Result<Self> {
-        let provider = ProviderRef::new("discovery", "filesystem", "2")?;
+        let provider = ProviderRef::new(
+            "discovery".into(),
+            "filesystem".into(),
+            "2".into(),
+            &mut None,
+        )?;
         let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let agent = AgentId::from_bytes([1; 16]);
         let volume = VolumeRef::new(
             provider,
-            "sources",
+            "sources".into(),
             VolumeClass::SessionShared,
             VolumeOwner::Agent(agent),
+            &mut None,
         )?;
         let issuer = AuthorityIssuer::new(
             "discovery",
@@ -157,24 +168,35 @@ impl Fixture {
                 id: "test".into(),
             },
         );
-        let scope = issuer.root_for_agent(
-            agent,
-            "owner",
-            Capabilities::new([
-                volume.capability(VolumeOperation::Write)?,
-                volume.capability(VolumeOperation::Read)?,
-                volume.directory_read_capability("")?,
-            ]),
-        );
+        let scope = issuer
+            .issue(
+                "owner",
+                &Capabilities::new([
+                    volume.capability(VolumeOperation::Write, &mut None)?,
+                    volume.capability(VolumeOperation::Read, &mut None)?,
+                    volume.directory_read_capability("", &mut None)?,
+                ]),
+                Some(agent),
+                None,
+                &mut None,
+            )
+            .expect("scope proof");
         host.create_volume(&volume).await?;
-        let writer =
-            ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-        let reader = Arc::new(FilesystemContentVerifier::new(
+        let writer = ContentGrant::verify(
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &scope,
+            &volume,
+            VolumeOperation::Write,
+            u64::MAX,
+            &mut None,
+        )?;
+        let reader = FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(),
-            scope,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &scope,
             32_768,
-        )?);
+            None,
+        )?;
         Ok(Self {
             host,
             issuer,
@@ -195,6 +217,8 @@ impl Fixture {
                 "source.md",
                 1_000_000,
                 &IdempotencyKey::new(key)?,
+                None,
+                None,
             )
             .await?;
         Ok(())
@@ -295,22 +319,25 @@ async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result
         Arc::new(live.stage(ContextPlacement::Prepend)?)
             as Arc<dyn acyclic_harness::context::ContextStage>,
     ]))?;
-    assert_ne!(old.contracts(), new.contracts());
+    assert_ne!(old.contracts(None)?, new.contracts(None)?);
     let input = ContextInput {
         input: ModelContent::Text("inspect".into()),
         selected_context: None,
         step: 0,
         prior_messages: Vec::new(),
     };
-    let old_context = old.run(&input).await?;
+    let old_context = old.run(&input, Limits::default(), None).await?;
     let recovered: acyclic_harness::context::DiscoveredContext = serde_json::from_slice(
         &serde_json::to_vec(&captured).map_err(|e| Error::Invalid(e.to_string()))?,
     )
     .map_err(|e| Error::Invalid(e.to_string()))?;
     let restarted = ContextPipeline::new([Arc::new(recovered.stage(ContextPlacement::Prepend)?)
         as Arc<dyn acyclic_harness::context::ContextStage>]);
-    assert_eq!(old_context, restarted.run(&input).await?);
-    assert_ne!(old_context, new.run(&input).await?);
+    assert_eq!(
+        old_context,
+        restarted.run(&input, Limits::default(), None).await?
+    );
+    assert_ne!(old_context, new.run(&input, Limits::default(), None).await?);
     fixture
         .put(
             "skills/inspect/SKILL.md",
@@ -319,7 +346,7 @@ async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result
         )
         .await?;
     assert!(declaration.capture(fixture.reader.as_ref()).await.is_err());
-    assert_eq!(old_context, old.run(&input).await?);
+    assert_eq!(old_context, old.run(&input, Limits::default(), None).await?);
     Ok(())
 }
 
@@ -354,23 +381,32 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
         Err(Error::Invalid(_))
     ));
     declaration.limits.entries = 64;
-    let scope = fixture.issuer.root_for_agent(
-        AgentId::from_bytes([1; 16]),
-        "denied",
-        Capabilities::default(),
-    );
+    let scope = fixture
+        .issuer
+        .issue(
+            "denied",
+            &Capabilities::default(),
+            Some(AgentId::from_bytes([1; 16])),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let denied = FilesystemContentVerifier::new(
         fixture.host.clone(),
-        fixture.issuer.verifier(),
-        scope,
+        &fixture.issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
         32_768,
+        None,
     )?;
     assert!(matches!(
-        declaration.capture(&denied).await,
+        declaration.capture(denied.as_ref()).await,
         Err(Error::Unauthorized(_))
     ));
     declaration.policy.instruction_names.clear();
-    assert_eq!(declaration.capture(&denied).await?, Default::default());
+    assert_eq!(
+        declaration.capture(denied.as_ref()).await?,
+        Default::default()
+    );
     declaration
         .policy
         .instruction_names
@@ -437,7 +473,21 @@ async fn malformed_frontmatter_has_explicit_outcomes() -> Result<()> {
         .first_mut()
         .ok_or_else(|| Error::NotFound("forged skill".into()))?
         .name = "Invalid".into();
-    assert!(forged.messages().is_err());
+    assert!(
+        forged
+            .load(
+                &ContextInput {
+                    input: ModelContent::Text("inspect".into()),
+                    selected_context: None,
+                    step: 0,
+                    prior_messages: Vec::new(),
+                },
+                Limits::default(),
+                None,
+            )?
+            .await
+            .is_err()
+    );
     forged
         .skills
         .first_mut()
@@ -541,7 +591,7 @@ async fn named_sources_with_wrong_file_kind_fail_explicitly() -> Result<()> {
 #[tokio::test]
 async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
     use acyclic_harness::{OperationId, executor::TurnInput};
-    use acyclic_stream::{MemoryStream, StreamClient};
+    use acyclic_stream::MemoryStream;
     let fixture = Fixture::new().await?;
     fixture
         .put("AGENTS.md", b"original instructions", "root")
@@ -559,7 +609,7 @@ async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
     let declaration = fixture.declaration();
     let snapshot = declaration.capture(fixture.reader.as_ref()).await?;
     let (private, scope) = fixture.journal_volume().await?;
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let journal = fixture.journal(stream.clone(), private.clone(), scope.clone())?;
     let provider = Arc::new(CapturingModel::default());
     let original_executor = executor(snapshot.clone(), provider.clone())?;
@@ -604,7 +654,8 @@ async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
             .source
             .read(fixture.reader.as_ref())
             .await?
-            .1,
+            .1
+            .as_ref(),
         b"---\nname: inspect\ndescription: Inspect files\n---\nSECRET BODY"
     );
     Ok(())
@@ -626,7 +677,7 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
     let mut source = first_skill(&captured)?.source.clone();
     source.generation = acyclic_harness::resources::GenerationRef::new(
         fixture.volume.provider().clone(),
-        [255; 32],
+        [255; 32].into(),
         Some("missing".into()),
     )?;
     assert!(source.read(fixture.reader.as_ref()).await.is_err());
@@ -638,8 +689,9 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
                 &source.root.directory,
                 &source.path,
                 &source.generation,
-                256
-            )
+                256,
+                None,
+            )?
             .await
             .is_err()
     );

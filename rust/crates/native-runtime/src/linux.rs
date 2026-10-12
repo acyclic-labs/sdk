@@ -7,7 +7,7 @@
 
 use std::fs::File;
 use std::io;
-use std::os::unix::fs::{FileExt, MetadataExt};
+use std::os::unix::fs::FileExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -24,40 +24,6 @@ use compio_driver::{
 
 const IO_ENTRIES: usize = 16;
 const MAX_IO_BYTES: usize = 1024 * 1024;
-
-const MAX_TRACKED_FILE_IDENTITIES: usize = 4_096;
-
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(super) struct FileIdentity {
-    device: u64,
-    inode: u64,
-}
-
-pub(super) fn file_identity_capacity() -> usize {
-    static CAPACITY: OnceLock<usize> = OnceLock::new();
-    *CAPACITY.get_or_init(|| {
-        let mut limit = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        // SAFETY: `limit` is a valid writable rlimit structure.
-        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
-            return 128;
-        }
-        usize::try_from(limit.rlim_cur)
-            .unwrap_or(usize::MAX)
-            .saturating_div(4)
-            .clamp(1, MAX_TRACKED_FILE_IDENTITIES)
-    })
-}
-
-pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
-    let metadata = file.metadata()?;
-    Ok(FileIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    })
-}
 
 struct SubmittedWindowUnwindFence(bool);
 
@@ -108,43 +74,49 @@ pub(super) fn uncertain_completion(error: io::Error) -> io::Error {
 }
 
 pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
-    validate_io_range(offset, destination.len(), "read")?;
+    validate_io_range(offset, destination.len())?;
     read_at_validated(file, offset, destination)
 }
 
 #[allow(unsafe_code)]
-pub(super) fn read_at_validated(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
+pub(super) fn read_at_validated(
+    file: &File,
+    offset: u64,
+    destination: &mut [u8],
+) -> io::Result<usize> {
     use std::os::fd::AsRawFd as _;
     let length = destination.len().min(MAX_IO_BYTES);
     // SAFETY: validation precedes this call; the descriptor and writable buffer
     // remain live for the single syscall, which never exceeds the buffer.
     let result = unsafe {
-        libc::pread(file.as_raw_fd(), destination.as_mut_ptr().cast(), length, offset as libc::off_t)
+        libc::pread(
+            file.as_raw_fd(),
+            destination.as_mut_ptr().cast(),
+            length,
+            offset as libc::off_t,
+        )
     };
-    if result < 0 { Err(io::Error::last_os_error()) } else { Ok(result as usize) }
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(result as usize)
+    }
 }
 
 pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
-    validate_io_range(offset, bytes.len(), "write")?;
+    validate_io_range(offset, bytes.len())?;
     file.write_all_at(bytes, offset)
-}
-
-#[allow(unsafe_code)]
-pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
-    use std::os::fd::AsRawFd as _;
-    let size = libc::off_t::try_from(size)
-        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    // SAFETY: ftruncate only acts on the live descriptor.
-    if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 { Ok(()) }
-    else { Err(io::Error::last_os_error()) }
 }
 
 #[allow(unsafe_code)]
 pub(super) fn sync_once(file: &File) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     // SAFETY: fsync only acts on the live descriptor.
-    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 { Ok(()) }
-    else { Err(io::Error::last_os_error()) }
+    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 fn chunk_owned_writes(writes: Vec<OwnedWrite>) -> impl Iterator<Item = io::Result<OwnedWrite>> {
@@ -172,9 +144,11 @@ fn chunk_owned_writes(writes: Vec<OwnedWrite>) -> impl Iterator<Item = io::Resul
         })
 }
 
-pub(super) fn validate_io_range(offset: u64, length: usize, _operation: &str) -> io::Result<()> {
+pub(super) fn validate_io_range(offset: u64, length: usize) -> io::Result<()> {
     let length = u64::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?;
-    let end = offset.checked_add(length).ok_or(io::ErrorKind::InvalidInput)?;
+    let end = offset
+        .checked_add(length)
+        .ok_or(io::ErrorKind::InvalidInput)?;
     if offset > libc::off_t::MAX as u64 || end > libc::off_t::MAX as u64 {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -204,82 +178,58 @@ struct OwnerPool {
     cursor: AtomicUsize,
 }
 
-struct OwnerFactory {
-    pool: OnceLock<OwnerPool>,
-    initializing: Mutex<()>,
-}
-
-impl OwnerFactory {
-    const fn new() -> Self {
-        Self {
-            pool: OnceLock::new(),
-            initializing: Mutex::new(()),
-        }
+fn owner_pool() -> io::Result<&'static OwnerPool> {
+    static POOL: OnceLock<OwnerPool> = OnceLock::new();
+    static INITIALIZING: Mutex<()> = Mutex::new(());
+    if let Some(pool) = POOL.get() {
+        return Ok(pool);
     }
-
-    fn get_or_start(&self) -> io::Result<&OwnerPool> {
-        if let Some(pool) = self.pool.get() {
-            return Ok(pool);
-        }
-        let _lock = self
-            .initializing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(pool) = self.pool.get() {
-            return Ok(pool);
-        }
-        let mut senders = Vec::with_capacity(OWNER_THREADS);
-        let mut threads = Vec::with_capacity(OWNER_THREADS);
-        for index in 0..OWNER_THREADS {
-            let (sender, receiver) = mpsc::sync_channel(OWNER_MAILBOX);
-            match std::thread::Builder::new()
-                .name(format!("acyclic-compio-{index}"))
-                .spawn(move || {
-                    if std::panic::catch_unwind(|| Owner::new().run(&receiver)).is_err() {
+    let _lock = INITIALIZING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(pool) = POOL.get() {
+        return Ok(pool);
+    }
+    let mut senders = Vec::with_capacity(OWNER_THREADS);
+    let mut threads = Vec::with_capacity(OWNER_THREADS);
+    for index in 0..OWNER_THREADS {
+        let (sender, receiver) = mpsc::sync_channel(OWNER_MAILBOX);
+        match std::thread::Builder::new()
+            .name(format!("acyclic-compio-{index}"))
+            .spawn(move || {
+                if std::panic::catch_unwind(|| Owner::new().run(&receiver)).is_err() {
+                    std::process::abort();
+                }
+            }) {
+            Ok(thread) => {
+                senders.push(sender);
+                threads.push(thread);
+            }
+            Err(error) => {
+                for sender in senders {
+                    let _ = sender.send(OwnerJob::Stop);
+                }
+                for thread in threads {
+                    if thread.join().is_err() {
                         std::process::abort();
                     }
-                }) {
-                Ok(thread) => {
-                    senders.push(sender);
-                    threads.push(thread);
                 }
-                Err(error) => {
-                    for sender in senders {
-                        let _ = sender.send(OwnerJob::Stop);
-                    }
-                    for thread in threads {
-                        if thread.join().is_err() {
-                            std::process::abort();
-                        }
-                    }
-                    return Err(error);
-                }
+                return Err(error);
             }
         }
-        Ok(self.pool.get_or_init(|| OwnerPool {
-            senders,
-            cursor: AtomicUsize::new(0),
-        }))
     }
-}
-
-fn owner_pool() -> io::Result<&'static OwnerPool> {
-    static FACTORY: OwnerFactory = OwnerFactory::new();
-    FACTORY.get_or_start()
+    Ok(POOL.get_or_init(|| OwnerPool {
+        senders,
+        cursor: AtomicUsize::new(0),
+    }))
 }
 
 impl OwnerPool {
     fn submit(&self, mut job: OwnerJob) -> io::Result<()> {
         let count = self.senders.len();
-        if count == 0 {
-            return Err(io::Error::other("missing native I/O owners"));
-        }
         let start = self.cursor.fetch_add(1, Ordering::Relaxed) % count;
         for index in 0..count {
-            let sender = self
-                .senders
-                .get((start + index) % count)
-                .ok_or_else(|| io::Error::other("missing native I/O owner"))?;
+            let sender = &self.senders[(start + index) % count];
             match sender.try_send(job) {
                 Ok(()) => return Ok(()),
                 Err(mpsc::TrySendError::Full(returned)) => job = returned,
@@ -290,9 +240,7 @@ impl OwnerPool {
                 }
             }
         }
-        self.senders
-            .get(start)
-            .ok_or_else(|| io::Error::other("missing native I/O owner"))?
+        self.senders[start]
             .send(job)
             .map_err(|_| io::Error::other("native I/O owner stopped before admission"))
     }
@@ -304,7 +252,7 @@ pub(super) fn submit_read(
     finish: ReadFinish,
 ) -> io::Result<()> {
     for read in &reads {
-        validate_io_range(read.offset, read.length, "batch read")?;
+        validate_io_range(read.offset, read.length)?;
     }
     owner_pool()?.submit(OwnerJob::Read(file, reads, finish))
 }
@@ -315,7 +263,7 @@ pub(super) fn submit_write(
     finish: WriteFinish,
 ) -> io::Result<()> {
     for write in &writes {
-        validate_io_range(write.offset, write.bytes.len(), "batch write")?;
+        validate_io_range(write.offset, write.bytes.len())?;
     }
     owner_pool()?.submit(OwnerJob::Write(file, writes, finish))
 }
@@ -442,12 +390,15 @@ impl Owner {
         uncertain_completion(error)
     }
 
-    fn read_batch(&mut self, file: &Arc<NativeFilePayload>, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+    fn read_batch(
+        &mut self,
+        file: &Arc<NativeFilePayload>,
+        reads: &[OwnedRead],
+    ) -> io::Result<Vec<Bytes>> {
         let mut output = Vec::with_capacity(reads.len());
         let mut remaining = reads;
         while let Some(first) = remaining.first() {
-            // Independent small reads share one bounded SQ window. Large
-            // reads retain the single-key, zero-copy fast path in read_one.
+            // Small reads share a queue window; large reads retain one key per window.
             let parallel = remaining
                 .iter()
                 .take(IO_ENTRIES)
@@ -461,7 +412,7 @@ impl Owner {
             let batch = remaining
                 .get(..parallel)
                 .unwrap_or_else(|| std::process::abort());
-            output.extend(self.read_small_batch(file, batch)?);
+            output.extend(self.read_window(file, batch)?);
             remaining = remaining
                 .get(parallel..)
                 .unwrap_or_else(|| std::process::abort());
@@ -469,7 +420,7 @@ impl Owner {
         Ok(output)
     }
 
-    fn read_small_batch(
+    fn read_window(
         &mut self,
         file: &Arc<NativeFilePayload>,
         reads: &[OwnedRead],
@@ -562,62 +513,18 @@ impl Owner {
                 }
                 continue;
             }
-            let lengths = owned_read_window_lengths(read.length - count);
-            let mut results = vec![None; lengths.len()];
-            let mut pending = Vec::with_capacity(lengths.len());
-            let mut unwind_fence = SubmittedWindowUnwindFence::new();
-            let mut first_error = None;
-            let mut push_error = None;
-            let driver = self
-                .driver
-                .as_mut()
-                .unwrap_or_else(|| std::process::abort());
-            let mut offset_in_window = 0_usize;
-            for (index, length) in lengths.iter().copied().enumerate() {
-                let op = ReadAt::new(
-                    SharedFd::new(Arc::clone(file)),
-                    read.offset + (count + offset_in_window) as u64,
-                    compio_buf::IoBuf::slice(Vec::with_capacity(length), ..length),
-                );
-                match driver.push(op) {
-                    PushEntry::Ready(result) => {
-                        let (status, operation) = result.into_parts();
-                        let count = match status {
-                            Ok(count) => count,
-                            Err(error) => {
-                                push_error = Some(error);
-                                break;
-                            }
-                        };
-                        let slot = results
-                            .get_mut(index)
-                            .unwrap_or_else(|| std::process::abort());
-                        if let Err(error) = record_owned_read(
-                            compio_buf::BufResult(Ok(count), operation),
-                            length,
-                            slot,
-                        ) {
-                            first_error.get_or_insert(error);
-                        }
-                    }
-                    PushEntry::Pending(key) => pending.push((index, key)),
-                }
-                offset_in_window += length;
-            }
-            if let Some(error) = self.drain_read_window(pending, &lengths, &mut results)? {
-                first_error.get_or_insert(error);
-            }
-            if let Some(error) = push_error {
-                unwind_fence.disarm();
-                self.driver = None;
-                return Err(error);
-            }
-            if let Some(error) = first_error {
-                unwind_fence.disarm();
-                return Err(error);
-            }
-            unwind_fence.disarm();
-            let (window, eof) = assemble_owned_read_window(lengths, results)?;
+            let length = (read.length - count).min(MAX_IO_BYTES * IO_ENTRIES);
+            let window = self
+                .read_window(
+                    file,
+                    &[OwnedRead {
+                        offset: read.offset + count as u64,
+                        length,
+                    }],
+                )?
+                .pop()
+                .ok_or_else(|| io::Error::other("missing native read completion"))?;
+            let eof = window.len() < length;
             count += window.len();
             if bytes.is_empty() && (eof || count == read.length) {
                 return Ok(window);
@@ -693,7 +600,11 @@ impl Owner {
         Ok(first_error)
     }
 
-    fn write_batch(&mut self, file: &Arc<NativeFilePayload>, writes: Vec<OwnedWrite>) -> io::Result<()> {
+    fn write_batch(
+        &mut self,
+        file: &Arc<NativeFilePayload>,
+        writes: Vec<OwnedWrite>,
+    ) -> io::Result<()> {
         let mut chunks = chunk_owned_writes(writes);
         loop {
             let window: Vec<_> = chunks
@@ -793,41 +704,6 @@ impl Owner {
     }
 }
 
-fn owned_read_window_lengths(remaining: usize) -> Vec<usize> {
-    // One owned request per 16 MiB window avoids per-key completion overhead.
-    // The window remains within the same retirement memory bound as 16 x 1 MiB.
-    vec![remaining.min(MAX_IO_BYTES * IO_ENTRIES)]
-}
-
-fn assemble_owned_read_window(
-    lengths: Vec<usize>,
-    results: Vec<Option<Bytes>>,
-) -> io::Result<(Bytes, bool)> {
-    if results.len() == 1 {
-        let length = lengths
-            .first()
-            .copied()
-            .ok_or_else(|| io::Error::other("missing native read length"))?;
-        let chunk = results
-            .into_iter()
-            .next()
-            .flatten()
-            .ok_or_else(|| io::Error::other("missing native read completion"))?;
-        let eof = chunk.len() < length;
-        return Ok((chunk, eof));
-    }
-    let mut output = Vec::new();
-    let mut eof = false;
-    for (length, result) in lengths.into_iter().zip(results) {
-        let chunk = result.ok_or_else(|| io::Error::other("missing native read completion"))?;
-        if !eof {
-            output.extend_from_slice(&chunk);
-            eof = chunk.len() < length;
-        }
-    }
-    Ok((Bytes::from(output), eof))
-}
-
 fn finish_owned_write_window(
     file: &File,
     window: Vec<OwnedWrite>,
@@ -885,128 +761,6 @@ fn record_owned_read(
 mod tests {
     use super::*;
 
-
-
-    #[test]
-    fn compio_parallel_read_window_preserves_order_empty_and_eof() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = Arc::new(NativeFilePayload::unmetered(
-            std::fs::OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(temporary.path().join("parallel-reads"))?,
-        ));
-        let mut requests = Vec::new();
-        for index in 0..16_usize {
-            let offset = ((index * 7) % 16) * 8192;
-            file.write_all_at(
-                &vec![u8::try_from(index).unwrap_or_default(); 8192],
-                offset as u64,
-            )?;
-            requests.push(OwnedRead {
-                offset: offset as u64,
-                length: 8192,
-            });
-        }
-        requests.push(OwnedRead {
-            offset: 0,
-            length: 0,
-        });
-        requests.push(OwnedRead {
-            offset: 16 * 8192,
-            length: 8192,
-        });
-        let (sender, receiver) = mpsc::sync_channel(1);
-        submit_read(
-            file,
-            requests,
-            Box::new(move |result| {
-                let _ = sender.send(result);
-            }),
-        )?;
-        let actual = receiver
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        for (index, bytes) in actual.iter().take(16).enumerate() {
-            assert_eq!(bytes.len(), 8192);
-            assert!(
-                bytes
-                    .iter()
-                    .all(|byte| *byte == u8::try_from(index).unwrap_or_default())
-            );
-        }
-        assert!(actual.get(16).is_some_and(Bytes::is_empty));
-        assert!(actual.get(17).is_some_and(Bytes::is_empty));
-        Ok(())
-    }
-
-    #[test]
-    fn compio_owner_drains_multiple_submission_windows_and_eof() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let file = Arc::new(NativeFilePayload::unmetered(
-            std::fs::OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(temporary.path().join("owned-windows"))?,
-        ));
-        let writes = (0..32_u64)
-            .map(|offset| OwnedWrite {
-                offset,
-                bytes: Bytes::from(vec![u8::try_from(offset).unwrap_or_default()]),
-            })
-            .collect();
-        let (sent, received) = mpsc::sync_channel(1);
-        submit_write(
-            Arc::clone(&file),
-            writes,
-            Box::new(move |result| {
-                let _ = sent.send(result);
-            }),
-        )?;
-        received
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        let (sent, received) = mpsc::sync_channel(1);
-        submit_read(
-            Arc::clone(&file),
-            vec![OwnedRead {
-                offset: 0,
-                length: 64,
-            }],
-            Box::new(move |result| {
-                let _ = sent.send(result);
-            }),
-        )?;
-        let result = received
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        let first = result
-            .first()
-            .ok_or_else(|| io::Error::other("missing first read"))?;
-        assert_eq!(first.len(), 32);
-        assert_eq!(first.as_ref(), &(0..32_u8).collect::<Vec<_>>());
-
-        file.set_len(17 * MAX_IO_BYTES as u64)?;
-        let (sent, received) = mpsc::sync_channel(1);
-        submit_read(
-            file,
-            vec![OwnedRead {
-                offset: 0,
-                length: 18 * MAX_IO_BYTES,
-            }],
-            Box::new(move |result| {
-                let _ = sent.send(result);
-            }),
-        )?;
-        let result = received
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)??;
-        assert_eq!(result.first().map(Bytes::len), Some(17 * MAX_IO_BYTES));
-        Ok(())
-    }
-
     #[test]
     fn compio_poll_failure_retains_key_and_allows_unrelated_progress() -> io::Result<()> {
         let mut owner = Owner::new();
@@ -1014,13 +768,14 @@ mod tests {
             return Ok(());
         }
         let temporary = tempfile::tempdir()?;
-        let affected = Arc::new(NativeFilePayload::unmetered(
-            std::fs::OpenOptions::new()
+        let affected = Arc::new(NativeFilePayload {
+            file: std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create_new(true)
                 .open(temporary.path().join("affected"))?,
-        ));
+            _allocation: None,
+        });
         affected.set_len(MAX_IO_BYTES as u64)?;
         let op = ReadAt::new(
             SharedFd::new(Arc::clone(&affected)),
@@ -1044,13 +799,14 @@ mod tests {
         assert_eq!(owner.retired.len(), 1);
         assert!(!owner.ensure_driver()?);
 
-        let unrelated = Arc::new(NativeFilePayload::unmetered(
-            std::fs::OpenOptions::new()
+        let unrelated = Arc::new(NativeFilePayload {
+            file: std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create_new(true)
                 .open(temporary.path().join("unrelated"))?,
-        ));
+            _allocation: None,
+        });
         owner.write_batch(
             &unrelated,
             vec![OwnedWrite {
@@ -1094,13 +850,14 @@ mod tests {
         };
         if std::env::var_os(CHILD).is_some() {
             let temporary = tempfile::tempdir()?;
-            let file = Arc::new(NativeFilePayload::unmetered(
-                std::fs::OpenOptions::new()
+            let file = Arc::new(NativeFilePayload {
+                file: std::fs::OpenOptions::new()
                     .read(true)
                     .write(true)
                     .create_new(true)
                     .open(temporary.path().join("pending"))?,
-            ));
+                _allocation: None,
+            });
             file.set_len(MAX_IO_BYTES as u64)?;
             let op = ReadAt::new(
                 SharedFd::new(file),

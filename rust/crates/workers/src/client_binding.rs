@@ -94,9 +94,6 @@ async fn run<T>(
     token: CancellationToken,
     deadline: Option<u32>,
 ) -> Result<T, Failure> {
-    if token.is_cancelled() {
-        return Err(Failure::cancelled());
-    }
     let expire = async {
         match deadline {
             None => std::future::pending::<()>().await,
@@ -114,32 +111,17 @@ async fn run<T>(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-type Backend = crate::grpc::Client;
-#[cfg(target_arch = "wasm32")]
-type Backend = wire::workers_service_client::WorkersServiceClient<
-    tonic::service::interceptor::InterceptedService<tonic_web_wasm_client::Client, BrowserAuth>,
->;
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone)]
-struct BrowserAuth(tonic::metadata::MetadataValue<tonic::metadata::Ascii>);
-#[cfg(target_arch = "wasm32")]
-impl tonic::service::Interceptor for BrowserAuth {
-    fn call(
-        &mut self,
-        mut request: tonic::Request<()>,
-    ) -> Result<tonic::Request<()>, tonic::Status> {
-        request
-            .metadata_mut()
-            .insert("authorization", self.0.clone());
-        Ok(request)
-    }
-}
-
 /// Connected source-owned Workers transport, cloned per unary RPC.
 pub struct Client {
-    inner: Backend,
+    #[cfg(not(target_arch = "wasm32"))]
+    inner: crate::grpc::Client,
+    #[cfg(target_arch = "wasm32")]
+    inner: wire::workers_service_client::WorkersServiceClient<
+        tonic::service::interceptor::InterceptedService<
+            tonic_web_wasm_client::Client,
+            crate::BearerAuth,
+        >,
+    >,
     maximum: usize,
     deadline: Option<u32>,
     metadata: tonic::metadata::MetadataMap,
@@ -169,9 +151,9 @@ impl Client {
         run(
             async move {
                 #[cfg(not(target_arch = "wasm32"))]
-                let inner = crate::grpc::connect_with_ca_certificate(
+                let inner = crate::grpc::connect(
                     &options.endpoint,
-                    &options.token,
+                    options.authorization,
                     options.ca.as_ref().map(|ca| ca.as_bytes()),
                 )
                 .await
@@ -208,7 +190,7 @@ impl Client {
                     );
                     wire::workers_service_client::WorkersServiceClient::with_interceptor(
                         transport,
-                        BrowserAuth(options.authorization),
+                        options.authorization,
                     )
                 };
                 Ok(Self {
@@ -228,13 +210,10 @@ impl Client {
 
     /// Actual native/browser transport selected by the compilation target.
     pub const fn transport(&self) -> &'static str {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            "grpc"
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
+        if cfg!(target_arch = "wasm32") {
             "grpc-web"
+        } else {
+            "grpc"
         }
     }
 
@@ -288,7 +267,9 @@ macro_rules! typed_methods {
             #[doc = concat!("Execute the canonical ", $name, " operation with Rust semantic types.")]
             pub async fn $method(&self, input: domain::$input, options: WorkersCallOptions, token: CancellationToken) -> Result<domain::$output, Failure> {
                 if token.is_cancelled() { return Err(Failure::cancelled()); }
-                let input = checked_request::<wire::$input, domain::$input>(wire::$input::from(input), $validate)?;
+                let input = wire::$input::from(input);
+                let admission: Result<(), crate::ContractError> = ($validate)(&input);
+                admission.map_err(|error| Failure::local("invalid_argument", error))?;
                 if input.encoded_len() > self.maximum { return Err(Failure::local("request_too_large", "request exceeds message ceiling")); }
                 let (deadline, metadata) = self.parameters(options)?;
                 let mut client = self.inner.clone();
@@ -313,18 +294,6 @@ where
     D::Error: std::fmt::Display,
 {
     let wire = W::decode(bytes).map_err(|error| Failure::local("invalid_argument", error))?;
-    checked_request::<W, D>(wire, validate)
-}
-
-fn checked_request<W, D>(
-    wire: W,
-    validate: impl FnOnce(&W) -> Result<(), crate::ContractError>,
-) -> Result<W, Failure>
-where
-    W: From<D>,
-    D: TryFrom<W>,
-    D::Error: std::fmt::Display,
-{
     validate(&wire).map_err(|error| Failure::local("invalid_argument", error))?;
     D::try_from(wire)
         .map(W::from)

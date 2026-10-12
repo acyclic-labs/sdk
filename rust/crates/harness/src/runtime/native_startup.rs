@@ -9,12 +9,11 @@ pub(super) type StartupIo<'a> = Option<&'a ()>;
 
 pub(super) fn error(
     io: StartupIo<'_>, code: crate::wire::ErrorCode, reason: &'static str,
-    ordinary: impl FnOnce() -> Error,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if io.is_some() { return Error::NativeBoundary { code, reason }; }
-    let _ = (io, code, reason);
-    ordinary()
+    let _ = io;
+    scope_metadata_boundary(&None, code, reason)
 }
 
 pub(super) fn item(io: StartupIo<'_>, bytes: usize) -> Result<()> {
@@ -40,24 +39,16 @@ pub(super) fn text(value: &str, io: StartupIo<'_>) -> Result<String> {
     Ok(value.to_owned())
 }
 
-pub(super) fn key(value: &(String, String), io: StartupIo<'_>) -> Result<(String, String)> {
-    Ok((text(&value.0, io)?, text(&value.1, io)?))
-}
-
 pub(super) fn content_write(
     content: Option<&ContentBindings>, scope: &RuntimeScope, io: StartupIo<'_>,
 ) -> Result<bool> {
     let Some(writer) = content.and_then(|binding| binding.writer.as_ref()) else { return Ok(false); };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io {
-        let work = io.original_native_work().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "startup requires its original native work",
-        })?;
-        let grant = writer.volume().capability_with_native_work(VolumeOperation::Write, work)?;
-        return Ok(scope.grants.contains(&grant.0));
+        let grant = writer.volume().capability(VolumeOperation::Write, &mut Some(&mut io.history_io()))?;
+        return Ok(scope.grants.contains(&grant));
     }
     let _ = io;
-    Ok(writer.volume().capability(VolumeOperation::Write)
+    Ok(writer.volume().capability(VolumeOperation::Write, &mut None)
         .is_ok_and(|grant| scope.grants.contains(&grant)))
 }

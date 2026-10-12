@@ -11,7 +11,7 @@ async fn fork_preparation_outbox_replay_binds_actual_report_and_original_request
     let created = fixture.create_filesystem_child().await?;
     let operation = created.report.request.operation_id;
     let bytes = crate::contract::canonical_json_bytes(&created.request.payload)?;
-    let payload = fixture.host.payloads.stage(operation, "recursive-request", &bytes).await?;
+    let payload = fixture.host.payloads.stage(operation, "recursive-request", &bytes, None)?.await?;
     let command = WorkflowCommand { operation_id: operation,
         kind: FORK_PREPARE_TASK_COMMAND_KIND.into(), payload };
     let mut input = created.request.clone();
@@ -76,12 +76,12 @@ async fn fork_preparation_outbox_replay_binds_actual_report_and_original_request
     assert!(reopened.transition(&admitted.state, &uncertain).is_err());
 
     let preparation_task = TaskId::from_bytes([83;16]);
-    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(preparation_task).await? else {
+    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(preparation_task, &mut None).await? else {
         return Err(Error::NotFound("original preparation lease".into()));
     };
     let owner = Arc::new(fixture.host.journal_owner(preparation_task, (&lease.reservation).into()).await?);
-    assert!(owner.resource_preparation(input).await.is_err());
-    assert!(owner.resource_preparation(created.request).await.is_ok());
+    assert!(owner.resource_preparation(input, &mut None).await.is_err());
+    assert!(owner.resource_preparation(created.request, &mut None).await.is_ok());
     Ok(())
 }
 
@@ -91,7 +91,7 @@ async fn chosen_child_default_source_and_foreign_project_do_not_import_transcrip
     let created = fixture.create_filesystem_child().await?;
     let original = created.report.request;
     let arguments = ForkToolArguments { id: original.child_agent, msg: "review exact source".into(), source: None };
-    assert_eq!(arguments.source_task(fixture.root, fixture.root_scope.limits())?, fixture.root);
+    assert_eq!(arguments.source_task(fixture.root, fixture.root_scope.limits(), &mut None)?, fixture.root);
     let project = original.selections.iter().find_map(|selection| match &selection.revision {
         crate::fork::ResourceRevision::Project { volume, generation } => Some((volume.clone(), generation.clone())),
         _ => None,
@@ -101,8 +101,8 @@ async fn chosen_child_default_source_and_foreign_project_do_not_import_transcrip
     assert_eq!(request, original);
     let selected = TaskId::from_bytes([205;16]);
     let explicit = ForkToolArguments { source: Some(selected), ..arguments.clone() };
-    let foreign = VolumeRef::new(fixture.filesystem_provider.clone(), "authorized-review-source", VolumeClass::Project,
-        VolumeOwner::Project("created-project".into()))?;
+    let foreign = VolumeRef::new(fixture.filesystem_provider.clone(), "authorized-review-source".into(), VolumeClass::Project,
+        VolumeOwner::Project("created-project".into()), &mut None)?;
     let generation = fixture.filesystem.create_volume(&foreign).await?.generation;
     explicit.select_project(fixture.root, selected, foreign, generation, fixture.root_scope.limits(), &mut request)?;
     assert_eq!(request.parent, original.parent);
@@ -140,8 +140,8 @@ async fn authenticated_output_selection_preserves_child_authority_and_rejects_ro
     assert!(Arc::ptr_eq(&binding.reader, &same.reader));
     assert!(Arc::ptr_eq(binding.writer.as_ref().ok_or_else(|| Error::Invalid("created writer missing".into()))?,
         same.writer.as_ref().ok_or_else(|| Error::Invalid("selected writer missing".into()))?));
-    let root_volume = VolumeRef::new(fixture.filesystem_provider.clone(), "scheduler",
-        VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80;16])))?;
+    let root_volume = VolumeRef::new(fixture.filesystem_provider.clone(), "scheduler".into(),
+        VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80;16])), &mut None)?;
     assert!(selected.created_content_bindings(&root_volume).is_err());
     assert!(context.clone().with_output_volume(&root_volume).is_err());
     let root = fixture.harness.durable_context(fixture.root, fixture.root_lease.operation.operation_id).await?;

@@ -307,7 +307,6 @@ pub(crate) struct ControlPlane {
     pub(crate) config_root: PathBuf,
     pub(crate) fs: LocalFs,
     pub(crate) store: LocalCoreStateStore,
-    pub(crate) distributed: LocalDistributedFs,
     pub(crate) shared_roots: SharedRootRegistry,
     pub(crate) state: AdapterState,
     pub(crate) roots: BTreeMap<String, LocalLazyWorkspace>,
@@ -395,7 +394,6 @@ impl ControlPlane {
         let mut control = Self {
             data,
             config_root,
-            distributed: DistributedFs::new(fs.clone(), store.clone()),
             fs,
             store,
             shared_roots,
@@ -453,9 +451,16 @@ impl ControlPlane {
     pub(crate) fn retain_original_input(
         &mut self,
         mut incoming: acyclic_fs::NativeAllocation,
-    ) -> Result<(), (acyclic_fs::NativeTreeMaterializationError, acyclic_fs::NativeAllocation)> {
+    ) -> Result<
+        (),
+        (
+            acyclic_fs::NativeTreeMaterializationError,
+            acyclic_fs::NativeAllocation,
+        ),
+    > {
         if let Some(held) = self.native_input_custody.as_mut() {
-            held.absorb(&mut incoming).map_err(|cause| (cause, incoming))
+            held.absorb(&mut incoming)
+                .map_err(|cause| (cause, incoming))
         } else {
             self.native_input_custody = Some(incoming);
             Ok(())
@@ -524,9 +529,7 @@ impl ControlPlane {
         if self.roots.is_empty() {
             return Err("root workspace is unavailable".to_owned());
         }
-        let root_context = self
-            .distributed
-            .contexts()
+        let root_context = WorkspaceContextRegistry::new(self.store.clone())
             .resolve(WorkspaceContextId::from_bytes(self.state.root_context_id))
             .await
             .map_err(display)?;
@@ -534,7 +537,10 @@ impl ControlPlane {
             .roots
             .into_iter()
             .map(|(root_id, root)| {
-                let binding = self.state.roots.get(&root_key(root_id))
+                let binding = self
+                    .state
+                    .roots
+                    .get(&root_key(root_id))
                     .ok_or_else(|| "publication has no original root binding".to_owned())?;
                 let creation = binding.created()?;
                 creation.validate()?;
@@ -546,13 +552,15 @@ impl ControlPlane {
                     PhysicalRoot {
                         workspace_id: root.workspace_id,
                         path: root.source_path,
-                        source_root_identity: acyclic_fs::NativeRootIdentity::from_bytes(creation.native_root_identity),
+                        source_root_identity: acyclic_fs::NativeRootIdentity::from_bytes(
+                            creation.native_root_identity,
+                        ),
                     },
                 ))
             })
             .collect::<Result<BTreeMap<_, _>, String>>()?;
         let mut publisher = MaterializingWorkspaceMultiRootPublisher::new(
-            self.distributed.clone(),
+            (self.fs.clone(), WorkspaceGraph::new(self.store.clone())),
             PluginRootMaterializer {
                 state: self.store.clone(),
                 physical_roots,
@@ -567,7 +575,8 @@ impl ControlPlane {
             publisher =
                 publisher.with_root_merge_drivers(root_id, merge_drivers_for(workspace).await?);
         }
-        Ok(self.distributed.publications(
+        Ok(MultiRootPublicationCoordinator::new(
+            self.store.clone(),
             publisher,
             LineageMultiRootPublicationAuthorizer::new(self.store.clone()),
         ))
@@ -660,23 +669,43 @@ impl ControlPlane {
                 .get(root_id)
                 .copied()
                 .ok_or_else(|| "published root generation is unavailable".to_owned())?;
-            let workspace = self
-                .distributed
-                .workspace(root.target_workspace_id)
+            let workspace = WorkspaceGraph::new(self.store.clone())
+                .workspace(
+                    &self.fs,
+                    root.target_workspace_id,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map_err(display)?;
             let published = workspace
-                .generation(published_generation)
+                .generation(
+                    published_generation,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(display)?;
-            let ignore_text = match published.read("/.gitignore", 1024 * 1024).await {
+            let ignore_text = match published
+                .read(
+                    "/.gitignore",
+                    1024 * 1024,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+            {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(WorkspaceError::NotFound) => String::new(),
                 Err(error) => return Err(display(error)),
             };
             let ignore =
                 GitIgnorePolicy::parse(&format!("{ignore_text}\n{}", reserved_ignore_rules()));
-            let repository = self.distributed.git(parent_repository_id);
+            let repository = GitCompatRepository::new(parent_repository_id, self.store.clone());
             let tracked = repository.tracked_paths().await.map_err(display)?;
             let child_binding = child_route
                 .roots
@@ -686,9 +715,7 @@ impl ControlPlane {
                 root.source_workspace_id.into_bytes(),
                 child_binding.repository_workspace_id,
             );
-            let source_head = self
-                .distributed
-                .git(child_repository_id)
+            let source_head = GitCompatRepository::new(child_repository_id, self.store.clone())
                 .head()
                 .await
                 .map_err(display)?;
@@ -710,7 +737,7 @@ impl ControlPlane {
             let capture_proof = captured
                 .authenticated_proof(
                     OperationId::from_bytes(capture_id),
-                    &self.distributed.lineage(),
+                    &WorkspaceGraph::new(self.store.clone()),
                 )
                 .await
                 .map_err(display)?;
@@ -754,9 +781,13 @@ impl ControlPlane {
         let limits = OperationReconcileLimits::default();
         let mut published_heads = BTreeMap::new();
         for (root_id, root) in &publication.candidate.plan.roots {
-            let source = self
-                .distributed
-                .workspace(root.source_workspace_id)
+            let source = WorkspaceGraph::new(self.store.clone())
+                .workspace(
+                    &self.fs,
+                    root.source_workspace_id,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map_err(display)?;
             let rebase_key = derived_idempotency_key(
@@ -938,8 +969,7 @@ impl ControlPlane {
                 let workspace = self
                     .workspace_root(&route, WorkspaceRootId::from_bytes(root.root_id))
                     .await?;
-                self.distributed
-                    .operations()
+                OperationWindowCoordinator::new(self.fs.operation_window_store())
                     .recover_workspace(&workspace, now, OperationReconcileLimits::default())
                     .await
                     .map_err(display)?;
@@ -977,22 +1007,23 @@ impl ControlPlane {
                 .ok_or_else(|| "pending root registration has no durable binding".to_owned())?;
             let workspace = self
                 .fs
-                .open_workspace(&root_workspace_name(
-                    &self.state.root_session_id,
-                    &binding.path,
-                ))
+                .open_workspace(
+                    &root_workspace_name(&self.state.root_session_id, &binding.path),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(display)?;
             if workspace.id().into_bytes() != binding.created()?.repository_workspace_id {
                 return Err("pending root workspace identity changed".to_owned());
             }
-            self.distributed
-                .lineage()
+            WorkspaceGraph::new(self.store.clone())
                 .register_root(&workspace)
                 .await
                 .map_err(display)?;
-            self.distributed
-                .contexts()
+            WorkspaceContextRegistry::new(self.store.clone())
                 .register_root(
                     WorkspaceContextId::from_bytes(self.state.root_context_id),
                     [WorkspaceContextRoot {
@@ -1009,9 +1040,7 @@ impl ControlPlane {
             self.state.pending_root_registration = false;
             self.persist()?;
         }
-        let mut context = self
-            .distributed
-            .contexts()
+        let mut context = WorkspaceContextRegistry::new(self.store.clone())
             .resolve(WorkspaceContextId::from_bytes(self.state.root_context_id))
             .await
             .map_err(display)?;
@@ -1029,16 +1058,18 @@ impl ControlPlane {
                 .ok_or_else(|| "pending root adoption has no durable binding".to_owned())?;
             let root_id = WorkspaceRootId::from_bytes(binding.root_id);
             if !context.roots.contains_key(&root_id) {
-                let workspace = self
-                    .distributed
-                    .workspace(acyclic_fs::WorkspaceId::from_bytes(
-                        binding.created()?.repository_workspace_id,
-                    ))
+                let workspace = WorkspaceGraph::new(self.store.clone())
+                    .workspace(
+                        &self.fs,
+                        acyclic_fs::WorkspaceId::from_bytes(
+                            binding.created()?.repository_workspace_id,
+                        ),
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
                     .await
                     .map_err(display)?;
-                context = self
-                    .distributed
-                    .contexts()
+                context = WorkspaceContextRegistry::new(self.store.clone())
                     .adopt_root(
                         context.context_id,
                         WorkspaceContextRoot {
@@ -1083,28 +1114,31 @@ impl ControlPlane {
                     native_root_source::budget(),
                     &CancellationToken::new(),
                 )
-                .await.map_err(|failure| format!("{}; work={:?}", failure.error, failure.work))?.value;
+                .await
+                .map_err(|failure| format!("{}; work={:?}", failure.error, failure.work))?
+                .value;
             let source = Arc::clone(&physical.source);
             verify_native_root_identity(&source, root.created()?.native_root_identity, &root.path)?;
             let refreshed = source.reference();
             if let Some(binding) = self.state.roots.get_mut(&key) {
                 binding.created_mut()?.source_epoch = refreshed.epoch;
             }
-            let workspace = self
-                .distributed
+            let workspace = WorkspaceGraph::new(self.store.clone())
                 .workspace(
+                    &self.fs,
                     context
                         .roots
                         .get(&WorkspaceRootId::from_bytes(root.root_id))
                         .ok_or_else(|| "adapter root is absent from its core context".to_owned())?
                         .workspace_id,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
                 )
                 .await
                 .map_err(display)?;
             self.roots.insert(
                 key.clone(),
-                self.distributed
-                    .open_or_attach_lazy(workspace, Arc::clone(&source))
+                LazyWorkspace::open_or_attach(workspace, Arc::clone(&source), self.store.clone())
                     .await
                     .map_err(display)?,
             );
@@ -1117,9 +1151,7 @@ impl ControlPlane {
         for route in self.state.routes.values() {
             self.validate_route_paths(route)?;
             let context_id = WorkspaceContextId::from_bytes(route.context_id);
-            let context = self
-                .distributed
-                .contexts()
+            let context = WorkspaceContextRegistry::new(self.store.clone())
                 .resolve(context_id)
                 .await
                 .map_err(display)?;
@@ -1239,21 +1271,27 @@ impl ControlPlane {
                 let workspace_name = root_workspace_name(&session_id, &canonical);
                 let physical = self
                     .shared_roots
-                    .acquire(&canonical, SharedRootAdmission::Fresh, native_root_source::budget(), &CancellationToken::new())
-                    .await.map_err(|failure| format!("{}; work={:?}", failure.error, failure.work))?.value;
-                let source = Arc::clone(&physical.source);
-                let source_reference = source.reference();
-                let workspace = self
-                    .distributed
-                    .attach_lazy_with_config(
-                        &workspace_name,
-                        Arc::clone(&source),
-                        VolumeConfig::native(Lifecycle::Durable),
+                    .acquire(
+                        &canonical,
+                        SharedRootAdmission::Fresh,
+                        native_root_source::budget(),
+                        &CancellationToken::new(),
                     )
                     .await
-                    .map_err(display)?;
-                self.distributed
-                    .lineage()
+                    .map_err(|failure| format!("{}; work={:?}", failure.error, failure.work))?
+                    .value;
+                let source = Arc::clone(&physical.source);
+                let source_reference = source.reference();
+                let workspace = LazyWorkspace::attach_with_config(
+                    &self.fs,
+                    &workspace_name,
+                    Arc::clone(&source),
+                    self.store.clone(),
+                    VolumeConfig::native(Lifecycle::Durable),
+                )
+                .await
+                .map_err(display)?;
+                WorkspaceGraph::new(self.store.clone())
                     .register_root(workspace.workspace())
                     .await
                     .map_err(display)?;
@@ -1278,8 +1316,7 @@ impl ControlPlane {
                     self.fail_after_root_intent = false;
                     return Err("injected failure after root adoption intent".to_owned());
                 }
-                self.distributed
-                    .contexts()
+                WorkspaceContextRegistry::new(self.store.clone())
                     .adopt_root(
                         WorkspaceContextId::from_bytes(self.state.root_context_id),
                         WorkspaceContextRoot {
@@ -1308,23 +1345,31 @@ impl ControlPlane {
         let workspace_name = root_workspace_name(&session_id, &canonical);
         let physical = self
             .shared_roots
-            .acquire(&canonical, SharedRootAdmission::Fresh, native_root_source::budget(), &CancellationToken::new())
-            .await.map_err(|failure| format!("{}; work={:?}", failure.error, failure.work))?.value;
+            .acquire(
+                &canonical,
+                SharedRootAdmission::Fresh,
+                native_root_source::budget(),
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| format!("{}; work={:?}", failure.error, failure.work))?
+            .value;
         let source = Arc::clone(&physical.source);
         let source_reference = source.reference();
         // The root's binding, lineage, and context commit as one change set
         // with one flush. The durable intent below precedes it, so recovery
         // can repeat all three, binding the root afresh if its attach was lost.
         let (store, durability) = self.store.defer_durability();
-        let distributed = DistributedFs::new(self.fs.clone(), store);
-        let workspace = distributed
-            .attach_lazy_with_config(
-                &workspace_name,
-                Arc::clone(&source),
-                VolumeConfig::native(Lifecycle::Durable),
-            )
-            .await
-            .map_err(display)?;
+
+        let workspace = LazyWorkspace::attach_with_config(
+            &self.fs,
+            &workspace_name,
+            Arc::clone(&source),
+            store.clone(),
+            VolumeConfig::native(Lifecycle::Durable),
+        )
+        .await
+        .map_err(display)?;
         let context_id = if self.state.root_context_id == [0; 16] {
             WorkspaceContextId::new()
         } else {
@@ -1359,13 +1404,11 @@ impl ControlPlane {
             self.fail_after_root_intent = false;
             return Err("injected failure after root registration intent".to_owned());
         }
-        distributed
-            .lineage()
+        WorkspaceGraph::new(store.clone())
             .register_root(workspace.workspace())
             .await
             .map_err(display)?;
-        distributed
-            .contexts()
+        WorkspaceContextRegistry::new(store.clone())
             .register_root(
                 context_id,
                 [WorkspaceContextRoot {
@@ -1594,10 +1637,8 @@ impl ControlPlane {
                 .await
                 .map_err(display)?;
         }
-        let operations = self.distributed.operations();
-        let parent_context = self
-            .distributed
-            .contexts()
+        let operations = OperationWindowCoordinator::new(self.fs.operation_window_store());
+        let parent_context = WorkspaceContextRegistry::new(self.store.clone())
             .resolve(self.context_for_agent(&route.parent_agent_id)?)
             .await
             .map_err(display)?;
@@ -1610,9 +1651,13 @@ impl ControlPlane {
                     .roots
                     .get(&root_id)
                     .ok_or_else(|| "direct parent root is missing".to_owned())?;
-                let parent = self
-                    .distributed
-                    .workspace(parent_root.workspace_id)
+                let parent = WorkspaceGraph::new(self.store.clone())
+                    .workspace(
+                        &self.fs,
+                        parent_root.workspace_id,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
                     .await
                     .map_err(display)?;
                 operations
@@ -1622,7 +1667,16 @@ impl ControlPlane {
                 operations
                     .begin(
                         workspace.id(),
-                        parent.head().await.map_err(display)?.id(),
+                        parent
+                            .head(
+                                acyclic_fs::WorkBudget::UNBOUNDED,
+                                &acyclic_fs::CancellationToken::new(),
+                            )
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| failure.error)
+                            .map_err(display)?
+                            .id(),
                         format!("{agent_id}:{tool_use_id}:{}", route_root.mount_name()),
                         now,
                         now.saturating_add(15 * 60 * 1_000),
@@ -1671,7 +1725,7 @@ impl ControlPlane {
         leases: &[(WorkspaceRootId, OperationWindowLease)],
         now: u64,
     ) -> Result<(), String> {
-        let operations = self.distributed.operations();
+        let operations = OperationWindowCoordinator::new(self.fs.operation_window_store());
         for (root_id, lease) in leases.iter().rev() {
             let workspace = self.workspace_root(route, *root_id).await?;
             match operations.finish(lease, now).await.map_err(display)? {
@@ -1709,24 +1763,24 @@ impl ControlPlane {
         self.sync_agent(&route.parent_agent_id)
             .await
             .map_err(|error| format!("cannot synchronize the parent workspace: {error}"))?;
-        let parent_context = self
-            .distributed
-            .contexts()
+        let parent_context = WorkspaceContextRegistry::new(self.store.clone())
             .resolve(self.context_for_agent(&route.parent_agent_id)?)
             .await
             .map_err(|error| format!("cannot resolve the parent workspace context: {error}"))?;
-        let parent = self
-            .distributed
+        let parent = WorkspaceGraph::new(self.store.clone())
             .workspace(
+                &self.fs,
                 parent_context
                     .roots
                     .get(&root_id)
                     .ok_or_else(|| "direct parent root is missing".to_owned())?
                     .workspace_id,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
             .await
             .map_err(display)?;
-        let operations = self.distributed.operations();
+        let operations = OperationWindowCoordinator::new(self.fs.operation_window_store());
         let now = now_millis();
         operations
             .recover_workspace(&workspace, now, OperationReconcileLimits::default())
@@ -1749,7 +1803,16 @@ impl ControlPlane {
         let lease = operations
             .begin(
                 workspace.id(),
-                parent.head().await.map_err(display)?.id(),
+                parent
+                    .head(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(display)?
+                    .id(),
                 format!("{agent_id}:git"),
                 now,
                 now.saturating_add(GIT_OPERATION_LEASE_MILLIS),
@@ -1796,7 +1859,7 @@ impl ControlPlane {
         };
         let executor = PluginGitExecutor {
             fs: &self.fs,
-            distributed: &self.distributed,
+            store: &self.store,
             current: workspace.clone(),
             lazy_current: lazy_workspace.clone(),
             repository_id,
@@ -1807,7 +1870,7 @@ impl ControlPlane {
             merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
             switched: Mutex::new(None),
         };
-        let repository = self.distributed.git(repository_id);
+        let repository = GitCompatRepository::new(repository_id, self.store.clone());
         let command = run_git_command(
             &repository,
             &argv,
@@ -1818,7 +1881,15 @@ impl ControlPlane {
             &executor,
         )
         .await;
-        let parent_head = parent.head().await.map(|generation| generation.id());
+        let parent_head = parent
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+            .map(|generation| generation.id());
         let observed: Result<(), String> = match parent_head {
             Ok(parent_head) => operations
                 .observe_parent(workspace.id(), parent_head)
@@ -1874,8 +1945,7 @@ impl ControlPlane {
             .map_err(display)?;
         if let Some(switched) = switched {
             self.unmount_agent(agent_id).await?;
-            self.distributed
-                .contexts()
+            WorkspaceContextRegistry::new(self.store.clone())
                 .set_workspace(
                     WorkspaceContextId::from_bytes(route.context_id),
                     root_id,
@@ -1935,7 +2005,7 @@ impl ControlPlane {
         let executor = RootMaterializingGitExecutor {
             inner: PluginGitExecutor {
                 fs: &self.fs,
-                distributed: &self.distributed,
+                store: &self.store,
                 current: workspace.clone(),
                 lazy_current: lazy_workspace.clone(),
                 repository_id,
@@ -1947,10 +2017,12 @@ impl ControlPlane {
                 switched: Mutex::new(None),
             },
             root: &root_binding.path,
-            source_root_identity: acyclic_fs::NativeRootIdentity::from_bytes(root_binding.created()?.native_root_identity),
+            source_root_identity: acyclic_fs::NativeRootIdentity::from_bytes(
+                root_binding.created()?.native_root_identity,
+            ),
             store: &self.store,
         };
-        let repository = self.distributed.git(repository_id);
+        let repository = GitCompatRepository::new(repository_id, self.store.clone());
         let output = run_git_command(
             &repository,
             &argv,
@@ -1964,8 +2036,7 @@ impl ControlPlane {
         let switched = executor.switched_workspace().map_err(display)?;
         drop(executor);
         if let Some(switched) = switched {
-            self.distributed
-                .contexts()
+            WorkspaceContextRegistry::new(self.store.clone())
                 .set_workspace(
                     WorkspaceContextId::from_bytes(self.state.root_context_id),
                     root_id,
@@ -2018,8 +2089,7 @@ impl ControlPlane {
                 }
                 fs::create_dir_all(&route.mount_path).map_err(display)?;
                 let mount = self.mount_route(&route).await?;
-                self.distributed
-                    .contexts()
+                WorkspaceContextRegistry::new(self.store.clone())
                     .set_active(WorkspaceContextId::from_bytes(route.context_id), true)
                     .await
                     .map_err(display)?;
@@ -2050,8 +2120,7 @@ impl ControlPlane {
                 }
                 fs::create_dir_all(&route.mount_path).map_err(display)?;
                 let mount = self.mount_route(&route).await?;
-                self.distributed
-                    .contexts()
+                WorkspaceContextRegistry::new(self.store.clone())
                     .set_active(WorkspaceContextId::from_bytes(route.context_id), true)
                     .await
                     .map_err(display)?;
@@ -2174,7 +2243,7 @@ impl ControlPlane {
                 .map_err(|error| format!("cannot synchronize the parent workspace: {error}"))?;
         }
         // The final close rebases each root onto its parent's head itself.
-        let operations = self.distributed.operations();
+        let operations = OperationWindowCoordinator::new(self.fs.operation_window_store());
         let mut sync_error = None;
         let mut expired = false;
         let mut conflicts = Vec::new();
@@ -2393,8 +2462,7 @@ impl ControlPlane {
                 ));
             }
             self.unmount_agent(&agent_id).await?;
-            self.distributed
-                .contexts()
+            WorkspaceContextRegistry::new(self.store.clone())
                 .set_active(WorkspaceContextId::from_bytes(route.context_id), false)
                 .await
                 .map_err(display)?;
@@ -2450,9 +2518,7 @@ impl ControlPlane {
                 .pending_conflict_for_parent(WorkspaceContextId::from_bytes(route.context_id))
                 .await?
                 .is_some();
-            let context = self
-                .distributed
-                .contexts()
+            let context = WorkspaceContextRegistry::new(self.store.clone())
                 .resolve(WorkspaceContextId::from_bytes(route.context_id))
                 .await
                 .map_err(display)?;
@@ -2464,13 +2530,22 @@ impl ControlPlane {
                     .get(&WorkspaceRootId::from_bytes(root.root_id))
                     .ok_or_else(|| "adapter route is absent from its core context".to_owned())?
                     .workspace_id;
-                let current = self
-                    .distributed
-                    .workspace(workspace_id)
+                let current = WorkspaceGraph::new(self.store.clone())
+                    .workspace(
+                        &self.fs,
+                        workspace_id,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
                     .await
                     .map_err(display)?
-                    .head()
+                    .head(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
                     .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
                     .map_err(display)?
                     .id();
                 let current = *current.digest().as_bytes();
@@ -2586,7 +2661,7 @@ impl ControlPlane {
             return Err("pending spawn is already being discarded".to_owned());
         }
         let capabilities = acyclic_fs::probe_native_mount();
-        if !capabilities.available || !capabilities.writable {
+        if !capabilities.available() {
             return Err(format!(
                 "cannot isolate the requested subagent: {}",
                 capabilities
@@ -2597,9 +2672,7 @@ impl ControlPlane {
         }
         self.sync_agent(&pending.parent_agent_id).await?;
         let parent_context_id = self.context_for_agent(&pending.parent_agent_id)?;
-        let parent_context = self
-            .distributed
-            .contexts()
+        let parent_context = WorkspaceContextRegistry::new(self.store.clone())
             .resolve(parent_context_id)
             .await
             .map_err(display)?;
@@ -2612,7 +2685,7 @@ impl ControlPlane {
             // Every root's fork binding, lineage, and the child context commit
             // as one change set, durable before the mount mark below.
             let (store, durability) = self.store.defer_durability();
-            let distributed = DistributedFs::new(self.fs.clone(), store);
+
             fs::create_dir_all(&pending.mount_path).map_err(display)?;
             if pending
                 .mount_path
@@ -2641,23 +2714,36 @@ impl ControlPlane {
                     source_binding.created()?.native_root_identity,
                     &source_binding.path,
                 )?;
-                let parent_workspace = distributed
-                    .workspace(parent_root.workspace_id)
+                let parent_workspace = WorkspaceGraph::new(store.clone())
+                    .workspace(
+                        &self.fs,
+                        parent_root.workspace_id,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
                     .await
                     .map_err(display)?;
-                let parent_lazy = distributed
-                    .open_lazy(parent_workspace, source)
+                let parent_lazy = LazyWorkspace::open(parent_workspace, source, store.clone())
                     .await
                     .map_err(display)?;
                 let root_name = route_name(*root_id);
                 let child_name = format!("{}-{root_name}", pending.workspace_name);
-                let fork_generation = parent_lazy.workspace().head().await.map_err(display)?.id();
+                let fork_generation = parent_lazy
+                    .workspace()
+                    .head(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(display)?
+                    .id();
                 let child = parent_lazy
                     .fork(&child_name, derived_idempotency_key(fork_key, *root_id))
                     .await
                     .map_err(display)?;
-                distributed
-                    .lineage()
+                WorkspaceGraph::new(store.clone())
                     .register_existing_child(
                         parent_lazy.workspace(),
                         child.workspace(),
@@ -2682,8 +2768,7 @@ impl ControlPlane {
                     },
                 );
             }
-            distributed
-                .contexts()
+            WorkspaceContextRegistry::new(store.clone())
                 .register_child(pending.context_id(), parent_context_id, context_roots)
                 .await
                 .map_err(display)?;
@@ -2718,17 +2803,18 @@ impl ControlPlane {
                 binding.created()?.native_root_identity,
                 &binding.path,
             )?;
-            let workspace = self
-                .distributed
-                .workspace(acyclic_fs::WorkspaceId::from_bytes(
-                    root.repository_workspace_id,
-                ))
+            let workspace = WorkspaceGraph::new(self.store.clone())
+                .workspace(
+                    &self.fs,
+                    acyclic_fs::WorkspaceId::from_bytes(root.repository_workspace_id),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map_err(display)?;
             roots.push((
                 root.mount_name(),
-                self.distributed
-                    .open_lazy(workspace, source)
+                LazyWorkspace::open(workspace, source, self.store.clone())
                     .await
                     .map_err(display)?,
             ));
@@ -2821,15 +2907,11 @@ impl ControlPlane {
             mount.unmount().await?;
             self.pending_mounts.remove(&pending.fork_key);
         }
-        if let Ok(context) = self
-            .distributed
-            .contexts()
+        if let Ok(context) = WorkspaceContextRegistry::new(self.store.clone())
             .resolve(pending.context_id())
             .await
         {
-            match self
-                .distributed
-                .contexts()
+            match WorkspaceContextRegistry::new(self.store.clone())
                 .discard_subtree(
                     context
                         .parent_context_id
@@ -2844,8 +2926,7 @@ impl ControlPlane {
             }
         }
         let root_ids = if pending.roots.is_empty() {
-            self.distributed
-                .contexts()
+            WorkspaceContextRegistry::new(self.store.clone())
                 .resolve(self.context_for_agent(&pending.parent_agent_id)?)
                 .await
                 .map_err(display)?
@@ -2906,10 +2987,8 @@ impl ControlPlane {
             .get(&agent)
             .cloned()
             .ok_or("unknown agent")?;
-        let graph = self.distributed.lineage();
-        let parent_context = self
-            .distributed
-            .contexts()
+        let graph = WorkspaceGraph::new(self.store.clone());
+        let parent_context = WorkspaceContextRegistry::new(self.store.clone())
             .resolve(self.context_for_agent(&route.parent_agent_id)?)
             .await
             .map_err(display)?;
@@ -2944,9 +3023,13 @@ impl ControlPlane {
                 let parent_id = lineage.parent_workspace_id.ok_or_else(|| {
                     "Git compatibility branch does not reach its repository workspace".to_owned()
                 })?;
-                let parent = self
-                    .distributed
-                    .workspace(parent_id)
+                let parent = WorkspaceGraph::new(self.store.clone())
+                    .workspace(
+                        &self.fs,
+                        parent_id,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
                     .await
                     .map_err(display)?;
                 graph
@@ -2959,9 +3042,13 @@ impl ControlPlane {
                 .roots
                 .get(&root_id)
                 .ok_or_else(|| "direct parent root is missing".to_owned())?;
-            let parent = self
-                .distributed
-                .workspace(parent_root.workspace_id)
+            let parent = WorkspaceGraph::new(self.store.clone())
+                .workspace(
+                    &self.fs,
+                    parent_root.workspace_id,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map_err(display)?;
             let lineage = graph
@@ -2969,10 +3056,24 @@ impl ControlPlane {
                 .await
                 .map_err(display)?;
             let base = workspace
-                .generation(branch_base.unwrap_or(lineage.initial_generation))
+                .generation(
+                    branch_base.unwrap_or(lineage.initial_generation),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(display)?;
-            let head = workspace.head().await.map_err(display)?;
+            let head = workspace
+                .head(
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(display)?;
             let changes = workspace
                 .diff(&base, &head, 100_000)
                 .await
@@ -2980,8 +3081,14 @@ impl ControlPlane {
             let (root_files, root_bindings, paths) = if let Some(path) = requested_path {
                 let filter = agent_change_filter(path, &route, route_root, workspace.profile())?;
                 let paths = changes
-                    .changed_paths(100_000)
+                    .changed_paths(
+                        100_000,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
                     .await
+                    .map(|receipt| receipt.value.0)
+                    .map_err(|failure| failure.error)
                     .map_err(display)?
                     .into_iter()
                     .filter(|change| change.path.is_within(&filter))
@@ -3049,7 +3156,7 @@ impl ControlPlane {
             .get(&agent)
             .cloned()
             .ok_or("unknown agent")?;
-        let registry = self.distributed.contexts();
+        let registry = WorkspaceContextRegistry::new(self.store.clone());
         let parent_context_id = self.context_for_agent(caller)?;
         if self
             .pending_conflict_for_parent(parent_context_id)
@@ -3089,14 +3196,22 @@ impl ControlPlane {
             if child_root.parent_workspace_id != Some(parent_root.workspace_id) {
                 return Err("child root is not forked from its direct parent root".to_owned());
             }
-            let source = self
-                .distributed
-                .workspace(child_root.workspace_id)
+            let source = WorkspaceGraph::new(self.store.clone())
+                .workspace(
+                    &self.fs,
+                    child_root.workspace_id,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map_err(display)?;
-            let target = self
-                .distributed
-                .workspace(parent_root.workspace_id)
+            let target = WorkspaceGraph::new(self.store.clone())
+                .workspace(
+                    &self.fs,
+                    parent_root.workspace_id,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map_err(display)?;
             let lazy_source = self.lazy_workspace_root(&route, *root_id).await?;
@@ -3107,26 +3222,49 @@ impl ControlPlane {
             let plan = source.join_into(&target).plan().await.map_err(display)?;
             let target_head = plan.target_head();
             let parent_repository_id = self.parent_repository_id(caller, *root_id, target.id())?;
-            let tracked = self
-                .distributed
-                .git(parent_repository_id)
+            let tracked = GitCompatRepository::new(parent_repository_id, self.store.clone())
                 .tracked_paths()
                 .await
                 .map_err(display)?;
             let base = target
-                .generation(plan.common_ancestor())
+                .generation(
+                    plan.common_ancestor(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(display)?;
             let source_head = source
-                .generation(plan.source_head())
+                .generation(
+                    plan.source_head(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(display)?;
             let changed = base
-                .diff_to(&source_head, u32::MAX)
+                .diff_to(
+                    &source_head,
+                    u32::MAX,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(display)?
-                .changed_paths(u32::MAX)
+                .changed_paths(
+                    u32::MAX,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value.0)
+                .map_err(|failure| failure.error)
                 .map_err(display)?;
             let child_wins_bindings = git_ignore_policy(&lazy_source)
                 .await?
@@ -3241,12 +3379,25 @@ impl ControlPlane {
         let mut generations = BTreeMap::new();
         let mut changed = false;
         for (root_id, parent_root) in &parent_context.roots {
-            let target = self
-                .distributed
-                .workspace(parent_root.workspace_id)
+            let target = WorkspaceGraph::new(self.store.clone())
+                .workspace(
+                    &self.fs,
+                    parent_root.workspace_id,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map_err(display)?;
-            let generation = target.head().await.map_err(display)?.id();
+            let generation = target
+                .head(
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(display)?
+                .id();
             changed |= target_heads
                 .get(root_id)
                 .is_some_and(|before| *before != generation);
@@ -3357,9 +3508,7 @@ impl ControlPlane {
                     .get(&descendant)
                     .cloned()
                     .ok_or_else(|| "discard subtree route disappeared".to_owned())?;
-                let removed_context = self
-                    .distributed
-                    .contexts()
+                let removed_context = WorkspaceContextRegistry::new(self.store.clone())
                     .resolve(WorkspaceContextId::from_bytes(removed.context_id))
                     .await
                     .map_err(display)?;
@@ -3391,9 +3540,7 @@ impl ControlPlane {
                 }
                 let mut workspaces = Vec::new();
                 for workspace_id in workspace_ids.into_iter().rev() {
-                    let name = self
-                        .distributed
-                        .lineage()
+                    let name = WorkspaceGraph::new(self.store.clone())
                         .resolve(workspace_id)
                         .await
                         .map_err(|error| {
@@ -3460,9 +3607,7 @@ impl ControlPlane {
             .cloned()
             .ok_or_else(|| "pending discard is missing".to_owned())?;
         if !pending.context_discarded {
-            match self
-                .distributed
-                .contexts()
+            match WorkspaceContextRegistry::new(self.store.clone())
                 .discard_subtree(
                     WorkspaceContextId::from_bytes(pending.parent_context_id),
                     WorkspaceContextId::from_bytes(pending.child_context_id),
@@ -3768,9 +3913,7 @@ impl ControlPlane {
         if !route.roots.contains_key(&root_key(root_id)) {
             return Err("workspace route root is missing".to_owned());
         }
-        let context = self
-            .distributed
-            .contexts()
+        let context = WorkspaceContextRegistry::new(self.store.clone())
             .resolve(WorkspaceContextId::from_bytes(route.context_id))
             .await
             .map_err(display)?;
@@ -3779,8 +3922,13 @@ impl ControlPlane {
             .get(&root_id)
             .ok_or_else(|| "workspace route root is absent from its core context".to_owned())?
             .workspace_id;
-        self.distributed
-            .workspace(workspace_id)
+        WorkspaceGraph::new(self.store.clone())
+            .workspace(
+                &self.fs,
+                workspace_id,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
             .map_err(display)
     }
@@ -3806,8 +3954,7 @@ impl ControlPlane {
             binding.created()?.native_root_identity,
             &binding.path,
         )?;
-        self.distributed
-            .open_lazy(workspace, source)
+        LazyWorkspace::open(workspace, source, self.store.clone())
             .await
             .map_err(display)
     }
@@ -3889,8 +4036,12 @@ impl ControlPlane {
             .checkout(
                 GenerationSelector::Head,
                 CheckoutMode::tracking_transaction(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
             )
             .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
             .map_err(display)?;
         match observation.batch {
             WatchBatch::Changes { .. } if source_advanced_elsewhere => {
@@ -3901,7 +4052,7 @@ impl ControlPlane {
                     .map_err(|_| "physical root watcher state is poisoned".to_owned())?
                     .watch_tree(&RESERVED_ROOT_NAMES)
                     .map_err(display)?;
-                capture_baseline_with_policy(
+                capture_baseline(
                     &mut checkout,
                     &capture,
                     &policy,
@@ -3912,7 +4063,7 @@ impl ControlPlane {
                 .map_err(display)?;
             }
             batch @ WatchBatch::Changes { .. } => {
-                capture_watch_batch_with_policy(
+                capture_watch_batch(
                     &mut checkout,
                     batch,
                     &capture,
@@ -3939,7 +4090,7 @@ impl ControlPlane {
                     .map_err(|_| "physical root watcher state is poisoned".to_owned())?
                     .watch_tree(&RESERVED_ROOT_NAMES)
                     .map_err(display)?;
-                capture_baseline_with_policy(
+                capture_baseline(
                     &mut checkout,
                     &capture,
                     &policy,
@@ -3954,7 +4105,7 @@ impl ControlPlane {
                     .map_err(|_| "physical root watcher state is poisoned".to_owned())?
                     .finish_rescan()
                     .map_err(display)?;
-                capture_watch_batch_with_policy(
+                capture_watch_batch(
                     &mut checkout,
                     trailing,
                     &capture,
@@ -3968,12 +4119,13 @@ impl ControlPlane {
         }
         if unreported {
             let recorded = recorded_paths(&workspace).await?;
-            capture_watch_batch_with_policy(
+            capture_watch_batch(
                 &mut checkout,
                 WatchBatch::Changes {
-                    epoch: WatchEpoch::from_u64(0),
-                    first_sequence: WatchSequence::from_u64(0),
-                    next_sequence: WatchSequence::from_u64(0),
+                    original: Default::default(),
+                    epoch: 0,
+                    first_sequence: 0,
+                    next_sequence: 0,
                     changes: recorded.into_iter().map(WatchChange::Modified).collect(),
                 },
                 &capture,
@@ -3995,8 +4147,20 @@ impl ControlPlane {
             match checkout
                 .commit(
                     OperationId::new(),
+                    None,
+                    None,
+                    None,
+                    PublicationPermit::Unrestricted,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
+                    |_| async {
+                        Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                            acyclic_fs::OperationReceipt {
+                                value: (),
+                                work: WorkCounters::UNCHARGED,
+                            },
+                        )
+                    },
                 )
                 .await
                 .map_err(display)?
@@ -4014,7 +4178,10 @@ impl ControlPlane {
         self.roots
             .get(&key)
             .ok_or_else(|| "root workspace is unavailable".to_owned())?
-            .rebind_source()
+            .rebind_source(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            ))
             .await
             .map_err(display)?;
         let binding = self
@@ -4061,7 +4228,16 @@ impl ControlPlane {
         let parent = self.workspace_root(parent_route, root_id).await?;
         let mut pending = VecDeque::from([(
             parent_agent_id.to_owned(),
-            parent.head().await.map_err(display)?.id(),
+            parent
+                .head(
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(display)?
+                .id(),
         )]);
         let root_key = root_key(root_id);
         let mut children = BTreeMap::<String, Vec<Route>>::new();
@@ -4073,7 +4249,7 @@ impl ControlPlane {
                     .push(route.clone());
             }
         }
-        let operations = self.distributed.operations();
+        let operations = OperationWindowCoordinator::new(self.fs.operation_window_store());
         while let Some((parent_id, parent_head)) = pending.pop_front() {
             for route in children.remove(&parent_id).unwrap_or_default() {
                 let child = self.workspace_root(&route, root_id).await?;
@@ -4195,7 +4371,7 @@ impl ControlPlane {
             None
         };
         let result = async {
-            let operations = self.distributed.operations();
+            let operations = OperationWindowCoordinator::new(self.fs.operation_window_store());
             let now = now_millis();
             let active = self.state.leases.values().cloned().collect::<Vec<_>>();
             for record in &active {
@@ -4205,28 +4381,40 @@ impl ControlPlane {
                     .get(&record.agent_id)
                     .cloned()
                     .ok_or_else(|| "active lease route is missing during shutdown".to_owned())?;
-                let parent_context = self
-                    .distributed
-                    .contexts()
+                let parent_context = WorkspaceContextRegistry::new(self.store.clone())
                     .resolve(self.context_for_agent(&route.parent_agent_id)?)
                     .await
                     .map_err(display)?;
                 for root_record in record.roots.values() {
                     let root_id = WorkspaceRootId::from_bytes(root_record.root_id);
                     let workspace = self.workspace_root(&route, root_id).await?;
-                    let parent = self
-                        .distributed
+                    let parent = WorkspaceGraph::new(self.store.clone())
                         .workspace(
+                            &self.fs,
                             parent_context
                                 .roots
                                 .get(&root_id)
                                 .ok_or_else(|| "active lease parent root is missing".to_owned())?
                                 .workspace_id,
+                            WorkBudget::UNBOUNDED,
+                            &CancellationToken::new(),
                         )
                         .await
                         .map_err(display)?;
                     operations
-                        .observe_parent(workspace.id(), parent.head().await.map_err(display)?.id())
+                        .observe_parent(
+                            workspace.id(),
+                            parent
+                                .head(
+                                    acyclic_fs::WorkBudget::UNBOUNDED,
+                                    &acyclic_fs::CancellationToken::new(),
+                                )
+                                .await
+                                .map(|receipt| receipt.value)
+                                .map_err(|failure| failure.error)
+                                .map_err(display)?
+                                .id(),
+                        )
                         .await
                         .map_err(display)?;
                     if let acyclic_fs::OperationWindowFinish::Reconcile(reconcile) = operations
@@ -4318,15 +4506,31 @@ mod root_allocation_tests;
 
 /// Every path the workspace's head records, parents before children.
 async fn recorded_paths(workspace: &LocalWorkspace) -> Result<Vec<NamespacePath>, String> {
-    let head = workspace.head().await.map_err(display)?;
+    let head = workspace
+        .head(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
+        .map_err(display)?;
     let mut recorded = Vec::new();
     let mut directories = vec!["/".to_owned()];
     while let Some(directory) = directories.pop() {
         let mut after = None;
         loop {
             let page = head
-                .list_directory(&directory, after.as_ref(), 1_024)
+                .list_directory(
+                    &directory,
+                    after.as_ref(),
+                    1_024,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value.0)
+                .map_err(|failure| failure.error)
                 .map_err(display)?;
             for entry in &page.entries {
                 let name = entry
@@ -4365,11 +4569,24 @@ async fn changed_paths_into(
         return Ok(());
     }
     for change in base
-        .diff_to(head, u32::MAX)
+        .diff_to(
+            head,
+            u32::MAX,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
         .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
         .map_err(display)?
-        .changed_paths(u32::MAX)
+        .changed_paths(
+            u32::MAX,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
         .await
+        .map(|receipt| receipt.value.0)
+        .map_err(|failure| failure.error)
         .map_err(display)?
     {
         changed.insert(namespace_path_text(&change.path)?);
@@ -4415,13 +4632,23 @@ impl ControlPlane {
             if tombstones.is_empty() {
                 continue;
             }
-            let child_head = self
-                .distributed
-                .workspace(root.source_workspace_id)
+            let child_head = WorkspaceGraph::new(self.store.clone())
+                .workspace(
+                    &self.fs,
+                    root.source_workspace_id,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map_err(display)?
-                .generation(root.source_generation)
+                .generation(
+                    root.source_generation,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(display)?;
             let parent_view = match &parent_route {
                 Some(parent_route) => Some(self.lazy_workspace_root(parent_route, *root_id).await?),
@@ -4431,7 +4658,16 @@ impl ControlPlane {
             let mut paths = Vec::new();
             for (path, deleted) in tombstones {
                 let beneath = format!("{path}/");
-                if child_head.stat(&path).await.is_ok()
+                if child_head
+                    .stat(
+                        &path,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .is_ok()
                     || view.current_source_version(&path).await.map_err(display)? != Some(deleted)
                     || changed
                         .range(beneath.clone()..)
@@ -4465,24 +4701,40 @@ impl ControlPlane {
         root: &MultiRootMergeRoot,
     ) -> Result<BTreeSet<String>, String> {
         let mut changed = BTreeSet::new();
-        let target = self
-            .distributed
-            .workspace(root.target_workspace_id)
+        let target = WorkspaceGraph::new(self.store.clone())
+            .workspace(
+                &self.fs,
+                root.target_workspace_id,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
             .map_err(display)?;
         changed_paths_into(
             &target
-                .generation(root.base_generation)
+                .generation(
+                    root.base_generation,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(display)?,
             &target
-                .generation(root.target_generation)
+                .generation(
+                    root.target_generation,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(display)?,
             &mut changed,
         )
         .await?;
-        let registry = self.distributed.contexts();
+        let registry = WorkspaceContextRegistry::new(self.store.clone());
         let mut upper = registry
             .resolve(plan.parent_context_id)
             .await
@@ -4494,14 +4746,22 @@ impl ControlPlane {
             else {
                 break;
             };
-            let upper_source = self
-                .distributed
-                .workspace(upper_child.workspace_id)
+            let upper_source = WorkspaceGraph::new(self.store.clone())
+                .workspace(
+                    &self.fs,
+                    upper_child.workspace_id,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map_err(display)?;
-            let upper_target = self
-                .distributed
-                .workspace(upper_parent.workspace_id)
+            let upper_target = WorkspaceGraph::new(self.store.clone())
+                .workspace(
+                    &self.fs,
+                    upper_parent.workspace_id,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map_err(display)?;
             let fork_point = upper_source
@@ -4511,8 +4771,25 @@ impl ControlPlane {
                 .map_err(display)?
                 .common_ancestor();
             changed_paths_into(
-                &upper_target.generation(fork_point).await.map_err(display)?,
-                &upper_target.head().await.map_err(display)?,
+                &upper_target
+                    .generation(
+                        fork_point,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(display)?,
+                &upper_target
+                    .head(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(display)?,
                 &mut changed,
             )
             .await?;

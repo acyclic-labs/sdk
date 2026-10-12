@@ -23,7 +23,7 @@ where
     if let Some(io) = io { io.check_cancellation()?; }
     let Some(deadline) = deadline else { return future.await; };
     if host.now_unix_millis() >= deadline {
-        expire(host, task, fence, io).await?;
+        host.expire_task_deadline(task, fence, &mut super::observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
         return Err(Error::Indeterminate(operation));
     }
     let result = {
@@ -40,25 +40,11 @@ where
         if result.as_ref().is_ok_and(&has_native_failure) { return result; }
         if host.now_unix_millis() < deadline { return result; }
     }
-    expire(host, task, fence, io).await?;
+    host.expire_task_deadline(task, fence, &mut super::observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
     Err(Error::Indeterminate(operation))
 }
 
-async fn expire<P: StreamProvider + 'static>(
-    host: &CoordinatorTaskHost<P>, task: TaskId, fence: Option<&LeaseFence>,
-    io: Option<&crate::filesystem::PreparationIo>,
-) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io {
-        let work = io.original_native_work().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native expiry requires original observer",
-        })?;
-        let fence = fence.map(|fence| super::observed::clone_fence(fence, Some(io))).transpose()?;
-        return host.expire_task_deadline_with_native_work(task, fence, work).await;
-    }
-    host.expire_task_deadline(task, fence.cloned()).await
-}
+
 
 /// Finite observation allowance, not a replacement execution deadline or grant.
 pub(super) async fn observe<T>(

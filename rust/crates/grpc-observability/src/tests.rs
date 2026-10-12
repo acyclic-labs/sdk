@@ -8,12 +8,9 @@ use super::*;
 use std::{
     collections::VecDeque,
     future::Future,
-    sync::{Arc, Mutex},
 };
-use tracing_subscriber::{
-    layer::{Context as LayerContext, SubscriberExt},
-    registry::LookupSpan,
-};
+use crate::test_support::Capture;
+use tracing_subscriber::{filter::filter_fn, prelude::*};
 
 #[test]
 fn canonical_status_and_missing_http_mapping_match_tonic_without_details_parsing() {
@@ -63,102 +60,21 @@ fn canonical_status_and_missing_http_mapping_match_tonic_without_details_parsing
     }
 }
 
-#[derive(Default)]
-struct Seen {
-    records: Vec<(String, String, String)>,
-    closed: Vec<String>,
-    events: Vec<(String, String)>,
+fn capture(filtered: bool) -> (Dispatch, Capture) {
+    let log = Capture::default();
+    let layer = log.clone().with_filter(filter_fn(move |metadata| {
+        !filtered || metadata.name() != "test.grpc.call"
+    }));
+    (Dispatch::new(tracing_subscriber::registry().with(layer)), log)
 }
-type Log = Arc<Mutex<Seen>>;
-struct Capture {
-    log: Log,
-    filtered: bool,
-}
-struct Fields(Vec<(String, String)>);
-impl tracing::field::Visit for Fields {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.0.push((
-            field.name().into(),
-            format!("{value:?}").trim_matches('"').into(),
-        ));
-    }
-}
-impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for Capture {
-    fn enabled(&self, metadata: &tracing::Metadata<'_>, _: LayerContext<'_, S>) -> bool {
-        !self.filtered || metadata.name() != "test.grpc.call"
-    }
-    fn on_new_span(
-        &self,
-        attrs: &tracing::span::Attributes<'_>,
-        _: &tracing::span::Id,
-        _: LayerContext<'_, S>,
-    ) {
-        let mut fields = Fields(Vec::new());
-        attrs.record(&mut fields);
-        self.log.lock().unwrap().records.extend(
-            fields
-                .0
-                .into_iter()
-                .map(|(k, v)| (attrs.metadata().name().into(), k, v)),
-        );
-    }
-    fn on_record(
-        &self,
-        id: &tracing::span::Id,
-        values: &tracing::span::Record<'_>,
-        ctx: LayerContext<'_, S>,
-    ) {
-        let mut fields = Fields(Vec::new());
-        values.record(&mut fields);
-        let name = ctx.span(id).unwrap().name();
-        self.log
-            .lock()
-            .unwrap()
-            .records
-            .extend(fields.0.into_iter().map(|(k, v)| (name.into(), k, v)));
-    }
-    fn on_close(&self, id: tracing::span::Id, ctx: LayerContext<'_, S>) {
-        self.log
-            .lock()
-            .unwrap()
-            .closed
-            .push(ctx.span(&id).unwrap().name().into());
-    }
-    fn on_event(&self, event: &tracing::Event<'_>, ctx: LayerContext<'_, S>) {
-        let mut fields = Fields(Vec::new());
-        event.record(&mut fields);
-        let name = ctx.lookup_current().map_or("none", |s| s.name());
-        self.log.lock().unwrap().events.extend(
-            fields
-                .0
-                .into_iter()
-                .filter(|(k, _)| k == "step")
-                .map(|(_, v)| (v, name.into())),
-        );
-    }
-}
-fn capture(filtered: bool) -> (Dispatch, Log) {
-    let log = Log::default();
-    (
-        Dispatch::new(tracing_subscriber::registry().with(Capture {
-            log: log.clone(),
-            filtered,
-        })),
-        log,
+fn call_span(rpc: Option<&str>) -> Span {
+    tracing::info_span!(
+        "test.grpc.call",
+        rpc,
+        rpc.code = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+        error.kind = tracing::field::Empty
     )
-}
-#[derive(Clone)]
-struct Family;
-impl CallSpan for Family {
-    fn span(rpc: Option<&str>) -> Span {
-        tracing::info_span!(
-            "test.grpc.call",
-            rpc,
-            rpc.code = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-            error.kind = tracing::field::Empty
-        )
-    }
 }
 struct Frames {
     frames: VecDeque<Result<http_body::Frame<Bytes>, Status>>,
@@ -262,10 +178,10 @@ fn call(
             rpc.code = tracing::field::Empty
         );
         let _entered = parent.enter();
-        TracedChannel::<_, Family>::new(Transport(Some(ResponseFuture {
+        TracedChannel::new(Transport(Some(ResponseFuture {
             result: Some(result),
             pending,
-        })))
+        })), call_span)
         .call(
             http::Request::builder()
                 .uri("/v1.Service/Call")
@@ -285,10 +201,10 @@ fn poll(
 fn frame(body: &mut Body) -> Poll<Option<Result<http_body::Frame<Bytes>, Status>>> {
     Pin::new(body).poll_frame(&mut Context::from_waker(futures::task::noop_waker_ref()))
 }
-fn terminal(log: &Log, code: Option<u8>, kind: Option<&str>) {
-    let log = log.lock().unwrap();
+fn terminal(log: &Capture, code: Option<u8>, kind: Option<&str>) {
+    let log = log.0.lock().unwrap();
     assert_eq!(
-        log.closed
+        log.closes
             .iter()
             .filter(|n| n.as_str() == "test.grpc.call")
             .count(),
@@ -301,7 +217,7 @@ fn terminal(log: &Log, code: Option<u8>, kind: Option<&str>) {
         .collect();
     assert_eq!(records.len(), 1);
     assert_eq!(
-        records.first().unwrap().2,
+        records.first().unwrap().2.trim_matches('"'),
         if code == Some(0) { "ok" } else { "err" }
     );
     if let Some(code) = code {
@@ -315,10 +231,10 @@ fn terminal(log: &Log, code: Option<u8>, kind: Option<&str>) {
         assert!(
             log.records
                 .iter()
-                .any(|(n, k, v)| n == "test.grpc.call" && k == "error.kind" && v == kind)
+                .any(|(n, k, v)| n == "test.grpc.call" && k == "error.kind" && v.trim_matches('"') == kind)
         );
     }
-    assert!(!format!("{:?}", log.records).contains("private-token"));
+    assert!(!format!("{:?}{:?}", log.records, log.spans).contains("private-token"));
 }
 
 #[test]
@@ -366,7 +282,7 @@ fn terminal_body_frames_errors_and_eof_preserve_consumption_and_close_before_dro
         terminal(&log, Some(expected), (expected != 0).then_some("status"));
         tracing::dispatcher::with_default(&foreign, || drop(r));
         drop(future);
-        assert!(other.lock().unwrap().events.is_empty());
+        assert!(other.0.lock().unwrap().events.is_empty());
         terminal(&log, Some(expected), (expected != 0).then_some("status"));
     }
     let (dispatch, log) = capture(false);
@@ -419,11 +335,13 @@ fn origin_dispatch_caller_and_cancellation_survive_foreign_poll_and_drop() {
             drop(future);
         });
         terminal(&log, None, Some("cancelled"));
-        assert!(other.lock().unwrap().events.is_empty());
-        let seen = log.lock().unwrap();
-        assert!(seen.events.iter().all(|(_, span)| span == "test.grpc.call"));
-        assert!(seen.events.iter().any(|(step, _)| step == "future.drop"));
-        assert!(seen.events.iter().any(|(step, _)| step == "body.drop"));
+        assert!(other.0.lock().unwrap().events.is_empty());
+        let seen = log.0.lock().unwrap();
+        assert!(seen.events.iter().all(|(parent, _)| parent.as_deref() == Some("test.grpc.call")));
+        for step in ["future.drop", "body.drop"] {
+            assert!(seen.events.iter().any(|(_, fields)| fields.iter()
+                .any(|(_, name, value)| name == "step" && value.trim_matches('"') == step)));
+        }
     }
 }
 
@@ -439,13 +357,13 @@ fn filtered_operation_never_records_parent_and_transport_errors_are_unchanged() 
         drop(r);
         drop(future);
     });
-    let seen = log.lock().unwrap();
+    let seen = log.0.lock().unwrap();
     assert!(
         seen.records.is_empty(),
         "filtered RPC must not write parent's declared fields"
     );
-    assert!(seen.events.iter().all(|(_, span)| span == "caller"));
-    assert!(other.lock().unwrap().events.is_empty());
+    assert!(seen.events.iter().all(|(parent, _)| parent.as_deref() == Some("caller")));
+    assert!(other.0.lock().unwrap().events.is_empty());
     drop(seen);
     let (origin, log) = capture(false);
     let mut future = call(&origin, Err(Failure("same failure")), false);
@@ -471,9 +389,9 @@ fn header_ok_waits_for_body_and_missing_status_explicit_eof_is_unknown() {
             panic!("response")
         };
         assert!(
-            log.lock()
+            log.0.lock()
                 .unwrap()
-                .closed
+                .closes
                 .iter()
                 .all(|n| n != "test.grpc.call")
         );
@@ -563,7 +481,7 @@ fn typed_result_and_cancellation_keep_origin_without_mutating_filtered_parent() 
                 );
                 let _entered = caller.enter();
                 Box::pin(observe_call(
-                    Family::span(Some("Typed")),
+                    call_span(Some("Typed")),
                     TypedFuture {
                         pending: stage == 1,
                         failed: stage == 2,
@@ -584,12 +502,12 @@ fn typed_result_and_cancellation_keep_origin_without_mutating_filtered_parent() 
                 }
                 drop(future);
             });
-            let seen = log.lock().unwrap();
+            let seen = log.0.lock().unwrap();
             assert!(!seen.records.iter().any(|(n, k, _)| n == "caller"
                 && ["outcome", "rpc.code", "error.kind"].contains(&k.as_str())));
             if !filtered {
                 assert_eq!(
-                    seen.closed
+                    seen.closes
                         .iter()
                         .filter(|n| n.as_str() == "test.grpc.call")
                         .count(),
@@ -606,7 +524,7 @@ fn typed_result_and_cancellation_keep_origin_without_mutating_filtered_parent() 
                 assert!(
                     seen.records
                         .iter()
-                        .any(|(n, k, v)| n == "test.grpc.call" && k == "outcome" && v == expected)
+                        .any(|(n, k, v)| n == "test.grpc.call" && k == "outcome" && v.trim_matches('"') == expected)
                 );
                 if stage == 2 {
                     assert!(
@@ -619,9 +537,9 @@ fn typed_result_and_cancellation_keep_origin_without_mutating_filtered_parent() 
             assert!(
                 seen.events
                     .iter()
-                    .all(|(_, n)| n == if filtered { "caller" } else { "test.grpc.call" })
+                    .all(|(parent, _)| parent.as_deref() == Some(if filtered { "caller" } else { "test.grpc.call" }))
             );
-            assert!(other.lock().unwrap().events.is_empty());
+            assert!(other.0.lock().unwrap().events.is_empty());
         }
     }
 }
@@ -639,10 +557,10 @@ fn rpc_attribution_uses_only_canonical_method_metadata() {
             request.extensions_mut().insert(method);
         }
         let mut future = tracing::dispatcher::with_default(&dispatch, || {
-            TracedChannel::<_, Family>::new(Transport(Some(ResponseFuture {
+            TracedChannel::new(Transport(Some(ResponseFuture {
                 result: Some(Err(Failure("same failure"))),
                 pending: false,
-            })))
+            })), call_span)
             .call(request)
         });
         assert!(matches!(
@@ -651,15 +569,13 @@ fn rpc_attribution_uses_only_canonical_method_metadata() {
         ));
         drop(future);
         terminal(&log, None, Some("transport"));
-        let seen = log.lock().unwrap();
+        let seen = log.0.lock().unwrap();
         assert_eq!(
-            seen.records
-                .iter()
-                .any(|(_, k, v)| k == "rpc" && v == "Call"),
+            seen.spans.iter().any(|span| span.fields.get("rpc").is_some_and(|v| v == "Call")),
             method.is_some()
         );
         for secret in ["private-uri", "private-query", "private-token"] {
-            assert!(!format!("{:?}", seen.records).contains(secret));
+            assert!(!format!("{:?}{:?}", seen.records, seen.spans).contains(secret));
         }
     }
 }

@@ -7,12 +7,12 @@ use super::attribute::{
     attribute_page_decode_shape,
 };
 use super::codec::DecodedPageShape;
-use super::persistent_btree::{self, Child, Format, Page, PageRef};
+use super::persistent_btree::{self, Format, Page, PageRef};
 use super::{
     AttributeEntry, AttributeName, CanonicalDecodeError, DecodeLimits,
 };
 use crate::foundation::usize_to_u64;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 use thiserror::Error;
 
@@ -30,20 +30,15 @@ impl Format for AttributeFormat {
         &value.name
     }
 
-    fn decode(bytes: &[u8], limits: DecodeLimits) -> Result<Page<Self>, CanonicalDecodeError> {
-        Self::decode_with_steps(bytes, limits, &mut |_| Ok(()))
-    }
-
-    fn decode_with_steps<E: From<CanonicalDecodeError>>(
+    fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
         observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
-        super::attribute::decode_attribute_page_mapped_with_steps(
-            bytes, limits, observe, Page::Leaf, Page::Internal,
-            |first, page| Child { first, page },
-            |child| &child.first,
-        )
+        Ok(match super::attribute::decode_attribute_page(bytes, limits, observe)? {
+            super::AttributePage::Leaf(values) => Page::Leaf(values),
+            super::AttributePage::Internal(children) => Page::Internal(children),
+        })
     }
 
     fn decode_shape(
@@ -53,19 +48,13 @@ impl Format for AttributeFormat {
         attribute_page_decode_shape(bytes, limits)
     }
 
-
     fn encode_with_accounting(
         page: &PageRef<'_, Self>, maximum_items: u32,
         accounting: &mut super::allocation::KernelAccounting<'_>,
     ) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
         match page {
-            PageRef::Leaf(entries) => super::attribute::encode_attribute_leaf_entries_with_accounting(
-                entries, maximum_items, accounting,
-            ),
-            PageRef::Internal(children) => super::attribute::encode_attribute_internal_children_with_accounting(
-                children.iter().map(|child| (&child.first, child.page)),
-                maximum_items, accounting,
-            ),
+            PageRef::Leaf(entries) => crate::kernel::codec::encode_owned(accounting, |observe, reserve| super::attribute::encode_attribute_leaf_entries(entries, maximum_items, observe, reserve)),
+            PageRef::Internal(children) => crate::kernel::codec::encode_owned(accounting, |observe, reserve| super::attribute::encode_attribute_internal_children(children.iter().map(|child| (&child.first, child.page)), maximum_items, observe, reserve)),
         }
     }
 
@@ -106,35 +95,21 @@ impl Format for AttributeFormat {
         Self::key_owned_bytes(&value.name)
     }
 
-    fn try_clone_key(
-        key: &Self::Key,
-        maximum_bytes: u32,
-    ) -> Result<Self::Key, CanonicalDecodeError> {
-        Self::try_clone_key_with_steps(key, maximum_bytes, &mut |_| Ok(()))
-    }
-
-    fn try_clone_key_with_steps<E: From<CanonicalDecodeError>>(
+    fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
         maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E> {
-        key.try_clone_with_steps(maximum_bytes, steps)
+        key.try_clone(maximum_bytes, steps)
     }
 
-    fn try_clone_value(
-        value: &Self::Value,
-        maximum_bytes: u32,
-    ) -> Result<Self::Value, CanonicalDecodeError> {
-        Self::try_clone_value_with_steps(value, maximum_bytes, &mut |_| Ok(()))
-    }
-
-    fn try_clone_value_with_steps<E: From<CanonicalDecodeError>>(
+    fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
         maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E> {
         Ok(AttributeEntry {
-            name: Self::try_clone_key_with_steps(&value.name, maximum_bytes, steps)?,
+            name: Self::try_clone_key(&value.name, maximum_bytes, steps)?,
             value_bytes: value.value_bytes,
             value: value.value,
         })
@@ -163,7 +138,7 @@ pub enum AttributeMutation {
 }
 
 impl AttributeMutation {
-    fn validate(&self) -> Result<(), AttributeSemanticError> {
+    fn validate(&self) -> Result<(), AttributeMutationError> {
         match self {
             Self::Insert(entry) => validate_entry(entry),
             Self::Remove {
@@ -172,7 +147,7 @@ impl AttributeMutation {
             } => {
                 validate_entry(expected)?;
                 if &expected.name != name {
-                    return Err(AttributeSemanticError::NameMismatch);
+                    return Err(AttributeMutationError::NameMismatch);
                 }
                 Ok(())
             }
@@ -183,7 +158,7 @@ impl AttributeMutation {
                 validate_entry(expected)?;
                 validate_entry(replacement)?;
                 if expected.name != replacement.name {
-                    return Err(AttributeSemanticError::NameMismatch);
+                    return Err(AttributeMutationError::NameMismatch);
                 }
                 Ok(())
             }
@@ -192,15 +167,15 @@ impl AttributeMutation {
     }
 }
 
-fn validate_entry(entry: &AttributeEntry) -> Result<(), AttributeSemanticError> {
+fn validate_entry(entry: &AttributeEntry) -> Result<(), AttributeMutationError> {
     if entry.value.kind != ObjectKind::Blob {
-        return Err(AttributeSemanticError::InvalidEntry);
+        return Err(AttributeMutationError::InvalidEntry);
     }
     Ok(())
 }
 
 impl persistent_btree::Mutation<AttributeFormat> for AttributeMutation {
-    type Error = AttributeSemanticError;
+    type Error = AttributeMutationError;
 
     fn key(&self) -> &AttributeName {
         match self {
@@ -216,17 +191,17 @@ impl persistent_btree::Mutation<AttributeFormat> for AttributeMutation {
 
     fn replacement<'a>(&'a self, current: Option<&AttributeEntry>) -> Result<Option<&'a AttributeEntry>, Self::Error> {
         match self {
-            Self::Insert(_) if current.is_some() => Err(AttributeSemanticError::AlreadyExists),
+            Self::Insert(_) if current.is_some() => Err(AttributeMutationError::AlreadyExists),
             Self::Insert(entry) => Ok(Some(entry)),
-            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(AttributeSemanticError::Missing),
+            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(AttributeMutationError::Missing),
             Self::Remove { expected, .. } => {
                 if expected.as_ref().is_some_and(|expected| current != Some(expected)) {
-                    return Err(AttributeSemanticError::StateConflict);
+                    return Err(AttributeMutationError::StateConflict);
                 }
                 Ok(None)
             }
             Self::Replace { expected, replacement } => {
-                if current != Some(expected) { return Err(AttributeSemanticError::StateConflict); }
+                if current != Some(expected) { return Err(AttributeMutationError::StateConflict); }
                 Ok(Some(replacement))
             }
         }
@@ -235,45 +210,11 @@ impl persistent_btree::Mutation<AttributeFormat> for AttributeMutation {
     fn map_error(error: persistent_btree::Error<Self::Error>) -> crate::FsError { map_error(error).into() }
 }
 
-/// Candidate attribute root and exact sparse path-copy work.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AttributeMutationReceipt {
-    /// Candidate immutable attribute-tree root.
-    pub root: ObjectId,
-    /// Exact work; authority publication is not included.
-    pub work: WorkCounters,
-}
-
 /// Attribute mutation failure retaining work and safe orphan writes.
 pub type AttributeMutationFailure = OperationFailure<AttributeMutationError>;
 
 /// Applies one bounded ordered attribute mutation batch.
-///
-/// # Errors
-///
-/// Rejects malformed entries and preconditions before backend access, then
-/// fails closed on semantic, routing, storage, allocation, or work failures.
-pub fn apply_attribute_mutations<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    mutations: Vec<AttributeMutation>,
-    maximum_mutations: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<AttributeMutationReceipt, AttributeMutationFailure> {
-    let cancellation = crate::CancellationToken::new();
-    crate::async_storage::poll_immediate(apply_attribute_mutations_async(
-        store, root, mutations, maximum_mutations, limits, budget, &cancellation,
-    ))
-}
-
-/// Asynchronously applies the same iterative attribute path-copy machine.
-///
-/// # Errors
-///
-/// Returns the same failures as [`apply_attribute_mutations`], including
-/// cooperative cancellation at object-store boundaries.
-pub async fn apply_attribute_mutations_async<S: crate::AsyncObjectStore>(
+pub async fn apply_attribute_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     mutations: Vec<AttributeMutation>,
@@ -281,24 +222,22 @@ pub async fn apply_attribute_mutations_async<S: crate::AsyncObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &crate::CancellationToken,
-) -> Result<AttributeMutationReceipt, AttributeMutationFailure> {
+) -> Result<OperationReceipt<ObjectId>, AttributeMutationFailure> {
     let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
     apply_attribute_mutations_with_accounting(store, root, &mutations, maximum_mutations, limits, &mut accounting, cancellation)
         .await.map_err(|error| OperationFailure::new(standalone_error(error), accounting.spent()))
 }
 
-/// Uses the same path-copy engine with original native ownership when selected.
 pub(crate) async fn apply_attribute_mutations_with_accounting<S: crate::AsyncObjectStore>(
     store: &S, root: ObjectId, mutations: &[AttributeMutation], maximum_mutations: u32,
     limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
-) -> Result<AttributeMutationReceipt, crate::FsError> {
+) -> Result<OperationReceipt<ObjectId>, crate::FsError> {
     accounting.check()?;
-    for mutation in mutations { mutation.validate().map_err(|error| crate::FsError::from(AttributeMutationError::from(error)))?; }
-    let receipt = persistent_btree::apply_with_accounting::<S, AttributeFormat, AttributeMutation>(
+    for mutation in mutations { mutation.validate().map_err(crate::FsError::from)?; }
+    persistent_btree::apply_with_accounting::<S, AttributeFormat, AttributeMutation>(
         store, root, mutations, maximum_mutations, limits, accounting, cancellation,
-    ).await?;
-    Ok(AttributeMutationReceipt { root: receipt.root, work: receipt.work })
+    ).await
 }
 
 fn standalone_error(error: crate::FsError) -> AttributeMutationError {
@@ -316,7 +255,7 @@ fn standalone_error(error: crate::FsError) -> AttributeMutationError {
     }
 }
 
-fn map_error(error: persistent_btree::Error<AttributeSemanticError>) -> AttributeMutationError {
+fn map_error(error: persistent_btree::Error<AttributeMutationError>) -> AttributeMutationError {
     match error {
         persistent_btree::Error::Empty => AttributeMutationError::Empty,
         persistent_btree::Error::TooManyMutations => AttributeMutationError::TooManyMutations,
@@ -333,31 +272,11 @@ fn map_error(error: persistent_btree::Error<AttributeSemanticError>) -> Attribut
         persistent_btree::Error::AllocationFailed | persistent_btree::Error::Allocation(_) => {
             AttributeMutationError::AllocationFailed
         }
-        persistent_btree::Error::Semantic(error) => error.into(),
+        persistent_btree::Error::Semantic(error) => error,
         persistent_btree::Error::Storage(error) => AttributeMutationError::Storage(error),
         persistent_btree::Error::Decode(error) => AttributeMutationError::Decode(error),
         persistent_btree::Error::Work(error) => AttributeMutationError::Work(error),
     }
-}
-
-/// Attribute mutation semantic failures.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-pub enum AttributeSemanticError {
-    /// Entry references a non-blob payload.
-    #[error("attribute entry is invalid")]
-    InvalidEntry,
-    /// Mutation precondition and replacement names differ.
-    #[error("attribute mutation names differ")]
-    NameMismatch,
-    /// Insert expected an absent name.
-    #[error("attribute already exists")]
-    AlreadyExists,
-    /// Remove or replace expected an existing name.
-    #[error("attribute is missing")]
-    Missing,
-    /// Existing complete entry differs from the precondition.
-    #[error("attribute state precondition failed")]
-    StateConflict,
 }
 
 /// Persistent attribute path-copy failures.
@@ -393,9 +312,21 @@ pub enum AttributeMutationError {
     /// Fallible bounded scratch allocation failed.
     #[error("attribute mutation scratch allocation failed")]
     AllocationFailed,
-    /// Semantic mutation failed.
-    #[error(transparent)]
-    Semantic(#[from] AttributeSemanticError),
+    /// Entry references a non-blob payload.
+    #[error("attribute entry is invalid")]
+    InvalidEntry,
+    /// Mutation precondition and replacement names differ.
+    #[error("attribute mutation names differ")]
+    NameMismatch,
+    /// Insert expected an absent name.
+    #[error("attribute already exists")]
+    AlreadyExists,
+    /// Remove or replace expected an existing name.
+    #[error("attribute is missing")]
+    Missing,
+    /// Existing complete entry differs from the precondition.
+    #[error("attribute state precondition failed")]
+    StateConflict,
     /// Immutable object storage failed.
     #[error(transparent)]
     Storage(#[from] ObjectStoreError),

@@ -20,17 +20,7 @@ impl NativeMcpHttpProvider {
             .map_err(|e| Error::Invalid(e.to_string()))?;
         Ok(Self(client))
     }
-    #[cfg(feature = "mcp-oauth")]
     pub(crate) fn exchange_authenticated<'a>(
-        &'a self,
-        operation: OperationId,
-        request: McpHttpRequest,
-        bearer: Option<reqwest::header::HeaderValue>,
-    ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
-        self.exchange_inner(operation, request, bearer)
-    }
-
-    fn exchange_inner<'a>(
         &'a self,
         operation: OperationId,
         request: McpHttpRequest,
@@ -71,7 +61,7 @@ impl McpHttpProvider for NativeMcpHttpProvider {
         operation: OperationId,
         request: McpHttpRequest,
     ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
-        self.exchange_inner(operation, request, None)
+        self.exchange_authenticated(operation, request, None)
     }
     fn reconcile<'a>(
         &'a self,
@@ -196,8 +186,8 @@ mod tests {
                 8192,
                 1000,
             )?;
-            let result = transport.call(operation, "echo", json!({})).await;
-            assert!(transport.reconcile(operation).await?.is_none());
+            let result = transport.call(operation, "echo", json!({}), None).await;
+            assert!(transport.reconcile(operation, None).await?.is_none());
             server.await.map_err(|e| Error::Storage(e.to_string()))??;
             if matches!(mode, "json" | "sse") {
                 assert_eq!(result?.content[0]["text"], "local");

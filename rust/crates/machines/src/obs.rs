@@ -6,7 +6,6 @@ use tracing::Span;
 pub(crate) use tracing::field::Empty;
 
 /// Records `outcome` and, on failure, `error.kind` on the current span. A
-/// success means every RPC in it returned `OK`.
 pub(crate) fn finish<T>(result: Result<T, ProviderError>) -> Result<T, ProviderError> {
     let span = Span::current();
     match &result {

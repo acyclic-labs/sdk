@@ -51,6 +51,9 @@ const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     TEXT        Queue a stock root/selected-parent task, without starting it\n\
     /parent TASK|root  Select an actual retained task as parent, or root\n\
     /queue FILE Queue a typed WorkflowCommand JSON with fresh admission identity\n\
+    /command FILE Run/reconcile an explicitly configured approved native effect\n\
+    /context FILE Capture discovery and replace typed attributes for later requests\n\
+    /fork-selection FILE Select full/fresh/summary from an authenticated original cut\n\
     /prepare FILE Admit exact typed fork ResourcePreparationRequest JSON under its caller\n\
     /publish-fork FILE Publish actual report/admit exact child: caller,lease,preparation\n\
     /inspect FILE Inspect authorized source allocations: caller,lease,source\n\
@@ -69,7 +72,7 @@ const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     /write FILE Stage bounded content in an explicit caller-owned volume\n\
     /read FILE  Read exact pinned content: caller,lease,file (max 64 KiB)\n\
     /read-path FILE Read granted head/explicit cut: caller,lease,volume,path,generation? (max 64 KiB)\n\
-    /publication-open FILE Prepare original SDK plan: operation_id,caller,caller_lease\n\
+    /publication-open FILE Prepare original SDK plan: operation_id,caller_lease\n\
     /publication-observe FILE Observe retained publication/approval journal\n\
     /publication-apply FILE Publish only the actual approved original plan\n\
     /publication-reconcile FILE Reconcile the original publication, never replan\n\
@@ -87,7 +90,7 @@ const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     /reset      Reset fixture display only (unavailable for native sessions)\n\
     /help       Display these commands\n\
     /quit       Exit without claiming pending work completed or cancelled\n\
-    Live-model, native-process and optional remote capabilities require explicit adapters.\n";
+    Live models and optional remote capabilities require explicit adapters.\n";
 
 #[cfg(not(target_arch = "wasm32"))]
 enum Selection { Fixture, Native(std::path::PathBuf), Scenario(std::path::PathBuf) }
@@ -215,14 +218,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             { let _ = path; return Err(Error::Unsupported("native scenario requires filesystem-local,native-execution features".into()).into()); }
         }
     };
-    let mut backend = Some(backend);
     let handshake = wire::client_frame::Frame::Handshake(wire::HandshakeRequest {
         protocol: Some(current_protocol()), required: None,
     });
-    let api = backend.as_ref().ok_or_else(|| Error::Conflict("session missing".into()))?;
+    let api = &backend;
     terminal::dispatch(api.api(), handshake).await?;
     let mut cursor = api.cursor();
     let fixture_mode = matches!(api, Backend::Fixture(_));
+    let mut backend = Some(backend);
     let stdin = std::io::stdin();
     let stdin_is_terminal = stdin.is_terminal();
     let interactive = !headless && stdin_is_terminal;
@@ -238,7 +241,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     writeln!(output, "{}", if fixture_mode {
         "GraphCoder — fixture wire; UI playback only, no durable effects"
     } else {
-        "GraphCoder — actual local Harness runtime; deterministic request-digest provider; live-model/native-process adapters unavailable"
+        "GraphCoder — actual local Harness runtime; deterministic request-digest provider; native commands require explicit approved bindings"
     })?;
     loop {
         if interactive { write!(output, "{}> ", if fixture_mode { "fixture" } else { "graphcoder" })?; }
@@ -278,9 +281,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         if command == "/help" { write!(output, "{HELP}")?; continue; }
         if command.is_empty() { continue; }
         if let Some(back) = command.strip_prefix("/back ") {
-            let result = back.parse::<usize>().ok().and_then(|back| {
-                if back < terminal::MAX_DISPLAY_PAGES { scrollback.page(back) } else { None }
-            });
+            let result = back.parse::<usize>().ok().and_then(|back| scrollback.page(back));
             if let Some(page) = result { write!(output, "{page}")?; }
             else { writeln!(output, "display page unavailable; request an explicit archival page")?; }
             continue;
@@ -331,6 +332,34 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             *backend = Some(Backend::Native(std::sync::Arc::new(native::NativeSession::open(config).await?)));
             return Ok("native providers reopened; no admission or effect resent\n".into());
         }
+        #[cfg(feature = "native-execution")]
+        if let Some(path) = command.strip_prefix("/command ") {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct NativeCommand {
+                caller: acyclic_harness::TaskId,
+                lease: acyclic_harness::distributed::WorkLease,
+                operation: acyclic_harness::OperationId,
+                decision: Option<bool>,
+            }
+            let request: NativeCommand = read_json(std::path::Path::new(path))?;
+            return api.native()?.command(request.caller, &request.lease, request.operation, request.decision).await;
+        }
+        if let Some(path) = command.strip_prefix("/context ") {
+            return api.native()?.configure_context(read_json(std::path::Path::new(path))?).await;
+        }
+        if let Some(path) = command.strip_prefix("/fork-selection ") {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Selection {
+                caller: acyclic_harness::TaskId,
+                lease: acyclic_harness::distributed::WorkLease,
+                operation: acyclic_harness::OperationId,
+                history: acyclic_harness::fork::ForkHistoryPolicy,
+            }
+            let request: Selection = read_json(std::path::Path::new(path))?;
+            return api.native()?.select_fork(request.caller, &request.lease, request.operation, request.history).await;
+        }
         if let Some(task) = command.strip_prefix("/parent ") {
             let native = api.native()?;
             *parent = if task == "root" { None } else {
@@ -359,7 +388,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
                     writeln!(output, "worker-claim task={task} lease-json-hex={}", native::lease_hex(&lease)?)
                         .and_then(|()| output.flush()).map_err(|error| Error::Storage(error.to_string()))?;
                     if command.starts_with("/claim ") {
-                        native.runtime.task_host().start_task(&lease).await?;
+                        native.runtime.task_host().start_task(&lease, None).await?;
                         return Ok(format!("worker retained task={task}; no command dispatched\n"));
                     }
                     let _ = workers.spawn(async move { native.resume(lease).await });
@@ -405,7 +434,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let fork: acyclic_harness::fork::ForkRequest =
                 serde_json::from_value(request.request.payload.clone())
                     .map_err(|error| Error::Invalid(format!("invalid exact fork request: {error}")))?;
-            fork.validate()?;
+            fork.validate(&mut None)?;
             writeln!(output, "preparation-attempt operation={} caller-task={} new-child-agent={} child-admission-operation={} fork-operation={}",
                 request.operation, request.parent, fork.child_agent,
                 request.request.child.operation_id, fork.operation_id)
@@ -462,18 +491,17 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             native.caller_context(request.caller, &request.lease).await?;
             let binding = native.caller_binding(request.caller).await?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
-                &binding.issuer, binding.key, binding.authority.clone()).verifier();
-            let reader = acyclic_harness::store::HistoryReader::new(
-                &native.stream, &binding.authority, verifier)?;
+                &binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
+            let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &binding.authority, &(verifier), &mut None)?;
             let cursor = match request.cursor {
                 Some(cursor) if cursor.authority == binding.authority => cursor,
                 Some(_) => return Err(Error::Unauthorized("history cursor belongs to a different caller conversation".into())),
-                None => reader.pin(0).await?,
+                None => reader.pin(0, None).await?,
             };
             let page = reader.read_page(&cursor, acyclic_harness::store::HistoryReadLimits {
                 maximum_events: terminal::MAX_PAGE_EVENTS as u32,
                 maximum_bytes: terminal::MAX_FRAME_BYTES as u64,
-            }).await?;
+            }, None).await?;
             return Ok(format!("history-json={}\n", serde_json::to_string(&page)
                 .map_err(|error| Error::Invalid(error.to_string()))?));
         }
@@ -499,8 +527,8 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
                 .or_else(|| if native.config.owner.authority == request.seed.parent { Some(&native.config.owner) } else { None })
                 .ok_or_else(|| Error::Unsupported("original parent history verifier unavailable".into()))?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
-                &parent.issuer, parent.key, parent.authority.clone()).verifier();
-            let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &parent.authority, verifier)?;
+                &parent.issuer, parent.key, parent.authority.clone()).verifier(&mut None).expect("verifier copy");
+            let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &parent.authority, &(verifier), &mut None)?;
             let messages = reader.inherited_conversation_page(
                 &request.seed, child.agent()?, request.after_sequence,
                 acyclic_harness::store::HistoryReadLimits {
@@ -543,16 +571,16 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let request: ReadPath = read_json(std::path::Path::new(path))?;
             let native = api.native()?;
             let context = native.caller_context(request.caller, &request.lease).await?;
-            let full = request.volume.capability(acyclic_harness::conversation::VolumeOperation::Read)?;
-            let directory = request.volume.directory_read_capability("")?;
+            let full = request.volume.capability(acyclic_harness::conversation::VolumeOperation::Read, &mut None)?;
+            let directory = request.volume.directory_read_capability("", &mut None)?;
             if !context.scope().grants().contains(&full) && !context.scope().grants().contains(&directory) {
                 return Err(Error::Unauthorized("caller cannot discover this current volume".into()));
             }
             let binding = native.caller_binding(request.caller).await?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
-                &binding.issuer, binding.key, binding.authority.clone()).verifier();
+                &binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
             let grant = acyclic_harness::conversation::ContentGrant::verify_directory_read(
-                &verifier, &binding.scope, &request.volume, "")?;
+                &verifier, &binding.scope, &request.volume, "", &mut None)?;
             let (file, bytes) = native.files.read_private_path(
                 &request.volume, &grant, &request.path, request.generation.as_ref(),
                 terminal::MAX_FRAME_BYTES as u64,

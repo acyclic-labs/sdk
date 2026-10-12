@@ -6,12 +6,13 @@ import type {
   WorkspaceRebaseResult,
 } from "./contracts.js";
 import {
-  GIT_COMPAT_ACTION_VARIANTS,
+  GIT_COMPAT_ACTION_VARIANTS as gitCompatActionVariants,
   GIT_COMPAT_BYTE_FIELDS,
   GIT_COMPAT_DIRTY_STATE_WIRE,
   GIT_COMPAT_OPAQUE_PATHS,
-  GIT_COMPAT_OUTPUT_VARIANTS,
+  GIT_COMPAT_OUTPUT_VARIANTS as gitCompatOutputVariants,
   GIT_COMPAT_PENDING_FIELDS,
+  GIT_COMPAT_RESULT_VARIANTS,
   GIT_COMPAT_PUBLIC_ALIASES,
   GIT_COMPAT_TIMESTAMP_FIELDS,
   GIT_COMPAT_TRANSITION_IDENTITY_BYTES,
@@ -55,8 +56,6 @@ export type {
   WorkspaceRootIdentity,
 } from "../generated/git-compat-contract.js";
 
-const gitCompatOutputVariants = [...GIT_COMPAT_OUTPUT_VARIANTS] as const;
-const gitCompatActionVariants = [...GIT_COMPAT_ACTION_VARIANTS] as const;
 const gitCompatDirtyStateByWire = new Map(
   Object.entries(GIT_COMPAT_DIRTY_STATE_WIRE).map(([typescript, wire]) => [wire, typescript]),
 );
@@ -91,18 +90,6 @@ export interface CompatibilityWire {
   decode(kind: CompatibilityWireKind, envelope: CompatibilityWireEnvelope): CompatibilityJson;
 }
 
-export interface RawCompatibilityWire {
-  encodeMergePlanJson(valueJson: string): string;
-  decodeMergePlanJson(valueJson: string): string;
-  encodeMergeCandidateJson(valueJson: string): string;
-  decodeMergeCandidateJson(valueJson: string): string;
-  encodeMultiRootPlanJson(valueJson: string): string;
-  decodeMultiRootPlanJson(valueJson: string): string;
-  encodeMultiRootCandidateJson(valueJson: string): string;
-  decodeMultiRootCandidateJson(valueJson: string): string;
-  encodePublicationJson(valueJson: string): string;
-  decodePublicationJson(valueJson: string): string;
-}
 
 /** Decodes an exact byte identity without JavaScript's truncating coercions. */
 export function decodeFixedBytes(value: unknown, length: number, name: string): Uint8Array {
@@ -159,7 +146,10 @@ function compatibilityEnvelope(value: unknown, kind: CompatibilityWireKind): Com
 }
 
 /** Adapts generated bindings without reimplementing Rust validation semantics. */
-export function adaptCompatibilityWire(raw: RawCompatibilityWire): CompatibilityWire {
+export function adaptCompatibilityWire(raw: Pick<typeof import("../generated/wasm/acyclic_fs_wasm.js"),
+  | "encodeMergePlanJson" | "decodeMergePlanJson" | "encodeMergeCandidateJson" | "decodeMergeCandidateJson"
+  | "encodeMultiRootPlanJson" | "decodeMultiRootPlanJson" | "encodeMultiRootCandidateJson" | "decodeMultiRootCandidateJson"
+  | "encodePublicationJson" | "decodePublicationJson">): CompatibilityWire {
   const functions = {
     "merge-plan": [raw.encodeMergePlanJson, raw.decodeMergePlanJson],
     "merge-candidate": [raw.encodeMergeCandidateJson, raw.decodeMergeCandidateJson],
@@ -391,31 +381,28 @@ export function parseGitCompatOutputJson(json: string): GitCompatOutput {
   const value = parseGitJson(json);
   if (value === "NoOp") return value;
   const output = object(value, "Git command output");
-  const variants = Object.keys(output);
-  if (variants.length !== 1 || !gitCompatOutputVariants.includes(variants[0] as typeof gitCompatOutputVariants[number])) {
-    throw new TypeError("Git command output has an unknown variant");
-  }
-  if (variants[0] === "Status") {
+  const kind = tagged(output, gitCompatOutputVariants, "command output");
+  if (kind === "Status") {
     const status = object(output.Status, "Git Status output");
     for (const field of ["branch", "workspace", "dirty", "all_changes_staged"]) {
       if (!(field in status)) throw new TypeError(`Git Status output lacks ${field}`);
     }
   }
-  if (variants[0] === "Bisect") {
+  if (kind === "Bisect") {
     const bisect = object(output.Bisect, "Git Bisect output");
     if ("remaining" in bisect) u32(bisect.remaining, "bisect remaining");
   }
-  if (variants[0] === "Text" && typeof output.Text !== "string") {
+  if (kind === "Text" && typeof output.Text !== "string") {
     throw new TypeError("Git Text output must be a string");
   }
-  if (variants[0] === "Paths" && (!Array.isArray(output.Paths)
+  if (kind === "Paths" && (!Array.isArray(output.Paths)
     || output.Paths.some(path => typeof path !== "string"))) {
     throw new TypeError("Git Paths output must be an array of strings");
   }
-  if (variants[0] === "Action") {
+  if (kind === "Action") {
     tagged(output.Action, gitCompatActionVariants, "Git action");
-  } else if (variants[0] === "Prepared") {
-    const envelope = object(output[variants[0]], `Git ${variants[0]} output`);
+  } else if (kind === "Prepared") {
+    const envelope = object(output[kind], `Git ${kind} output`);
     tagged(envelope.action, gitCompatActionVariants, "Git action");
   }
   return hydrateGitCompatValue(output, "") as GitCompatOutput;
@@ -437,7 +424,7 @@ export function parseGitPendingTransitionJson(json: string): GitPendingTransitio
 
 /** Serializes a public executor result using the Rust wire field contract. */
 export function stringifyGitFilesystemResult(result: GitFilesystemResult): string {
-  tagged(result, ["Captured", "Forked", "Applied", "Data"], "filesystem result");
+  tagged(result, GIT_COMPAT_RESULT_VARIANTS, "filesystem result");
   return JSON.stringify(serializeGitCompatValue(result, ""));
 }
 
@@ -553,18 +540,14 @@ export async function finishGitCompatOutput(
   return output;
 }
 
-function tagged<const K extends string>(
-  value: unknown,
-  variants: readonly K[],
-  label: string,
-): readonly [K, unknown] {
+function tagged(value: unknown, variants: ReadonlySet<string>, label: string): string {
   const record = object(value, label);
   const keys = Object.keys(record);
-  if (keys.length !== 1 || !variants.includes(keys[0] as K)) {
+  const kind = keys[0];
+  if (keys.length !== 1 || kind === undefined || !variants.has(kind)) {
     throw new TypeError(`Git ${label} has an unknown or ambiguous variant`);
   }
-  const kind = keys[0] as K;
-  return [kind, record[kind]];
+  return kind;
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {

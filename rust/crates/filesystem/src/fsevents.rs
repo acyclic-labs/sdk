@@ -232,11 +232,11 @@ impl Api {
         work.preflight(WorkCounters {
             items_examined: cleanup_records, ..WorkCounters::default()
         })?;
-        work.with_original_leaf(|work| work.reserve_pending_items(cleanup_records))?;
+        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, cleanup_records))?;
         let mut slot_allocation = match work.claim(slots) {
             Ok(allocation) => allocation,
             Err(error) => {
-                work.with_original_leaf(|work| work.refund_pending_items(cleanup_records));
+                work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_records).expect("original reservation is balanced"));
                 return Err(error);
             }
         };
@@ -248,7 +248,7 @@ impl Api {
         if let Err(error) = reserved.map_err(DemandError::Allocation).and(reconciled) {
             drop(strings);
             work.release(slot_allocation)?;
-            work.with_original_leaf(|work| work.refund_pending_items(cleanup_records));
+            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_records).expect("original reservation is balanced"));
             return Err(error);
         }
         let mut cleanup_remaining = cleanup_records;
@@ -288,7 +288,7 @@ impl Api {
                 strings.push(string);
                 payload += owned;
                 if let Some(copy) = copy {
-                    copy.record(owned).map_err(crate::native_name::original_name_error)?;
+                    { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: owned, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
                 } else {
                     work.record(WorkCounters { bytes_copied: owned, ..WorkCounters::UNCHARGED })?;
                 }
@@ -317,7 +317,7 @@ impl Api {
                 return Err(native_error("cannot create the FSEvents path array"));
             }
             if let Some(copy) = copy {
-                copy.record(slots).map_err(crate::native_name::original_name_error)?;
+                { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: slots, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
             } else {
                 work.record(WorkCounters { bytes_copied: slots, ..WorkCounters::UNCHARGED })?;
             }
@@ -330,10 +330,10 @@ impl Api {
             let retired = work.record(WorkCounters {
                 backend_write_operations: 1, ..WorkCounters::default()
             });
-            let visited = work.with_original_leaf(|work| work.record_pending_items(1));
+            let visited = work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items, 1, 1));
             if let Err(error) = retired.and(visited) { result = Err(error); }
         }
-        work.with_original_leaf(|work| work.refund_pending_items(cleanup_remaining));
+        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_remaining).expect("original reservation is balanced"));
         drop(strings);
         work.release(slot_allocation)?;
         match result {
@@ -607,8 +607,8 @@ impl EventStream {
         self.original_cleanup && work.native_source_work().is_some_and(|work| {
             let current = work.original_demand_work();
             self.birth.as_ref().is_some_and(|birth| {
-                Arc::ptr_eq(birth.meter(), current.meter())
-                    && match (birth.resource_allowance(), current.resource_allowance()) {
+                Arc::ptr_eq(&birth.state, &current.state)
+                    && match (birth.resource.as_ref(), current.resource.as_ref()) {
                         (None, None) => true,
                         (Some(birth), Some(current)) => Arc::ptr_eq(birth, current),
                         _ => false,

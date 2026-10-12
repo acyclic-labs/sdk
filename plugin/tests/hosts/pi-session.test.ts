@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "bun:test";
@@ -8,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { invokePi, loadPiContextHelpers } from "./pi-fixture.ts";
 
-const { captureParentCut, childSessionBytes } = await loadPiContextHelpers();
+const { captureParentCut, nativeChildSession } = await loadPiContextHelpers();
 const provider = `
 import { fauxProvider, fauxAssistantMessage, getCurrentTools } from "@earendil-works/pi-ai";
 export default function (pi) {
@@ -21,10 +20,10 @@ export default function (pi) {
 }
 `;
 
-function probeArguments(session: string, extension: string, model = "probe") {
+function probeArguments(session: string, extension: string) {
   return [
     "--print", "--mode", "text", "--session", session,
-    "--provider", "acyclic-qualification", "--model", model,
+    "--provider", "acyclic-qualification", "--model", "probe",
     "--no-extensions", "--no-mcp", "--no-builtin-tools", "-e", extension,
   ];
 }
@@ -78,8 +77,8 @@ export default function (pi) {
     compacted.appendMessage(spawnMessage(["spawn-after-compaction"]));
     const cut = captureParentCut(compacted, "spawn-after-compaction", 100, 100_000);
     const child = join(directory, "child.jsonl");
-    const childId = randomUUID();
-    writeFileSync(child, childSessionBytes(cut, childId, project));
+    const native = nativeChildSession(compacted, project, cut);
+    writeFileSync(child, native.session_bytes);
     const originalParent = readFileSync(parentFile, "utf8");
     const extension = join(directory, "provider.ts");
     writeFileSync(extension, provider);
@@ -87,7 +86,7 @@ export default function (pi) {
       const result = await invokePi([...probeArguments(child, extension), prompt], project, directory);
       assert.match(result.stdout, /qualified native parent summary/);
       assert.doesNotMatch(result.stdout, /old parent instruction|spawn-after-compaction/);
-      assert.equal(SessionManager.open(child, directory).getSessionId(), childId);
+      assert.equal(SessionManager.open(child, directory).getSessionId(), native.native_session_id);
       assert.equal(readFileSync(parentFile, "utf8"), originalParent);
     }
   } finally {

@@ -28,10 +28,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get("token")
         .and_then(serde_json::Value::as_str)
         .ok_or("token")?;
-    let mut actors_grpc =
-        actors::grpc::connect_with_ca_certificate(endpoint, token, Some(ca.as_bytes())).await?;
-    let mut workers_grpc =
-        workers::grpc::connect_with_ca_certificate(endpoint, token, Some(ca.as_bytes())).await?;
+    let mut actors_grpc = actors::grpc::connect(endpoint, token, Some(ca.as_bytes())).await?;
+    let mut workers_grpc = workers::grpc::connect(
+        endpoint,
+        workers::BearerAuth::new(token)
+            .map_err(|()| workers::grpc::ConnectError::InvalidCredential)?,
+        Some(ca.as_bytes()),
+    )
+    .await?;
     let actors_http = actors::http::Client::new(http_endpoint, token, 1024 * 1024)?;
     let workers_http = workers::http::Client::new(http_endpoint, token, 1024 * 1024)?;
     let request = actors::wire::CreateActorRequest {
@@ -226,8 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let resolved = workers_http.invoke_deployment(&request).await?;
     assert_eq!(resolved.resolved_sha256, vec![2; 32]);
     assert_eq!(resolved.resolved_revision, Some(8));
-    let mut denied =
-        actors::grpc::connect_with_ca_certificate(endpoint, "wrong", Some(ca.as_bytes())).await?;
+    let mut denied = actors::grpc::connect(endpoint, "wrong", Some(ca.as_bytes())).await?;
     assert_eq!(
         denied
             .inspect_actor(actors::wire::InspectActorRequest::default())
@@ -244,7 +247,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await,
         Err(actors::http::Error::Service {
             status: 401,
-            detail: Some(_)
+            detail: Some(_),
+            ..
         })
     ));
     let bounded = actors::http::Client::new(http_endpoint, token, 8)?;

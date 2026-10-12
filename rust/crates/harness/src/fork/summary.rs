@@ -36,14 +36,14 @@ impl SummaryForkSelection {
     pub(crate) fn validate_with_work(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.limits.validate_with_work(work)?;
-        self.limits.validate_file_with_work(&self.checkpoint, work)?;
+        self.limits.validate(work)?;
+        self.limits.validate_file(&self.checkpoint, work)?;
         if self.checkpoint.descriptor().media_type() != "application/json"
             || self.checkpoint.descriptor().byte_length() > self.limits.render_bytes
             || self.history_limits.maximum_events == 0
             || self.history_limits.maximum_bytes == 0
         {
-            return Err(super::fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
+            return Err(super::boundary_error(work, crate::wire::ErrorCode::Invalid,
                 "summary fork selection is invalid"));
         }
         Ok(())
@@ -79,7 +79,7 @@ impl SummaryForkCapture {
         child_private: &VolumeRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let mut work = super::ForkValidationWork::new(work)?;
+        let mut work = super::CodecQuota::observed(work)?;
         self.selection.validate()?;
         if self
             .payloads
@@ -92,7 +92,7 @@ impl SummaryForkCapture {
                 "summary fork capture exceeds protocol counts".into(),
             ));
         }
-        self.selection.limits.validate_file(&self.context)?;
+        self.selection.limits.validate_file(&self.context, &mut None)?;
         if self.context.volume() != child_private
             || self.context.path() != ".system/inherited-conversation/summary-context.json"
             || self.context.descriptor().media_type() != "application/json"
@@ -106,7 +106,7 @@ impl SummaryForkCapture {
         let mut paths = std::collections::BTreeSet::new();
         for file in &self.payloads {
             work.checkpoint()?;
-            self.selection.limits.validate_file(file)?;
+            self.selection.limits.validate_file(file, &mut None)?;
             if file.volume() != child_private
                 || !file
                     .path()
@@ -122,8 +122,8 @@ impl SummaryForkCapture {
         let mut refs = std::collections::BTreeSet::new();
         for file in &self.references {
             work.checkpoint()?;
-            self.selection.limits.validate_file(file)?;
-            if !refs.insert(work.digest(file)?) {
+            self.selection.limits.validate_file(file, &mut None)?;
+            if !refs.insert(crate::contract::canonical_json_digest_with_work(file, crate::store::default_projection_read_limits().maximum_bytes, work.work())?) {
                 return Err(Error::Invalid(
                     "summary fork reference appears twice".into(),
                 ));
@@ -248,7 +248,7 @@ pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider>(
             Error::Invalid("summary fork parent conversation is unbound".into())
         })?;
     let through_sequence = conversation.logical_revision();
-    let (checkpoint, context) = crate::executor::load_canonical_checkpoint_through_with_io(
+    let (checkpoint, context) = crate::executor::load_canonical_checkpoint_through(
         journal,
         &selection.checkpoint,
         selection.limits,
