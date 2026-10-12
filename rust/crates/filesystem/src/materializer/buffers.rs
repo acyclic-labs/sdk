@@ -198,7 +198,7 @@ impl NativeMaterializationWork {
 pub(super) struct ImageWriter {
     pub(super) bytes: Vec<u8>,
     pub(super) allocation: NativeAllocation,
-    failure: Option<NativeTreeMaterializationError>,
+    pub(super) failure: Option<NativeTreeMaterializationError>,
 }
 impl ImageWriter {
     pub(super) fn new(
@@ -210,7 +210,7 @@ impl ImageWriter {
             failure: None,
         })
     }
-    fn append(&mut self, bytes: &[u8]) -> Result<(), NativeTreeMaterializationError> {
+    pub(super) fn append(&mut self, bytes: &[u8]) -> Result<(), NativeTreeMaterializationError> {
         let work = self.allocation.work().clone();
         let copied = bytes
             .len()
@@ -250,5 +250,24 @@ impl std::fmt::Write for ImageWriter {
             self.failure = Some(error);
             std::fmt::Error
         })
+    }
+}
+impl std::io::Write for ImageWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.allocation
+            .work()
+            .charge(crate::WorkCounters {
+                bytes_encoded: bytes.len() as u64,
+                ..crate::WorkCounters::UNCHARGED
+            })
+            .and_then(|()| self.append(bytes))
+            .map(|()| bytes.len())
+            .map_err(|error| {
+                self.failure = Some(error);
+                std::io::ErrorKind::Other.into()
+            })
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }

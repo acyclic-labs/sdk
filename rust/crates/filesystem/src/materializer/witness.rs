@@ -6,20 +6,26 @@ pub(super) fn encode_native_witness(
     before: Option<[u8; 32]>,
     after: Option<[u8; 32]>,
     metadata: Option<crate::WorkspaceMetadata>,
-) -> Result<Vec<u8>, NativeTreeMaterializationError> {
-    let mut image = Vec::with_capacity(67);
-    image.push(NATIVE_WITNESS_VERSION);
-    for fingerprint in [before, after] {
-        image.push(u8::from(fingerprint.is_some()));
-        image.extend_from_slice(&fingerprint.unwrap_or([0; 32]));
+    work: &NativeMaterializationWork,
+) -> Result<(Vec<u8>, NativeAllocation), NativeTreeMaterializationError> {
+    let mut header = [0; 67];
+    header[0] = NATIVE_WITNESS_VERSION;
+    for (field, fingerprint) in header[1..].chunks_exact_mut(33).zip([before, after]) {
+        field[0] = u8::from(fingerprint.is_some());
+        field[1..].copy_from_slice(&fingerprint.unwrap_or([0; 32]));
     }
+    let mut writer = ImageWriter::new(work)?;
+    std::io::Write::write_all(&mut writer, &header)
+        .map_err(|_| writer.failure.take().expect("native encoding failure"))?;
     if let Some(metadata) = metadata {
-        image.extend_from_slice(
-            &serde_json::to_vec(&metadata)
-                .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?,
-        );
+        serde_json::to_writer(&mut writer, &metadata).map_err(|_| {
+            writer
+                .failure
+                .take()
+                .unwrap_or(NativeTreeMaterializationError::InvalidLayout)
+        })?;
     }
-    Ok(image)
+    Ok((writer.bytes, writer.allocation))
 }
 
 pub(super) fn decode_native_witness(

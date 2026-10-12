@@ -1,83 +1,78 @@
 use super::*;
+use crate::native_host::HostRoot;
 
-#[cfg(all(
-    feature = "local",
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
-pub(super) fn validate_native_operation_location(
+/// Validates a recovery location against the held checkout allocation.
+pub fn validate_native_preparation_location(
     root: &Path,
-    operation_directory: &Path,
-) -> Result<(), NativeTreeMaterializationError> {
-    let root = root.canonicalize()?;
-    let operation = prospective_canonical_path(operation_directory)?;
-    if operation == root || operation.starts_with(&root) || root.starts_with(&operation) {
-        return Err(NativeTreeMaterializationError::InvalidLayout);
-    }
-    let existing = nearest_existing_ancestor(operation_directory)?;
-    if !same_native_volume(&root, &existing.canonicalize()?)? {
-        return Err(NativeTreeMaterializationError::InvalidLayout);
-    }
-    Ok(())
-}
-
-#[cfg(all(
-    feature = "local",
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
-pub(super) fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, std::io::Error> {
-    let mut cursor = path;
-    loop {
-        match std::fs::symlink_metadata(cursor) {
-            Ok(_) => return Ok(cursor.to_path_buf()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                cursor = cursor.parent().ok_or(error)?;
+    operation: &Path,
+    work: &NativeMaterializationWork,
+) -> Result<crate::NativeRootIdentity, NativeTreeMaterializationError> {
+    let root = HostRoot::open(root, &mut &*work)?;
+    let mut existing = operation;
+    let parent = loop {
+        match HostRoot::open(existing, &mut &*work) {
+            Ok(parent) => break parent,
+            Err(NativeTreeMaterializationError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                existing = existing.parent().ok_or(error)?;
             }
             Err(error) => return Err(error),
         }
-    }
-}
-
-#[cfg(all(
-    feature = "local",
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
-pub(super) fn prospective_canonical_path(path: &Path) -> Result<PathBuf, std::io::Error> {
-    let existing = nearest_existing_ancestor(path)?;
-    let mut canonical = existing.canonicalize()?;
-    let suffix = path
-        .strip_prefix(&existing)
-        .map_err(|_| std::io::Error::other("invalid prospective path"))?;
+    };
+    let suffix = operation
+        .strip_prefix(existing)
+        .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?;
     for component in suffix.components() {
-        match component {
-            std::path::Component::Normal(name) => canonical.push(name),
-            _ => return Err(std::io::Error::other("invalid prospective path component")),
+        work.charge(NativeResourceCredit::Items.delta(1))?;
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err(NativeTreeMaterializationError::InvalidLayout);
         }
     }
-    Ok(canonical)
+    validate_layout(&root, &parent, suffix, work)?;
+    Ok(root.identity())
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32")))]
-pub(super) fn same_native_volume(left: &Path, right: &Path) -> Result<bool, std::io::Error> {
-    use std::os::unix::fs::MetadataExt as _;
-    Ok(std::fs::metadata(left)?.dev() == std::fs::metadata(right)?.dev())
-}
-
-#[cfg(all(windows, not(target_arch = "wasm32")))]
-pub(super) fn same_native_volume(left: &Path, right: &Path) -> Result<bool, std::io::Error> {
-    use std::path::Component;
-    let prefix = |path: &Path| {
-        path.components().find_map(|component| match component {
-            Component::Prefix(prefix) => Some(prefix.as_os_str().to_os_string()),
-            _ => None,
-        })
+pub(super) fn validate_layout(
+    root: &HostRoot,
+    operation: &HostRoot,
+    suffix: &Path,
+    work: &NativeMaterializationWork,
+) -> Result<(), NativeTreeMaterializationError> {
+    if root.identity().device != operation.identity().device
+        || root.identity() == operation.identity()
+    {
+        return Err(NativeTreeMaterializationError::InvalidLayout);
+    }
+    // A missing path cannot be an ancestor of an existing checkout.
+    #[cfg(unix)]
+    let nested = crate::native_host::directory_has_ancestor(
+        &operation.directory,
+        root.identity(),
+        &mut &*work,
+    )? || suffix.as_os_str().is_empty()
+        && crate::native_host::directory_has_ancestor(
+            &root.directory,
+            operation.identity(),
+            &mut &*work,
+        )?;
+    #[cfg(windows)]
+    let nested = {
+        let (root, _root) =
+            crate::native_host::canonical_directory_wide(&root.directory, &mut &*work)?;
+        let (operation, _operation) =
+            crate::native_host::canonical_directory_wide(&operation.directory, &mut &*work)?;
+        work.charge(NativeResourceCredit::Items.delta((root.len() + operation.len()) as u64))?;
+        fn contains(parent: &[u16], child: &[u16]) -> bool {
+            child.starts_with(parent)
+                && (parent.last() == Some(&92)
+                    || child.len() == parent.len()
+                    || child.get(parent.len()) == Some(&92))
+        }
+        contains(&root, &operation) || suffix.as_os_str().is_empty() && contains(&operation, &root)
     };
-    Ok(prefix(left) == prefix(right))
-}
-
-#[cfg(all(not(unix), not(windows), not(target_arch = "wasm32")))]
-pub(super) fn same_native_volume(_left: &Path, _right: &Path) -> Result<bool, std::io::Error> {
-    Ok(true)
+    if nested {
+        return Err(NativeTreeMaterializationError::InvalidLayout);
+    }
+    Ok(())
 }

@@ -17,6 +17,8 @@ mod types;
 pub use types::*;
 mod protocol;
 pub use protocol::*;
+mod inspection;
+pub use inspection::*;
 mod memory;
 pub use memory::*;
 
@@ -32,8 +34,10 @@ native_modules! {
     pub work;
     pub(crate) allowance;
     pub allocation;
+    pub(crate) checkout_work;
     pub(crate) views;
     pub reservation;
+    pub preparation;
     pub(crate) cleanup;
     pub buffers;
     pub backend;

@@ -24,7 +24,8 @@ impl Reservation {
     }
 }
 impl NativeWorkReservation {
-    pub(super) fn new(meter: NativeMaterializationWork, remaining: WorkCounters) -> Self {
+    pub(super) fn new(mut meter: NativeMaterializationWork, remaining: WorkCounters) -> Self {
+        meter.original.capture_origin = None;
         Self {
             meter,
             state: parking_lot::Mutex::new(Reservation {
@@ -198,15 +199,7 @@ impl NativeWorkReservation {
             (None, None) => true,
             _ => false,
         };
-        let capture = match (
-            &self.meter.original.capture_origin,
-            &other.meter.original.capture_origin,
-        ) {
-            (Some(a), Some(b)) => std::sync::Weak::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        };
-        if !self.meter.shares_allocation_context(&other.meter) || !invocation || !capture {
+        if !self.meter.shares_allocation_context(&other.meter) || !invocation {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         let remaining = &mut self.state.get_mut().remaining;
