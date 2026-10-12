@@ -892,7 +892,7 @@ fn with_lazy_mount<T>(
     use acyclic_fs::demand::native::NativeDemandSource;
     use acyclic_fs::model::VolumeLimits;
     use acyclic_fs::native_mount::MountOptions;
-    use acyclic_fs::{DistributedFs, LocalCoreStateStore, MountPublication};
+    use acyclic_fs::{LazyWorkspace, LocalCoreStateStore, MountPublication};
     use std::sync::Arc;
 
     let mount_dir = work.join("mnt");
@@ -905,14 +905,14 @@ fn with_lazy_mount<T>(
                 .map_err(engine_err("open store"))?;
             let state = LocalCoreStateStore::open_owned(work.join("core-state"))
                 .map_err(engine_err("open core state"))?;
-            let distributed = DistributedFs::new(engine, state);
             let demand = NativeDemandSource::open(source, profile, VolumeLimits::default(), None, None)
                 .await
                 .map_err(engine_err("open source"))?;
-            let workspace = distributed
-                .attach_lazy_with_config(
+            let workspace = LazyWorkspace::attach_with_config(
+                    &engine,
                     "mount-bench",
                     Arc::new(demand),
+                    state,
                     VolumeConfig::native(Lifecycle::Durable),
                 )
                 .await

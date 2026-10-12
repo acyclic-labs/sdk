@@ -77,8 +77,6 @@ pub mod distributed;
 mod logical_objects;
 #[cfg(feature = "distributed")]
 pub use logical_objects::LogicalObjectStore;
-#[cfg(feature = "distributed")]
-mod distributed_fs;
 pub mod facade;
 #[macro_use]
 pub mod foundation;
@@ -175,8 +173,6 @@ pub use core_state::{
 };
 #[cfg(feature = "distributed")]
 pub use distributed::StreamAuthorityStore;
-#[cfg(feature = "distributed")]
-pub use distributed_fs::DistributedFs;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
     CheckoutCommitOutcome, ContentChange, ContentTimes, DetachedFile,
