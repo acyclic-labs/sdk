@@ -375,13 +375,6 @@ impl CancellationToken {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn prepare_cancel_with_native_work(
-        &self, original: &crate::NativeMaterializationWork,
-    ) -> Result<PreparedCancellation, crate::NativeTreeMaterializationError> {
-        self.prepare_cancel_with_cleanup_wait(original.cancellation())
-    }
-
     /// Uses only this registry's original before-birth terminal credit. The
     /// independent token controls waiting, not namespace or task authority.
     #[cfg(not(target_arch = "wasm32"))]

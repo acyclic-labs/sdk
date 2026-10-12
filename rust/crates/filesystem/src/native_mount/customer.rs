@@ -1315,7 +1315,9 @@ pub enum MountLifecycleError {
     #[error("{source}")]
     NativeWorkspace {
         #[source]
+        /// Original workspace failure.
         source: WorkspaceError,
+        /// Allocation custody retained until the cause drops.
         custody: Option<crate::NativeAllocation>,
     },
     /// Lazy source or sparse-overlay admission failed.
@@ -1325,7 +1327,9 @@ pub enum MountLifecycleError {
     #[error("{source}")]
     NativeLazy {
         #[source]
+        /// Original lazy workspace failure.
         source: LazyWorkspaceError,
+        /// Allocation custody retained until the cause drops.
         custody: Option<crate::NativeAllocation>,
     },
     /// Native driver admission or teardown failed.
@@ -1336,7 +1340,9 @@ pub enum MountLifecycleError {
     #[error("native capture or namespace cleanup failed: {source}")]
     NativeCaptureFailure {
         #[source]
+        /// Original native capture failure.
         source: NativeMountError,
+        /// Distinct namespace cleanup failure.
         cleanup_failure: Option<NativeMountError>,
     },
     /// Native callback publication failed.
