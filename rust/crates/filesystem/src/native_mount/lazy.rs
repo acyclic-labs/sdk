@@ -483,7 +483,7 @@ fn mount_watch_error(error: crate::watch::NativeWatchError) -> MountSourceError 
 fn native_lazy_error(error: LazyWorkspaceError) -> MountSourceError {
     match error {
         LazyWorkspaceError::Demand(error) => mount_demand_error(error),
-        LazyWorkspaceError::NativeCustody(error) => super::adapter::native_custody_error(error),
+        LazyWorkspaceError::NativeCustody(error) => MountSourceError::from(error),
         LazyWorkspaceError::NotRegularFile => MountSourceError::NativeStaticText {
             kind: super::NativeSourceTextKind::Invalid, text: "path is not a regular file",
         },
@@ -1315,7 +1315,7 @@ fn directory_removal_bytes(names: &Vec<String>) -> Result<u64, MountSourceError>
 
 fn directory_lazy_error(error: LazyWorkspaceError) -> MountSourceError {
     match error {
-        LazyWorkspaceError::NativeCustody(error) => super::adapter::native_custody_error(error),
+        LazyWorkspaceError::NativeCustody(error) => MountSourceError::from(error),
         error => match error.semantic_error() {
             LazyWorkspaceError::Demand(DemandError::StaleVersion) => MountSourceError::Stale,
             _ => lazy_error(error),
@@ -6398,7 +6398,7 @@ where
                         Err(error) => return Err(error),
                     }
                 }
-                self.authored.capture_host_with_identity_with_native_work(
+                self.authored.capture_host(
                     source_root, paths, expected_root_identity, scope, None, original,
                 ).await
             })
