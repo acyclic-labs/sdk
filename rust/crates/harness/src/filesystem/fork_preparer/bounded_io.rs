@@ -284,7 +284,7 @@ impl PreparationIo {
     /// Uses the original native ledger for filesystem operations.
     pub fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         work.remaining().map_err(Error::from)?;
-        let custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(Error::from)?;
+        let custody = work.claim(0, 0, acyclic_fs::WorkCounters::default()).map_err(Error::from)?;
         Ok(Self::Native { work: work.clone(), custody: Mutex::new(custody) })
     }
 

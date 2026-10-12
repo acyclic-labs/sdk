@@ -24,9 +24,9 @@ impl Journal {
                 publication.check()?;
                 self.check()?;
                 let snapshot = difference(&State::default(), state, 0, &mut publication)?;
-                let temporary = crate::physical::local_path(&self.root.path, TEMPORARY, publication.meter.as_ref())?;
+                let temporary = crate::physical::local_path(&self.root.path, TEMPORARY, publication.native.as_ref().map(|(meter, _)| meter))?;
                 let destination =
-                    crate::physical::local_path(&self.root.path, "mutations.log", publication.meter.as_ref())?;
+                    crate::physical::local_path(&self.root.path, "mutations.log", publication.native.as_ref().map(|(meter, _)| meter))?;
                 let mut file = crate::physical::open_publication(&temporary.value, &publication)?;
                 let header = publication.encode(&self.header)?;
                 let header_length = u32::try_from(header.len())
@@ -67,8 +67,8 @@ impl Journal {
                 #[cfg(test)]
                 self.checkpoint_fault(3).map_err(|_| Error::from(Unavailable))?;
                 if let Err(error) = self.root.replace_journal(|| {
-                    match &publication.meter {
-                        Some(meter) => acyclic_native_runtime::durable_rename(
+                    match &publication.native {
+                        Some((meter, _)) => acyclic_native_runtime::durable_rename(
                             &temporary.value, &destination.value,
                             acyclic_native_runtime::RenameMode::Replace, Some(meter),
                         ),
@@ -167,7 +167,7 @@ impl Checkpoint {
             return Err(Error::from(QuotaExceeded).into());
         }
         // Each encoded frame owns temporary custody.
-        let mut frame = Publication::new(publication.meter.clone());
+        let mut frame = Publication::new(publication.native.as_ref().map(|(meter, _)| Arc::clone(meter)));
         let encoded = frame.encode(&self.pending)?;
         let length = u32::try_from(encoded.len()).map_err(|_| Error::from(QuotaExceeded))?;
         let digest = frame.codec(0, 0, encoded.len(), || blake3::hash(&encoded))?;
