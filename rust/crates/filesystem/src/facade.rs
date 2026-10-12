@@ -721,7 +721,7 @@ impl<A, O> Fs<A, O> {
         &self, name: impl AsRef<str>, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> MeasuredResult<FsReceipt<(crate::WorkspaceName, crate::WorkspaceId)>, WorkspaceError> {
 
-        let named = crate::WorkspaceName::new_measured(name, budget, cancellation)?;
+        let named = crate::WorkspaceName::new(name, budget, cancellation)?;
         let work = named.work;
         let derived = crate::WorkspaceId::derive(
             self.inner.workspace_namespace, &named.value,
@@ -3622,7 +3622,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
         cancellation.check().map_err(FsError::from)?;
         original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
-        let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
+        let name = crate::WorkspaceName::new(name, original, cancellation)?;
         let id = crate::WorkspaceId::derive(
             self.inner.workspace_namespace, &name, original, cancellation,
         )?;
@@ -3667,7 +3667,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let result: Result<_, WorkspaceError> = async {
             cancellation.check()?;
             original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
-            let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
+            let name = crate::WorkspaceName::new(name, original, cancellation)?;
             let id = crate::WorkspaceId::derive(
                 self.inner.workspace_namespace, &name, original, cancellation,
             )?;
@@ -3700,7 +3700,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let result: Result<_, WorkspaceError> = async {
             cancellation.check()?;
             original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
-            let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
+            let name = crate::WorkspaceName::new(name, original, cancellation)?;
             let id = crate::WorkspaceId::derive(
                 self.inner.workspace_namespace, &name, original, cancellation,
             )?;
@@ -3778,7 +3778,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self, name: impl AsRef<str>, original: &NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<(crate::WorkspaceName, crate::WorkspaceId), (WorkspaceError, Option<NativeAllocation>)> {
         let result = (|| {
-            let name = crate::WorkspaceName::new_with_native_work(name.as_ref(), original, cancellation)?;
+            let name = crate::WorkspaceName::new(name.as_ref(), original, cancellation)?;
             let id = crate::WorkspaceId::derive(
                 self.inner.workspace_namespace, &name, original, cancellation,
             )?;
@@ -8043,7 +8043,7 @@ async fn read_named_attribute_to_file_root_with_accounting<A: AsyncAuthorityStor
             accounting, cancellation,
         ).await?;
         let lookup = (value, allocation);
-        let entry = lookup.0.value.as_ref().map(|entry| (entry.value, entry.value_bytes));
+        let entry = lookup.0.as_ref().map(|entry| (entry.value, entry.value_bytes));
         drop(lookup);
         readonly_cleanup_standalone(accounting, before, 0)?;
         let Some((value, value_bytes)) = entry else { return Ok(None); };
@@ -11306,15 +11306,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             &volume.fs.inner.objects, root, name,
             DecodeLimits::for_volume(volume.config), accounting, cancellation,
         ).await?;
-        let current_bytes = match &allocation {
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone => 0,
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(_) =>
-                current.value.as_ref().map_or(0, |entry| crate::foundation::usize_to_u64(entry.name.retained_bytes())),
-        };
+        let current_bytes = current.as_ref().map_or(0, |entry| crate::foundation::usize_to_u64(entry.name.retained_bytes()));
         let current = crate::kernel::Owned::new(current, allocation, current_bytes);
         let result = async {
-            match (value.map(|(_, mode)| mode), current.value.value.as_ref()) {
+            match (value.map(|(_, mode)| mode), current.value.as_ref()) {
                 (Some(NamedAttributeWriteMode::Create), Some(_))
                 | (Some(NamedAttributeWriteMode::Replace), None) => return Err(FsError::CreationRejected),
                 (None, None) => return Err(FsError::NotFound),
@@ -11355,12 +11350,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let mutation = match blob {
             Some(blob) => {
                 let replacement = AttributeEntry { name, value_bytes: blob.logical_bytes, value: blob.root };
-                match current.value {
+                match current {
                     Some(expected) => AttributeMutation::Replace { expected, replacement },
                     None => AttributeMutation::Insert(replacement),
                 }
             }
-            None => AttributeMutation::Remove { name, expected: current.value },
+            None => AttributeMutation::Remove { name, expected: current },
         };
         let mutation = crate::kernel::Owned::new(mutation, name_custody, name_bytes);
         let changed = crate::kernel::apply_attribute_mutations_with_accounting(

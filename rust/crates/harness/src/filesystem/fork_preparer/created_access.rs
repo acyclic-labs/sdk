@@ -490,8 +490,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         self.writer.as_ref().ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "original Root content has no declared publication authority"))
     }
 
-    fn publication_lease(&self) -> Result<&dyn crate::resource_preparation::CreatedTaskLease> {
-        self.allocation.publication_lease.as_deref().ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "original Root content has no current publication lease"))
+    fn publication_lease(&self) -> Result<&Arc<dyn crate::resource_preparation::CreatedTaskLease>> {
+        self.allocation.publication_lease.as_ref().ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "original Root content has no current publication lease"))
     }
 
     fn authorize_path(&self, volume: &VolumeRef, prefix: &str, path: &str,
@@ -733,7 +733,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         let lease = self.publication_lease()?;
         let volume = source.map_or(&self.allocation.request.volume, FileRef::volume);
         match io {
-            Some(io) => io.verify_publication_lease(lease).await?,
+            Some(io) => io.verify_publication_lease(lease.as_ref()).await?,
             None => lease.verify().await?,
         }
         self.authenticate(volume, io).await?;

@@ -2392,7 +2392,7 @@ pub fn demo_derive(_input: TokenStream) -> TokenStream { TokenStream::new() }
     );
 
     let workspace_only =
-        sdk_docs::rustdoc_profiles::load_metadata(fixture.root.join("Cargo.toml")).unwrap();
+        sdk_docs::rustdoc_profiles::load_metadata(fixture.root.join("Cargo.toml"), sdk_docs::rustdoc_profiles::CargoExecutionContext::default()).unwrap();
     assert!(!workspace_only
         .packages
         .iter()

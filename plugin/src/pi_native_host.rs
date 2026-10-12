@@ -163,7 +163,7 @@ impl LiveHandles {
             let stopped = session.stop_with_meter(&volume_work)
                 .map_err(|cause| pi_native::native_view_error(
                     acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
-            if !stopped || !session.cleanup_state().cleanup_complete {
+            if !stopped || !session.cleanup_state().cleanup_complete() {
                 return Err(Error::Indeterminate(command));
             }
             self.project_startup_owner = None;
