@@ -234,7 +234,7 @@ where
                         | LivePublicationObservation::AlreadyCommitted { generation_id, .. } =>
                             return Ok(Some(NativeSourcePublicationAck::Published { operation: operation_id, generation: generation_id })),
                         LivePublicationObservation::Conflict { .. } if force => {
-                            let (decision, allocation) = checkout.rebase_head_with_native_work(
+                            let (decision, allocation) = checkout.rebase_head(
                                 checkout.volume_config().limits.maximum_checkout_dependencies,
                                 original, cancellation,
                             ).await.map_err(T::from)?;
@@ -437,7 +437,7 @@ mod tests {
         ).await?.value;
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let mut checkout = volume.checkout_with_native_work(
+        let mut checkout = volume.checkout(
             GenerationSelector::Head, CheckoutMode::tracking_transaction(), &original, &cancellation,
         ).await?;
         let generation = checkout.generation_id();
@@ -469,7 +469,7 @@ mod tests {
         ).await?.value;
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let mut checkout = volume.checkout_with_native_work(
+        let mut checkout = volume.checkout(
             GenerationSelector::Head, CheckoutMode::tracking_transaction(), &original, &cancellation,
         ).await?;
         let generation = checkout.generation_id();

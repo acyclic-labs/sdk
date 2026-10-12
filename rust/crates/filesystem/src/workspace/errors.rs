@@ -131,9 +131,6 @@ pub(crate) fn workspace_bounded_error(error: &(dyn std::error::Error + 'static))
     if let Some(WorkspaceError::WorkMerge { prior, backend, error }) = error.downcast_ref::<WorkspaceError>() {
         return Some(WorkspaceError::WorkMerge { prior: *prior, backend: *backend, error: *error });
     }
-    if let Some(FsError::RootReadWorkMerge { prior, backend, error }) = error.downcast_ref::<FsError>() {
-        return Some(WorkspaceError::Filesystem(FsError::RootReadWorkMerge { prior: *prior, backend: *backend, error: *error }));
-    }
     macro_rules! bounded {
         ($kind:ty; [$($nested:ident),*]; [$($cancelled:ident),*]) => {{
             type Cause = $kind;
@@ -207,7 +204,6 @@ pub(crate) fn workspace_bounded_error(error: &(dyn std::error::Error + 'static))
 
 impl From<FsError> for WorkspaceError {
     fn from(error: FsError) -> Self {
-        if matches!(&error, FsError::RootReadWorkMerge { .. }) { return Self::Filesystem(error); }
         if let Some(cause) = workspace_bounded_error(&error) { return cause; }
         match error {
             FsError::Path(crate::kernel::PathLookupError::NamespacePath(error)) => error.into(),

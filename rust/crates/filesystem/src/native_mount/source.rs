@@ -731,7 +731,6 @@ pub(crate) fn native_workspace_failure_is_fatal(error: &crate::WorkspaceError) -
         Some(
             crate::WorkspaceError::Work(_)
                 | crate::WorkspaceError::Cancelled(_)
-                | crate::WorkspaceError::Filesystem(crate::FsError::RootReadWorkMerge { .. })
         )
     ) || matches!(
         error,

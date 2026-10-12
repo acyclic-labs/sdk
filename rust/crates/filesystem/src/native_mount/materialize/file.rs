@@ -89,7 +89,7 @@ where
     Fut: Future<Output = Result<(), E>>,
 {
     let resolved = read_source!(reader, receipt, remaining, value,
-        reader.resolve_file_ranges_with_native_work(std::slice::from_ref(path), receipt.custody.work(), cancellation)
+        reader.resolve_files(std::slice::from_ref(path), receipt.custody.work(), cancellation)
             => receipt.accept_source(value.0, value.1)?,
         reader.resolve_files(std::slice::from_ref(path), remaining, cancellation) => {
             receipt.adopt(vec_bytes(&value))?;
@@ -222,7 +222,7 @@ pub(super) async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectSto
 ) -> Result<(), MaterializeError> {
     let request_bytes = vec_bytes(&reads);
     let read = read_source!(reader, receipt, remaining, value,
-        reader.read_resolved_ranges_with_native_work(
+        reader.read_resolved_ranges(
             &reads, usize::try_from(maximum_extent_spans).unwrap_or(usize::MAX), receipt.custody.work(), cancellation,
         ) => receipt.accept_source(value.0, value.1)?,
         reader.read_resolved_ranges(

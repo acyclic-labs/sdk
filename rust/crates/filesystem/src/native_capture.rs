@@ -1015,7 +1015,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let (source_root, observed) = result?;
     let lookup_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
     let current = capture_sdk(
-        checkout.lookup_batch_no_follow_with_native_work(&canonical, &meter.native, &lookup_cancellation),
+        checkout.lookup_batch_no_follow(&canonical, &meter.native, &lookup_cancellation),
         meter, &lookup_cancellation,
     ).await?;
 
@@ -1912,7 +1912,7 @@ async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let count = paths.len().min(page_size);
         let page = &paths.as_slice()[..count];
         let lookup = capture_sdk(
-            checkout.lookup_batch_no_follow_with_native_work(page, &meter.native, &cancellation),
+            checkout.lookup_batch_no_follow(page, &meter.native, &cancellation),
             meter, &cancellation,
         ).await?;
         for ((path, observation), entry) in paths.by_ref().take(count)
@@ -2123,8 +2123,8 @@ async fn walk_checkout_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         loop {
             let cancellation = meter.native.cancellation().clone();
             let page = capture_sdk(
-                checkout.list_directory_records_with_native_work(
-                    &directory, after.as_ref(), page_size, &meter.native, &cancellation,
+                checkout.list_directory_records(
+                    &directory, after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), page_size, &meter.native, &cancellation,
                 ),
                 meter, &cancellation,
             ).await?;
@@ -2535,7 +2535,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
     }
     if !lookup_paths.is_empty() {
         let lookup = capture_sdk(
-            checkout.lookup_batch_no_follow_with_native_work(&lookup_paths, &meter.native, &cancellation),
+            checkout.lookup_batch_no_follow(&lookup_paths, &meter.native, &cancellation),
             meter, &cancellation,
         ).await?;
 
