@@ -29,7 +29,7 @@ pub async fn call<I, O>(&self, tool: &ToolDefinition, input: I) -> Result<O>
         }
         let arguments =
             serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
-        validate_value(&tool.input_schema, &arguments, "tool input", None)?;
+        crate::contract::validate_json_schema_value(&tool.input_schema, &arguments, "tool input", &mut None)?;
         let operation_id = OperationId::new();
         let invocation = ToolInvocation {
             operation_id,
@@ -52,7 +52,7 @@ pub async fn call<I, O>(&self, tool: &ToolDefinition, input: I) -> Result<O>
             .executor
             .execute_with_context(context, invocation)
             .await?;
-        validate_value(&tool.output_schema, &result.value, "tool output", None)?;
+        crate::contract::validate_json_schema_value(&tool.output_schema, &result.value, "tool output", &mut None)?;
         serde_json::from_value(result.value).map_err(|error| Error::Invalid(error.to_string()))
     }
 

@@ -89,7 +89,7 @@ fn inspect_value(value: &Value, maximum: u64, work: &mut Option<&mut dyn History
 }
 pub(super) fn value_bound(value: &Value, maximum: u64, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
     inspect_value(value, maximum, work)?;
-    crate::contract::validate_trusted_json_byte_bound(value, maximum, work)
+    crate::contract::json_byte_length(value, maximum, work).map(|_| ())
 }
 pub(super) fn result_bound(content: &ToolResultContent, maximum: u64, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
     if work.is_some() {
@@ -108,7 +108,7 @@ pub(super) fn result_bound(content: &ToolResultContent, maximum: u64, work: &mut
             },
         }
     }
-    crate::contract::validate_trusted_json_byte_bound(content, maximum, work)
+    crate::contract::json_byte_length(content, maximum, work).map(|_| ())
 }
 
 pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&PreparationIo>) -> Result<[u8; 32]> {

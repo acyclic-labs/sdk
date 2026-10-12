@@ -308,13 +308,10 @@ pub(super) async fn stage(
             true,
         )?;
         let _path;
-        let path = crate::contract::preparation_format(
-            format_args!("recursive-tools/{}/{label}.json", context.operation_id()),
-            Some(io),
-        )?;
+        let path = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("recursive-tools/{}/{label}.json", context.operation_id()), work))?;
         _path = io.guard_owned(path.capacity() as u64)?;
         let _display;
-        let display = crate::contract::preparation_format(format_args!("{label}.json"), Some(io))?;
+        let display = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("{label}.json"), work))?;
         _display = io.guard_owned(display.capacity() as u64)?;
         let (file, custody) = context
             .stage_file_once_with_native_work(
