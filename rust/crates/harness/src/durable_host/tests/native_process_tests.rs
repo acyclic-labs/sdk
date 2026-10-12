@@ -1124,7 +1124,7 @@ where
             scope: scope.clone(),
             causal_parent: None,
             action: crate::core::Action::BindConversation { agent },
-        }).await?;
+        }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     }
     let setup_scope = issuer.issue("setup", &Capabilities::new(
             [

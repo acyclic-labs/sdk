@@ -591,7 +591,7 @@ impl WasmTaskRegistry {
         let identity = machine.identity();
         if !matches!(
             self.tasks
-                .get_version::<Value, Value>(&identity.name, &identity.version),
+                .get_version::<Value, Value>(&identity.name, &identity.version, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None),
             Err(Error::NotFound(_))
         ) {
             return Err(js_error(Error::Conflict(

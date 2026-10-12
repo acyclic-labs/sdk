@@ -3309,7 +3309,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         _ => {
             #[cfg(feature = "filesystem")]
             { _committed_hold = None; }
-            history.pin(0).await?
+            history.pin(0, None).await?
         }
     };
     if cursor.authority != committed.authority {
@@ -3329,7 +3329,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
             let mut observer = crate::store::history::native_work_io(
                 io.original_native_work().expect("native branch retains original work"),
             ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            let selection = history.operation_event_bounded_with_work(
+            let selection = history.operation_event(
                 envelope.operation_id, maximum_history_bytes, &mut Some(&mut observer),
             ).await?;
             observer.return_staged_output()?;
@@ -3350,7 +3350,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         _ => {
             #[cfg(feature = "filesystem")]
             { _selection_hold = None; }
-            history.operation_event_bounded(envelope.operation_id, maximum_history_bytes).await?
+            history.operation_event(envelope.operation_id, maximum_history_bytes, &mut None).await?
         }
     };
     let selection = selection
@@ -3429,7 +3429,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
                 io.original_native_work().expect("native branch retains original work"),
             ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
             let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
-            let records = history.conversation_range_with_work(
+            let records = history.conversation_range(
                 cursor, after_sequence, through_sequence, range_limits, &mut work,
             ).await?;
             let (view, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut work)?;
@@ -3445,7 +3445,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
                 Some(io) => {
                     let before = io.owned_bytes()?;
                     let mut observer = io.history_io();
-                    let value = history.conversation_range_with_work(cursor, after_sequence,
+                    let value = history.conversation_range(cursor, after_sequence,
                         through_sequence, range_limits, &mut Some(&mut observer)).await?;
                     _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
                     value
@@ -3453,7 +3453,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
                 _ => {
                     #[cfg(feature = "filesystem")]
                     { _records_hold = None; }
-                    history.conversation_range(cursor, after_sequence, through_sequence, range_limits).await?
+                    history.conversation_range(cursor, after_sequence, through_sequence, range_limits, &mut None).await?
                 }
             };
             #[cfg(feature = "filesystem")]

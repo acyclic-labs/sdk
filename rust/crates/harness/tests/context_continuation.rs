@@ -822,7 +822,7 @@ async fn assert_checkpoint_history_cut(
     use acyclic_harness::{executor::load_canonical_checkpoint_at, runtime::RuntimeScope};
 
     let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier(&mut None).expect("verifier copy"))?;
-    let cursor = history.pin(0).await?;
+    let cursor = history.pin(0, None).await?;
     let scope = RuntimeScope::new(storage.owner_scope().capabilities().clone(), limits)?;
     let bytes = MAX_RECORD_BYTES as u64 * 2;
     let (checkpoint, retained, _) =
@@ -857,7 +857,7 @@ async fn assert_checkpoint_history_cut(
         Err(Error::Unsupported(_))
     ));
     let (selection, _) = history
-        .operation_event_bounded(checkpoint.operation_id, bytes)
+        .operation_event(checkpoint.operation_id, bytes, &mut None)
         .await?;
     let selection = selection.ok_or_else(|| Error::Invalid("missing actual selection".into()))?;
     let mut cut = cursor.clone();
@@ -934,7 +934,7 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             content,
         } = *self;
         let (_, proof_bytes) = history
-            .operation_event_bounded(operation_id, budget.maximum_bytes)
+            .operation_event(operation_id, budget.maximum_bytes, &mut None)
             .await?;
         for (through, allowance) in [
             (18, budget),
@@ -1044,7 +1044,7 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
         ));
         assert_eq!(prepared_summary.through_sequence(), 20);
         assert_eq!(prepared_summary.context(), imported);
-        let later = history.pin(0).await?;
+        let later = history.pin(0, None).await?;
         assert_eq!(
             load_canonical_checkpoint_through(journal, reference, limits, exact, history, &later, 21, HistoryReadLimits {
                     maximum_events: 3,
@@ -1082,7 +1082,7 @@ async fn assert_checkpoint_tail_source(
     };
 
     let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier(&mut None).expect("verifier copy"))?;
-    let cursor = history.pin(0).await?;
+    let cursor = history.pin(0, None).await?;
     let content = StoredContent(storage.clone());
     let budget = HistoryReadLimits {
         maximum_events: 2,
@@ -1098,7 +1098,7 @@ async fn assert_checkpoint_tail_source(
         imported.messages.get(..retained.messages.len()),
         Some(retained.messages.as_slice())
     );
-    let tail = history.conversation_range(&cursor, 19, 20, budget).await?;
+    let tail = history.conversation_range(&cursor, 19, 20, budget, &mut None).await?;
     assert_eq!(tail.len(), 1);
     let tail_message = tail
         .first()

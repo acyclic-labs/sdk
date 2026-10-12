@@ -542,7 +542,7 @@ impl HarnessWireApi for NativeSession {
                     Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
                 ], &mut None)?))
                 .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.files.clone())));
-            let (state, error) = match aggregate.execute(command).await {
+            let (state, error) = match aggregate.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await {
                 Ok(_) => (wire::AdmissionState::Accepted, None),
                 Err(error @ Error::Indeterminate(_)) => (wire::AdmissionState::Indeterminate, Some(acyclic_harness::encode_error(&error))),
                 Err(error) => (wire::AdmissionState::Rejected, Some(acyclic_harness::encode_error(&error))),
@@ -565,7 +565,7 @@ impl HarnessWireApi for NativeSession {
             let authority = cursor.authority.as_ref().ok_or_else(|| Error::Invalid("cursor authority missing".into()))?;
             let binding = self.binding(authority)?;
             let reader = HistoryReader::new(&self.stream, &binding.authority, binding.verifier()?)?;
-            let pinned = reader.pin(cursor.revision).await?;
+            let pinned = reader.pin(cursor.revision, None).await?;
             let page = reader.read_page(&pinned, HistoryReadLimits {
                 maximum_events: MAX_PAGE_EVENTS as u32,
                 maximum_bytes: (MAX_FRAME_BYTES - 8192) as u64,

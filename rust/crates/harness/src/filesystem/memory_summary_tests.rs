@@ -301,7 +301,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             scope: storage.scope.clone(),
             causal_parent: None,
             action: Action::SelectModelContext { selection },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     aggregate.compact_conversation_projection()?;
     let retired = aggregate
@@ -313,7 +313,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     assert!(retired.messages().is_empty());
 
     let history = HistoryReader::new(&storage.stream, &storage.conversation, storage.verifier(&mut None).expect("verifier copy"))?;
-    let cursor = history.pin(0).await?;
+    let cursor = history.pin(0, None).await?;
     let original_scope = RuntimeScope::new(storage.scope.capabilities().clone(), limits)?;
     let prepared = prepare_summary_fork_context(
         aggregate.reducer(),
@@ -368,7 +368,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let archived = history.fork_history(
         aggregate.reducer(), 4,
         HistoryReadLimits { maximum_events: 4, maximum_bytes: 2_097_152 },
-    ).await?;
+     &mut None).await?;
     let preparer = FilesystemForkPreparer::new(
         storage.host.clone(),
         aggregate.reducer().clone(),
@@ -590,7 +590,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             action: Action::PublishFork {
                 seed: Box::new(seed.clone()),
             },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     assert_eq!(aggregate.reducer().fork(&seed.child), Some(&seed));
     assert_summary_child_import(&storage, &aggregate, &seed, &captured, limits).await?;
@@ -651,7 +651,7 @@ async fn assert_summary_child_import(
         Err(Error::Unauthorized(_))
     ));
     child
-        .bind_published_child(parent, seed, scope.clone())
+        .bind_published_child(parent, seed, scope.clone(), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let capture = seed
         .summary
@@ -724,7 +724,7 @@ async fn assert_summary_child_import(
             action: Action::BindConversation {
                 agent: seed.child_agent,
             },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     assert!(matches!(
         unrelated
@@ -928,7 +928,7 @@ async fn append_later_summary_parent_messages(
                         extensions: BTreeMap::new(),
                     }),
                 },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
     }
     Ok(())
@@ -952,7 +952,7 @@ async fn assert_cold_summary_reads(
     let child_history = HistoryReader::new(&storage.stream, &seed.child, issuer.verifier(&mut None).expect("verifier copy"))?;
     let binding = child_history
         .read_page(
-            &child_history.pin(0).await?,
+            &child_history.pin(0, None).await?,
             HistoryReadLimits {
                 maximum_events: 1,
                 maximum_bytes: 262_144,
@@ -964,10 +964,10 @@ async fn assert_cold_summary_reads(
         .next()
         .ok_or_else(|| Error::Invalid("missing binding".into()))?;
     let (_, parent_bytes) = parent_history
-        .operation_event_bounded(seed.operation_id, 262_144)
+        .operation_event(seed.operation_id, 262_144, &mut None)
         .await?;
     let (_, binding_bytes) = child_history
-        .operation_event_bounded(binding.operation_id, 262_144)
+        .operation_event(binding.operation_id, 262_144, &mut None)
         .await?;
     let history_limits = HistoryReadLimits {
         maximum_events: 2,
@@ -1209,9 +1209,9 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     assert_eq!(conversation.logical_revision(), 12);
     let history = HistoryReader::new(&storage.stream, &storage.conversation, storage.verifier(&mut None).expect("verifier copy"))?;
     assert!(history.fork_history(parent.reducer(), 12,
-        HistoryReadLimits { maximum_events: 11, maximum_bytes: 2_097_152 }).await.is_err());
+        HistoryReadLimits { maximum_events: 11, maximum_bytes: 2_097_152 }, &mut None).await.is_err());
     let archived = history.fork_history(parent.reducer(), 12,
-        HistoryReadLimits { maximum_events: 12, maximum_bytes: 2_097_152 }).await?;
+        HistoryReadLimits { maximum_events: 12, maximum_bytes: 2_097_152 }, &mut None).await?;
     let provider = storage.volume.provider().clone();
     let project = VolumeRef::new(provider.clone(), "full-parent-project",
         VolumeClass::Project, VolumeOwner::Project("full-project".into()))?;
@@ -1280,7 +1280,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
             scope: scope.clone(),
             causal_parent: None,
             action: Action::PublishFork { seed: Box::new(changed) },
-        }).await, Err(Error::Invalid(_) | Error::Unauthorized(_))));
+        }, #[cfg(feature = "filesystem")] None, &mut None).await, Err(Error::Invalid(_) | Error::Unauthorized(_))));
         assert_eq!(parent.reducer().revision(), revision);
     }
     let fork_verifier = Arc::new(CompositeForkVerifier::new(&[
@@ -1299,7 +1299,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     parent.execute(command.clone()).await?;
     let mut reopened = storage.open_conversation(limits).await?
         .with_fork_verifier(fork_verifier);
-    assert!(matches!(reopened.execute(command).await?, crate::core::ApplyResult::Replayed { .. }));
+    assert!(matches!(reopened.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await?, crate::core::ApplyResult::Replayed { .. }));
     let mut count = 0;
     while count < 12 {
         let page = history.inherited_conversation_page(&seed, child_agent, count,

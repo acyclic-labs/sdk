@@ -1775,7 +1775,7 @@ mod tests {
                 aggregate.execute(Command { operation_id: OperationId::from_bytes([186; 16]),
                     idempotency_key: IdempotencyKey::new("genuine-foreign-prior-root-bind")?,
                     expected_revision: 0, causal_parent: None,
-                    action: Action::BindConversation { agent: foreign_agent }, scope }).await?;
+                    action: Action::BindConversation { agent: foreign_agent }, scope }, #[cfg(feature = "filesystem")] None, &mut None).await?;
             }
             let actor = if prior_foreign_bind { AgentId::from_bytes([80; 16]) }
                 else { AgentId::from_bytes([187; 16]) };

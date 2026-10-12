@@ -817,7 +817,7 @@ impl CreationFixture {
             idempotency_key: IdempotencyKey::new("created-fork-bind")?,
             expected_revision: 0, scope: fork_scope.clone(), causal_parent: None,
             action: Action::BindConversation { agent: parent_agent },
-        }).await?;
+        }, #[cfg(feature = "filesystem")] None, &mut None).await?;
         let project = VolumeRef::new(
             self.filesystem_provider.clone(), "child-project", VolumeClass::Project,
             VolumeOwner::Project("created-project".into()),
@@ -862,7 +862,7 @@ impl CreationFixture {
         )?.fork_history(
             aggregate.reducer(), 0,
             crate::store::HistoryReadLimits { maximum_events:2, maximum_bytes:65_536 },
-        ).await?;
+         &mut None).await?;
         let preparer = FilesystemForkPreparer::new(
             self.filesystem.clone(), aggregate.reducer().clone(), fork_issuer.verifier(&mut None).expect("verifier copy"),
             fork_scope.clone(), fork.selections.iter().find_map(|selection| match &selection.revision {

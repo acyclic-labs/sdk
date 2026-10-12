@@ -2708,7 +2708,15 @@ mod physical_clones {
         crate::core::physical_clone_factory!(copy, ResourceRevision, revision, self);
     }
     impl ForkReport {
-        crate::core::physical_clone_factory!(copy, ForkReport, report, self);
+        /// Copies report fields with bounded work and returns their retained bytes.
+        pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
+            if work.is_none() { return Ok((self.clone(), 0)); }
+            let mut quota = CodecQuota::new(work, 0)?;
+            let value = report(self, &mut quota)?;
+            let held = quota.retained();
+            quota.transfer();
+            Ok((value, held))
+        }
     }
     impl ForkRequest {
         crate::core::physical_clone_factory!(copy, ForkRequest, request, self);

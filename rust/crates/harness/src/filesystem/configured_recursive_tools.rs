@@ -1021,7 +1021,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let reader = HistoryReader::new_with_native_work(&self.stream, binding.authority(), &verifier, work)?;
         let expected = snapshot.events.last().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized, reason: "native checkpoint has no canonical head" })?;
-        let (head, retained) = reader.0.operation_event_bounded_with_work(
+        let (head, retained) = reader.0.operation_event(
             expected.operation_id, self.config.history_limits.maximum_bytes, &mut observer,
         ).await?;
         let head_hold = io.guard_owned(retained)?;

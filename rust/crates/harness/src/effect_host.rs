@@ -251,7 +251,7 @@ impl<P: StreamProvider> ObservedEffectAggregate<P> {
         if let Some(effect) = self.aggregate.reducer().effect(effect_id) {
             return Ok(EffectStateRef::Resident(effect));
         }
-        let (effect, retained) = self.aggregate.effect_with_work(
+        let (effect, retained) = self.aggregate.effect(
             effect_id, self.history_limits, work,
         ).await?.ok_or_else(|| missing_effect(work))?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -736,7 +736,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                         crate::wire::ErrorCode::Unsupported,
                         "native effect settlement requires filesystem task ownership"));
                 }
-                aggregate.aggregate.execute(command, None, command_custody.work()).await
+                aggregate.aggregate.execute(command, command_custody.work()).await
             };
             drop(command_custody);
             match result {

@@ -58,7 +58,7 @@ impl Fixture {
         }
     }
     async fn admit(&self, runtime: &Runtime) -> Result<(WorkLease, TaskId)> {
-        let definition = self.tasks.get_version::<Value, Value>("pi.mail.test", "1")?;
+        let definition = self.tasks.get_version::<Value, Value>("pi.mail.test", "1", None)?;
         let operation = OperationId::from_bytes([73;16]);
         assert!(matches!(runtime.harness().admit(operation, &definition, json!({}), None).await?, Admission::Accepted(_)));
         Ok((self.pull(runtime).await?, TaskId::from_bytes(operation.into_bytes())))

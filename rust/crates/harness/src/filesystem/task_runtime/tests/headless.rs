@@ -11,7 +11,7 @@ async fn runtime(fixture: &Fixture) -> Result<Runtime> {
 }
 
 async fn admit(runtime: &Runtime, fixture: &Fixture, id: u8, grants: Capabilities) -> Result<TaskId> {
-    let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1")?;
+    let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let scoped = runtime.harness().scoped(grants, Limits::default())?;
     match scoped.admit(OperationId::from_bytes([id; 16]), &definition, json!({}), None).await? {
         Admission::Accepted(task) => Ok(task.task_id()),
@@ -211,13 +211,13 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let mut history = StreamAggregate::open(&fixture.stream, authority.clone(), issuer.verifier(&mut None)?, SchemaRegistry::new()).await?
         .with_content_verifier(reader.clone()).with_fork_verifier(forks.clone());
     history.execute(Command { operation_id: OperationId::from_bytes([133; 16]), idempotency_key: IdempotencyKey::new("restore-bind")?,
-        expected_revision: 0, scope: signed.clone(), causal_parent: None, action: Action::BindConversation { agent } }).await?;
+        expected_revision: 0, scope: signed.clone(), causal_parent: None, action: Action::BindConversation { agent } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let message = put(&fixture, &fixture.volume, "restore/history.txt", b"original conversation", "restore-history").await?;
     history.execute(Command { operation_id: OperationId::from_bytes([134; 16]), idempotency_key: IdempotencyKey::new("restore-message")?,
         expected_revision: 1, scope: signed.clone(), causal_parent: None, action: Action::AppendConversationMessage {
             message: Box::new(ConversationMessage { id: uuid::Uuid::from_bytes([134; 16]), sequence: 1, kind: MessageKind::User,
                 content: message.clone(), attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() }, reply_to: None, tool_call_id: None, extensions: BTreeMap::new() }),
-        } }).await?;
+        } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let original_history = history.reducer().conversation().map(|state| state.messages().to_vec());
     let original_revision = history.reducer().revision();
     let workspace = fs.open_workspace(project.storage_name()?).await.map_err(|e| Error::Storage(e.to_string()))?;

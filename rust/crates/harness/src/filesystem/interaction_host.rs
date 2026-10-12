@@ -317,10 +317,7 @@ where
                     "interaction attempt custody underflows"))?)).transpose()?;
             let command = Command { operation_id, idempotency_key, expected_revision,
                 scope, causal_parent: None, action: Action::OpenInteraction { ticket: command_ticket } };
-            let result = match owner {
-                Some(owner) => aggregate.execute_task_command_with_work(command, owner, &mut work).await,
-                None => aggregate.execute_with_work(command, &mut work).await,
-            };
+            let result = aggregate.execute(command, owner, &mut work).await;
             drop(aggregate);
             drop(attempt_hold);
             match result {
@@ -376,7 +373,7 @@ where
         let command = Command {
             operation_id, idempotency_key, expected_revision, scope, causal_parent: None, action: Action::ResolveInteraction { resolution },
         };
-        let result = aggregate.execute_with_work(command, &mut work).await;
+        let result = aggregate.execute(command, None, &mut work).await;
         drop(aggregate);
         drop(aggregate_hold);
         drop(command_hold);

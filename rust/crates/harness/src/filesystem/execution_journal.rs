@@ -778,7 +778,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     &self.stream, self.verifier.audience(), &self.verifier, self.turn_operation(envelope.operation_id),
                     history_limits.maximum_bytes, true,
                     &mut Some(work as &mut dyn crate::store::history::HistoryIo)).await?.0,
-                None => reader.operation_event(self.turn_operation(envelope.operation_id)).await?,
+                None => reader.operation_event(self.turn_operation(envelope.operation_id), 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event)?,
             }.ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                 "checkpoint source selection is not the committed admission"))?;
             let crate::core::EventPayload::ModelContextSelected { selection } = &event.payload else {
@@ -797,7 +797,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let cursor = crate::store::HistoryCursor {
                 authority, after_revision: 0, through_revision: event.revision,
             };
-            let loaded = reader.conversation_range_with_work(
+            let loaded = reader.conversation_range(
                 &cursor, after, envelope.selection.conversation_revision, history_limits,
                 &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo),
             ).await?;
@@ -2681,7 +2681,7 @@ mod tests {
                 scope: scope.clone(),
                 causal_parent: None,
                 action: Action::BindConversation { agent },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let mut ids = Vec::new();
         let mut references = Vec::new();
@@ -2731,7 +2731,7 @@ mod tests {
                             extensions: Default::default(),
                         }),
                     },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
             ids.push(id);
             references.push(file);
@@ -2762,7 +2762,7 @@ mod tests {
                     scope: scope.clone(),
                     causal_parent: None,
                     action: Action::SelectModelContext { selection },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
         }
         let limits = Limits {

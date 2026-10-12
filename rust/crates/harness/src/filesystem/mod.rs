@@ -5203,7 +5203,7 @@ mod tests {
                 scope: scope.clone(),
                 causal_parent: None,
                 action: Action::BindConversation { agent },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let message = ConversationMessage {
             id: uuid::Uuid::from_bytes([2; 16]),
@@ -5235,7 +5235,7 @@ mod tests {
                 },
             })
         };
-        assert!(aggregate.execute(command(3, missing)?).await.is_err());
+        assert!(aggregate.execute(command(3, missing)?, #[cfg(feature = "filesystem")] None, &mut None).await.is_err());
         assert_eq!(aggregate.reducer().revision(), 1);
         let mut missing_attachment = message.clone();
         missing_attachment.attachments = vec![Attachment {
@@ -5251,12 +5251,12 @@ mod tests {
         .into();
         assert!(
             aggregate
-                .execute(command(5, missing_attachment)?)
+                .execute(command(5, missing_attachment)?, #[cfg(feature = "filesystem")] None, &mut None)
                 .await
                 .is_err()
         );
         assert_eq!(aggregate.reducer().revision(), 1);
-        aggregate.execute(command(4, message.clone())?).await?;
+        aggregate.execute(command(4, message.clone())?, #[cfg(feature = "filesystem")] None, &mut None).await?;
         assert_eq!(
             aggregate
                 .reducer()
@@ -5289,7 +5289,7 @@ mod tests {
                     action: Action::AppendConversationMessage {
                         message: Box::new(bad_count)
                     },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await
                 .is_err()
         );
@@ -5304,7 +5304,7 @@ mod tests {
                 action: Action::AppendConversationMessage {
                     message: Box::new(manifest_message),
                 },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         assert_eq!(
             aggregate

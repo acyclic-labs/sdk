@@ -267,7 +267,7 @@ impl Fixture {
         let operation = OperationId::from_bytes([104; 16]);
         let payloads = FilesystemSchedulerPayloadStore::new(self.filesystem.clone(), &(self.volume), &self.issuer.verifier(&mut None).expect("verifier copy"), &self.signed, 65_536, None)?;
         let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(&command)?).await?;
-        let definition = self.tasks.get_version::<Value, Value>("test.deadline", "1")?;
+        let definition = self.tasks.get_version::<Value, Value>("test.deadline", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         let input = json!({"command":WorkflowCommand {
             operation_id: OperationId::from_bytes([105; 16]),
             kind: kind.into(),
