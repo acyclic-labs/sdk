@@ -257,7 +257,12 @@ impl Fixture {
         let mut issuer = (AuthorityIssuer::new(issuer_id.0, [25; 32],
             Authority { kind: AggregateKind::Conversation, id: issuer_audience_id.0 }), issuer_id.1);
         issuer.1.absorb(&mut issuer_audience_id.1).map_err(native_error)?;
-        let mut scope = issuer.0.root_for_agent_with_native_work(self.binding.agent_id, "owner", self.scope.capabilities(), work)?;
+        let mut scope = {
+            let mut io = acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let scope = issuer.0.issue("owner", self.scope.capabilities(), Some(self.binding.agent_id), None, &mut Some(&mut io))?;
+            (scope, io.into_custody())
+        };
         let mut authorization = ((audience.0, issuer.0, scope.0), audience.1);
         authorization.1.absorb(&mut issuer.1).map_err(native_error)?;
         authorization.1.absorb(&mut scope.1).map_err(native_error)?;

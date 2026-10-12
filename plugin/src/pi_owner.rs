@@ -225,9 +225,12 @@ impl PiOwnerConfig {
             let value = issuer.0.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
-        let signed = issuer.0.root_for_agent_with_native_work(
-            self.policy.agent, &verifier.0.audience().id, &storage.0, work,
-        )?;
+        let signed = {
+            let mut io = acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let scope = issuer.0.issue(&verifier.0.audience().id, &storage.0, Some(self.policy.agent), None, &mut Some(&mut io))?;
+            (scope, io.into_custody())
+        };
         drop(storage.0);
         drop(storage.1);
         drop(journal_grants);
@@ -327,7 +330,12 @@ impl PiOwnerConfig {
         let audience = (Authority { kind: AggregateKind::Conversation, id: audience_id.0 }, audience_id.1);
         let issuer = self.issuer_with_native_work(AggregateKind::Conversation, task, work)?;
         let scope_id = work.display(&scope_id).map_err(native_work_error)?;
-        let scope = issuer.0.root_for_agent_with_native_work(agent, &scope_id.0, grants, work)?;
+        let scope = {
+            let mut io = acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let scope = issuer.0.issue(&scope_id.0, grants, Some(agent), None, &mut Some(&mut io))?;
+            (scope, io.into_custody())
+        };
         drop(scope_id.0);
         drop(scope_id.1);
         combine_native_metadata(((audience.0, issuer.0, scope.0), audience.1, [issuer.1, scope.1]))

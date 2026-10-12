@@ -55,9 +55,12 @@ pub(crate) fn issue(
         }
     };
     let capabilities = Capabilities::new_with_native_work([CALLER_CAPABILITY], work)?;
-    let scope = authority.0.issuer.root_for_agent_with_native_work(
-        binding.agent_id, identity_text, &capabilities.0, work,
-    )?;
+    let scope = {
+        let mut io = acyclic_harness::store::history::native_work_io(work)
+            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let scope = authority.0.issuer.issue(identity_text, &capabilities.0, Some(binding.agent_id), None, &mut Some(&mut io))?;
+        (scope, io.into_custody())
+    };
     drop(identity.0);
     drop(identity.1);
     drop(capabilities.0);
