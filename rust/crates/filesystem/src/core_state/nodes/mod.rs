@@ -472,7 +472,7 @@ impl LocalCoreStateStore {
                     };
                     let mut allocation = allocation.expect("native record allocation");
                     let value = T::from_wire(wire, work, &mut allocation)?;
-                    allocation.substitute(value.owned_bytes())?;
+                    allocation.resize(value.owned_bytes())?;
                     let owned = (value, allocation);
                     if lazy_digest((&owned.0), work)? != T::address(id) {
                         return Err(LocalCoreStateStoreError::Integrity);
