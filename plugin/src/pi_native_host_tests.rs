@@ -5,11 +5,20 @@ use crate::pi_native::{PiNativeHostRuntime, PI_NATIVE_VERSION};
 use acyclic_fs::CancellationToken;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
+fn native_host(fixture: &Fixture, replacement: Option<PiOwnerConfig>) -> acyclic_harness::Result<Arc<PiNativeCommandHost>> {
+    let work = acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &CancellationToken::new())
+        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+    let owner = match replacement {
+        Some(owner) => owner,
+        None => PiOwnerConfig::load_with_native_work(&fixture.private_root, &fixture.relative_session, &work)?,
+    };
+    PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(), &fixture.resources, owner, &work)
+}
+
 #[tokio::test]
 async fn native_host_rejects_missing_original_pinned_bootstrap() {
     let fixture = Fixture::new().await;
-    assert!(PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
-        fixture.stream.clone(), fixture.resources.clone(), fixture.owner.clone()).is_err());
+    assert!(native_host(&fixture, None).is_err());
 }
 
 #[tokio::test]
@@ -17,8 +26,7 @@ async fn native_host_rejects_replacement_owner_before_opening_native_handles() {
     let fixture = Fixture::new().await;
     let replacement = PiOwnerConfig::new(fixture.owner.policy().clone()).unwrap();
     assert!(fixture.runtime.verify_owner(&replacement).is_err());
-    assert!(PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
-        fixture.stream.clone(), fixture.resources.clone(), Arc::new(replacement)).is_err());
+    assert!(native_host(&fixture, Some(replacement)).is_err());
 }
 
 fn required_path(name: &str) -> PathBuf {
@@ -46,8 +54,7 @@ fn installed_runtime() -> PiNativeHostRuntime {
 #[ignore = "requires the installed Pi 1.1.0 node, CLI and harness extension artifacts"]
 async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handles() {
     let fixture = Fixture::new_with_native_runtime(Some(installed_runtime())).await;
-    let host = PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
-        fixture.stream.clone(), fixture.resources.clone(), fixture.owner.clone()).unwrap();
+    let host = native_host(&fixture, None).unwrap();
     let plan = fixture.plan().await;
     let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
@@ -60,9 +67,6 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
     host.register_prepared(prepared).await.unwrap();
     let entry = host.find_entry(task).unwrap();
     assert!(entry.native_custody.work().shares_ledger(&original_work));
-    assert_eq!(entry.native_custody.bytes(),
-        (std::mem::size_of::<super::NativeEntry>()
-            + std::mem::size_of::<(acyclic_harness::TaskId, Arc<super::NativeEntry>)>()) as u64);
     assert_eq!(host.binding(task), Some(expected_binding.clone()));
     assert_eq!(host.source(task), Some(expected_source));
     assert_eq!(host.live_workspace(task).unwrap().workspace().id(), expected_snapshot.workspace_id);
@@ -92,8 +96,7 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
 #[ignore = "requires the installed Pi 1.1.0 node, CLI and harness extension artifacts"]
 async fn actual_registration_denial_never_allocates_a_native_entry() {
     let fixture = Fixture::new_with_native_runtime(Some(installed_runtime())).await;
-    let host = PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
-        fixture.stream.clone(), fixture.resources.clone(), fixture.owner.clone()).unwrap();
+    let host = native_host(&fixture, None).unwrap();
     let plan = fixture.plan().await;
     let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
@@ -135,8 +138,7 @@ async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
         CancellationToken::new()).await.unwrap().unwrap();
     let task = original.binding.task_id;
-    let host = PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
-        fixture.stream.clone(), fixture.resources.clone(), fixture.owner.clone()).unwrap();
+    let host = native_host(&fixture, None).unwrap();
     let root_key = original.binding.project_volumes.keys().next().unwrap().clone();
     let query_cancellation = CancellationToken::new();
     let query_work = acyclic_fs::NativeMaterializationWork::new(

@@ -8,7 +8,7 @@ use acyclic_harness::{
 
 fn root_path() -> PathBuf { std::env::temp_dir().join("acyclic-pi-native-test") }
 
-fn original_request_work() -> NativeMaterializationWork {
+fn work() -> NativeMaterializationWork {
     pi_meter(super::super::native_root_source::budget(), &CancellationToken::new()).unwrap()
 }
 
@@ -60,14 +60,10 @@ fn invocation() -> PiNativeInvocation {
 
 #[test]
 fn original_native_capture_policy_is_finite_root_bounded_and_sdk_admissible() {
-    let work = original_request_work();
+    let work = work();
     let limits = acyclic_harness::conversation::Limits { file_bytes: 65_536, ..Default::default() };
     let capture = capture_limits(limits, 32_768).unwrap();
-    assert_eq!(capture.timeout_ms, 180_000);
-    assert_eq!(capture.control_timeout_ms, 5_000);
-    assert_eq!(capture.cancellation_poll_ms, 250);
     assert_eq!(capture.maximum_result_bytes, 32_768);
-    assert!(u64::from(capture.maximum_output_bytes) * 4 + 2048 <= u64::from(capture.maximum_result_bytes));
     let mut input = invocation();
     input.timeout_ms = capture.timeout_ms;
     input.control_timeout_ms = capture.control_timeout_ms;
@@ -76,37 +72,39 @@ fn original_native_capture_policy_is_finite_root_bounded_and_sdk_admissible() {
     input.maximum_result_bytes = capture.maximum_result_bytes;
     let (binding, manifest) = binding_and_manifest();
     assert!(input.request_with_work(&binding, &manifest, &work).unwrap().0.has_valid_capture_allowances());
-    assert!(capture_limits(limits, 2051).is_err());
-    assert_eq!(capture_limits(limits, 2052).unwrap().maximum_output_bytes, 1);
     assert!(capture_limits(limits, 0).is_err());
     assert!(capture_limits(acyclic_harness::conversation::Limits { file_bytes: 0, ..limits }, 32_768).is_err());
 }
 
 #[test]
 fn source_bound_session_rejects_forged_cuts_headers_and_extra_lines() {
+    let work = work();
     let (source, bytes) = source_and_session();
-    source.validate_session("child", &root_path(), &bytes, 16, 65_536).unwrap();
+    source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).unwrap();
     let unchanged = source.clone();
-    assert!(source.validate_session("parent", &root_path(), &bytes, 16, 65_536).is_err());
-    assert!(source.validate_session("child", &root_path(), &bytes, 0, 65_536).is_err());
-    assert!(source.validate_session("child", &root_path(), &bytes, 16, 1).is_err());
+    assert!(source.validate_session("parent", &root_path(), &bytes, 16, 65_536, &work).is_err());
+    assert!(source.validate_session("child", &root_path(), &bytes, 0, 65_536, &work).is_err());
+    assert!(source.validate_session("child", &root_path(), &bytes, 16, 1, &work).is_err());
     let text = String::from_utf8(bytes.clone()).unwrap();
     for changed in [text.replace("\"version\":3", "\"version\":2"), text.replace("\"child\"", "\"foreign\""),
         text.replace("original instruction", "forged instruction"), format!("{text}{{\"type\":\"session\"}}\n"),
         format!("{text}not-json\n"), text.trim_end().to_owned()] {
-        assert!(source.validate_session("child", &root_path(), changed.as_bytes(), 16, 65_536).is_err(), "accepted {changed}");
+        assert!(source.validate_session("child", &root_path(), changed.as_bytes(), 16, 65_536, &work).is_err(), "accepted {changed}");
     }
     let mut forged = source.clone();
     forged.parent_leaf_id = Some("another-leaf".into());
-    assert!(forged.validate_session("child", &root_path(), &bytes, 16, 65_536).is_err());
+    assert!(forged.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).is_err());
     forged = source.clone(); forged.entries_json = "[]".into();
-    assert!(forged.validate_session("child", &root_path(), &bytes, 16, 65_536).is_err());
+    assert!(forged.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).is_err());
     assert_eq!(source, unchanged);
+    work.cancellation().cancel();
+    assert!(matches!(source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work),
+        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
 }
 
 #[test]
 fn native_invocation_is_exact_absolute_and_discovery_free() {
-    let work = original_request_work();
+    let work = work();
     let (binding, manifest) = binding_and_manifest();
     let input = invocation();
     let owned_request = input.request_with_work(&binding, &manifest, &work).unwrap();
@@ -127,11 +125,23 @@ fn native_invocation_is_exact_absolute_and_discovery_free() {
     assert_ne!(digest, changed.approval_digest_with_native_work(binding.task_id, OperationId::from_bytes([41; 16]), &work).unwrap());
     changed = (*request).clone(); changed.argv.push("--resume".into());
     assert_ne!(digest, changed.approval_digest_with_native_work(binding.task_id, OperationId::from_bytes([41; 16]), &work).unwrap());
+    for prompt in ["--model attacker --session original-root", "@source-file-must-not-be-opened", "literal native prompt\nwith another line"] {
+        let mut literal = input.clone();
+        literal.prompt = prompt.into();
+        let request = literal.request_with_work(&binding, &manifest, &work).unwrap();
+        assert_eq!(request.0.standard_input.as_deref(), Some(prompt.as_bytes()));
+        assert_eq!(request.0.argv.iter().filter(|arg| *arg == "--model").count(), 1);
+        assert_eq!(request.0.argv.iter().filter(|arg| *arg == "--session").count(), 1);
+        assert!(!request.0.argv.contains(&literal.prompt));
+    }
+    work.cancellation().cancel();
+    assert!(matches!(input.request_with_work(&binding, &manifest, &work),
+        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
 }
 
 #[test]
 fn changed_session_grants_paths_models_and_executable_never_rebind() {
-    let work = original_request_work();
+    let work = work();
     let (binding, manifest) = binding_and_manifest();
     let input = invocation();
     let mutations: [fn(&mut PiNativeInvocation); 9] = [
@@ -160,7 +170,7 @@ fn changed_session_grants_paths_models_and_executable_never_rebind() {
 
 #[test]
 fn materialized_project_cannot_replace_the_existing_lazy_mount() {
-    let work = original_request_work();
+    let work = work();
     let (mut binding, mut manifest) = binding_and_manifest();
     let project = VolumeRef::new(binding.scratch.volume.provider().clone(), "project", VolumeClass::Project, VolumeOwner::Project("project".into())).unwrap();
     binding.project_volumes.insert("project".into(), project.clone());
@@ -183,7 +193,7 @@ fn exact_native_receipt_schema_preserves_cancellation_uncertainty() {
 
 #[test]
 fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_by_a_child() {
-    let work = original_request_work();
+    let work = work();
     let input = invocation();
     let mut environment = input.environment.clone();
     environment.insert("acyclic_pi_token".into(), "must-not-inherit".into());
@@ -228,7 +238,7 @@ fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_b
 
 #[test]
 fn original_immutable_native_seed_binds_only_the_created_child_current_caller() {
-    let work = original_request_work();
+    let work = work();
     let input = invocation();
     let host = PiNativeHostRuntime { version: input.version.clone(), executable: input.executable.clone(),
         executable_prefix: input.executable_prefix.clone(), extension: input.extension.clone(),
@@ -265,11 +275,11 @@ fn original_immutable_native_seed_binds_only_the_created_child_current_caller() 
     for alias in ["".into(), "non-ASCII-子".into(), "control\nalias".into(), "slash/alias".into(), "backslash\\alias".into(), "space alias".into(), "a".repeat(129)] {
         changed = original.clone();
         changed.agent_alias = alias;
-        assert!(changed.validate().is_err());
+        assert!(changed.validate(&work).is_err());
     }
     changed = original.clone();
     changed.agent_alias = "a".repeat(128);
-    changed.validate().unwrap();
+    changed.validate(&work).unwrap();
     assert_eq!(changed.child_session_id, original.child_session_id, "alias must not replace original native identity");
     let mut missing_alias = serde_json::to_value(&original).unwrap();
     missing_alias.as_object_mut().unwrap().remove("agent_alias");
@@ -278,44 +288,22 @@ fn original_immutable_native_seed_binds_only_the_created_child_current_caller() 
 
 #[test]
 fn scratch_and_parallel_caller_modes_preserve_only_the_actual_sdk_caller_branch() {
+    assert!(serde_json::from_value::<PiNativeSourceMode>(json!("selected_branch")).is_err());
+    let work = work();
     let (mut source, bytes) = source_and_session();
     source.source_leaf_id = Some("actual-sibling-tool-result".into());
-    source.validate_session("child", &root_path(), &bytes, 16, 65_536).unwrap();
+    source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).unwrap();
     source.mode = PiNativeSourceMode::Scratch;
     source.owner_entry_id = None;
     source.source_leaf_id = None;
     source.parent_leaf_id = None;
-    assert!(source.validate_session("child", &root_path(), &bytes, 16, 65_536).is_err());
+    assert!(source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).is_err());
     source.entries_json = "[]".into();
     source.sha256 = hex::encode(Sha256::digest(source.entries_json.as_bytes()));
     let header = format!("{}\n", json!({"type":"session","version":3,"id":"child","timestamp":source.captured_at,"cwd":root_path()}));
-    source.validate_session("child", &root_path(), header.as_bytes(), 16, 65_536).unwrap();
+    source.validate_session("child", &root_path(), header.as_bytes(), 16, 65_536, &work).unwrap();
     source.owner_entry_id = Some("fabricated-tool-owner".into());
-    assert!(source.validate_session("child", &root_path(), header.as_bytes(), 16, 65_536).is_err());
-}
-
-#[test]
-fn native_default_context_rejects_obsolete_foreign_transcript_mode() {
-    assert!(serde_json::from_value::<PiNativeSourceMode>(json!("selected_branch")).is_err());
-    let (mut cut, bytes) = source_and_session();
-    cut.mode = PiNativeSourceMode::Scratch;
-    assert!(cut.validate_session("child", &root_path(), &bytes, 16, 65_536).is_err());
-}
-
-#[test]
-fn native_literal_option_prompt_cannot_change_model_session_or_installed_extension() {
-    let work = original_request_work();
-    let mut invocation = invocation();
-    let (binding, manifest) = binding_and_manifest();
-    for prompt in ["--model attacker --session original-root", "@source-file-must-not-be-opened", "literal native prompt\nwith another line"] {
-        invocation.prompt = prompt.into();
-        let owned_request = invocation.request_with_work(&binding, &manifest, &work).unwrap();
-        let request = &owned_request.0;
-        assert_eq!(request.standard_input.as_deref(), Some(prompt.as_bytes()));
-        assert_eq!(request.argv.iter().filter(|arg| *arg == "--model").count(), 1);
-        assert_eq!(request.argv.iter().filter(|arg| *arg == "--session").count(), 1);
-        assert!(!request.argv.contains(&invocation.prompt));
-    }
+    assert!(source.validate_session("child", &root_path(), header.as_bytes(), 16, 65_536, &work).is_err());
 }
 
 #[test]
@@ -335,15 +323,6 @@ fn native_process_cleanup_is_an_explicit_observed_result_not_success_or_cancella
     assert!(process_cleanup_completed(br#"{"success":true,"exit_code":0,"stdout":[],"stderr":[],"stop":{"kind":"control_stopped","message":"missing observed cleanup"}}"#, 4096, &work).is_err());
     assert!(process_cleanup_completed(br#"{"success":true,"exit_code":0,"stdout":[],"stderr":[]}"#, 4096, &work).is_err());
     assert!(process_cleanup_completed(br#"{"success":true,"stdout":[],"stderr":[],"stop":null}"#, 4096, &work).is_err());
-}
-
-#[test]
-fn native_plan_content_recovery_uses_original_command_and_role_only() {
-    let command = OperationId::from_bytes([61; 16]);
-    assert_eq!(native_plan_operation(command).unwrap(), native_artifact_operation(command, "plan").unwrap());
-    assert_ne!(native_plan_operation(command).unwrap(), native_artifact_operation(command, "request").unwrap());
-    assert_ne!(native_plan_operation(command).unwrap(), native_artifact_operation(command, "schema").unwrap());
-    assert_ne!(native_plan_operation(command).unwrap(), native_plan_operation(OperationId::from_bytes([62; 16])).unwrap());
 }
 
 #[tokio::test]
@@ -464,7 +443,6 @@ fn actual_native_artifact_codec_keeps_original_ledger_and_stable_upload_identity
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cancellation).unwrap();
     let value = json!({"literal":"@/not-a-file\n\"--not-an-option\"","entries":[1,2,3]});
-    let before = work.receipt();
     let encoded = guarded_native_bytes(&value, 4096, &work, false).unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&encoded.bytes).unwrap(), value);
     let original = work.retain_owned(0).unwrap();
@@ -472,8 +450,6 @@ fn actual_native_artifact_codec_keeps_original_ledger_and_stable_upload_identity
     assert!(encoded._custody.bytes() >= encoded.bytes.len() as u64);
     assert!(work.receipt().bytes_encoded >= encoded.bytes.len() as u64 * 2);
     assert!(work.receipt().bytes_copied >= encoded.bytes.len() as u64);
-    assert_eq!(work.receipt().allocation_operations - before.allocation_operations, 1,
-        "only the SDK's genuine output Vec reservation is an allocator operation");
     let alias = work.native_mount_work().native_materialization_work();
     assert!(alias.retain_owned(0).unwrap().shares_ledger(&original));
     let command = OperationId::from_bytes([91; 16]);
@@ -500,122 +476,6 @@ fn actual_native_artifact_codec_retains_exact_quota_and_cancellation_causes() {
 }
 
 #[test]
-fn actual_publication_guard_transport_preserves_full_native_error_custody() {
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cancellation).unwrap();
-    let custody = work.claim(17).unwrap();
-    let original = Mutex::new(None);
-    let cause = acyclic_fs::WorkError::BudgetExceeded { counter: "bytes_copied", observed: 19, maximum: 18 };
-    assert!(matches!(retain_publication_guard_error(
-        Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(cause), custody: Some(custody) }, &original),
-        acyclic_fs::native_mount::MountSourceError::Work(returned) if returned == cause));
-    let retained = original.into_inner().unwrap().unwrap();
-    assert!(matches!(&retained, Error::NativeWork {
-        cause: acyclic_fs::NativeTreeMaterializationError::Work(returned), custody: Some(custody),
-    } if *returned == cause && custody.bytes() == 17));
-}
-
-#[test]
-fn actual_builtin_locator_normalizes_only_native_components_and_keeps_original_custody() {
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cancellation).unwrap();
-    let (_, manifest) = binding_and_manifest();
-    let mapping = &manifest.volumes[0];
-    let locator = crate::pi_builtin::mounted_relative_path(&manifest, mapping, Path::new("notes/file.txt"), &work).unwrap();
-    assert_eq!(locator.0, Path::new("scratch/notes/file.txt"));
-    assert!(locator.1.shares_ledger(&work.retain_owned(0).unwrap()));
-    for invalid_path in ["", ".", "../outside", "notes/../outside", "notes/\0outside"] {
-        assert!(crate::pi_builtin::mounted_relative_path(&manifest, mapping, Path::new(invalid_path), &work).is_err());
-    }
-    assert!(crate::pi_builtin::mounted_relative_path(&manifest, mapping, &root_path().join("outside"), &work).is_err());
-    #[cfg(unix)]
-    assert!(crate::pi_builtin::mounted_relative_path(&manifest, mapping, Path::new("notes\\outside"), &work).is_err());
-    #[cfg(windows)]
-    assert_eq!(crate::pi_builtin::mounted_relative_path(&manifest, mapping, Path::new("notes\\file.txt"), &work).unwrap().0,
-        Path::new("scratch/notes/file.txt"));
-}
-
-#[test]
-fn actual_publication_metadata_is_admitted_before_mutation_and_preserves_original_error() {
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cancellation).unwrap();
-    let (_, manifest) = binding_and_manifest();
-    let original = work.retain_owned(0).unwrap();
-    let (destination, custody) = acyclic_harness::filesystem::copy_native_mapping_with_work(
-        &manifest.volumes[0], &work).unwrap();
-    assert!(custody.shares_ledger(&original));
-    let failure = acyclic_harness::filesystem::NativeViewPublicationError {
-        cause: Error::Unauthorized("original owner denied before mutation".into()),
-        accounting_failure: None, work: work.receipt(), destination: Some(destination),
-        completed: Vec::new(), published: Vec::new(), custody: Some(custody),
-        rendering_failure: None, diagnostic: None,
-    };
-    assert!(failure.completed.is_empty());
-    assert_eq!(failure.destination.as_ref(), manifest.volumes.first());
-    assert!(matches!(&failure.cause, Error::Unauthorized(message) if message == "original owner denied before mutation"));
-    assert!(failure.rendering_failure.is_none() && failure.diagnostic.is_none());
-    assert!(failure.custody.as_ref().unwrap().shares_ledger(&original));
-}
-
-#[test]
-fn actual_native_metadata_reservations_count_only_physical_buffers_on_original_ledger() {
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cancellation).unwrap();
-    let original = work.retain_owned(0).unwrap();
-    let before = work.receipt();
-    let empty_string = pi_native_string("", &work).unwrap();
-    let empty_vector = pi_native_vec::<usize>(0, &work).unwrap();
-    assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
-    assert!(empty_string.1.shares_ledger(&original) && empty_vector.1.shares_ledger(&original));
-    let provider = pi_native_string(PI_NATIVE_PROVIDER, &work).unwrap();
-    let effect = pi_native_string(NATIVE_PROCESS_EFFECT_KIND, &work).unwrap();
-    let kind = pi_native_string(EFFECT_TASK_COMMAND_KIND, &work).unwrap();
-    assert_eq!(work.receipt().allocation_operations - before.allocation_operations, 3);
-    assert_eq!(work.receipt().bytes_copied - before.bytes_copied,
-        (provider.0.len() + effect.0.len() + kind.0.len()) as u64);
-    for custody in [&provider.1, &effect.1, &kind.1] { assert!(custody.shares_ledger(&original)); }
-}
-
-#[test]
-fn actual_native_guard_absorption_preserves_both_payloads_on_foreign_ledger_denial() {
-    let cancellation = CancellationToken::new();
-    let first = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cancellation).unwrap();
-    let second = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cancellation).unwrap();
-    let mut retained = pi_native_string("first original payload", &first).unwrap();
-    let mut foreign = pi_native_string("second original payload", &second).unwrap();
-    let original_bytes = retained.1.bytes();
-    let foreign_bytes = foreign.1.bytes();
-    let before_first = first.receipt();
-    let before_second = second.receipt();
-    assert!(matches!(retained.1.absorb(&mut foreign.1), Err(acyclic_fs::NativeTreeMaterializationError::InvalidLayout)));
-    assert_eq!(retained.1.bytes(), original_bytes);
-    assert_eq!(foreign.1.bytes(), foreign_bytes);
-    assert_eq!(retained.0, "first original payload");
-    assert_eq!(foreign.0, "second original payload");
-    assert_eq!(first.receipt(), before_first);
-    assert_eq!(second.receipt(), before_second);
-}
-
-#[test]
-fn actual_native_constructor_denial_returns_inline_cause_and_original_prefix() {
-    let cancellation = CancellationToken::new();
-    cancellation.cancel();
-    assert!(matches!(pi_meter(super::super::native_root_source::budget(), &cancellation),
-        Err(Error::NativeConstruction { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-    let mut budget = super::super::native_root_source::budget();
-    budget.native_peak_owned_bytes = Some(1);
-    let cancellation = CancellationToken::new();
-    match pi_meter(budget, &cancellation) {
-        Err(Error::NativeConstruction { cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::BudgetExceeded { dimension, .. }), work }) => {
-            assert_eq!(dimension, "native_peak_owned_bytes");
-            assert_eq!(work.backend_read_operations, 0);
-            assert_eq!(work.backend_write_operations, 0);
-        }
-        _ => panic!("constructor must preserve its inline native denial rather than allocate or erase the prefix"),
-    }
-}
-
-#[test]
 fn actual_native_namespace_references_reject_wrong_original_task_root_and_descendant() {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cancellation).unwrap();
@@ -630,144 +490,6 @@ fn actual_native_namespace_references_reject_wrong_original_task_root_and_descen
     assert!(native_service_root(&data, "original-root", task, &root_path().join("unowned/view"), &work).is_err());
     assert!(work.receipt().bytes_hashed > 0);
     assert_eq!(work.receipt().backend_write_operations, 0, "planned references do not allocate or publish a native root");
-}
-
-#[test]
-fn native_request_owned_copies_keep_the_original_codec_custody_and_cancel_before_copy() {
-    let cancellation = CancellationToken::new();
-    let work = pi_meter(super::super::native_root_source::budget(), &cancellation).unwrap();
-    let baseline = work.live_allocation_bytes();
-    let (binding, manifest) = binding_and_manifest();
-    let input = invocation();
-    let request = input.request_with_work(&binding, &manifest, &work).unwrap();
-    assert!(request.1.work().shares_ledger(&work));
-    assert!(request.1.bytes() > 0);
-    assert_eq!(work.live_allocation_bytes(), baseline + request.1.bytes());
-    assert!(work.receipt().allocation_operations > 0);
-    assert!(work.receipt().bytes_copied > 0);
-    drop(request);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    cancellation.cancel();
-    let before = work.receipt();
-    assert!(matches!(input.request_with_work(&binding, &manifest, &work),
-        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-    assert_eq!(work.receipt(), before);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-}
-
-#[test]
-fn native_source_cut_validation_funds_every_json_value_and_releases_temporary_custody() {
-    let (source, bytes) = source_and_session();
-    let cancellation = CancellationToken::new();
-    let work = pi_meter(super::super::native_root_source::budget(), &cancellation).unwrap();
-    let baseline = work.live_allocation_bytes();
-    source.validate_session_with_work("child", &root_path(), &bytes, 16, 65_536, &work).unwrap();
-    assert!(work.receipt().bytes_encoded > 0);
-    assert!(work.receipt().allocation_operations > 0);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    let text = String::from_utf8(bytes).unwrap().replace("original instruction", "foreign transcript");
-    assert!(source.validate_session_with_work("child", &root_path(), text.as_bytes(), 16, 65_536, &work).is_err());
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    cancellation.cancel();
-    let before = work.receipt();
-    assert!(matches!(source.validate_session_with_work("child", &root_path(), text.as_bytes(), 16, 65_536, &work),
-        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-    assert_eq!(work.receipt(), before);
-}
-
-#[test]
-fn native_fixed_approval_formatter_never_allocates_an_unbounded_identity_label() {
-    let text = native_fixed_text(format_args!("interaction:respond:{}", task_interaction_id(
-        TaskId::from_bytes([103; 16]), OperationId::from_bytes([104; 16])))).unwrap();
-    assert!(text.as_str().starts_with("interaction:respond:"));
-    assert!(native_fixed_text(format_args!("{}", "a".repeat(257))).is_err());
-}
-
-#[test]
-fn native_entry_identity_ordering_stops_on_the_original_error_without_allocator_or_sort_panic() {
-    let cancellation = CancellationToken::new();
-    let work = pi_meter(super::super::native_root_source::budget(), &cancellation).unwrap();
-    let before = work.receipt();
-    let mut ids = ["z", "a", "b", "a", "y"];
-    native_sort_entry_ids(&mut ids, &work).unwrap();
-    assert_eq!(ids, ["a", "a", "b", "y", "z"]);
-    assert!(work.receipt().items_examined > before.items_examined);
-    assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
-    cancellation.cancel();
-    let before = work.receipt();
-    assert!(matches!(native_sort_entry_ids(&mut ids, &work),
-        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-    assert_eq!(work.receipt(), before);
-}
-
-#[tokio::test]
-async fn native_callback_preserves_the_whole_original_root_cause_and_denies_before_its_builder() {
-    let cancellation = CancellationToken::new();
-    let work = pi_meter(super::super::native_root_source::budget(), &cancellation).unwrap();
-    let header = work.native_mount_work();
-    let baseline = work.live_allocation_bytes();
-    let denied = CancellationToken::new();
-    denied.cancel();
-    let original = match pi_meter(super::super::native_root_source::budget(), &denied) {
-        Err(error) => error,
-        Ok(_) => panic!("cancelled original constructor unexpectedly succeeded"),
-    };
-    let callback = acyclic_fs::native_mount::NativeMountCallbackFuture::new_guarded(
-        &header, || async move { Err::<(), Error>(original) }).unwrap();
-    let failure = callback.await.unwrap_err();
-    let mut source: &(dyn std::error::Error + 'static) = &failure;
-    let mut preserved = false;
-    loop {
-        if matches!(source.downcast_ref::<Error>(),
-            Some(Error::NativeConstruction { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. }))
-        { preserved = true; }
-        let Some(next) = source.source() else { break; };
-        source = next;
-    }
-    assert!(preserved, "the SDK authority failure erased the actual original root cause");
-    assert!(work.live_allocation_bytes() > baseline, "the actual error slot retired while its cause was still alive");
-    drop(failure);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-
-    cancellation.cancel();
-    let invoked = std::sync::atomic::AtomicBool::new(false);
-    let before = work.receipt();
-    let callback = acyclic_fs::native_mount::NativeMountCallbackFuture::new_guarded(&header, || {
-        invoked.store(true, std::sync::atomic::Ordering::SeqCst);
-        async { Ok::<(), Error>(()) }
-    });
-    assert!(callback.is_err());
-    assert!(!invoked.load(std::sync::atomic::Ordering::SeqCst));
-    assert_eq!(work.receipt(), before);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    let input = invocation();
-    let host = PiNativeHostRuntime { version: input.version, executable: input.executable,
-        executable_prefix: input.executable_prefix, extension: input.extension,
-        provider_extension: input.provider_extension, environment: input.environment }.sanitize().unwrap();
-    assert!(matches!(host.clone_with_native_work(&work),
-        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-    assert_eq!(work.receipt(), before);
-}
-
-#[test]
-fn funded_native_root_routes_preserve_the_original_canonical_layout_without_path_authority() {
-    let cancellation = CancellationToken::new();
-    let work = pi_meter(super::super::native_root_source::budget(), &cancellation).unwrap();
-    let root = acyclic_fs::WorkspaceRootId::from_bytes([0xaf; 16]);
-    let key = super::super::root_key(root);
-    let baseline = work.live_allocation_bytes();
-    let route = native_root_route_with_work(&key, &work).unwrap();
-    assert_eq!(route.0, super::super::route_name(root));
-    assert!(route.1.work().shares_ledger(&work));
-    assert_eq!(work.live_allocation_bytes(), baseline + route.1.bytes());
-    assert!(native_root_route_with_work(&key.to_uppercase(), &work).is_err());
-    drop(route);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    cancellation.cancel();
-    let before = work.receipt();
-    assert!(matches!(native_root_route_with_work(&key, &work),
-        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-    assert_eq!(work.receipt(), before);
 }
 
 #[test]

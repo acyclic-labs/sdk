@@ -1,10 +1,9 @@
 //! Required pinned-CLI lane: real native provider, real filesystem, real Stream.
-//! No mock process runner and no test-only launch/status ledger.
 
 use super::*;
 use acyclic_harness::{
     AgentId, Capabilities, TaskId,
-    conversation::{ContentResidencyVerifier, Limits, VolumeClass, VolumeOwner},
+    conversation::{ContentPublisher, ContentResidencyVerifier, Limits, VolumeClass, VolumeOwner},
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry},
     distributed::{WorkPull, Worker},
     executor::ExecutionJournal,
@@ -38,8 +37,7 @@ impl Drop for FixtureRoot {
     fn drop(&mut self) {
         if self.publication_pending {
             if let Some(directory) = self.directory.take() {
-                let preserved = directory.keep();
-                eprintln!("native qualification retained uncertain publication root: {}", preserved.display());
+                directory.keep();
             }
         }
     }
@@ -65,7 +63,7 @@ struct Fixture {
     work: NativeMaterializationWork,
     command: OperationId,
     approval: InteractionId,
-    plan: TaskEffectPlan,
+    plan: (TaskEffectPlan, acyclic_fs::NativeAllocation),
     results_volume: VolumeRef,
     reservation: Option<Reservation>,
 }
@@ -178,8 +176,10 @@ impl Fixture {
             source_leaf_id: Some("spawn".into()), owner_entry_id: Some("spawn".into()), parent_leaf_id: Some("original".into()), captured_at: "2026-10-09T00:00:01.000Z".into(),
             sha256: hex::encode(Sha256::digest(source_json.as_bytes())), entries_json: source_json };
         let bytes = format!("{}\n{}\n", json!({"type":"session","version":3,"id":"child","timestamp":source.captured_at,"cwd":cwd}), source_entries[0]);
-        publish_session(&files, &scratch, &grant, &source, "child", &cwd, "child.jsonl", bytes.as_bytes(), 16, 65_536,
-            &IdempotencyKey::new("pi-native-child-session")?, budget, &cancellation).await.map_err(|failure| invalid(&failure.to_string()))?;
+        source.validate_session("child", &cwd, bytes.as_bytes(), 16, 65_536, &work)?;
+        files.put_content_with_native_work(&scratch, &grant, "child.jsonl", bytes.as_bytes(),
+            "application/x-ndjson", "Pi child session", 65_536,
+            &IdempotencyKey::new("pi-native-child-session")?, &work).await?;
         let selected = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name()?)?).await?;
         let workspace = files.open_measured(&selected.workspace, budget, &cancellation).await
             .map_err(|failure| invalid(&failure.to_string()))?.value;
@@ -208,8 +208,6 @@ impl Fixture {
                     workspace_id: result_workspace, generation: result_creation.generation,
                 }) }),
         };
-        // Provider module lives beneath the exact pinned package so Node resolves
-        // Pi's real SDK imports, rather than a custom module loader/mock runner.
         let provider_directory = required_path("ACYCLIC_PI_TEST_PROVIDER_DIR")?;
         let provider_module = provider_directory.join(format!("acyclic-native-{}.mjs", uuid::Uuid::new_v4()));
         let package_probe = format!("import {{ VERSION }} from '@earendil-works/pi-coding-agent';\nimport {{ fauxProvider, fauxAssistantMessage }} from '@earendil-works/pi-ai';\nimport {{ appendFileSync }} from 'node:fs';\nexport default function(pi) {{ if (VERSION !== '1.1.0') throw new Error('unpinned Pi'); const provider = fauxProvider({{provider:'pi-native-test',models:[{{id:'probe'}}]}}); provider.setResponses([context => fauxAssistantMessage(JSON.stringify({{messages:context.messages}}))]); pi.registerProvider(provider.provider); pi.on('before_agent_start', async () => {{ appendFileSync({}, 'started\\n'); await new Promise(resolve => setTimeout(resolve,{delay_ms})); }}); }}\n", serde_json::to_string(&cwd.join("launches.txt")).unwrap());
@@ -226,8 +224,17 @@ impl Fixture {
         let request = invocation.request_with_work(&binding, view.manifest(), &work)?;
         let results = Arc::new(FilesystemContentPublisher::new(files.clone(), results_volume.clone(), &issuer.verifier(), &scope, 1_048_576)?);
         let content = Arc::new(FilesystemContentVerifier::new(files.clone(), issuer.verifier(), scope.clone(), 1_048_576)?);
-        let plan = stage_command(&files, &results_volume, &ContentGrant::verify(&issuer.verifier(), &scope, &results_volume, VolumeOperation::Write)?,
-            command, &request.0, 1_048_576, budget, &cancellation).await.map_err(|failure| invalid(&failure.to_string()))?.value.1;
+        let bytes = guarded_native_bytes(&request.0, 1_048_576, &work, false)?;
+        let mut request_file = results.stage_once_with_native_work(
+            native_artifact_operation_with_work(command, "request", &work)?,
+            &format!("pi-native/{command}/request.json"), &bytes.bytes, "application/json", "request", &work)?.await?;
+        let bytes = guarded_native_bytes(&result_schema()?, 1_048_576, &work, false)?;
+        let mut schema = results.stage_once_with_native_work(
+            native_artifact_operation_with_work(command, "schema", &work)?,
+            &format!("pi-native/{command}/schema.json"), &bytes.bytes, "application/schema+json", "schema", &work)?.await?;
+        request_file.1.absorb(&mut schema.1).map_err(native_error)?;
+        let plan = (TaskEffectPlan { provider: PI_NATIVE_PROVIDER.into(), effect_kind: NATIVE_PROCESS_EFFECT_KIND.into(),
+            guarantee: EffectGuarantee::AtMostOnce, request: request_file.0, result_schema: schema.0 }, request_file.1);
         let approvals = Arc::new(FilesystemExecutionJournal::new(stream.clone(), files.clone(), results_volume.clone(), issuer.verifier(), scope.clone(), 1_048_576)?);
         approvals.open_interaction(approval, Interaction::approval("Run pinned native Pi", command, request.0.approval_digest_with_native_work(task, command, &work)?)?).await?;
         approvals.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &scope).await?;
@@ -242,12 +249,9 @@ impl Fixture {
             authority_custody: Some(verifier.1) })
     }
     async fn runner(&self) -> Result<Arc<Runner>> {
-        Ok(Arc::new(Runner::bind_with_work(self.owner.clone(), &self.binding, self.command, &self.plan, &self.invocation, self.view.clone(), self.approval, self.authority(&self.work)?, &self.work).await?))
+        Ok(Arc::new(Runner::bind_with_work(self.owner.clone(), &self.binding, self.command, &self.plan.0, &self.invocation, self.view.clone(), self.approval, self.authority(&self.work)?, &self.work).await?))
     }
-    fn effects(&self, runner: &Runner) -> Result<ConversationEffectHost<LocalStream>> {
-        self.effects_on(runner, runner.original_work())
-    }
-    fn effects_on(&self, runner: &Runner, work: &NativeMaterializationWork) -> Result<ConversationEffectHost<LocalStream>> {
+    fn effects(&self, runner: &Runner, work: &NativeMaterializationWork) -> Result<ConversationEffectHost<LocalStream>> {
         let mut registry = acyclic_harness::effects::EffectRegistry::new_with_native_work(work)?
             .with_result_resolver_with_native_work(self.content.clone(), work)?;
         registry.register_with_native_work(runner.effect_provider(), work)?;
@@ -279,8 +283,6 @@ impl Fixture {
         let meter = self.work.clone();
         self.owner.verify_with_native_work(true, &meter).await?;
         if let Some(reservation) = self.reservation.take() {
-            // A failure returns the whole canonical owner and leaves the
-            // physical root pending, including failures before Fixture exists.
             reservation.into_cleanup().release(&self.owner.native_view_owner(), &meter, &cancellation).await?;
             self._directory.publication_pending = false;
         }
@@ -315,7 +317,7 @@ fn receipt_error(error: NativeReceiptError) -> Error {
 async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_not_relaunch() -> Result<()> {
     let mut fixture = Fixture::new(250).await?;
     let runner = fixture.runner().await?;
-    let effects = Arc::new(fixture.effects(&runner)?);
+    let effects = Arc::new(fixture.effects(&runner, runner.original_work())?);
     let retained = runner.clone(); let launched_effects = effects.clone();
     let launched = tokio::spawn(async move { retained.launch(&launched_effects).await });
     fixture.wait_started().await?;
@@ -335,9 +337,9 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
     let recovery_work = pi_meter(super::super::native_root_source::budget(), &recovery_cancellation)?;
     let owner = runtime.task_host().journal_owner_with_native_work(
         fixture.binding.task_id, &fixture.fence, &recovery_work).await?.into_native_shared(&recovery_work)?;
-    let recovered = Runner::recover(owner, fixture.command, &fixture.plan, fixture.approval, fixture.authority(&recovery_work)?, &recovery_work)
+    let recovered = Runner::recover(owner, fixture.command, &fixture.plan.0, fixture.approval, fixture.authority(&recovery_work)?, &recovery_work)
         .await.map_err(receipt_error)?;
-    let effects = fixture.effects(&recovered)?;
+    let effects = fixture.effects(&recovered, recovered.original_work())?;
     let reconciled = recovered.reconcile(&effects).await?;
     assert_eq!(reconciled.0, status.0);
     let settled = recovered.launch(&effects).await?;
@@ -372,7 +374,7 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
 async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_publication_or_relaunch() -> Result<()> {
     let mut fixture = Fixture::new(60_000).await?;
     let runner = fixture.runner().await?;
-    let effects = Arc::new(fixture.effects(&runner)?);
+    let effects = Arc::new(fixture.effects(&runner, runner.original_work())?);
     let child = runner.clone(); let child_effects = effects.clone();
     let launched = tokio::spawn(async move { child.launch(&child_effects).await });
     fixture.wait_started().await?;
@@ -400,9 +402,9 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
         1_048_576, &cleanup_work).await.is_err());
     let recovery_cancellation = CancellationToken::new();
     let recovery_work = pi_meter(super::super::native_root_source::budget(), &recovery_cancellation)?;
-    let recovered = Runner::recover(fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval, fixture.authority(&recovery_work)?, &recovery_work)
+    let recovered = Runner::recover(fixture.owner.clone(), fixture.command, &fixture.plan.0, fixture.approval, fixture.authority(&recovery_work)?, &recovery_work)
         .await.map_err(receipt_error)?;
-    let effects = fixture.effects(&recovered)?;
+    let effects = fixture.effects(&recovered, recovered.original_work())?;
     let reconciled = recovered.reconcile(&effects).await?;
     assert!(matches!(reconciled.0, EffectStatus::Indeterminate));
     assert_eq!(std::fs::read_to_string(fixture.invocation.cwd.join("launches.txt")).map_err(io_error)?, "started\n");
@@ -416,14 +418,12 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
 async fn required_pinned_pi_native_warm_supervisor_stop_drains_without_cancelling_task_or_relaunching() -> Result<()> {
     let mut fixture = Fixture::new(60_000).await?;
     let runner = fixture.runner().await?;
-    let effects = Arc::new(fixture.effects(&runner)?);
+    let effects = Arc::new(fixture.effects(&runner, runner.original_work())?);
     let child = runner.clone(); let child_effects = effects.clone();
     let launched = tokio::spawn(async move { child.launch(&child_effects).await });
     fixture.wait_started().await?;
     let cleanup_cancellation = CancellationToken::new();
     let work = fixture.work.clone();
-    // Lifecycle signals every original supervisor before awaiting any launch
-    // future. This controls the actual producer, not Task.cancel or a PID.
     runner.signal_stop(&work, &cleanup_cancellation).await.map_err(receipt_error)?;
     let observed = runner.request_stop(&work, &cleanup_cancellation).await.map_err(receipt_error)?;
     let _ = launched.await.map_err(|error| invalid(&error.to_string()))??;
@@ -444,7 +444,7 @@ async fn required_pinned_pi_native_warm_supervisor_stop_drains_without_cancellin
     runner.verify_terminal_process_result_with_native_work(
         &fixture.binding, fixture.context.context(), 1_048_576, &work).await.map_err(receipt_error)?;
     assert!(work.receipt().backend_read_operations > 0);
-    let recovered = Runner::recover(fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval, fixture.authority(&work)?, &work)
+    let recovered = Runner::recover(fixture.owner.clone(), fixture.command, &fixture.plan.0, fixture.approval, fixture.authority(&work)?, &work)
         .await.map_err(receipt_error)?;
     assert!(matches!(recovered.signal_stop(&work, &cleanup_cancellation).await, Err(NativeReceiptError::Record(_))),
         "cold recovery has no original ephemeral supervisor to control");
@@ -482,18 +482,19 @@ async fn required_pinned_pi_native_denies_forged_owner_request_approval_and_chan
     let mut fixture = Fixture::new(0).await?;
     let mut foreign = fixture.binding.clone();
     foreign.task_id = TaskId::from_bytes([99; 16]);
-    assert!(Runner::bind_with_work(fixture.owner.clone(), &foreign, fixture.command, &fixture.plan, &fixture.invocation,
+    assert!(Runner::bind_with_work(fixture.owner.clone(), &foreign, fixture.command, &fixture.plan.0, &fixture.invocation,
         fixture.view.clone(), fixture.approval, fixture.authority(&fixture.work)?, &fixture.work).await.is_err());
     let mut changed = fixture.invocation.clone();
     changed.prompt = "forged original command".into();
-    assert!(Runner::bind_with_work(fixture.owner.clone(), &fixture.binding, fixture.command, &fixture.plan, &changed,
+    assert!(Runner::bind_with_work(fixture.owner.clone(), &fixture.binding, fixture.command, &fixture.plan.0, &changed,
         fixture.view.clone(), fixture.approval, fixture.authority(&fixture.work)?, &fixture.work).await.is_err());
-    assert!(Runner::bind_with_work(fixture.owner.clone(), &fixture.binding, fixture.command, &fixture.plan, &fixture.invocation,
+    assert!(Runner::bind_with_work(fixture.owner.clone(), &fixture.binding, fixture.command, &fixture.plan.0, &fixture.invocation,
         fixture.view.clone(), InteractionId::from_bytes([98; 16]), fixture.authority(&fixture.work)?, &fixture.work).await.is_err());
     let changed = changed.request_with_work(&fixture.binding, fixture.view.manifest(), &fixture.work)?;
-    let grant = ContentGrant::verify(&fixture.issuer.verifier(), &fixture.scope, &fixture.results_volume, VolumeOperation::Write)?;
-    let failed = stage_command(&fixture.files, &fixture.results_volume, &grant, fixture.command, &changed.0, 1_048_576,
-        super::super::native_root_source::budget(), &CancellationToken::new()).await;
+    let bytes = guarded_native_bytes(&changed.0, 1_048_576, &fixture.work, false)?;
+    let failed = fixture.results.stage_once_with_native_work(
+        native_artifact_operation_with_work(fixture.command, "request", &fixture.work)?,
+        fixture.plan.0.request.path(), &bytes.bytes, "application/json", "request", &fixture.work)?.await;
     assert!(failed.is_err(), "changed retry bytes reused the original actual upload operation");
     let original = fixture.runner().await?;
     let sealed_guard = fixture.context.volume_callback_guard_with_native_work(&fixture.owner, &fixture.work).await?;
@@ -504,7 +505,7 @@ async fn required_pinned_pi_native_denies_forged_owner_request_approval_and_chan
         .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
     let unrelated_cancellation = CancellationToken::new();
     let unrelated_work = pi_meter(super::super::native_root_source::budget(), &unrelated_cancellation)?;
-    let unrelated_effects = fixture.effects_on(&original, &unrelated_work)?;
+    let unrelated_effects = fixture.effects(&original, &unrelated_work)?;
     let before = fixture.work.receipt();
     assert!(original.launch(&unrelated_effects).await.is_err(), "another ledger supplied native metadata authority");
     assert_eq!(fixture.work.receipt().backend_read_operations, before.backend_read_operations);
@@ -516,7 +517,7 @@ async fn required_pinned_pi_native_denies_forged_owner_request_approval_and_chan
     assert_eq!(unrelated_work.receipt().backend_read_operations, 0);
     assert_eq!(unrelated_work.receipt().backend_write_operations, 0);
     assert!(original.receipt().await.map_err(receipt_error)?.is_none(), "a denied request created native launch evidence");
-    assert!(original.reconcile(&fixture.effects(&original)?).await.is_err(), "a denied request created a committed effect");
+    assert!(original.reconcile(&fixture.effects(&original, original.original_work())?).await.is_err(), "a denied request created a committed effect");
     fixture.release_publication().await?;
     Ok(())
 }

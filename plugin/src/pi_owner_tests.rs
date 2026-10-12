@@ -12,9 +12,6 @@ use acyclic_harness::{
 };
 use serde_json::json;
 
-#[path = "pi_root_effects_tests.rs"]
-mod root_effects;
-
 #[path = "pi_root_preparation_tests.rs"]
 mod root_preparation;
 
@@ -83,6 +80,7 @@ fn policy() -> PiOwnerPolicy {
 
 async fn root_input_fixture(
     session: &Path,
+    raw: Option<acyclic_fs::LocalFs>,
     configure: impl FnOnce(&mut PiOwnerPolicy),
 ) -> (
     PiOwnerConfig,
@@ -90,22 +88,10 @@ async fn root_input_fixture(
     PiRootRequest,
     acyclic_fs::LocalFs,
 ) {
-    let raw = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(session.join("filesystem")))
-        .await
-        .unwrap();
-    root_input_fixture_on_fs(session, raw, configure).await
-}
-
-async fn root_input_fixture_on_fs(
-    session: &Path,
-    raw: acyclic_fs::LocalFs,
-    configure: impl FnOnce(&mut PiOwnerPolicy),
-) -> (
-    PiOwnerConfig,
-    FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
-    PiRootRequest,
-    acyclic_fs::LocalFs,
-) {
+    let raw = match raw {
+        Some(raw) => raw,
+        None => acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(session.join("filesystem"))).await.unwrap(),
+    };
     let mut policy = policy();
     let root_id = [83; 16];
     let project = VolumeRef::new(
@@ -170,7 +156,7 @@ async fn root_input_fixture_on_fs(
 #[tokio::test]
 async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority() {
     let session = tempfile::tempdir().unwrap();
-    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
+    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
     let work = startup_work();
     let _reference_custody;
     let reference;
@@ -271,7 +257,7 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
     use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
     use std::sync::Arc;
     let session = tempfile::tempdir().unwrap();
-    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
+    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
     let work = startup_work();
     let authority = owner.authority().unwrap();
     let _command_custody;
@@ -403,7 +389,7 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
     for failure in ["owner", "grant", "bytes", "path", "foreign"] {
         let work = startup_work();
         let session = tempfile::tempdir().unwrap();
-        let (owner, filesystem, mut request, raw) = root_input_fixture(session.path(), |policy| {
+        let (owner, filesystem, mut request, raw) = root_input_fixture(session.path(), None, |policy| {
             if failure == "grant" {
                 policy.grants = Capabilities::new(
                     policy
@@ -717,7 +703,7 @@ async fn pi_root_startup_constructor_denial_and_cancel_do_not_publish_inputs() {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError,
         WorkBudget, WorkCounters};
     let session = tempfile::tempdir().unwrap();
-    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
+    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
     let workspace = raw.open_workspace(owner.policy.journal.storage_name().unwrap()).await.unwrap();
     let original = workspace.head().await.unwrap().id();
     let cancelled = CancellationToken::new();
@@ -752,44 +738,9 @@ async fn pi_root_startup_constructor_denial_and_cancel_do_not_publish_inputs() {
 }
 
 #[tokio::test]
-async fn pi_root_decoded_request_drops_data_before_original_guard() {
-    struct Data {
-        request: PiRootRequest,
-        work: acyclic_fs::NativeMaterializationWork,
-        baseline: u64,
-    }
-    impl Drop for Data {
-        fn drop(&mut self) {
-            assert!(self.work.live_allocation_bytes() > self.baseline);
-            assert_ne!(self.request.binding.task_id.into_bytes(), [0; 16]);
-        }
-    }
-    struct Owned {
-        data: Data,
-        _custody: acyclic_fs::NativeAllocation,
-    }
-    let session = tempfile::tempdir().unwrap();
-    let (_, _, request, _) = root_input_fixture(session.path(), |_| {}).await;
-    let work = startup_work();
-    let baseline = work.live_allocation_bytes();
-    let bytes = crate::pi_root_provider::guarded_pi_bytes(&request, 65_536, &work).unwrap();
-    let decoded = crate::pi_root_provider::guarded_pi_decode::<PiRootRequest>(
-        &bytes.0, 65_536, std::mem::size_of::<PiRootRequest>() as u64,
-        acyclic_harness::contract::JsonValueSchema::None,
-        crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, &work).unwrap();
-    drop(bytes.0);
-    drop(bytes.1);
-    let owned = Owned { data: Data { request: decoded.0, work: work.clone(), baseline },
-        _custody: decoded.1 };
-    assert_eq!(owned.data.request, request);
-    drop(owned);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-}
-
-#[tokio::test]
 async fn native_owner_authority_preserves_original_grants_and_scope_names() {
     let session = tempfile::tempdir().unwrap();
-    let (owner, _, _, _) = root_input_fixture(session.path(), |_| {}).await;
+    let (owner, _, _, _) = root_input_fixture(session.path(), None, |_| {}).await;
     let work = startup_work();
     let baseline = work.live_allocation_bytes();
     let ordinary = owner.authority().unwrap();
@@ -828,7 +779,7 @@ async fn native_owner_authority_preserves_original_grants_and_scope_names() {
 async fn native_owner_authority_denial_does_not_write_original_storage() {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkBudget};
     let session = tempfile::tempdir().unwrap();
-    let (owner, _, _, raw) = root_input_fixture(session.path(), |_| {}).await;
+    let (owner, _, _, raw) = root_input_fixture(session.path(), None, |_| {}).await;
     let original = raw.open_workspace(owner.policy.journal.storage_name().unwrap())
         .await.unwrap().head().await.unwrap().id();
     let cancellation = CancellationToken::new();

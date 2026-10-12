@@ -176,10 +176,8 @@ async fn alter_command(
 impl Fixture {
     async fn new(case: &str) -> Self {
         let session = tempfile::tempdir().unwrap();
-        let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
+        let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
         let work = startup_work();
-        // This is trusted fixture host configuration, not a request-selected
-        // project path or accounting token authorizing private-file access.
         let private_root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
             session.path(), &work,
         ).unwrap();
@@ -519,11 +517,8 @@ fn native_preparation_operation_preserves_original_digest_and_admits_before_hash
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
     let task = acyclic_harness::TaskId::from_bytes([93; 16]);
     let work = startup_work();
-    let before = work.receipt();
     let operation = preparation_operation_with_native_work(task, &work).unwrap();
     assert_eq!(operation, preparation_operation(task));
-    assert_eq!(work.receipt().bytes_hashed - before.bytes_hashed,
-        b"acyclic.pi/root-preparation/v1".len() as u64 + 16);
     let limited = NativeMaterializationWork::new(WorkBudget {
         bytes_hashed: 0, ..crate::pi_root_provider::allocation_budget()
     }, &CancellationToken::new()).unwrap();

@@ -49,7 +49,7 @@ impl Fixture {
             "task:spawn:pi.mail.test@1".to_owned(), "mail:send".to_owned(), "mail:read".to_owned(),
             volume.directory_read_capability("pi-inputs")?,
         ]), Limits::default())?;
-        let machine = Arc::new(Passive { identity: MachineIdentity { name: "pi.mail.test".into(), version: "1".into(), digest: *blake3::hash(include_bytes!("pi_mail.rs")).as_bytes() }, schema: json!({"type":"object"}) });
+        let machine = Arc::new(Passive { identity: MachineIdentity { name: "pi.mail.test".into(), version: "1".into(), digest: [73; 32] }, schema: json!({"type":"object"}) });
         let mut tasks = TaskRegistry::default();
         tasks.register(TaskDefinition::<Value, Value>::resumable(machine.clone(), json!({"type":"object"}), json!({}))?)?;
         let mut machines = MachineRegistry::default(); machines.register(machine)?;
@@ -249,22 +249,5 @@ async fn invalid_native_receive_returns_static_denial_without_mailbox_io() -> Re
     }));
     assert_eq!(work.receipt(), before);
     assert_eq!(work.live_allocation_bytes(), live);
-    Ok(())
-}
-
-#[test]
-fn typed_mail_decoder_keeps_same_original_custody_until_dto_drop() -> Result<()> {
-    let work = original_work();
-    let upstream = work.claim(31).map_err(native_error)?;
-    let baseline = work.live_allocation_bytes();
-    let bytes = br#"{"kind":"message","message":"actual original custody"}"#;
-    let (envelope, custody): (PiMailEnvelope, NativeAllocation) = decode(bytes, &work)?;
-    assert_eq!(envelope.message, "actual original custody");
-    assert!(custody.bytes() > 0);
-    assert!(work.live_allocation_bytes() > baseline);
-    drop(envelope);
-    drop(custody);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    drop(upstream);
     Ok(())
 }

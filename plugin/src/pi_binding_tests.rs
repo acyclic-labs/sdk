@@ -173,7 +173,7 @@ fn native_retained_binding_validation_uses_original_work_and_retires_keys() {
         root_agent_id: "root:root-session".to_owned(),
         ..AdapterState::default()
     };
-    let cancellation = tokio_util::sync::CancellationToken::new();
+    let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let live = work.live_allocation_bytes();
@@ -186,20 +186,7 @@ fn native_retained_binding_validation_uses_original_work_and_retires_keys() {
     assert!(matches!(validate_pi_bindings_with_native_work(&substituted, &work),
         Err(acyclic_harness::Error::NativeBoundary { .. })));
     assert_eq!(work.live_allocation_bytes(), live);
-}
-
-#[test]
-fn native_binding_validation_denies_original_cancellation_before_catalog_keys() {
-    let state = AdapterState {
-        task_binding: PluginTaskBinding::Pi(Box::new(binding("root-session", 1))),
-        root_session_id: "root-session".to_owned(),
-        ..AdapterState::default()
-    };
-    let cancellation = tokio_util::sync::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let before = work.receipt();
-    let live = work.live_allocation_bytes();
     cancellation.cancel();
     assert!(matches!(validate_pi_bindings_with_native_work(&state, &work),
         Err(acyclic_harness::Error::NativeWork { .. })));
@@ -210,7 +197,7 @@ fn native_binding_validation_denies_original_cancellation_before_catalog_keys() 
 #[test]
 fn native_binding_validation_denies_zero_visit_budget_before_key_retention() {
     let state = AdapterState::default();
-    let cancellation = tokio_util::sync::CancellationToken::new();
+    let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
         items_examined: 0, ..crate::pi_root_provider::allocation_budget()
     }, &cancellation).unwrap();
