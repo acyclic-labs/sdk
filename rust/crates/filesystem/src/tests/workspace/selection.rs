@@ -22,13 +22,13 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
         .value;
     let key = IdempotencyKey::new();
     let child = parent
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "scratch-child",
             ForkOptions::from_generation(pinned.clone(), key).inherit_paths(Vec::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -70,13 +70,13 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
             .is_empty()
     );
     let retried = parent
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "scratch-child",
             ForkOptions::from_generation(pinned.clone(), key).inherit_paths(Vec::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -98,13 +98,13 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
     );
     assert!(
         parent
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 "scratch-child",
                 ForkOptions::from_generation(pinned, key),
                 crate::PublicationPermit::Unrestricted,
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
-                |_| std::future::ready(Ok(crate::OperationReceipt {
+                &mut |_| std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED
                 }))
@@ -145,7 +145,7 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
         idempotency_key: IdempotencyKey::new(),
     };
     assert!(matches!(
-        plan.apply(options, crate::PublicationPermit::Unrestricted)
+        plan.apply(options, std::collections::BTreeMap::new(), crate::PublicationPermit::Unrestricted)
             .await?,
         JoinOutcome::Applied(_)
     ));
@@ -259,14 +259,14 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
             .await?
             .value;
         let child = parent
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 "child",
                 ForkOptions::from_generation(pinned.clone(), IdempotencyKey::new())
                     .inherit_paths(paths.iter().map(|path| (*path).to_owned()).collect()),
                 crate::PublicationPermit::Unrestricted,
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
-                |_| {
+                &mut |_| {
                     std::future::ready(Ok(crate::OperationReceipt {
                         value: (),
                         work: crate::WorkCounters::UNCHARGED,
@@ -348,7 +348,7 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
                 ApplyOptions {
                     if_target: target.id(),
                     idempotency_key: IdempotencyKey::new()
-                },
+                }, std::collections::BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted
             )
             .await?,
@@ -419,7 +419,7 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
                         .value
                         .id(),
                     idempotency_key: IdempotencyKey::new()
-                },
+                }, std::collections::BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted
             )
             .await?,
@@ -460,14 +460,14 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                 .map(|index| format!("/file-{index}"))
                 .collect();
             let child = parent
-                .fork(
+                .fork::<_, _, crate::WorkspaceError>(
                     "subset-child",
                     ForkOptions::from_generation(pinned, IdempotencyKey::new())
                         .inherit_paths(paths),
                     crate::PublicationPermit::Unrestricted,
                     crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new(),
-                    |_| {
+                    &mut |_| {
                         std::future::ready(Ok(crate::OperationReceipt {
                             value: (),
                             work: crate::WorkCounters::UNCHARGED,
@@ -478,7 +478,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                 .value;
             let source = if descendant {
                 child
-                    .fork(
+                    .fork::<_, _, crate::WorkspaceError>(
                         "subset-grandchild",
                         ForkOptions::from_generation(
                             child
@@ -493,7 +493,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                         crate::PublicationPermit::Unrestricted,
                         crate::WorkBudget::UNBOUNDED,
                         &crate::CancellationToken::new(),
-                        |_| {
+                        &mut |_| {
                             std::future::ready(Ok(crate::OperationReceipt {
                                 value: (),
                                 work: crate::WorkCounters::UNCHARGED,
@@ -564,7 +564,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                     ApplyOptions {
                         if_target: target.id(),
                         idempotency_key: IdempotencyKey::new()
-                    },
+                    }, std::collections::BTreeMap::new(),
                     crate::PublicationPermit::Unrestricted
                 )
                 .await?,
@@ -636,7 +636,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                         ApplyOptions {
                             if_target: repeated.target_head(),
                             idempotency_key: IdempotencyKey::new()
-                        },
+                        }, std::collections::BTreeMap::new(),
                         crate::PublicationPermit::Unrestricted
                     )
                     .await?,
@@ -657,7 +657,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
         .value;
     parent.write_text("/omitted", "base").await?;
     let child = parent
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "negative-child",
             ForkOptions::from_generation(
                 parent
@@ -672,7 +672,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -688,7 +688,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new()
-            },
+            }, std::collections::BTreeMap::new(),
             crate::PublicationPermit::Unrestricted
         )
         .await?,
@@ -723,7 +723,7 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
         .value;
     parent.write_text("/omitted", "base").await?;
     let child = parent
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "filtered-rebase-child",
             ForkOptions::from_generation(
                 parent
@@ -739,7 +739,7 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -794,7 +794,7 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new()
-            },
+            }, std::collections::BTreeMap::new(),
             crate::PublicationPermit::Unrestricted
         )
         .await?,
@@ -855,7 +855,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
     root.write_text("/keep", "root").await?;
     root.write_text("/omit", "root").await?;
     let parent = root
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "nested-parent",
             ForkOptions::from_generation(
                 root.head(
@@ -869,7 +869,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -880,7 +880,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
         .value;
     parent.write_text("/keep", "inherited").await?;
     let child = parent
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "nested-child",
             ForkOptions::from_generation(
                 parent
@@ -896,7 +896,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -913,7 +913,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
         ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
-        },
+        }, std::collections::BTreeMap::new(),
         crate::PublicationPermit::Unrestricted,
     )
     .await?;
@@ -960,7 +960,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
+            }, std::collections::BTreeMap::new(),
             crate::PublicationPermit::Unrestricted
         )
         .await?,
@@ -972,7 +972,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
         ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
-        },
+        }, std::collections::BTreeMap::new(),
         crate::PublicationPermit::Unrestricted,
     )
     .await?;

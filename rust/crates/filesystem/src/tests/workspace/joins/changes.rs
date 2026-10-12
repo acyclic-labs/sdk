@@ -20,13 +20,13 @@ async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<
         .await?
         .value;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -62,7 +62,7 @@ async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
+            }, std::collections::BTreeMap::new(),
             crate::PublicationPermit::Unrestricted
         )
         .await?,

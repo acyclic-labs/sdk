@@ -219,13 +219,13 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
         .value;
     let fork_key = IdempotencyKey::from_bytes([0x42; 16]);
     let fork = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-42",
             ForkOptions::from_generation(base.clone(), fork_key),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -235,13 +235,13 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
         .await?
         .value;
     let retried = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-42",
             ForkOptions::from_generation(base.clone(), fork_key),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -291,13 +291,13 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
         .id()
     );
     assert!(
-        main.fork(
+        main.fork::<_, _, crate::WorkspaceError>(
             "agent-42",
             ForkOptions::from_generation(base, IdempotencyKey::from_bytes([0x43; 16])),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| std::future::ready(Ok(crate::OperationReceipt {
+            &mut |_| std::future::ready(Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED
             }))

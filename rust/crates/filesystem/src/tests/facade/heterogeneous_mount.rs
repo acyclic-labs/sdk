@@ -282,7 +282,7 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
         .value;
     assert!(matches!(
         scratch
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 "foreign",
                 crate::ForkOptions::from_generation(
                     root_head.clone(),
@@ -291,7 +291,7 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
                 crate::PublicationPermit::Unrestricted,
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
-                |_| std::future::ready(Ok(crate::OperationReceipt {
+                &mut |_| std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED
                 }))
@@ -302,7 +302,7 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
         Err(crate::WorkspaceError::ForeignGeneration)
     ));
     assert!(matches!(
-        root.fork(
+        root.fork::<_, _, crate::WorkspaceError>(
             "foreign",
             crate::ForkOptions::from_generation(
                 scratch_head.clone(),
@@ -311,7 +311,7 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| std::future::ready(Ok(crate::OperationReceipt {
+            &mut |_| std::future::ready(Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED
             }))
@@ -323,7 +323,7 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
     ));
     for (workspace, head) in [(&root, &root_head), (&scratch, &scratch_head)] {
         let fork = workspace
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 "child",
                 crate::ForkOptions::from_generation(
                     head.clone(),
@@ -332,7 +332,7 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
                 crate::PublicationPermit::Unrestricted,
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
-                |_| {
+                &mut |_| {
                     std::future::ready(Ok(crate::OperationReceipt {
                         value: (),
                         work: crate::WorkCounters::UNCHARGED,

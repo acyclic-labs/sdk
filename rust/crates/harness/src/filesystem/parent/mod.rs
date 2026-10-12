@@ -38,7 +38,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> VolumeImportPlan<A, O> {
                 ApplyOptions {
                     if_target: self.plan.target_head(),
                     idempotency_key: filesystem_key(key),
-                },
+                }, std::collections::BTreeMap::new(),
                 acyclic_fs::PublicationPermit::Unrestricted,
             )
             .await

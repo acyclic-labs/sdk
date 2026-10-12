@@ -152,14 +152,14 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         "/tree".to_owned(),
     ];
     let child = workspace
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "selected-fork-closure-child",
             ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
                 .inherit_paths(paths.clone()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -311,14 +311,14 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
     assert!(denied.work.backend_read_operations > 0);
     assert!(denied.work.allocation_operations > 0);
     let all = workspace
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "selected-fork-root-child",
             ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
                 .inherit_paths(vec!["/tree".to_owned(), "/".to_owned(), "/".to_owned()]),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -403,14 +403,14 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
             .map_err(|failure| failure.error)
     })
     .await?;
-    let child = (workspace.fork(
+    let child = (workspace.fork::<_, _, crate::WorkspaceError>(
         "selected-fork-verification-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/file".to_owned()]),
         crate::PublicationPermit::Unrestricted,
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-        |_| {
+        &mut |_| {
             std::future::ready(Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,

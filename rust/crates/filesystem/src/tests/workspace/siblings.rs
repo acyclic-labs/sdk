@@ -59,13 +59,13 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
             )
             .await?
             .value;
-        main.fork(
+        main.fork::<_, _, crate::WorkspaceError>(
             "promote-first",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -74,13 +74,13 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
         )
         .await?
         .value;
-        main.fork(
+        main.fork::<_, _, crate::WorkspaceError>(
             "promote-second",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -129,7 +129,7 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new()
-                },
+                }, std::collections::BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted
             )
             .await?,
@@ -186,7 +186,7 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new()
-                },
+                }, std::collections::BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted
             )
             .await?,
@@ -230,13 +230,13 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
         .await?
         .value;
     let first = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "siblings-first",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -246,13 +246,13 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
         .await?
         .value;
     let second = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "siblings-second",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -271,7 +271,7 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                },
+                }, std::collections::BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted,
             )
             .await?;
@@ -347,13 +347,13 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
     let mut forks = Vec::new();
     for (name, file) in [("fold-first", "a.rs"), ("fold-second", "b.rs")] {
         let fork = main
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 name,
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
                 crate::PublicationPermit::Unrestricted,
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
-                |_| {
+                &mut |_| {
                     std::future::ready(Ok(crate::OperationReceipt {
                         value: (),
                         work: crate::WorkCounters::UNCHARGED,
@@ -407,7 +407,7 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                },
+                }, std::collections::BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted,
             )
             .await?
@@ -470,13 +470,13 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
         ("file-fold-second", "second\n"),
     ] {
         let fork = main
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 name,
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
                 crate::PublicationPermit::Unrestricted,
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
-                |_| {
+                &mut |_| {
                     std::future::ready(Ok(crate::OperationReceipt {
                         value: (),
                         work: crate::WorkCounters::UNCHARGED,
@@ -498,7 +498,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
                     ApplyOptions {
                         if_target: plan.target_head(),
                         idempotency_key: IdempotencyKey::new(),
-                    },
+                    }, std::collections::BTreeMap::new(),
                     crate::PublicationPermit::Unrestricted,
                 )
                 .await?
@@ -518,13 +518,13 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
     assert_eq!(outcomes, [Vec::new(), vec![Some("/other.rs".to_owned())]]);
 
     let fork = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "file-fold-third",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -540,7 +540,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
+            }, std::collections::BTreeMap::new(),
             crate::PublicationPermit::Unrestricted,
         )
         .await?
@@ -684,13 +684,13 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
         .value;
     let cancellation = crate::CancellationToken::new();
     let fork = |name: &'static str, base: &Generation<_, _>| {
-        main.fork(
+        main.fork::<_, _, crate::WorkspaceError>(
             name,
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &cancellation,
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -744,7 +744,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                },
+                }, std::collections::BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted,
             )
             .await?;
@@ -842,7 +842,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
+            }, std::collections::BTreeMap::new(),
             crate::PublicationPermit::Unrestricted,
         )
         .await?

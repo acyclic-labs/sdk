@@ -462,10 +462,10 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
     let target = fs.create_workspace("immutable-target", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     target.write_text("/base", "base").await?;
     let source = target
-        .fork(
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
             "immutable-source",
             ForkOptions::from_generation(target.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::from_bytes([3; 16])),
-        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
+        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), &mut |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     source.write_text("/source-before-plan", "one").await?;
     let immutable_plan = source.join_into(&target).plan().await?;
@@ -475,7 +475,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
             .apply(ApplyOptions {
                 if_target: immutable_plan.target_head(),
                 idempotency_key: IdempotencyKey::from_bytes([4; 16]),
-            }, acyclic_fs::PublicationPermit::Unrestricted)
+            }, std::collections::BTreeMap::new(), acyclic_fs::PublicationPermit::Unrestricted)
             .await?,
         JoinOutcome::Applied(_)
     ));
@@ -489,7 +489,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
             .apply(ApplyOptions {
                 if_target: stale_plan.target_head(),
                 idempotency_key: IdempotencyKey::from_bytes([5; 16]),
-            }, acyclic_fs::PublicationPermit::Unrestricted)
+            }, std::collections::BTreeMap::new(), acyclic_fs::PublicationPermit::Unrestricted)
             .await?,
         JoinOutcome::StaleTarget(_)
     ));
@@ -501,11 +501,11 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
         idempotency_key: IdempotencyKey::from_bytes([6; 16]),
     };
     assert!(matches!(
-        current_plan.apply(options, acyclic_fs::PublicationPermit::Unrestricted).await?,
+        current_plan.apply(options, std::collections::BTreeMap::new(), acyclic_fs::PublicationPermit::Unrestricted).await?,
         JoinOutcome::Applied(_)
     ));
     assert!(matches!(
-        current_plan.apply(options, acyclic_fs::PublicationPermit::Unrestricted).await?,
+        current_plan.apply(options, std::collections::BTreeMap::new(), acyclic_fs::PublicationPermit::Unrestricted).await?,
         JoinOutcome::AlreadyApplied(_)
     ));
     assert_eq!(target.read("/source-after-plan", 16, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), &b"two"[..]);
@@ -519,10 +519,10 @@ async fn forged_merge_candidate_is_rejected_before_publication()
     let target = fs.create_workspace("candidate-target", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     target.write_text("/shared", "base").await?;
     let source = target
-        .fork(
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
             "candidate-source",
             ForkOptions::from_generation(target.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::from_bytes([6; 16])),
-        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
+        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), &mut |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     source.write_text("/shared", "source").await?;
     target.write_text("/shared", "target").await?;
@@ -534,7 +534,7 @@ async fn forged_merge_candidate_is_rejected_before_publication()
         .apply(ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::from_bytes([7; 16]),
-        }, acyclic_fs::PublicationPermit::Unrestricted)
+        }, std::collections::BTreeMap::new(), acyclic_fs::PublicationPermit::Unrestricted)
         .await?
     else {
         return Err("expected a semantic conflict".into());

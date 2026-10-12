@@ -132,13 +132,13 @@ async fn deletion_is_terminal_and_does_not_invalidate_a_fork() -> Result<(), Box
         .await?
         .value;
     let fork = workspace
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "survivor",
             ForkOptions::from_generation(generation, IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,

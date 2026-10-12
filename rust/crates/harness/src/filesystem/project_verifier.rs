@@ -99,18 +99,14 @@ where
                     != receipt.provider_operation_id.as_slice()
                 || witness.history != JoinHistory::Merge
                 || !target_workspace
-                    .verify_join_commit(&witness)
-                    .await
-                    .map_err(map_error)?
+                    .verify_join_commit(&witness, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?
             {
                 return Err(Error::Invalid(
                     "merge receipt does not prove the committed Filesystem join".into(),
                 ));
             }
             let normalized_source = source_generation
-                .normalized_join_parent_for(&expected)
-                .await
-                .map_err(map_error)?;
+                .normalized_join_parent_for(&expected, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?;
             let parents = result.parents(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?;
             if parents.as_slice() != [expected.id(), normalized_source] {
                 return Err(Error::Invalid(

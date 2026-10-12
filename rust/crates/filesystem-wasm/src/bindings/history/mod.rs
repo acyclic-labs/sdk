@@ -123,7 +123,7 @@ impl BrowserJoinPlan {
         };
         let result = browser_join_result(
             self.engine
-                .apply(options, acyclic_fs::PublicationPermit::Unrestricted)
+                .apply(options, std::collections::BTreeMap::new(), acyclic_fs::PublicationPermit::Unrestricted)
                 .await
                 .map_err(js_error)?,
         );

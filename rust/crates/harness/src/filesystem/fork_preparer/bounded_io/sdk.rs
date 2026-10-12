@@ -666,25 +666,25 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
                 async move { guard.verify_creation_with_native_work(&work)?.await }
             };
             break 'forked workspace
-                .fork_with_native_work(
+                .fork::<_, _, crate::Error>(
                     &name,
                     options,
                     acyclic_fs::PublicationPermit::Unrestricted,
                     work,
                     io.cancellation(),
-                    &mut before,
+                    acyclic_fs::NativeAuthorityGuard(before.clone()),
                 )
                 .await?;
         }
         io.receive(
             workspace
-                .fork(
+                .fork::<_, _, acyclic_fs::WorkspaceError>(
                     &name,
                     options,
                     acyclic_fs::PublicationPermit::Unrestricted,
                     io.remaining()?,
                     io.cancellation(),
-                    |_| {
+                    &mut |_| {
                         std::future::ready(Ok(OperationReceipt {
                             value: (),
                             work: WorkCounters::default(),

@@ -76,13 +76,13 @@ async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
         .await?
         .value;
     let snapshot = workspace
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "restore-paths-snapshot",
             ForkOptions::from_generation(committed, IdempotencyKey::from_bytes([0x61; 16])),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -205,13 +205,13 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
         .await?
         .value;
     let source_workspace = workspace
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "apply-paths-source",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::from_bytes([0x63; 16])),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -278,7 +278,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
         .await?
         .value;
     let conflict_source = conflicting
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "apply-paths-conflict-source",
             ForkOptions::from_generation(
                 conflict_base.clone(),
@@ -287,7 +287,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,

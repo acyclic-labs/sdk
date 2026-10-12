@@ -346,7 +346,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let (outcome, custody) = if selections.is_empty() {
                 plan.plan
                     .apply_with_native_work(
-                        options,
+                        options, &[],
                         acyclic_fs::PublicationPermit::Unrestricted,
                         work,
                         work.cancellation(),
@@ -371,7 +371,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let options = Self::merge_options(plan, project_join_key(operation_id, None)?);
         let outcome = if selections.is_empty() {
             plan.plan
-                .apply(options, acyclic_fs::PublicationPermit::Unrestricted)
+                .apply(options, std::collections::BTreeMap::new(), acyclic_fs::PublicationPermit::Unrestricted)
                 .await
                 .map_err(map_error)?
         } else {

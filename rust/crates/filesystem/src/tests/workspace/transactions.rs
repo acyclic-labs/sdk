@@ -86,13 +86,13 @@ async fn workspace_forks_an_unpublished_checkpoint_without_mutating_its_source()
         .await?
         .value;
     let child = source
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "checkpoint-child",
             ForkOptions::from_generation(unpublished, IdempotencyKey::from_bytes([0x44; 16])),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -212,13 +212,13 @@ async fn transaction_is_atomic_idempotent_and_visible_to_forks() -> Result<(), B
         OwnedBytes::from_static(b"ready")
     );
     let fork = workspace
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "copy",
             ForkOptions::from_generation(generation.clone(), IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,

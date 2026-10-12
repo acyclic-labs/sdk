@@ -20,13 +20,13 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
         .await?
         .value;
     let left = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "lineage-left",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -36,13 +36,13 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
         .await?
         .value;
     let right = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "lineage-right",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -112,7 +112,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
         .value;
     main.write_text("/base", "base").await?;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-rebase",
             ForkOptions::from_generation(
                 main.head(
@@ -126,7 +126,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -218,7 +218,7 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
         .value;
     main.write_text("/shared", "base").await?;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-conflict",
             ForkOptions::from_generation(
                 main.head(
@@ -232,7 +232,7 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -305,7 +305,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
     main.write("/shared", bytes::Bytes::from(vec![b'a'; 128]))
         .await?;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-ranges",
             ForkOptions::from_generation(
                 main.head(
@@ -319,7 +319,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,

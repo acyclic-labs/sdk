@@ -24,13 +24,13 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
     let cancellation = CancellationToken::new();
     let budget = selected_transaction_budget();
     let first = parent
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "original-fork-child",
             ForkOptions::from_generation(frozen.clone(), key),
             crate::PublicationPermit::Unrestricted,
             budget,
             &cancellation,
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -56,13 +56,13 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
         .await?
         .value;
     let retry = parent
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "original-fork-child",
             ForkOptions::from_generation(frozen, key),
             crate::PublicationPermit::Unrestricted,
             budget,
             &cancellation,
-            |_| {
+            &mut |_| {
                 std::future::ready(Err(crate::OperationFailure::before_work(
                     crate::FsError::CreationRejected,
                 )))
@@ -542,14 +542,14 @@ async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_auth
         )))
     };
     let failure = workspace
-        .fork_with_native_work(
+        .fork::<_, _, crate::WorkspaceError>(
             "native-guarded-fork-denied",
             ForkOptions::from_generation(frozen, IdempotencyKey::new())
                 .inherit_paths(vec!["/selected".to_owned()]),
             crate::PublicationPermit::Unrestricted,
             &original,
             &cancellation,
-            &mut deny,
+            crate::NativeAuthorityGuard(deny.clone()),
         )
         .await
         .err()
@@ -618,13 +618,13 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
     let mut allow =
         |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
     let failed = workspace
-        .fork_with_native_work(
+        .fork::<_, _, crate::WorkspaceError>(
             "native-fork-reserved-destination",
             ForkOptions::from_generation(frozen, IdempotencyKey::new()),
             permit,
             &original,
             &cancellation,
-            &mut allow,
+            crate::NativeAuthorityGuard(allow.clone()),
         )
         .await
         .err()
@@ -726,10 +726,9 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
         .value;
     assert_ne!(current.id(), original_generation.id());
     let observed = workspace
-        .operation_generation_record(key, WorkBudget::UNBOUNDED, &cancellation)
-        .await?;
-    let (generation, record) = observed.value.0.ok_or("original operation disappeared")?;
-    assert_eq!(generation.id(), original_generation.id());
+        .volume.fs.workspace_operation_generation(&workspace.volume, (key).operation_id(), &mut crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation), &cancellation).await?;
+    let (generation, record) = observed.0.ok_or("original operation disappeared")?;
+    assert_eq!(generation, original_generation.id());
     assert_eq!(record.operation_id, key.operation_id());
     let mut decode_work = crate::WorkCounters::UNCHARGED;
     let mut allocations = crate::kernel::allocation::AllocationLedger::default();
@@ -763,13 +762,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     );
     assert!(
         workspace
-            .operation_generation_record(
-                IdempotencyKey::new(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value
+            .volume.fs.workspace_operation_generation(&workspace.volume, (IdempotencyKey::new()).operation_id(), &mut crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation), &cancellation).await?
             .0
             .is_none()
     );
@@ -846,9 +839,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         _ => return Err("the current genuine reservation did not authorize publication".into()),
     };
     let (_, record) = workspace
-        .operation_generation_record(key, WorkBudget::UNBOUNDED, &cancellation)
-        .await?
-        .value
+        .volume.fs.workspace_operation_generation(&workspace.volume, (key).operation_id(), &mut crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation), &cancellation).await?
         .0
         .ok_or("the original publication disappeared")?;
     let mut work = crate::WorkCounters::UNCHARGED;
@@ -1111,9 +1102,7 @@ async fn original_fingerprint_metadata_never_authorizes_a_foreign_current_reserv
     );
     assert!(
         workspace
-            .operation_generation_record(key, WorkBudget::UNBOUNDED, &cancellation,)
-            .await?
-            .value
+            .volume.fs.workspace_operation_generation(&workspace.volume, (key).operation_id(), &mut crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation), &cancellation).await?
             .0
             .is_none()
     );
