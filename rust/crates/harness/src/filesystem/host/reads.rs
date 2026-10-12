@@ -113,10 +113,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         scratch.absorb_native_custody(requested_custody)?;
         let page_custody;
         let mut page;
-        (page, page_custody) = generation.list_after_with_native_work(
-            &requested, after, maximum_entries as usize + usize::from(path.is_empty()),
+        (page, page_custody) = generation.list_directory(
+            &requested, after, maximum_entries.checked_add(u32::from(path.is_empty())).ok_or_else(|| Error::NativeWorkspace { source: acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::Overflow), custody: None })?,
             work, work.cancellation(),
-        ).await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
+        ).await.map(|(page, allocation)| (page, allocation.expect("native directory allocation"))).map_err(|source| Error::NativeWorkspace { source, custody: None })?;
         output.absorb_native_custody(page_custody)?;
         guard().await?;
         if path.is_empty() {

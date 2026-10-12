@@ -75,10 +75,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .generation(&workspace, reference)
                 .await?
                 .list_directory(path, after, maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error)),
+                .await.map(|receipt| receipt.value.0).map_err(|failure| map_error(failure.error)),
             None => workspace
                 .list_directory(path, after, maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error)),
+                .await.map(|receipt| receipt.value.0).map_err(|failure| map_error(failure.error)),
         }
     }
 
