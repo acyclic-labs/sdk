@@ -3,11 +3,12 @@ use super::*;
 use crate::CancellationToken;
 use crate::foundation::Digest;
 use crate::kernel::persistent_btree::Mutation;
-use crate::kernel::{AttributeChild, AttributePage, attribute_page_id, encode_attribute_page};
+use crate::kernel::{AttributePage, attribute_page_id, encode_attribute_page};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectStore;
 use acyclic_stream::OwnedBytes;
 
+use crate::kernel::Child;
 fn name(byte: u8, length: usize) -> Result<AttributeName, Box<dyn std::error::Error>> {
     Ok(AttributeName::new(
         super::super::AttributeClass::PosixXattr,
@@ -60,16 +61,16 @@ fn three_leaf_tree(
     let root = put(
         store,
         &AttributePage::Internal(vec![
-            AttributeChild {
-                first_name: name(1, 1)?,
+            Child {
+                first: name(1, 1)?,
                 page: leaves[0],
             },
-            AttributeChild {
-                first_name: name(3, 1)?,
+            Child {
+                first: name(3, 1)?,
                 page: leaves[1],
             },
-            AttributeChild {
-                first_name: name(6, 1)?,
+            Child {
+                first: name(6, 1)?,
                 page: leaves[2],
             },
         ]),
@@ -100,7 +101,7 @@ fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
     let bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
-    let AttributePage::Internal(children) = decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::AttributePage::Leaf, crate::kernel::AttributePage::Internal, |first_name, page| crate::kernel::AttributeChild { first_name, page }, |child| &child.first_name)?
+    let AttributePage::Internal(children) = decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("candidate attribute root is not internal".into());
     };
@@ -131,7 +132,7 @@ fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
     let bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
-    let AttributePage::Leaf(entries) = decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::AttributePage::Leaf, crate::kernel::AttributePage::Internal, |first_name, page| crate::kernel::AttributeChild { first_name, page }, |child| &child.first_name)?
+    let AttributePage::Leaf(entries) = decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("unordered attribute result is not a leaf".into());
     };
@@ -252,7 +253,7 @@ fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std:
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     assert!(root_bytes.len() <= 175);
-    let AttributePage::Internal(children) = decode_attribute_page(&root_bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::AttributePage::Leaf, crate::kernel::AttributePage::Internal, |first_name, page| crate::kernel::AttributeChild { first_name, page }, |child| &child.first_name)? else {
+    let AttributePage::Internal(children) = decode_attribute_page(&root_bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? else {
         return Err("byte-bounded candidate attribute root is not internal".into());
     };
     assert_eq!(children.len(), 2);
@@ -262,7 +263,7 @@ fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std:
             .value;
         assert!(bytes.len() <= 175);
         assert!(
-            matches!(decode_attribute_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::AttributePage::Leaf, crate::kernel::AttributePage::Internal, |first_name, page| crate::kernel::AttributeChild { first_name, page }, |child| &child.first_name)?, AttributePage::Leaf(entries) if entries.len() == 1)
+            matches!(decode_attribute_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, AttributePage::Leaf(entries) if entries.len() == 1)
         );
     }
     Ok(())
