@@ -57,7 +57,7 @@ async fn indexed_publication_cancellation_precedes_codec_and_sdk() -> Result<()>
     let ApplyResult::Applied { event } = reducer.plan(&command(71)?)? else {
         return Err(Error::Invalid("fixture needs fresh event".into()));
     };
-    let bytes = crate::wire_codec::encode_event(reducer.authority(), &event)?;
+    let bytes = crate::wire_codec::encode_event(reducer.authority(), &event, &mut None)?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let mut work = history::HistoryWork::new(publication_budget(), &cancellation);
@@ -181,10 +181,10 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     };
     let owner = fixture.host.journal_owner(task, (&lease.reservation).into()).await?;
     let child_agent = AgentId::from_bytes([94; 16]);
-    let project = VolumeRef::new(fixture.filesystem_provider.clone(), "measured-child-project", VolumeClass::Project,
-        VolumeOwner::Project("created-project".into()))?;
-    let private = VolumeRef::new(fixture.filesystem_provider.clone(), "measured-child-private", VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(child_agent))?;
+    let project = VolumeRef::new(fixture.filesystem_provider.clone(), "measured-child-project".into(), VolumeClass::Project,
+        VolumeOwner::Project("created-project".into()), &mut None)?;
+    let private = VolumeRef::new(fixture.filesystem_provider.clone(), "measured-child-private".into(), VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(child_agent), &mut None)?;
     let project_generation = created.seed.resources.iter().find_map(|resource| match &resource.revision {
         ResourceRevision::Project { generation, .. } => Some(generation.clone()), _ => None,
     }).ok_or_else(|| Error::Invalid("original created project generation missing".into()))?;
@@ -215,8 +215,8 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let mut admission = fixture.admission(85, serde_json::json!({"action":"filesystem-io"}));
     admission.parent = Some(task);
     admission.grants = Capabilities::new([
-        private.capability(VolumeOperation::Read)?, private.capability(VolumeOperation::Write)?,
-        project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
+        private.capability(VolumeOperation::Read, &mut None)?, private.capability(VolumeOperation::Write, &mut None)?,
+        project.capability(VolumeOperation::Read, &mut None)?, project.capability(VolumeOperation::Write, &mut None)?,
         "conversation:bind".into(),
     ]);
     let (resources, proofs) = preparer.creation_allocations(&fork, task, None)?;
@@ -691,7 +691,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
                 records[0] = Bytes::from(crate::contract::canonical_json_bytes(&location)?);
             } else if mode == 7 && path.as_str() == authority().stream_path(&mut None)? {
                 event.attestation[0] ^= 1;
-                records[0] = Bytes::from(crate::wire_codec::encode_event(&authority(), &event)?);
+                records[0] = Bytes::from(crate::wire_codec::encode_event(&authority(), &event, &mut None)?);
             }
         }
         let detached = if mode == 8 {

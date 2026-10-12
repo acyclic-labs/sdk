@@ -1552,8 +1552,8 @@ mod tests {
         assert!(creator.protect_root_bootstrap_with_native_work(&owner, &birth.volume, RootBootstrapContentRole::Project,
             birth.operation, birth.config, acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(wrong_initial)),
             birth.selected_generation, None, &work)?.await.is_err());
-        let foreign_scratch = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-original-root-private",
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([184; 16])))?;
+        let foreign_scratch = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-original-root-private".into(),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([184; 16])), &mut None)?;
         let denied = creator.protect_root_bootstrap_with_native_work(&owner, &foreign_scratch, RootBootstrapContentRole::Scratch,
             birth.operation, birth.config, birth.initial_generation, birth.selected_generation, None, &work);
         assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
@@ -1578,8 +1578,8 @@ mod tests {
                 1 => request.root_operation = OperationId::from_bytes([182; 16]),
                 2 => request.generation = GenerationRef::new(fixture.filesystem_provider.clone(),
                     birth.initial_generation.digest().into_bytes().to_vec(), None)?,
-                3 => request.volume = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-root-project",
-                    VolumeClass::Project, VolumeOwner::Project("created-project".into()))?,
+                3 => request.volume = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-root-project".into(),
+                    VolumeClass::Project, VolumeOwner::Project("created-project".into()), &mut None)?,
                 _ => request.role = RootBootstrapContentRole::Scratch,
             }
             let denied = creator.verify_root_bootstrap_with_native_work(context, &request, &work);

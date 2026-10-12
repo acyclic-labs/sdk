@@ -29,8 +29,8 @@ async fn put(fixture: &Fixture, volume: &VolumeRef, path: &str, bytes: &[u8], ke
 #[tokio::test]
 async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() -> Result<()> {
     let mut fixture = Fixture::new().await?;
-    let project = VolumeRef::new(fixture.volume.provider().clone(), "project", VolumeClass::Project,
-        VolumeOwner::Project("selected-project".into()))?;
+    let project = VolumeRef::new(fixture.volume.provider().clone(), "project".into(), VolumeClass::Project,
+        VolumeOwner::Project("selected-project".into()), &mut None)?;
     fixture.filesystem.create_volume(&project).await?;
     let agent = fixture.signed.agent().ok_or_else(|| Error::Invalid("fixture agent".into()))?;
     fixture.signed = fixture.issuer.issue("owner", &Capabilities::new(
@@ -71,8 +71,8 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
     assert!(owner.list(&project, "src", "src", &old_generation, None, 0).await.is_err());
     assert!(owner.list(&project, "src", "src", &old_generation, Some("a/b"), 1).await.is_err());
     assert!(owner.read_path(&project, "src", ".system/hidden", &old_generation).await.is_err());
-    let foreign = VolumeRef::new(project.provider().clone(), "project", VolumeClass::Project,
-        VolumeOwner::Project("wrong-owner".into()))?;
+    let foreign = VolumeRef::new(project.provider().clone(), "project".into(), VolumeClass::Project,
+        VolumeOwner::Project("wrong-owner".into()), &mut None)?;
     assert!(matches!(owner.list(&foreign, "src", "src", &old_generation, None, 1).await,
         Err(Error::Unauthorized(_))));
     let wrong_generation = crate::resources::GenerationRef::new(
@@ -157,8 +157,8 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let fs = Fs::memory();
     fixture.filesystem = Arc::new(FilesystemHost::new(fs.clone(), fixture.volume.provider().clone())?);
     fixture.filesystem.create_volume(&fixture.volume).await?;
-    let project = VolumeRef::new(fixture.volume.provider().clone(), "restore-project", VolumeClass::Project,
-        VolumeOwner::Project("restore".into()))?;
+    let project = VolumeRef::new(fixture.volume.provider().clone(), "restore-project".into(), VolumeClass::Project,
+        VolumeOwner::Project("restore".into()), &mut None)?;
     fixture.filesystem.create_volume(&project).await?;
     let agent = fixture.signed.agent().ok_or_else(|| Error::Invalid("fixture agent".into()))?;
     fixture.signed = fixture.issuer.issue("owner", &Capabilities::new(
@@ -256,8 +256,8 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
 
     let child_agent = AgentId::from_bytes([139; 16]);
     let child_authority = Authority { kind: AggregateKind::Conversation, id: "restore-new-conversation".into() };
-    let child_project = VolumeRef::new(project.provider().clone(), "restore-child", VolumeClass::Project, project.owner().clone())?;
-    let child_private = VolumeRef::new(project.provider().clone(), "restore-child", VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent))?;
+    let child_project = VolumeRef::new(project.provider().clone(), "restore-child".into(), VolumeClass::Project, project.owner().clone(), &mut None)?;
+    let child_private = VolumeRef::new(project.provider().clone(), "restore-child".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent), &mut None)?;
     let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), history.reducer().clone(), issuer.verifier(), signed.clone(),
         project.clone(), stream_provider.clone(), reader,
         None, None, #[cfg(not(target_arch = "wasm32"))] None,
@@ -273,7 +273,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
                 generation: fixture.filesystem.resolve(&crate::filesystem::workspace_ref(project.provider().clone(), &fixture.volume.storage_name(&mut None)?)?).await?.generation,
                 paths: Vec::new() } },
             ForkSelection { required: true, revision: ResourceRevision::History(crate::resources::StreamRef::new(stream_provider,
-                authority.stream_path()?.into_bytes(), Some(original_revision.to_string()))?) },
+                authority.stream_path(&mut None)?.into_bytes(), Some(original_revision.to_string()))?) },
         ] };
     let report = history.prepare_fork(&preparer, request).await?;
     let child_issuer = AuthorityIssuer::new("restore", [132; 32], child_authority.clone());

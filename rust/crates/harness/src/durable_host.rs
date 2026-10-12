@@ -5779,6 +5779,7 @@ impl<P: StreamProvider> crate::runtime::TaskStateProvider for CoordinatorTaskHos
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::runtime::DurableTaskHost;
     use crate::{
         AgentId, Capabilities, GroupId,
         conversation::{FileDescriptor, Limits, VolumeClass, VolumeOwner, VolumeRef},
@@ -5972,10 +5973,10 @@ pub(crate) mod tests {
             Ok(Self {
                 volume: VolumeRef::new(
                     ProviderRef::new("batch-test".into(), "filesystem".into(), "2".into(), &mut None)?,
-                    "private",
+                    "private".into(),
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
-                )?,
+                 &mut None)?,
                 files: Mutex::new(BTreeMap::new()),
             })
         }
@@ -5997,7 +5998,7 @@ pub(crate) mod tests {
             "task:spawn:test.mail@1".to_owned(),
             "mail:send".to_owned(),
             "mail:read".to_owned(),
-            payloads.volume.capability(crate::conversation::VolumeOperation::Read)?,
+            payloads.volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
         ]);
         let signed = issuer.issue("owner", &grants, None, None, &mut None).expect("scope proof");
         let runtime_scope = RuntimeScope::new(grants, Limits::default())?;
@@ -6465,7 +6466,7 @@ pub(crate) mod tests {
             "effect:run".into(),
             "effect:plan".into(),
             capability::effect_provider(provider),
-            payload_volume.capability(crate::conversation::VolumeOperation::Read)?,
+            payload_volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
         ];
         grants.extend(additional);
         let grants = Capabilities::new(grants);
@@ -6846,9 +6847,9 @@ pub(crate) mod tests {
             request.volume().clone(),
             request.path(),
             request.version(),
-            FileDescriptor::from_bytes(b"{}", "application/schema+json")?,
-            "schema.json",
-        )?;
+            FileDescriptor::from_bytes(b"{}", "application/schema+json", &mut None)?,
+            "schema.json".into(),
+         &mut None)?;
         let plan = TaskEffectPlan {
             provider: "test.receipt".into(),
             guarantee: EffectGuarantee::AtMostOnce,
@@ -7015,7 +7016,7 @@ pub(crate) mod tests {
         )?);
         let agent = AgentId::from_bytes([1; 16]);
         let volume = VolumeRef::new(
-            filesystem_provider.clone(), "native-owned", VolumeClass::AgentPrivate,
+            filesystem_provider.clone(), "native-owned".into(), VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
         )?;
         filesystem.create_volume(&volume).await?;
@@ -7211,7 +7212,7 @@ pub(crate) mod tests {
             filesystem.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?;
         let other_volume = VolumeRef::new(
-            filesystem_provider, "other-native-owned", VolumeClass::AgentPrivate,
+            filesystem_provider, "other-native-owned".into(), VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
         )?;
         filesystem.create_volume(&other_volume).await?;
@@ -7401,14 +7402,14 @@ pub(crate) mod tests {
             )?);
             let volume = VolumeRef::new(
                 provider,
-                "owned-private",
+                "owned-private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
-            )?;
+             &mut None)?;
             filesystem.create_volume(&volume).await?;
             let content_scope = issuer.issue("workflow-content", &Capabilities::new([
-                    volume.capability(crate::conversation::VolumeOperation::Read)?,
-                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
             let original_owner = host.journal_owner(task_id, fence.clone()).await?;
             assert!(
@@ -7648,7 +7649,7 @@ pub(crate) mod tests {
             );
             assert_eq!(journal.replay(attempt, 0, 64).await?.len(), 2);
             assert!(matches!(
-                journal.suspend_workflow_command_if_quiescent(1, attempt).await,
+                journal.suspend_workflow_command_if_quiescent(1, attempt, None).await,
                 Err(Error::Indeterminate(id)) if id == attempt
             ));
             let invocation = crate::tool::ToolInvocation::for_model_call(
@@ -7674,7 +7675,7 @@ pub(crate) mod tests {
                 )
                 .await?;
             assert!(matches!(
-                journal.suspend_workflow_command_if_quiescent(1, attempt).await,
+                journal.suspend_workflow_command_if_quiescent(1, attempt, None).await,
                 Err(Error::Indeterminate(id)) if id == attempt
             ));
             assert!(journal.replay(operation_id, 0, 1).await.is_err());
@@ -7773,8 +7774,8 @@ pub(crate) mod tests {
             let conversation_scope = conversation_issuer.issue("owner", &Capabilities::new([
                     "conversation:bind".to_owned(),
                     "interaction:open".to_owned(),
-                    volume.capability(crate::conversation::VolumeOperation::Read)?,
-                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
             let mut aggregate = crate::store::StreamAggregate::open(
                 &stream,
@@ -7820,8 +7821,8 @@ pub(crate) mod tests {
             )?;
             let response_scope = conversation_issuer.issue("owner", &Capabilities::new([
                     "interaction:open".to_owned(),
-                    volume.capability(crate::conversation::VolumeOperation::Read)?,
-                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
             assert!(
                 matches!(
@@ -7923,8 +7924,8 @@ pub(crate) mod tests {
             );
             let conversation_scope = conversation_issuer.issue("owner", &Capabilities::new([
                     "interaction:open".to_owned(),
-                    volume.capability(crate::conversation::VolumeOperation::Read)?,
-                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
             let binding = host.journal_owner(task_id, fence.clone()).await?;
             let pending = binding
@@ -8251,7 +8252,7 @@ pub(crate) mod tests {
             );
             assert_eq!(reopened.replay(attempt, 64, 64).await?.len(), 10);
             assert!(matches!(
-                reopened.suspend_workflow_command_if_quiescent(1, attempt).await,
+                reopened.suspend_workflow_command_if_quiescent(1, attempt, None).await,
                 Err(Error::Indeterminate(id)) if id == attempt
             ));
             let completed = crate::executor::stage_json(&reopened, attempt, "model-completed", &crate::model::ModelEvent::Completed {
@@ -8277,7 +8278,7 @@ pub(crate) mod tests {
             );
             assert!(
                 reopened
-                    .suspend_workflow_command_if_quiescent(1, attempt)
+                    .suspend_workflow_command_if_quiescent(1, attempt, None)
                     .await
                     .is_err()
             );

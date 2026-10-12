@@ -132,15 +132,15 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("schema".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([11; 16])),
-            )?,
-            "file.txt",
-            "pinned-1",
-            FileDescriptor::from_bytes(b"exact", "text/plain")?,
-            "file.txt",
-        )
+             &mut None)?,
+            "file.txt".into(),
+            "pinned-1".into(),
+            FileDescriptor::from_bytes(b"exact", "text/plain", &mut None)?,
+            "file.txt".into(),
+         &mut None)
     }
 
     #[test]

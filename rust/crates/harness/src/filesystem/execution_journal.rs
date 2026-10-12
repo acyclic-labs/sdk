@@ -2458,10 +2458,10 @@ mod tests {
         let agent = AgentId::new();
         let volume = VolumeRef::new(
             provider,
-            "observation-identity",
+            "observation-identity".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
-        )?;
+         &mut None)?;
         host.create_volume(&volume).await?;
         let issuer = crate::core::AuthorityIssuer::new(
             "observation-identity",
@@ -2600,10 +2600,10 @@ mod tests {
         let agent = AgentId::new();
         let volume = VolumeRef::new(
             fs_provider,
-            "cold-source",
+            "cold-source".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
-        )?;
+         &mut None)?;
         host.create_volume(&volume).await?;
         let authority = Authority {
             kind: AggregateKind::Conversation,

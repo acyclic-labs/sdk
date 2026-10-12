@@ -1,5 +1,5 @@
-//! Canonical resource controls use crate::wire::ErrorCode;
-use real Stream/Filesystem allocation and IO.
+//! Canonical resource controls use real Stream/Filesystem allocation and IO.
+use crate::wire::ErrorCode;
 
 use super::*;
 use crate::runtime::TaskStateProvider;
@@ -92,7 +92,7 @@ async fn native_stock_startup_retains_original_configuration_and_current_context
     let mut tools = crate::tool::ToolRegistry::default();
     tools.register(tool)?;
     let fixture = NativeCustomerFixture::new_with_grants(&[&grant], tools).await?;
-    let volume = VolumeRef::new(fixture.creation.filesystem_provider.clone(), "scheduler",
+    let volume = VolumeRef::new(fixture.creation.filesystem_provider.clone(), "scheduler".into(),
         VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80; 16])))?;
     let resumable = crate::durable_tool::ResumableToolRegistry::default();
     let original = &fixture.creation.host;
@@ -125,7 +125,7 @@ async fn native_stock_startup_retains_original_configuration_and_current_context
 #[tokio::test]
 async fn native_stock_startup_denies_preallocation_and_precancel_before_sdk_io() -> Result<()> {
     let fixture = NativeCustomerFixture::new_with_grants(&[], crate::tool::ToolRegistry::default()).await?;
-    let volume = VolumeRef::new(fixture.creation.filesystem_provider.clone(), "scheduler",
+    let volume = VolumeRef::new(fixture.creation.filesystem_provider.clone(), "scheduler".into(),
         VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80; 16])))?;
     let resumable = crate::durable_tool::ResumableToolRegistry::default();
     let original = &fixture.creation.host;
@@ -174,7 +174,7 @@ struct SandboxCreator {
 impl SandboxCreator {
     fn proof(&self, preparation: TaskId) -> Result<ResourceCreationProofRef> {
         let evidence_volume = VolumeRef::new(
-            self.filesystem_provider.clone(), "sandbox-allocation", VolumeClass::AgentPrivate,
+            self.filesystem_provider.clone(), "sandbox-allocation".into(), VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([81; 16])),
         )?;
         Ok(ResourceCreationProofRef {
@@ -211,7 +211,7 @@ impl SandboxCreator {
         }
         let sandbox = VolumeRef::new(
             self.filesystem_provider.clone(),
-            "isolated-sandbox",
+            "isolated-sandbox".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([81; 16])),
         )?;
@@ -227,7 +227,7 @@ impl SandboxCreator {
         preparation.verify_creation().await?;
         let evidence_volume = VolumeRef::new(
             self.filesystem_provider.clone(),
-            "sandbox-allocation",
+            "sandbox-allocation".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([81; 16])),
         )?;
@@ -283,7 +283,7 @@ impl ResourceCreationProvider for SandboxCreator {
                 .cloned()
                 .ok_or_else(|| Error::Unauthorized("sandbox allocation is absent".into()))?;
             let volume = VolumeRef::new(
-                self.filesystem_provider.clone(), "sandbox-allocation", VolumeClass::AgentPrivate,
+                self.filesystem_provider.clone(), "sandbox-allocation".into(), VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([81; 16])),
             )?;
             let evidence = workspace_ref(self.filesystem_provider.clone(), &volume.storage_name()?)?;
@@ -366,7 +366,7 @@ impl NativeCustomerFixture {
     ) -> Result<Self> {
         let creation = CreationFixture::new_with_grants(grants).await?;
         let volume = VolumeRef::new(
-            creation.filesystem_provider.clone(), "scheduler",
+            creation.filesystem_provider.clone(), "scheduler".into(),
             VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
         )?;
         let runtime = NativeCustomerRuntime::from_host(
@@ -409,12 +409,12 @@ impl CreationFixture {
         let fs = Fs::memory();
         let filesystem = Arc::new(FilesystemHost::new(fs.clone(), filesystem_provider.clone())?);
         let payload_volume = VolumeRef::new(
-            filesystem_provider.clone(), "scheduler", VolumeClass::AgentPrivate,
+            filesystem_provider.clone(), "scheduler".into(), VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
         )?;
         #[cfg(not(target_arch = "wasm32"))]
         let original_root_births = if let Some(work) = bootstrap {
-            let project = VolumeRef::new(filesystem_provider.clone(), "parent-project", VolumeClass::Project,
+            let project = VolumeRef::new(filesystem_provider.clone(), "parent-project".into(), VolumeClass::Project,
                 VolumeOwner::Project("created-project".into()))?;
             let config = acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable);
             let mut births = Vec::new();
@@ -464,9 +464,9 @@ impl CreationFixture {
             "fork:publish".into(), payload_volume.capability(VolumeOperation::Read)?,
             "conversation:bind".into(),
             payload_volume.capability(VolumeOperation::Write)?,
-            VolumeRef::new(filesystem_provider.clone(), "parent-project", VolumeClass::Project,
+            VolumeRef::new(filesystem_provider.clone(), "parent-project".into(), VolumeClass::Project,
                 VolumeOwner::Project("created-project".into()))?.capability(VolumeOperation::Read)?,
-            VolumeRef::new(filesystem_provider.clone(), "parent-private", VolumeClass::AgentPrivate,
+            VolumeRef::new(filesystem_provider.clone(), "parent-private".into(), VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([90;16])))?.capability(VolumeOperation::Read)?,
         ].into_iter().chain(extra.iter().map(|grant| (*grant).to_owned())));
         let signed = issuer.issue("owner", &grants, Some(AgentId::from_bytes([80; 16])), None, &mut None).expect("scope proof");
@@ -782,12 +782,12 @@ impl CreationFixture {
         let child_agent = AgentId::from_bytes([91; 16]);
         let fork_issuer = AuthorityIssuer::new("created-owner", [80; 32], parent.clone());
         let parent_project = VolumeRef::new(
-            self.filesystem_provider.clone(), "parent-project", VolumeClass::Project,
+            self.filesystem_provider.clone(), "parent-project".into(), VolumeClass::Project,
             VolumeOwner::Project("created-project".into()),
         )?;
         let project_head = self.filesystem.create_volume(&parent_project).await?;
         let parent_private = VolumeRef::new(
-            self.filesystem_provider.clone(), "parent-private", VolumeClass::AgentPrivate,
+            self.filesystem_provider.clone(), "parent-private".into(), VolumeClass::AgentPrivate,
             VolumeOwner::Agent(parent_agent),
         )?;
         let private_head = self.filesystem.create_volume(&parent_private).await?;
@@ -809,15 +809,15 @@ impl CreationFixture {
             action: Action::BindConversation { agent: parent_agent },
         }, #[cfg(feature = "filesystem")] None, &mut None).await?;
         let project = VolumeRef::new(
-            self.filesystem_provider.clone(), "child-project", VolumeClass::Project,
+            self.filesystem_provider.clone(), "child-project".into(), VolumeClass::Project,
             VolumeOwner::Project("created-project".into()),
         )?;
         let private = VolumeRef::new(
-            self.filesystem_provider.clone(), "child-private", VolumeClass::AgentPrivate,
+            self.filesystem_provider.clone(), "child-private".into(), VolumeClass::AgentPrivate,
             VolumeOwner::Agent(child_agent),
         )?;
         let result = with_result.then(|| VolumeRef::new(
-            self.filesystem_provider.clone(), "child-result", VolumeClass::AgentPrivate,
+            self.filesystem_provider.clone(), "child-result".into(), VolumeClass::AgentPrivate,
             VolumeOwner::Agent(child_agent),
         )).transpose()?;
         let stream_provider = ProviderRef::new("created-controls".into(), "stream".into(), "2".into(), &mut None)?;
@@ -1084,7 +1084,7 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
         "application/json", "command.json",
     ).await?;
     let volume = VolumeRef::new(
-        fixture.filesystem_provider.clone(), "scheduler", VolumeClass::AgentPrivate,
+        fixture.filesystem_provider.clone(), "scheduler".into(), VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
     )?;
     let journal = FilesystemExecutionJournal::for_task(

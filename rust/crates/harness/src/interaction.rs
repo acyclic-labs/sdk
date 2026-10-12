@@ -980,15 +980,15 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
-                "interaction-private",
+                "interaction-private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([8; 16])),
-            )?,
+             &mut None)?,
             path,
-            "immutable-1",
-            FileDescriptor::from_bytes(bytes, "application/json")?,
-            "interaction.json",
-        )
+            "immutable-1".into(),
+            FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
+            "interaction.json".into(),
+         &mut None)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1234,11 +1234,11 @@ mod tests {
         ticket.validate_answer_bytes(&admitted, &answer, response_bytes, &mut None)?;
         let non_json = FileRef::new(
             answer.volume().clone(),
-            "answer.txt",
-            "immutable-1",
-            FileDescriptor::from_bytes(response_bytes, "text/plain")?,
-            "answer.txt",
-        )?;
+            "answer.txt".into(),
+            "immutable-1".into(),
+            FileDescriptor::from_bytes(response_bytes, "text/plain", &mut None)?,
+            "answer.txt".into(),
+         &mut None)?;
         assert!(matches!(
             (InteractionResolution {
                 id: ticket.id,

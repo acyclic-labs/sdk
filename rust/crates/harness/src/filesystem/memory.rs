@@ -1387,7 +1387,7 @@ mod tests {
         let limits = Limits { file_bytes: 65536, ..Default::default() };
         let tools = storage.default_tools(limits, None)?;
         for name in ["acyclic.fork", "acyclic.merge"] {
-            let tool = tools.get(name).unwrap().clone();
+            let tool = tools.get(name, None)?.unwrap().clone();
             run_admitted_file_case(&storage, limits, move |task| {
                 let tool = tool.clone();
                 async move {
@@ -1427,7 +1427,7 @@ mod tests {
         };
         let tool = owner
             .default_tools(limits, None)?
-            .get("acyclic.read_file")
+            .get("acyclic.read_file", None)?
             .ok_or_else(|| Error::NotFound("read tool".into()))?
             .clone();
         let invocation = ToolInvocation {
@@ -1527,7 +1527,7 @@ mod tests {
         };
         let tool = storage
             .default_tools(limits, None)?
-            .get("acyclic.write_file")
+            .get("acyclic.write_file", None)?
             .ok_or_else(|| Error::NotFound("write tool".into()))?
             .clone();
         run_admitted_file_case(&storage, limits, move |task| {
@@ -1597,7 +1597,7 @@ mod tests {
         };
         let tool = storage
             .default_tools(limits, None)?
-            .get("acyclic.list_files")
+            .get("acyclic.list_files", None)?
             .ok_or_else(|| Error::NotFound("default list tool".into()))?
             .clone();
         let invocation = ToolInvocation {
@@ -1685,11 +1685,11 @@ mod tests {
                     ("acyclic.edit_file", json!({"file":file,"old_text":"one","new_text":"two"})),
                 ] {
                     let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: name.into(), name: name.into(), arguments };
-                    let tool = tools.get(name).ok_or_else(|| Error::NotFound(name.into()))?;
+                    let tool = tools.get(name, None)?.ok_or_else(|| Error::NotFound(name.into()))?;
                     assert!(matches!(tool.executor.execute_with_context(crate::runtime::ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?, invocation).await, Err(Error::Unauthorized(_))));
                 }
                 let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: "list".into(), name: "acyclic.list_files".into(), arguments: json!({"path":"","maximum_entries":8}) };
-                assert!(matches!(tools.get("acyclic.list_files").ok_or_else(|| Error::NotFound("list tool".into()))?.executor.authorize(Some(task.scope()), &invocation), Err(Error::Unauthorized(_))));
+                assert!(matches!(tools.get("acyclic.list_files", None)?.ok_or_else(|| Error::NotFound("list tool".into()))?.executor.authorize(Some(task.scope()), &invocation), Err(Error::Unauthorized(_))));
                 Ok(())
             }
         }).await

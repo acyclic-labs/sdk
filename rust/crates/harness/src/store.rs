@@ -1849,10 +1849,10 @@ mod tests {
         FileRef::new(
             content()?.volume().clone(),
             path,
-            "generation-1",
-            FileDescriptor::from_bytes(bytes, "application/json")?,
-            "interaction.json",
-        )
+            "generation-1".into(),
+            FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
+            "interaction.json".into(),
+         &mut None)
     }
 
     fn authority() -> Authority {
@@ -1883,15 +1883,15 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
-                "extension",
+                "extension".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
-            )?,
-            "extension/event.json",
-            "generation-1",
-            FileDescriptor::from_bytes(EXTENSION_BYTES, "application/json")?,
-            "event.json",
-        )
+             &mut None)?,
+            "extension/event.json".into(),
+            "generation-1".into(),
+            FileDescriptor::from_bytes(EXTENSION_BYTES, "application/json", &mut None)?,
+            "event.json".into(),
+         &mut None)
     }
 
     struct TestContent;
@@ -1970,10 +1970,10 @@ mod tests {
                 let reference = FileRef::new(
                     self.volume.clone(),
                     path,
-                    "generation-1",
-                    FileDescriptor::from_bytes(bytes, media_type)?,
+                    "generation-1".into(),
+                    FileDescriptor::from_bytes(bytes, media_type, &mut None)?,
                     display_name,
-                )?;
+                 &mut None)?;
                 self.files.insert(&reference, bytes)?;
                 Ok((reference, None))
             })
@@ -2668,14 +2668,14 @@ mod tests {
             )?);
             let private = crate::conversation::VolumeRef::new(
                 filesystem_provider,
-                "journal",
+                "journal".into(),
                 crate::conversation::VolumeClass::AgentPrivate,
                 crate::conversation::VolumeOwner::Agent(agent),
-            )?;
+             &mut None)?;
             host.create_volume(&private).await?;
             let journal_scope = issuer().issue("cold-selection-journal", &Capabilities::new([
-                    private.capability(crate::conversation::VolumeOperation::Read)?,
-                    private.capability(crate::conversation::VolumeOperation::Write)?,
+                    private.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    private.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(agent), None, &mut None).expect("scope proof");
             let journal = crate::filesystem::FilesystemExecutionJournal::new(
                 client.clone(),
@@ -3236,7 +3236,7 @@ mod tests {
                     "extension:migrate".to_owned(),
                     content()?
                         .volume()
-                        .capability(crate::conversation::VolumeOperation::Write)?,
+                        .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(crate::AgentId::from_bytes([8; 16])), None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::MigrateExtensionState {
@@ -3368,10 +3368,10 @@ mod tests {
         let publisher = TestPublisher {
             volume: VolumeRef::new(
                 ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
-                "extension-child",
+                "extension-child".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])),
-            )?,
+             &mut None)?,
             stages: std::sync::atomic::AtomicUsize::new(0),
             files: files.clone(),
         };
@@ -3379,11 +3379,11 @@ mod tests {
                 "extension:migrate".to_owned(),
                 publisher
                     .volume
-                    .capability(crate::conversation::VolumeOperation::Write)?,
+                    .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
             ]), Some(crate::AgentId::from_bytes([9; 16])), None, &mut None).expect("scope proof");
         let unauthorized = issuer().issue("child-unauthorized", &Capabilities::new([publisher
                 .volume
-                .capability(crate::conversation::VolumeOperation::Write)?]), Some(crate::AgentId::from_bytes([9; 16])), None, &mut None).expect("scope proof");
+                .capability(crate::conversation::VolumeOperation::Write, &mut None)?]), Some(crate::AgentId::from_bytes([9; 16])), None, &mut None).expect("scope proof");
         assert!(matches!(
             aggregate
                 .migrate_extension_state(request.clone(), unauthorized, &publisher)
@@ -3401,7 +3401,7 @@ mod tests {
                 "extension:migrate".to_owned(),
                 publisher
                     .volume
-                    .capability(crate::conversation::VolumeOperation::Write)?,
+                    .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
             ]), Some(crate::AgentId::from_bytes([8; 16])), None, &mut None).expect("scope proof");
         assert!(matches!(
             aggregate
@@ -3526,14 +3526,14 @@ mod tests {
 
         let agent = crate::AgentId::from_bytes([94; 16]);
         let provider = ProviderRef::new("admission-bytes".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let volume = VolumeRef::new(provider.clone(), "admission-bytes",
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+        let volume = VolumeRef::new(provider.clone(), "admission-bytes".into(),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider)?);
         host.create_volume(&volume).await?;
         let issuer = issuer();
         let scope = issuer.issue("content-owner", &Capabilities::new([
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
         let publisher = FilesystemContentPublisher::new(
             host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
@@ -3585,9 +3585,9 @@ mod tests {
             &Action::OpenInteraction { ticket: ticket.clone() }, &mut Some(&mut io)).await?;
         native.admit_retained(available)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let missing = FileRef::new(volume, "interactions/missing.json", reference.version(),
-            FileDescriptor::from_bytes(br#"{"type":"question","value":"yes"}"#, "application/json")?,
-            "missing.json")?;
+        let missing = FileRef::new(volume, "interactions/missing.json".into(), reference.version(),
+            FileDescriptor::from_bytes(br#"{"type":"question","value":"yes"}"#, "application/json", &mut None)?,
+            "missing.json".into(), &mut None)?;
         let error = aggregate.validate_interaction_part_with_work(
             &ticket, &missing, None, &mut Some(&mut io)).await
             .expect_err("real publisher has no second response file");

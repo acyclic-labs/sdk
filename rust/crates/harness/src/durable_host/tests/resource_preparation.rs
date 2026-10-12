@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::DurableTaskHost as _;
 use crate::resource_preparation::ResourcePreparationRequest;
 use crate::resources::{ResourceKind, ResourceRef};
 
@@ -33,7 +34,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         "resource:create:custom".into(),
         payloads
             .volume
-            .capability(crate::conversation::VolumeOperation::Read)?,
+            .capability(crate::conversation::VolumeOperation::Read, &mut None)?,
     ]);
     let signed = issuer.issue("owner", &grants, None, None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(grants, Limits::default())?;

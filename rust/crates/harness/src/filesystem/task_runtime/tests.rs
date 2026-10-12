@@ -191,7 +191,7 @@ impl Fixture {
         let provider = ProviderRef::new("deadline-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let agent = AgentId::from_bytes([101; 16]);
-        let volume = VolumeRef::new(provider, "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+        let volume = VolumeRef::new(provider, "private".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
         filesystem.create_volume(&volume).await?;
         let issuer = AuthorityIssuer::new("deadline-control", [102; 32], Authority {
             kind: AggregateKind::Task,

@@ -180,7 +180,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         Err(Error::Storage(_))
     ));
     for mutation in 0..4 {
-        let mut changed: Certificate = crate::executor::decode_json(&certificates[0].value)?;
+        let mut changed: Certificate = crate::executor::decode_json(&certificates[0].value, None)?;
         match mutation {
             0 => changed.root = Some([93; 32]),
             1 => changed.revision = 2,

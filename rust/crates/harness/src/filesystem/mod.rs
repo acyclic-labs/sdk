@@ -4630,10 +4630,10 @@ mod tests {
         let owner = AgentId::from_bytes([3; 16]);
         let volume = VolumeRef::new(
             provider,
-            "agent-private-a",
+            "agent-private-a".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(owner),
-        )?;
+         &mut None)?;
         host.create_volume(&volume).await?;
         let issuer = AuthorityIssuer::new(
             "test",
@@ -4740,7 +4740,7 @@ mod tests {
             assert_eq!(bytes.as_ref(), b"two");
             drop(bytes);
             let tampered = FileRef::new(first.volume().clone(), first.path(), first.version(),
-                second.descriptor().clone(), first.display_name())?;
+                second.descriptor().clone(), first.display_name(), &mut None)?;
             assert!(host.read_pinned_io(&tampered, 16, Some(&io)).await.is_err());
             let denied_scope = issuer.issue("no-files", &Capabilities::default(), Some(owner), None, &mut None).expect("scope proof");
             let denied = FilesystemForkVerifier::new_with_native_work(
@@ -4901,7 +4901,7 @@ mod tests {
             first.version(),
             FileDescriptor::new([0; 32], 3, "text/plain")?,
             first.display_name(),
-        )?;
+         &mut None)?;
         assert!(host.read_content(&wrong_digest, &read, 16).await.is_err());
         assert!(
             host.put_content(
@@ -4920,10 +4920,10 @@ mod tests {
         assert!(host.read_content(&first, &write, 16).await.is_err());
         let other = VolumeRef::new(
             volume.provider().clone(),
-            "agent-private-b",
+            "agent-private-b".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([5; 16])),
-        )?;
+         &mut None)?;
         assert!(ContentGrant::verify(&verifier, &scope, &other, VolumeOperation::Read, u64::MAX, &mut None).is_err());
         Ok(())
     }
@@ -4943,10 +4943,10 @@ mod tests {
         let agent = AgentId::from_bytes([7; 16]);
         let volume = VolumeRef::new(
             provider,
-            "scratch",
+            "scratch".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
-        )?;
+         &mut None)?;
         host.create_volume(&volume).await?;
         let authority = Authority {
             kind: AggregateKind::Conversation,
@@ -5017,11 +5017,11 @@ mod tests {
         let mut missing = message.clone();
         missing.content = FileRef::new(
             volume,
-            "messages/missing.txt",
+            "messages/missing.txt".into(),
             file.version(),
             file.descriptor().clone(),
-            "missing.txt",
-        )?;
+            "missing.txt".into(),
+         &mut None)?;
         let command = |id: u8, value: ConversationMessage| -> Result<Command> {
             Ok(Command {
                 operation_id: OperationId::from_bytes([id; 16]),
@@ -5040,11 +5040,11 @@ mod tests {
         missing_attachment.attachments = vec![Attachment {
             file: FileRef::new(
                 file.volume().clone(),
-                "attachments/missing.bin",
+                "attachments/missing.bin".into(),
                 file.version(),
                 file.descriptor().clone(),
-                "missing.bin",
-            )?,
+                "missing.bin".into(),
+             &mut None)?,
             label: None,
         }]
         .into();

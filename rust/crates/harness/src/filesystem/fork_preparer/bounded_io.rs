@@ -1630,8 +1630,8 @@ mod tests {
     async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix() -> Result<()> {
         let provider = crate::resources::ProviderRef::new("ordinary-owner-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
-        let volume = VolumeRef::new(provider, "owned", VolumeClass::Project,
-            VolumeOwner::Project("ordinary-owner-control".into()))?;
+        let volume = VolumeRef::new(provider, "owned".into(), VolumeClass::Project,
+            VolumeOwner::Project("ordinary-owner-control".into()), &mut None)?;
         let initial = host.create_volume(&volume).await?;
         let mutations = [WorkspaceMutation::PutFile { path: "/file".into(), bytes: b"owned".to_vec() }];
         let cancellation = CancellationToken::new();
@@ -1664,7 +1664,7 @@ mod tests {
         let provider = crate::resources::ProviderRef::new("source-read-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
         let project = |name: &str| VolumeRef::new(provider.clone(), name, VolumeClass::Project,
-            VolumeOwner::Project("source-read-control".into()));
+            VolumeOwner::Project("source-read-control".into()), &mut None);
         let source = project("selected")?;
         let caller = project("caller")?;
         let child = project("child")?;
