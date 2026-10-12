@@ -145,7 +145,10 @@ async fn a_stopping_meter_refuses_the_next_call_the_way_codex_stops_on() {
     let fake = FakeUpstream::message("hello").await;
     let proxy = ResponsesProxy::start(
         upstream(&fake),
-        Arc::new(RecordingMeter::stopping_after(1)),
+        Arc::new(RecordingMeter {
+            stop_after: Some(1),
+            ..RecordingMeter::default()
+        }),
         8,
         None,
     )
