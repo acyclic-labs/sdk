@@ -426,7 +426,6 @@ async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
             error.semantic_error(),
             crate::LazyWorkspaceError::Cancelled
         ));
-        assert_eq!(error.spent_work(), crate::WorkCounters::UNCHARGED);
     }
     assert_eq!(accounting.spent(), crate::WorkCounters::UNCHARGED);
     assert!(

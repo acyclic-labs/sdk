@@ -144,7 +144,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut records =
             operations::read_records(client, &reader.path, start, (through - start) as u32, work)
                 .await?
-                .map_err(|error| crate::distributed::sdk_error(error, work))?;
+                .map_err(|error| crate::store::operations::stream_error_with_work(error, work))?;
         let mut used = 0_u64;
         let mut output_bytes = 0_u64;
         loop {

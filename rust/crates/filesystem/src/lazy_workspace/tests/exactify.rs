@@ -111,7 +111,7 @@ async fn source_refresh_and_subtree_exactification_preserve_lazy_siblings() {
         b"hot"
     );
     std::fs::write(directory.path().join("hot/file.txt"), b"changed").unwrap();
-    source.invalidate();
+    source.invalidate(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).unwrap();
     root.state(accounting!()).await.unwrap();
     assert_eq!(
         root.read("/hot/file.txt", 64, accounting!())
@@ -174,12 +174,7 @@ async fn source_refresh_and_subtree_exactification_preserve_lazy_siblings() {
     {
         let staged = tempfile::tempdir().unwrap();
         exact
-            .materialize_path(
-                "/hot",
-                &crate::MaterializeOptions::native(staged.path()),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
+            .materialize(std::iter::once("/hot"), &crate::MaterializeOptions::native(staged.path()), WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(

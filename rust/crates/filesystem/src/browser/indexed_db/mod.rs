@@ -23,8 +23,6 @@ use indexed_db_futures::prelude::*;
 use indexed_db_futures::transaction::{
     Transaction, TransactionDurability, TransactionMode, TransactionOptions,
 };
-#[cfg(test)]
-use js_sys::Promise;
 use js_sys::{Array, Uint8Array};
 use std::future::{Future, poll_fn};
 use std::mem::size_of;
@@ -117,20 +115,20 @@ fn create_blob(bytes: &[u8]) -> Result<Blob, JsValue> {
     parts.push(&Uint8Array::from(bytes));
     Blob::new_with_u8_array_sequence(&parts)
 }
-async fn await_cancellable<T, E>(
+async fn await_cancellable<T, E: std::fmt::Display>(
     operation: impl Future<Output = Result<T, E>>,
     cancellation: &CancellationToken,
-) -> Result<T, Option<E>> {
+) -> Result<T, AuthorityStoreError> {
     let mut operation = std::pin::pin!(operation);
     let mut cancelled = std::pin::pin!(cancellation.cancelled());
     poll_fn(|context| {
         if cancelled.as_mut().poll(context).is_ready() {
-            return Poll::Ready(Err(None));
+            return Poll::Ready(Err(AuthorityStoreError::Cancelled));
         }
         operation
             .as_mut()
             .poll(context)
-            .map(|result| result.map_err(Some))
+            .map(|result| result.map_err(backend))
     })
     .await
 }
