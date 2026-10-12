@@ -34,12 +34,13 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head()
     )).await?;
     assert_eq!(exact.value.generation_id(), head.value.generation_id());
     let authority = volume_authority_id(volume_id);
-    let header = AsyncAuthorityStore::head(&fs.inner.authority, authority, WorkBudget::UNBOUNDED, &cancellation).await?;
-    let replay = AsyncAuthorityStore::replay(
-        &fs.inner.authority, authority, Sequence::new(header.value.sequence.get() - 1),
-        ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, WorkBudget::UNBOUNDED, &cancellation,
+    let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let header = AsyncAuthorityStore::head(&fs.inner.authority, authority, &mut authority_work).await?;
+    AsyncAuthorityStore::replay(
+        &fs.inner.authority, authority, Sequence::new(header.sequence.get() - 1),
+        ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, &mut authority_work,
     ).await?;
-    let without_record_decode = exact.work.checked_add(header.work)?.checked_add(replay.work)?;
+    let without_record_decode = exact.work.checked_add(authority_work.spent())?;
     let denied = opened.checkout(
         GenerationSelector::Head, pinned(),
         WorkBudget { items_examined: without_record_decode.items_examined, ..WorkBudget::UNBOUNDED }, &cancellation,

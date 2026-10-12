@@ -345,7 +345,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,
         )
-        .await.map_err(|(error, _)| error)?.value;
+        .await?;
     let preparation_us = started.elapsed().as_micros();
 
     let warm_view = tempfile::tempdir()?;
@@ -358,7 +358,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,
         )
-        .await.map_err(|(error, _)| error)?.value;
+        .await?;
     let warm_preparation_us = started.elapsed().as_micros();
     warm_working_set.validate_for_presentation().await?;
 

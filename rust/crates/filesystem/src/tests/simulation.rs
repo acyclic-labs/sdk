@@ -1,6 +1,6 @@
 use acyclic_stream::OwnedBytes;
 use super::*;
-use crate::WorkError;
+use crate::{AuthorityFailure, AuthorityResult, WorkError};
 use crate::foundation::Digest;
 use crate::storage::{FenceOutcome, ObjectKind};
 

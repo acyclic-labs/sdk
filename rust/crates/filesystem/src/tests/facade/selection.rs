@@ -24,16 +24,19 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
         let paths = vec![invalid];
         let owned = (paths.capacity() * std::mem::size_of::<String>()
             + paths[0].capacity()) as u64;
-        let failure = fs.select_fork_paths(
-            &source, checkout.root(), paths,
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
             WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+        );
+        let failure = fs.select_fork_paths_with_accounting(
+            &source, checkout.root(), paths, &mut accounting, &cancellation,
         ).await.err().ok_or("invalid selected path unexpectedly succeeded")?;
-        assert!(matches!(failure.error, WorkspaceError::NamespacePath(_)));
-        assert_eq!(failure.work.allocation_operations, 0);
-        assert_eq!(failure.work.backend_read_operations, 0);
-        assert_eq!(failure.work.page_reads, 0);
-        assert_eq!(failure.work.bytes_copied, 0);
-        assert_eq!(failure.work.peak_allocation_bytes, owned);
+        assert!(matches!(failure, WorkspaceError::NamespacePath(_)));
+        let work = accounting.spent();
+        assert_eq!(work.allocation_operations, 0);
+        assert_eq!(work.backend_read_operations, 0);
+        assert_eq!(work.page_reads, 0);
+        assert_eq!(work.bytes_copied, 0);
+        assert_eq!(work.peak_allocation_bytes, owned);
     }
     Ok(())
 }
