@@ -1,9 +1,4 @@
 //! Browser persistence and WebAssembly bindings for the canonical Rust engine.
-//!
-//! Installed bindings use the single `acyclic_fs::browser` IndexedDB provider
-//! and its portable authority protocol controls. OPFS remains an explicit,
-//! authenticated object-storage profile; it never substitutes a native backend.
-//! Browser-owned allocations are not native physical-quota guarantees.
 
 #[cfg(target_arch = "wasm32")]
 mod opfs;
