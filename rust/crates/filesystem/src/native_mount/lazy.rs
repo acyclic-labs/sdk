@@ -98,13 +98,13 @@ impl MountSyncBuffer<Vec<String>> {
     fn push_cloned_text(&mut self, text: &str, work: &mut MountSyncWork<'_>) -> Result<(), MountSourceError> {
         let copied = crate::WorkCounters { bytes_copied: text.len() as u64, ..crate::WorkCounters::UNCHARGED };
         if let Some(original) = work.meter.original_native_work() {
-            use super::adapter::CaptureInputScratch;
-            let mut scratch = super::adapter::NativeCaptureScratchAllocation::new(&original)?;
+            let mut input_carrier = super::adapter::NativeDemandCarrier::Native(&original);
+            let mut scratch = super::adapter::InputBuffers::new(&mut input_carrier)?;
             scratch.admit(copied)?;
             let mut bytes = scratch.vec::<u8>(text.len())?;
             bytes.extend_from_slice(text.as_bytes());
             scratch.record(copied)?;
-            let mut owned = (String::from_utf8(bytes).expect("source String is UTF-8"), scratch.retain());
+            let mut owned = (String::from_utf8(bytes).expect("source String is UTF-8"), scratch.retain().expect("native input allocation"));
             let retained = owned.0.capacity() as u64;
             let total = self.bytes.checked_add(retained).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
             if let Some(allocation) = &mut self.native_allocation {
@@ -185,12 +185,12 @@ impl<'w> MountSyncWork<'w> {
 
     fn owned_vec<T>(&mut self, count: usize) -> Result<MountSyncBuffer<Vec<T>>, MountSourceError> {
         if let Some(original) = self.meter.original_native_work() {
-            use super::adapter::CaptureInputScratch;
-            let mut scratch = super::adapter::NativeCaptureScratchAllocation::new(&original)?;
+            let mut input_carrier = super::adapter::NativeDemandCarrier::Native(&original);
+            let mut scratch = super::adapter::InputBuffers::new(&mut input_carrier)?;
             let value = scratch.vec::<T>(count)?;
             let bytes = value.capacity().checked_mul(std::mem::size_of::<T>())
                 .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
-            return Ok(MountSyncBuffer { value, custody: None, bytes, native_allocation: Some(scratch.retain()) });
+            return Ok(MountSyncBuffer { value, custody: None, bytes, native_allocation: Some(scratch.retain().expect("native input allocation")) });
         }
         let value = self.vec(count)?;
         let bytes = value.capacity().checked_mul(std::mem::size_of::<T>())
@@ -1125,9 +1125,9 @@ impl<'a, 'w> DirectoryCarrierScratch<'a, 'w> {
 
     fn vec<T>(&mut self, count: usize) -> Result<Vec<T>, MountSourceError> {
         if let Some(original) = self.carrier.original_native_work() {
-            use super::adapter::CaptureInputScratch;
-            let mut scratch = super::adapter::NativeCaptureScratchAllocation::new(&original)?;
-            let mut owned = (scratch.vec::<T>(count)?, scratch.retain());
+            let mut input_carrier = super::adapter::NativeDemandCarrier::Native(&original);
+            let mut scratch = super::adapter::InputBuffers::new(&mut input_carrier)?;
+            let mut owned = (scratch.vec::<T>(count)?, scratch.retain().expect("native input allocation"));
             self.absorb_native(&mut owned.1)?;
             Ok(owned.0)
         } else {
@@ -1228,8 +1228,8 @@ fn directory_lazy_error(error: LazyWorkspaceError) -> MountSourceError {
     }
 }
 
-fn mount_components_with_scratch<S: super::adapter::CaptureInputScratch>(
-    source: &[Vec<u8>], extra: Option<&[u8]>, scratch: &mut S,
+fn mount_components_with_scratch(
+    source: &[Vec<u8>], extra: Option<&[u8]>, scratch: &mut super::adapter::InputBuffers<'_, '_>,
 ) -> Result<MountPath, MountSourceError> {
     let count = source.len().checked_add(usize::from(extra.is_some()))
         .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
@@ -1250,9 +1250,12 @@ fn mount_components_with_scratch<S: super::adapter::CaptureInputScratch>(
 fn mount_components_with_work(
     source: &[Vec<u8>], extra: Option<&[u8]>, work: &mut crate::demand::DemandWork,
 ) -> Result<(MountPath, u64), MountSourceError> {
-    let mut scratch = super::adapter::CaptureScratchAllocation::new(work);
+    let mut carrier = super::adapter::NativeDemandCarrier::Borrowed(work);
+    let mut scratch = super::adapter::InputBuffers::new(&mut carrier)?;
     let path = mount_components_with_scratch(source, extra, &mut scratch)?;
-    Ok((path, scratch.retain()))
+    let bytes = scratch.bytes;
+    scratch.retain();
+    Ok((path, bytes))
 }
 
 struct MountOwnedBuffer<T> {
@@ -1281,9 +1284,10 @@ fn mount_components_with_carrier(
     carrier: &mut super::adapter::NativeDemandCarrier<'_>,
 ) -> Result<MountOwnedBuffer<MountPath>, MountSourceError> {
     if let Some(original) = carrier.original_native_work() {
-        let mut scratch = super::adapter::NativeCaptureScratchAllocation::new(&original)?;
+        let mut input_carrier = super::adapter::NativeDemandCarrier::Native(&original);
+            let mut scratch = super::adapter::InputBuffers::new(&mut input_carrier)?;
         let path = mount_components_with_scratch(source, extra, &mut scratch)?;
-        Ok(MountOwnedBuffer { value: path, legacy_bytes: 0, allocation: Some(scratch.retain()) })
+        Ok(MountOwnedBuffer { value: path, legacy_bytes: 0, allocation: Some(scratch.retain().expect("native input allocation")) })
     } else {
         let (path, bytes) = carrier.with_work(|work| mount_components_with_work(source, extra, work))?;
         Ok(MountOwnedBuffer { value: path, legacy_bytes: bytes, allocation: None })
@@ -1321,11 +1325,11 @@ fn promotion_push<T>(
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
         let delta = crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED };
         let mut replacement = if let Some(original) = &original {
-            use super::adapter::CaptureInputScratch;
             original.admit(delta).map_err(MountSourceError::NativeWork)?;
-            let mut allocation = super::adapter::NativeCaptureScratchAllocation::new(original)?;
+            let mut input_carrier = super::adapter::NativeDemandCarrier::Native(original);
+            let mut allocation = super::adapter::InputBuffers::new(&mut input_carrier)?;
             let values = allocation.vec::<T>(capacity)?;
-            let mut allocation = allocation.retain();
+            let mut allocation = allocation.retain().expect("native input allocation");
             if let Some(backing) = &mut scratch.native_backing {
                 backing.absorb(&mut allocation).map_err(MountSourceError::NativeWork)?;
             } else {
@@ -1432,13 +1436,13 @@ impl<T> CursorTable<T> {
         carrier: &mut super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<MountOwnedBuffer<Vec<u8>>, MountSourceError> {
         if let Some(original) = carrier.original_native_work() {
-            use super::adapter::CaptureInputScratch;
             let native_cleanup = original.reserve_work(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
             let native_cleanup_allocation = original.claim(
                 (std::mem::size_of::<Option<crate::materializer::NativeWorkReservation>>()
                     + std::mem::size_of::<Option<crate::NativeAllocation>>()) as u64, 0, crate::WorkCounters::UNCHARGED,
             ).map_err(MountSourceError::NativeWork)?;
-            let mut scratch = super::adapter::NativeCaptureScratchAllocation::new(&original)?;
+            let mut input_carrier = super::adapter::NativeDemandCarrier::Native(&original);
+            let mut scratch = super::adapter::InputBuffers::new(&mut input_carrier)?;
             let delta = crate::WorkCounters {
                 bytes_copied: 8, ..crate::WorkCounters::UNCHARGED
             };
@@ -1479,7 +1483,7 @@ impl<T> CursorTable<T> {
                 .map_err(|error| MountSourceError::NativeWork(original.runtime_error(error)));
             recorded_copy.and(recorded_output)?;
             return Ok(MountOwnedBuffer {
-                value: token_bytes, legacy_bytes: 0, allocation: Some(scratch.retain()),
+                value: token_bytes, legacy_bytes: 0, allocation: Some(scratch.retain().expect("native input allocation")),
             });
         }
         let mut scratch = DirectoryCarrierScratch::new(carrier);
@@ -2325,10 +2329,7 @@ impl NativeMountSourceWatchOwner {
             return self.stop_ordinary_with_carrier(carrier);
         }
         match carrier {
-            super::adapter::NativeDemandCarrier::Borrowed(work) => {
-                let loan = super::adapter::BorrowedNativeDemandMeter::new(work)?;
-                loan.run(|original| self.stop_on_native_work(crate::demand::NativeSourceWork::new(original)))
-            }
+            super::adapter::NativeDemandCarrier::Borrowed(_) => self.stop_ordinary_with_carrier(carrier),
             super::adapter::NativeDemandCarrier::Shared(original) => self.stop_on_native_work(crate::demand::NativeSourceWork::new(original)),
             super::adapter::NativeDemandCarrier::Native(work) => {
                 let original = work.clone();
@@ -2346,6 +2347,10 @@ impl NativeMountSourceWatchOwner {
             Ok::<_, MountSourceError>((budget, work.cancellation().clone(), work.live_allocation_bytes()))
         })?;
         if self.is_stopped() { return Ok(false); }
+        if let Some(failure) = &self.startup_failure {
+            return carrier.with_work(|work| failure.stop_with_work(work))
+                .map_err(mount_demand_error).map(|()| true);
+        }
         let watch = self.watch.as_ref().expect("ordinary construction retains its original watch");
         let result = crate::demand::stop_watch(watch.as_ref(), budget, &cancellation);
 
@@ -2417,13 +2422,6 @@ pub struct LazyMountSource<A, O, D, S> {
     source_watch: Option<NativeMountSourceWatchOwner>,
     linked: Mutex<LinkedIdentities>,
     native_allocation: Option<crate::NativeAllocation>,
-}
-
-impl<A, O, D, S> super::adapter::NativeSourceIoRetirement for LazyMountSource<A, O, D, S>
-where Self: Send + Sync, CheckoutMountSource<A, O>: Send + Sync {
-    fn release_native_source_io(&self) {
-        super::adapter::NativeSourceIoRetirement::release_native_source_io(self.authored.as_ref());
-    }
 }
 
 #[derive(Default)]
@@ -2733,8 +2731,8 @@ where
     pub(crate) fn native_source_io_lease(
         self: &Arc<Self>,
     ) -> Result<super::adapter::NativeSourceIoLease, MountSourceError> {
-        let owner: Arc<dyn super::adapter::NativeSourceIoRetirement> =
-            Arc::clone(self) as Arc<dyn super::adapter::NativeSourceIoRetirement>;
+        let owner: Arc<dyn Send + Sync> =
+            Arc::clone(self) as Arc<dyn Send + Sync>;
         self.authored.native_source_io_lease_for_owner(owner)
     }
 
@@ -3505,14 +3503,9 @@ where
         E: From<MountSourceError> + Send + 'static,
     {
         let mut work = crate::demand::DemandWork::new(budget, cancellation);
-        let result = async {
-            super::adapter::BorrowedNativeDemandMeter::new(&mut work).map_err(E::from)?
-                .run_async(|meter| async move {
-                    self.sync_async_with_permit_carrier_guarded(
-                        permit, super::adapter::NativeDemandCarrier::Shared(&meter), cancellation, &mut before_publication,
-                    ).await
-                }).await
-        }.await;
+        let result = self.sync_async_with_permit_carrier_guarded(
+            permit, super::adapter::NativeDemandCarrier::Borrowed(&mut work), cancellation, &mut before_publication,
+        ).await;
         let finalized = work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error);
         match (result, finalized) {
             (Ok(value), Ok(())) => Ok(crate::OperationReceipt { value, work: work.work }),
@@ -4164,7 +4157,8 @@ where
     ) -> Result<(Vec<String>, bool, u64), MountSourceError> {
         let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
         let opaque = Self::removed_by_with_work(&removals.paths, directory, work)?;
-        let mut scratch = super::adapter::CaptureScratchAllocation::new(work);
+        let mut carrier = super::adapter::NativeDemandCarrier::Borrowed(work);
+        let mut scratch = super::adapter::InputBuffers::new(&mut carrier)?;
         let children = Self::removal_children_with_scratch(&removals.paths, directory, &mut scratch)?;
         scratch.retain();
         Ok((children, opaque, removals.epoch))
@@ -4178,10 +4172,11 @@ where
             let opaque = Self::removed_by_with_items(&removals.paths, directory, || original.charge(
                 crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED },
             ).map_err(MountSourceError::NativeWork))?;
-            let mut scratch = super::adapter::NativeCaptureScratchAllocation::new(&original)?;
+            let mut input_carrier = super::adapter::NativeDemandCarrier::Native(&original);
+            let mut scratch = super::adapter::InputBuffers::new(&mut input_carrier)?;
             let children = Self::removal_children_with_scratch(&removals.paths, directory, &mut scratch)?;
             Ok((MountOwnedBuffer { value: children, legacy_bytes: 0,
-                allocation: Some(scratch.retain()) }, opaque, removals.epoch))
+                allocation: Some(scratch.retain().expect("native input allocation")) }, opaque, removals.epoch))
         } else {
             let (children, opaque, epoch) = carrier.with_work(|work|
                 self.removal_snapshot_with_work(directory, work))?;
@@ -4190,8 +4185,8 @@ where
         }
     }
 
-    fn removal_children_with_scratch<C: super::adapter::CaptureInputScratch>(
-        paths: &BTreeMap<MountedRemovalPath, MountedRemoval>, directory: &str, scratch: &mut C,
+    fn removal_children_with_scratch(
+        paths: &BTreeMap<MountedRemovalPath, MountedRemoval>, directory: &str, scratch: &mut super::adapter::InputBuffers<'_, '_>,
     ) -> Result<Vec<String>, MountSourceError> {
         let prefix: std::borrow::Cow<'_, str> = if directory == "/" {
             std::borrow::Cow::Borrowed("/")
@@ -4273,18 +4268,18 @@ where
             Err(position) => position,
         };
         if entries.len() < entries.capacity() { return Ok(Some(position)); }
-        use super::adapter::CaptureInputScratch;
         let count = entries.len().checked_add(1).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         let copied = entries.len().checked_mul(std::mem::size_of::<(FileId, DetachedIdentity<A, O>)>())
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
         let copy = original.reserve_work(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
         let mut items = original.reserve_work(crate::WorkCounters { items_examined: entries.len() as u64, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
-        let mut scratch = super::adapter::NativeCaptureScratchAllocation::new(&original)?;
+        let mut input_carrier = super::adapter::NativeDemandCarrier::Native(&original);
+            let mut scratch = super::adapter::InputBuffers::new(&mut input_carrier)?;
         let values = scratch.vec::<(FileId, DetachedIdentity<A, O>)>(count)?;
         let bytes = values.capacity().checked_mul(std::mem::size_of::<(FileId, DetachedIdentity<A, O>)>())
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
         let mut replacement = DetachedTable {
-            entries: values, custody: None, bytes, native_allocation: Some(scratch.retain()),
+            entries: values, custody: None, bytes, native_allocation: Some(scratch.retain().expect("native input allocation")),
         };
         let examined = entries.len() as u64;
         replacement.entries.append(&mut entries.entries);
@@ -4716,35 +4711,18 @@ where
         &self, path: &MountPath, owner: super::view_gate::CallbackOwner,
         carrier: &mut super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError> {
-        match carrier {
-            super::adapter::NativeDemandCarrier::Native(original) =>
-                self.promote_subtree_with_original_work(path, owner, original).await,
-            super::adapter::NativeDemandCarrier::Shared(original) => {
-                let original = crate::demand::OriginalDemandWork::from_meter(Arc::clone(original));
-                let original = crate::NativeMaterializationWork::from_original_demand_work(&original)
-                    .map_err(mount_demand_error)?;
-                self.promote_subtree_with_original_work(path, owner, &original).await
-            }
-            super::adapter::NativeDemandCarrier::Borrowed(work) =>
-                super::adapter::BorrowedNativeDemandMeter::new(work)?
-                    .run_async(|original| async move {
-                        let original = crate::demand::OriginalDemandWork::from_meter(original);
-                        let original = crate::NativeMaterializationWork::from_original_demand_work(&original)
-                            .map_err(mount_demand_error)?;
-                        self.promote_subtree_with_original_work(path, owner, &original).await
-                    }).await,
-        }
-    }
-
-    async fn promote_subtree_with_original_work(
-        &self, path: &MountPath, owner: super::view_gate::CallbackOwner,
-        native: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
-        let original = native.clone();
-        let cancellation = original.cancellation();
-        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
-        let mut carrier = super::adapter::NativeDemandCarrier::Native(native);
-        let mut scratch = DirectoryCarrierScratch::new(&mut carrier);
+        let original = match carrier {
+            super::adapter::NativeDemandCarrier::Shared(meter) => Some(crate::NativeMaterializationWork::from_meter(Arc::clone(meter))),
+            _ => carrier.original_native_work(),
+        };
+        let mut native_carrier;
+        let carrier = if let Some(original) = &original {
+            native_carrier = super::adapter::NativeDemandCarrier::Native(original);
+            &mut native_carrier
+        } else { carrier };
+        let cancellation = carrier.cancellation();
+        carrier.with_work(|work| work.check()).map_err(mount_demand_error)?;
+        let mut scratch = DirectoryCarrierScratch::new(carrier);
         let root = mount_components_with_carrier(path.components(), None, scratch.carrier)?;
         let mut directories = Vec::new();
         promotion_push(&mut directories, root, &mut scratch)?;
@@ -4757,28 +4735,29 @@ where
             let mut unresolved = Vec::new();
             let mut cursor = None;
             loop {
-                original.charge(crate::WorkCounters { items_examined: 1,
-                    ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
+                scratch.carrier.with_work(|work| mount_items(work, 1))?;
                 let observation = self.authored.shared_checkout().observe(
-                    owner, scratch.carrier, cancellation, Some(self.authored.cancellation()),
+                    owner, scratch.carrier, &cancellation, Some(self.authored.cancellation()),
                 ).await?;
                 observation.ensure_publication_resolved()?;
-                let state = self.lazy.state(& mut crate :: kernel::KernelAccounting::native (&original, cancellation) ) .await
-                    .map_err(native_lazy_error)?;
-                let mut checkout =  observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect( "observer preserves validated checkout" ).value ;
-                let (mut page, _, allocation) = self
-                    .lazy
-                    .list_directory_at(
-                        &state,
-                        &mut checkout,
-                        &text,
-                        cursor.take(),
-                        DIRECTORY_PROMOTION_PAGE ,
-                    Some((&removed, opaque)), &mut crate::kernel::KernelAccounting::native(&original, cancellation) ,
-                ).await.map_err(native_lazy_error)?;
+                let (mut page, _, allocation) = {
+                    let mut inputs = super::adapter::InputBuffers::new(scratch.carrier)?;
+                    let mut checkout = inputs.observer(&observation, &cancellation)?;
+                    let mut accounting = if let Some(original) = &original {
+                        crate::kernel::KernelAccounting::native(original, &cancellation)
+                    } else {
+                        let super::adapter::NativeDemandCarrier::Borrowed(work) = &mut *inputs.carrier else { unreachable!("ordinary promotion borrows its ledger") };
+                        let (_, allocations, counters, budget) = work.native_mount_admission_parts().map_err(mount_demand_error)?;
+                        crate::kernel::KernelAccounting::borrowed_standalone(allocations, counters, budget, &cancellation)
+                    };
+                    let state = self.lazy.state(&mut accounting).await.map_err(lazy_error)?;
+                    self.lazy.list_directory_at(
+                        &state, &mut checkout, &text, cursor.take(), DIRECTORY_PROMOTION_PAGE,
+                        Some((&removed, opaque)), &mut accounting,
+                    ).await.map_err(lazy_error)?
+                };
                 for entry in &page.entries {
-                    original.charge(crate::WorkCounters { items_examined: 1,
-                        ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
+                    scratch.carrier.with_work(|work| mount_items(work, 1))?;
                     if entry.authored { continue; }
                     let name = mount_name_with_carrier(&entry.name, scratch.carrier)?;
                     let child = mount_components_with_carrier(
@@ -4788,8 +4767,13 @@ where
                         (child, entry.kind == SourceNodeKind::Directory), &mut scratch)?;
                 }
                 cursor = page.next.take();
+                let bytes = crate::lazy_workspace::retained_directory_page_bytes(&page.entries, page.entries.iter().map(|entry| entry.name.retained_bytes())).map_err(lazy_error)?;
                 drop(page);
-                drop(allocation); if cursor.is_none() { break; }
+                drop(allocation);
+                if original.is_none() {
+                    scratch.carrier.with_work(|work| work.release(bytes)).map_err(mount_demand_error)?;
+                }
+                if cursor.is_none() { break; }
             }
             if !self.authored.unchanged_since_with_carrier(&directory, None, stamp, scratch.carrier)? {
                 return Err(MountSourceError::Stale);
@@ -4818,7 +4802,7 @@ where
         ).ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
         drop(directories);
         scratch.release_backing(directory_bytes)?;
-        original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)
+        scratch.carrier.with_work(|work| work.check()).map_err(mount_demand_error)
     }
 
     async fn lookup_pinned_in_view(
@@ -5512,7 +5496,7 @@ where
 
 pub(super) fn with_native_callback_carrier<T>(
     runtime: &CallbackRuntime, carrier: &mut super::adapter::NativeDemandCarrier<'_>,
-    run: impl FnOnce(&mut super::adapter::NativeDemandCarrier<'_>, Arc<super::adapter::CallbackWait>)
+    run: impl FnOnce(&mut super::adapter::NativeDemandCarrier<'_>, super::adapter::PreparedCallbackWait)
         -> Result<T, MountSourceError>,
 ) -> Result<T, MountSourceError> {
     let prepared = carrier.with_work(|work| runtime.prepare_wait(work))?;
