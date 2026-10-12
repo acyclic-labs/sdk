@@ -4,7 +4,7 @@ import type {
   WasmRawMergeConflict,
 } from "./contracts.js";
 
-export function decodeMergeConflict(raw: unknown, origin: string): MergeConflict {
+export function decodeMergeConflict(raw: unknown, origin = "merge preparation"): MergeConflict {
   if (typeof raw !== "object" || raw === null) throw new Error(`${origin} returned a malformed conflict`);
   const conflict = raw as Partial<WasmRawMergeConflict>;
   const { fileId, directoryId, name } = conflict;
@@ -21,10 +21,6 @@ export function decodeMergeConflict(raw: unknown, origin: string): MergeConflict
       name: { encoding: name.encoding, bytes: Uint8Array.from(name.bytes) } };
   }
   throw new Error(`${origin} returned a malformed conflict`);
-}
-
-export function copyMergeConflict(conflict: MergeConflict): MergeConflict {
-  return decodeMergeConflict(conflict, "merge preparation");
 }
 
 function copyGenerationId(value: unknown, label: string): Uint8Array | undefined {
@@ -53,7 +49,7 @@ export function parseMergePreparation<Conflict>(
   }
   if (value.status === "conflicted" && generationId === undefined) {
     return { status: "conflicted", generationId: undefined,
-      conflicts: value.conflicts.map(decodeConflict), truncated: value.truncated, work: value.work };
+      conflicts: value.conflicts.map(conflict => decodeConflict(conflict)), truncated: value.truncated, work: value.work };
   }
   throw new TypeError("binding returned a malformed merge preparation");
 }
@@ -90,7 +86,7 @@ function parseResult<Status extends string, Conflict>(
   return {
     status: value.status,
     generationId: copyGenerationId(value.generationId, `${label} result`),
-    conflicts: value.conflicts.map(decodeConflict),
+    conflicts: value.conflicts.map(conflict => decodeConflict(conflict)),
     truncated: value.truncated,
   };
 }

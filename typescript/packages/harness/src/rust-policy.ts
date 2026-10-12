@@ -4,15 +4,6 @@ import {
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import { ensureHarnessWasm } from "./wasm-runtime.js";
 
-export async function validateAuthorityPathSegment(value: string): Promise<string> {
-  await ensureHarnessWasm();
-  try {
-    return validateAuthorityPathSegmentWasm(value);
-  } catch {
-    throw new TypeError("aggregate identity is not a safe path segment");
-  }
-}
-
 export async function isSafeAuthorityId(value: string): Promise<boolean> {
   await ensureHarnessWasm();
   try {
