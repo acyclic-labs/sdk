@@ -125,3 +125,26 @@ impl MountOptions {
         self
     }
 }
+
+pub(super) async fn in_native_heap<T, F>(
+    work: &NativeMaterializationWork,
+    create: impl FnOnce() -> F,
+) -> Result<T, MountLifecycleError>
+where
+    F: Future<Output = Result<T, MountLifecycleError>>,
+{
+    let mut custody = None;
+    let (mut future, _) = crate::heap_future::in_heap_admitted(
+        &mut custody,
+        |custody, bytes| {
+            **custody =
+                Some(work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::default())?);
+            Ok::<(), crate::NativeTreeMaterializationError>(())
+        },
+        |_| create(),
+    )?;
+    let result = future.as_mut().await;
+    drop(future);
+    drop(custody);
+    result
+}

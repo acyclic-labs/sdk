@@ -17,12 +17,6 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    /// Exact generation admitted into the physical view.
-    #[must_use]
-    pub const fn generation_id(&self) -> GenerationId {
-        self.expected_generation
-    }
-
     /// Physical volume-root directory owned by this view.
     #[must_use]
     pub fn path(&self) -> &Path {

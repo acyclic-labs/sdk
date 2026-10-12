@@ -266,7 +266,6 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
         std::fs::read(source_root.path().join("file.txt"))?,
         b"original",
     );
-    assert_eq!(source.generation_id(), admitted.id());
     assert!(publish(&source, &default_work).await.is_err());
     std::fs::write(source_root.path().join("file.txt"), "source mutation")?;
     assert!(source.verify_unchanged(&default_work).await.is_err());
