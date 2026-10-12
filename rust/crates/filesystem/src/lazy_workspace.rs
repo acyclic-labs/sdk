@@ -4971,7 +4971,7 @@ where
                 let head = self.workspace.head(
                     original, cancellation,
                 ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
-                let reader = self.workspace.readonly_pinned_reader_with_native_work(
+                let reader = self.workspace.reader(
                     head.id(), &original, cancellation,
                 ).await.map_err(native_workspace_error)?;
                 drop(head);
@@ -5061,7 +5061,7 @@ where
                         let head = self.workspace.head(
                             *original, cancellation,
                         ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
-                        let reader = self.workspace.readonly_pinned_reader_with_native_work(
+                        let reader = self.workspace.reader(
                             head.id(), original, cancellation,
                         ).await.map_err(native_workspace_error)?;
                         drop(head);
@@ -5782,7 +5782,7 @@ where
         let state = self.readonly_snapshot_state(snapshot, false,
             &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation))
             .map_err(|error| (error, None))?;
-        let reader = self.workspace.readonly_pinned_reader_with_native_work(
+        let reader = self.workspace.reader(
             snapshot.authored_generation, original, cancellation,
         ).await.map_err(|error| (native_workspace_error(error), None))?;
         let mut accounting = LazyReadonlyAccounting::Native { original, cancellation };
@@ -5842,7 +5842,7 @@ where
             LazyTreapMeter::NativeOriginal { original, .. } => {
                     self.readonly_snapshot_state(frozen, false,
                         &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation))?;
-                    let reader = self.workspace.readonly_pinned_reader_with_native_work(
+                    let reader = self.workspace.reader(
                         frozen.authored_generation, original, cancellation,
                     ).await.map_err(native_workspace_error)?;
                     drop(reader);
@@ -6229,7 +6229,7 @@ where
                 let reader = if matches!(lookup, LazyLookup::Shadow { .. }) {
                     let head = self.workspace.head(original, cancellation)
                         .await.map_err(|error| (error, None)).map_err(|error| (native_workspace_error_pair(error), None))?;
-                    Some(self.workspace.readonly_pinned_reader_with_native_work(head.id(), original, cancellation)
+                    Some(self.workspace.reader(head.id(), original, cancellation)
                         .await.map_err(|error| (native_workspace_error(error), None))?)
                 } else { None };
                 self.read_resolved_with_work(lookup, source, reader.as_ref(), None, path,
@@ -6676,7 +6676,7 @@ where
                 record
             },
             |original| {
-                let reader = self.workspace.readonly_pinned_reader_with_native_work(
+                let reader = self.workspace.reader(
                     snapshot.authored_generation, original, cancellation,
                 ).await.map_err(native_workspace_error)?;
                 reader.lookup_record_with_native_work(&namespace, original, cancellation).await
@@ -7560,7 +7560,7 @@ where
                 let state = self.readonly_snapshot_state(
                     snapshot, source_required, &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation),
                 )?;
-                let reader = self.workspace.readonly_pinned_reader_with_native_work(
+                let reader = self.workspace.reader(
                     snapshot.authored_generation, original, cancellation,
                 ).await.map_err(native_workspace_error)?;
                 let mut accounting = LazyReadonlyAccounting::Native { original, cancellation };
@@ -8728,7 +8728,7 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } => {
                 let original = *original;
-                let reader = self.workspace.readonly_pinned_reader_with_native_work(
+                let reader = self.workspace.reader(
                     generation.id(), original, cancellation,
                 ).await.map_err(native_workspace_error)?;
                 let mut values = accounting.vector(namespaces.len(), cancellation)?;
@@ -8784,7 +8784,7 @@ where
                     let head = self.workspace.head(
                         original, cancellation,
                     ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
-                    let reader = self.workspace.readonly_pinned_reader_with_native_work(
+                    let reader = self.workspace.reader(
                         head.id(), original, cancellation,
                     ).await.map_err(native_workspace_error)?;
                     drop(head);
@@ -8956,15 +8956,17 @@ where
         let cancellation = work.cancellation;
         before_mutation.check(work).await?;
         lazy_dispatch!{work, accept_lazy_write_receipt(
-                work, self.workspace.operation_generation_record_measured(
+                work, self.workspace.operation_generation_record(
                     key, work.remaining()?, cancellation,
                 ).await.map_err(|failure| failure.map_error(|error|
                     E::from(LazyWorkspaceError::WorkspaceCause(error)))),
-            ).map(|value| value.map(LazyReadonlyNode::Portable)),
+            ).map(|(value, _allocation)| value.map(LazyReadonlyNode::Portable)),
             |original| {
-                let (value, allocation) = self.workspace.operation_generation_record_with_native_work(
-                    key.operation_id(), original, cancellation,
-                ).await.map_err(|error| E::from(native_workspace_error_pair(error)))?;
+                let (value, allocation) = self.workspace.operation_generation_record(
+                    key, original, cancellation,
+                ).await.map_err(|error| E::from(native_workspace_error(error)))?;
+                let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = allocation
+                    else { unreachable!("native operation retains its allocation"); };
                 Ok(match value {
                     Some(value) => Some(LazyReadonlyNode::Native(
                         NativeOwnedCoreState::from_parts(value, allocation),
@@ -16268,16 +16270,14 @@ mod tests {
         let node = root.source.lookup(reference, &namespace, WorkBudget::UNBOUNDED, &token).await
             .expect("fixture metadata").value.expect("fixture link");
         drop(namespace);
-        let (bytes, metadata) = root.read_source_link(
+        let bytes = root.read_source_link(
             "/link", reference, node.version, target.len() as u64, &original, &token,
         ).await.expect("same original link producer");
         assert_eq!(bytes.bytes.as_ref(), target);
         assert!(bytes.is_intrinsic());
         assert!(bytes.logical_owned_bytes >= target.len() as u64);
         assert_eq!(original.receipt().source_bytes_read, target.len() as u64);
-        assert_eq!(metadata.bytes(), 0);
         drop(bytes);
-        drop(metadata);
         token.cancel();
         let (error, custody) = root.read_source_link(
             "/link", reference, node.version, target.len() as u64, &original, &token,
@@ -17656,8 +17656,8 @@ mod tests {
         let appends = simulation.trace().expect("real trace").into_iter()
             .filter(|entry| entry.operation == crate::simulation::SimulationOperation::AuthorityAppend).count();
         let companion = store.load_lazy_workspace(root.workspace().id()).await.expect("companion").expect("binding");
-        let (observed, custody) = root.workspace().operation_generation_record_with_native_work(
-            key.operation_id(), &original, &token,
+        let (observed, custody) = root.workspace().operation_generation_record(
+            key, &original, &token,
         ).await.expect("original protected DATA and whole live provider custody");
         let (actual, record) = observed.expect("original operation exists");
         let allocation_count = original.receipt().allocation_operations;

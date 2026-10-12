@@ -875,8 +875,8 @@ where
                 let reservation = self.reservation.ok_or(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Invalid,
                     reason: "fork publication guard has no reservation" })?;
-                return self.workspace.release_publication_with_native_work(reservation, original, original.cancellation())
-                    .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+                return self.workspace.release_publication(reservation, original, original.cancellation())
+                    .await.map_err(|source| Error::NativeWorkspace { source, custody: None });
             }
             let reservation = self.reservation.ok_or_else(|| Error::Invalid("fork publication guard has no reservation".into()))?;
             let budget = work.as_ref().map(|io| io.remaining()).transpose()?.unwrap_or(acyclic_fs::WorkBudget::UNBOUNDED);
@@ -1576,8 +1576,8 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                 })
             };
             let operation = acyclic_fs::OperationId::from_bytes(seed.operation_id.into_bytes());
-            let reservation = match guard.workspace.reserve_publication_with_native_work(
-                operation, work, work.cancellation()).await
+            let reservation = match guard.workspace.reserve_publication(
+                operation, work, work.cancellation()).await.map_err(|error| (error, None))
             {
                 Ok(reservation) => reservation,
                 Err((source, custody)) => {
@@ -1586,7 +1586,7 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                         operation, work, work.cancellation()).await
                     {
                         guard.reservation = Some(reservation);
-                        let _cleanup = guard.workspace.release_publication_with_native_work(
+                        let _cleanup = guard.workspace.release_publication(
                             reservation, work, work.cancellation()).await;
                     }
                     return Err(primary);
@@ -2534,7 +2534,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         let authorization = handle.authorization();
         if context.durable_task_id() != Some(authorization.caller_task) {
             #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some_and(PreparationIo::uses_native_work) {
+            if io.is_some_and(|io| io.original_native_work().is_some()) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "selected project import belongs to another original caller" });
             }
@@ -2846,7 +2846,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         )?;
         io.absorb_native_custody(custody)?;
         let result_generation = fork_preparer_io::generation_ref(
-            &self.host, application.generation(), Some(&io),
+            &self.host, &application.generation, Some(&io),
         )?;
         let operation_bytes = filesystem_key.into_bytes();
         let mut provider_operation_id = Vec::new();
@@ -2905,7 +2905,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
             source_generation: self.host.generation_ref_id(plan.source_head())?,
             target_project: self.project.clone(),
             expected_target_generation: self.host.generation_ref_id(plan.target_head())?,
-            result_generation: self.host.generation_ref(application.generation())?,
+            result_generation: self.host.generation_ref(&application.generation)?,
             provider_operation_id: filesystem_key.into_bytes().to_vec(),
             provider_proof: ProviderJoinProof {
                 provider: self.host.provider.clone(),

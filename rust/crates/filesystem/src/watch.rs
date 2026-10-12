@@ -627,7 +627,8 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
     }
     let backing = count.checked_mul(size_of::<LogicalName>()).ok_or(WorkError::Overflow)? as u64;
     let allocation = if let Some(original) = &original {
-        Some(original.claim_allocation(backing, u64::from(backing != 0), WorkCounters::UNCHARGED).map_err(crate::native_name::original_name_error)?)
+        Some(original.claim_allocation(backing, u64::from(backing != 0), WorkCounters::UNCHARGED)
+            .map_err(crate::native_name::original_name_error)?)
     } else {
         work.allocate(backing)?;
         None

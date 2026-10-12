@@ -1855,7 +1855,7 @@ where
             },
             |(original, _)| async move {
                 let workspace = self.workspace();
-                let reader = workspace.readonly_pinned_reader_with_native_work(
+                let reader = workspace.reader(
                     self.id(), original, cancellation,
                 ).await?;
                 super::materialize_checkout_with_work(&reader, options, work).await
@@ -2024,9 +2024,9 @@ where
                 let config = checkout.volume_config();
                 let root = original.allocations(
                     |allocations, work, budget, cancellation| {
-                        crate::workspace::customer_path_measured(
-                            &mount.subdirectory, config, allocations, work, budget, cancellation,
-                        ).map_err(MountLifecycleError::Workspace)
+                        crate::kernel::NamespacePath::parse_in_profile_with_ledger(
+                            &mount.subdirectory, config.profile, config.limits, allocations, work, budget, cancellation,
+                        ).map_err(|error| MountLifecycleError::Workspace(WorkspaceError::from(error)))
                     },
                 )?;
                 if checkout.lookup_no_follow(&root.0, original, cancellation)

@@ -578,7 +578,7 @@ fn append_projected_attachments(
         Cow::Owned(items) => items,
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let move_files = if let Some(io) = io.filter(|io| io.uses_native_work()) {
+    let move_files = if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         let hold = source_hold.as_ref().expect("native manifest retains ownership");
         let mut retained = 0_u64;
         for attachment in items.iter().take(count) {
@@ -764,7 +764,7 @@ fn convert_projection_value<'a, T: crate::filesystem::UploadRecord>(
         .checked_add(additional.as_ref().expect("conversion reservation").bytes())
         .ok_or_else(|| projection_invalid(Some(io), "owned tool conversion allowance overflows"))?;
     #[cfg(not(target_arch = "wasm32"))]
-    if io.uses_native_work() {
+    if io.original_native_work().is_some() {
         reservation.take().expect("source reservation").into_retained();
         additional.take().expect("conversion reservation").into_retained();
         native_custody = Some(io.take_native_custody(total)?);
@@ -814,7 +814,7 @@ async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     }
     let _source_hold;
     let bytes = resolver.read(file, maximum_bytes, Some(io))?.await?;
-    _source_hold = if io.uses_native_work() { None } else {
+    _source_hold = if io.original_native_work().is_some() { None } else {
         bytes.retained_capacity().map(|capacity| io.reserve_decode(capacity as u64)).transpose()?
     };
     if bytes.len() as u64 > maximum_bytes {
@@ -1172,7 +1172,7 @@ mod tests {
             fn read<'a>(&'a self, _: &'a FileRef, _: u64, io: Option<&'a crate::executor::PreparationIo>)
                 -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
                 crate::conversation::BoundedContentFuture::new(io, || async move {
-                    let counter = if io.is_some_and(|io| io.uses_native_work()) { &self.native } else { &self.ordinary };
+                    let counter = if io.is_some_and(|io| io.original_native_work().is_some()) { &self.native } else { &self.ordinary };
                     counter.fetch_add(1, Ordering::SeqCst);
                     Ok(acyclic_stream::OwnedBytes::from_static(b"[]"))
                 })
