@@ -1,16 +1,16 @@
 import type {
   AgentHarness, AgentId, ApprovalBinding, Authority, BrowserAggregate, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeSpawner, HarnessRuntimeState, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
-  ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectMergeNotice, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, RuntimeTaskId, TaskContext,
+  ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, TaskId, TaskContext,
   SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef, ModelContentPart, ModelEvent, ModelRole,
   NativeModelContent, NativeModelContentPart,
   CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire, ModelContextCapacity, ModelTokenCount,
 } from "../src/index.js";
-import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool, parseIdentity, resourceRef } from "../src/index.js";
+import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool } from "../src/index.js";
 import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
 import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_pb.js";
 import type {
   WasmExtensionAdmissionWire, WasmFileRefWire, WasmTaskAdmissionInput,
-  WasmModelContent, WasmModelContentPart, WasmModelEvent, WasmModelRole,
+  ModelContent as ModelContentWire, ModelContentPart as ModelContentPartWire, ModelEvent as ModelEventWire, ModelRole as ModelRoleWire,
   CompactionPolicy as RustCompactionPolicy, CompactionRetention as RustCompactionRetention,
   ThresholdCompaction as RustThresholdCompaction, ModelContextCapacity as RustModelContextCapacity,
   ModelTokenCount as RustModelTokenCount,
@@ -29,8 +29,8 @@ type _SummaryLimitsPreserveEveryBigint = Assert<Equal<
 
 type _BrowserAggregateBindsCommandAuthority = Assert<Equal<Parameters<BrowserAggregate["execute"]>[0], Omit<Command, "authority">>>;
 type _BrowserReconciliationBindsCommandAuthority = Assert<Equal<Parameters<BrowserAggregate["reconcile"]>[0], Omit<Command, "authority">>>;
-type _NativeModelPartUsesGeneratedRustUnion = Assert<Equal<NativeModelContentPart, WasmModelContentPart>>;
-type _NativeModelContentUsesGeneratedRustUnion = Assert<Equal<NativeModelContent, WasmModelContent>>;
+type _NativeModelPartUsesGeneratedRustUnion = Assert<Equal<NativeModelContentPart, ModelContentPartWire>>;
+type _NativeModelContentUsesGeneratedRustUnion = Assert<Equal<NativeModelContent, ModelContentWire>>;
 
 type _CompactionContractsUseGeneratedRustShapes = Assert<Equal<
   [CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire],
@@ -45,23 +45,23 @@ type _AccountingFacadeUsesRustCounts = Assert<Equal<
   Readonly<{ requestDigest: Uint8Array; fixedTokens: RustModelTokenCount["fixed_tokens"]; messageTokens: readonly RustModelTokenCount["message_tokens"][number][] }>
 >>;
 
-type _ModelRolesHaveNoUntrackedRustVariants = AssertNever<Exclude<WasmModelRole,
+type _ModelRolesHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelRoleWire,
   "system" | "user" | "assistant" | "tool">>;
 type _ModelRolesHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "system" | "user" | "assistant" | "tool", WasmModelRole>>;
-type _ModelPartsHaveNoUntrackedRustVariants = AssertNever<Exclude<WasmModelContentPart["kind"],
+  "system" | "user" | "assistant" | "tool", ModelRoleWire>>;
+type _ModelPartsHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelContentPartWire["kind"],
   "text" | "file" | "tool_call" | "tool_result">>;
 type _ModelPartsHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "text" | "file" | "tool_call" | "tool_result", WasmModelContentPart["kind"]>>;
-type _ModelEventsHaveNoUntrackedRustVariants = AssertNever<Exclude<WasmModelEvent["kind"],
+  "text" | "file" | "tool_call" | "tool_result", ModelContentPartWire["kind"]>>;
+type _ModelEventsHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelEventWire["kind"],
   "content" | "reasoning" | "tool_call" | "completed">>;
 type _ModelEventsHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "content" | "reasoning" | "tool_call" | "completed", WasmModelEvent["kind"]>>;
+  "content" | "reasoning" | "tool_call" | "completed", ModelEventWire["kind"]>>;
 
-const generatedModelContent: WasmModelContent = {
+const generatedModelContent: ModelContentWire = {
   kind: "tool_call", call_id: "call", name: "lookup", arguments: { value: 1 },
 };
-const generatedModelEvent: WasmModelEvent = {
+const generatedModelEvent: ModelEventWire = {
   kind: "tool_call", call_id: "call", name: "lookup", arguments: { value: 1 },
 };
 const publicModelContent: ModelContentPart = {
@@ -124,7 +124,7 @@ const unlinkedToolResult: ConversationMessage<"tool_result">["reply_to"] = null;
 // @ts-expect-error ordinary user records cannot carry a tool-call identity
 const toolIdOnUser: ConversationMessage<"user">["tool_call_id"] = "call";
 // @ts-expect-error a project merge receipt can only append a merge notice
-const wrongMergeNoticeKind: ProjectMergeNotice["kind"] = "assistant";
+const wrongMergeNoticeKind: ConversationMessage<"merge">["kind"] = "assistant";
 // @ts-expect-error provider identities require a string namespace
 const wrongMergeProofProvider: ProviderJoinProof["provider"] = { ...provider, namespace: 7 };
 // @ts-expect-error a merge proof cannot encode the absence of a provider statement
@@ -234,7 +234,7 @@ function recordedEventCannotExposeBearerProof(event: Event): Uint8Array {
   return event.attestation;
 }
 
-function durableTasksNeedPinnedTypes(harness: AgentHarness, id: RuntimeTaskId): void {
+function durableTasksNeedPinnedTypes(harness: AgentHarness, id: TaskId): void {
   // @ts-expect-error a typed checkpoint transition needs its own pinned state schema
   const missingState: ResumableTask<number, number, number> = { initial: input => input,
     async transition(_context, state) { return { kind: "finish", output: state }; } };
@@ -257,7 +257,7 @@ function toolsNeedTypedAdmission(): void {
     inputSchema: { type: "number" }, outputSchema: { type: "number" } }, (_context, value) => value);
 }
 
-function hostRecoveryCannotInventTypes(host: HarnessRuntimeSpawner & HarnessRuntimeState, id: RuntimeTaskId): void {
+function hostRecoveryCannotInventTypes(host: HarnessRuntimeSpawner & HarnessRuntimeState, id: TaskId): void {
   // @ts-expect-error recovered task output is unknown until its pinned definition validates it
   void host.attach<number>(id, {} as AgentHarness);
   if (host.reconcileBatch) {
@@ -337,30 +337,26 @@ function admittedContentCannotBeRebound(content: ContentBindings): void {
   content.writer!.stage = async () => { throw new Error("not the owner"); };
 }
 
-function identityConstructorsKeepDistinctBrands(): void {
-  void parseIdentity("agent", "01010101-0101-0101-0101-010101010101").then(agent => {
-    const admitted: AgentId = agent;
-    // @ts-expect-error an agent identity cannot masquerade as an operation identity
-    const operation: OperationId = agent;
-    void [admitted, operation];
-  });
+function identityConstructorsKeepDistinctBrands(native: NativeContracts): void {
+  const agent = native.validateIdentity("agent", "01010101-0101-0101-0101-010101010101");
+  const admittedAgent: AgentId = agent;
+  // @ts-expect-error an agent identity cannot masquerade as an operation identity
+  const operationFromAgent: OperationId = agent;
   // @ts-expect-error only Rust-supported identity kinds are constructible
-  void parseIdentity("arbitrary", "01010101-0101-0101-0101-010101010101");
-  void parseIdentity("interaction", "01010101-0101-0101-0101-010101010101").then(id => {
-    const admitted: InteractionId = id;
-    // @ts-expect-error interaction identity is not an operation identity
-    const operation: OperationId = id;
-    void [admitted, operation];
-  });
+  native.validateIdentity("arbitrary", "01010101-0101-0101-0101-010101010101");
+  const interaction = native.validateIdentity("interaction", "01010101-0101-0101-0101-010101010101");
+  const admittedInteraction: InteractionId = interaction;
+  // @ts-expect-error interaction identity is not an operation identity
+  const operationFromInteraction: OperationId = interaction;
+  void [admittedAgent, operationFromAgent, admittedInteraction, operationFromInteraction];
 }
 
-function nativeResourceValidationKeepsProviderKind(reference: ResourceRef<"generation">): void {
-  void resourceRef(reference).then(generation => {
-    const exact: ResourceRef<"generation"> = generation;
-    // @ts-expect-error a generation cannot become an artifact after validation
-    const artifact: ResourceRef<"artifact"> = generation;
-    void [exact, artifact];
-  });
+function nativeResourceValidationKeepsProviderKind(contracts: NativeContracts, reference: ResourceRef<"generation">): void {
+  const generation = contracts.validate("resource_ref", reference);
+  const exact: ResourceRef<"generation"> = generation;
+  // @ts-expect-error a generation cannot become an artifact after validation
+  const artifact: ResourceRef<"artifact"> = generation;
+  void [exact, artifact];
 }
 
 void [wrongOwner, untypedPrivateOwner, untypedBoundAgent, wrongFamily, wrongFile, wrongGrant, emptySharedGrant, untypedForkAgent, untypedAttachedAgent, untypedForkOperation, wrongPrivateGeneration, unlinkedToolResult, toolIdOnUser, wrongMergeNoticeKind, wrongMergeProofProvider, missingMergeProofStatement, roundedConversationSequence, unvalidatedMessageId, unvalidatedSelectionId, roundedContextRevision, roundedPageCursor, unversionedProjection, untypedInteractionId, untypedApprovalOperation, unboundApproval, approvalOnQuestion, wrongRevision, wrongHistoryProvider, wrongAuthority, executableModelSchema, inlineOutboxBody, stringOutboxMetadata, roundedInteractionVersion, stringMergeOperation, mismatchedClientFrame, unpinnedPolicy, unpinnedHostPolicy, unvalidatedPolicyDigest, unboundLocalApproval];

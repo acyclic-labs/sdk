@@ -17,6 +17,10 @@ export function copyOptionalBytes(value: Uint8Array | undefined): Uint8Array | u
   return value === undefined ? undefined : copyBytes(value);
 }
 
+export function requireWorkspaceName(name: string): void {
+  if (name.length === 0) throw new RangeError("workspace name must be non-empty");
+}
+
 export function requireIdentity(value: Uint8Array, label: string): void {
   if (value.byteLength !== 16) {
     throw new RangeError(`${label} must be exactly 16 bytes`);

@@ -1139,7 +1139,7 @@ impl crate::AsyncObjectStore for NativeMissingCustody<'_> {
     async fn read_with_native_work(
         &self, object: ObjectId, maximum: u64, original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
         crate::AsyncObjectStore::read_with_native_work(self.0, object, maximum, original, cancellation).await
     }
 

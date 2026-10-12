@@ -36,20 +36,20 @@ pub(crate) struct PiControlReply {
 /// Immutable admission input.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PiTaskInput {
-    pub(crate) binding: PiTaskBinding,
-    pub(crate) execution: PiTaskExecution,
+pub(crate) struct PiTaskInput<B = PiTaskBinding, R = PiRootIntent, C = WorkflowCommand> {
+    pub(crate) binding: B,
+    pub(crate) execution: PiTaskExecution<R, C>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum PiTaskExecution {
+pub(crate) enum PiTaskExecution<R = PiRootIntent, C = WorkflowCommand> {
     Host {
-        root: PiRootIntent,
-        preparation: WorkflowCommand,
+        root: R,
+        preparation: C,
     },
     Child {
-        launch: WorkflowCommand,
+        launch: C,
     },
 }
 
@@ -178,8 +178,9 @@ impl PiTaskMachine {
         let mut identity = MachineIdentity::new_with_native_work(
             "acyclic.pi", "1", machine_digest(), work,
         )?;
-        let mut schema = super::pi_root_provider::guarded_pi_value(
-            &state_schema_descriptor(), NATIVE_METADATA_MAXIMUM, work,
+        let mut schema = super::pi_root_provider::guarded_pi_decode(
+            STATE_SCHEMA.as_bytes(), NATIVE_METADATA_MAXIMUM, std::mem::size_of::<Value>() as u64,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::Root, 0, work,
         )?;
         identity.1.absorb(&mut schema.1).map_err(native_work_error)?;
         let alignment = std::mem::align_of::<Self>();
@@ -204,11 +205,77 @@ impl PiTaskMachine {
         self: &Arc<Self>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(TaskDefinition<PiTaskInput, FileRef>, acyclic_fs::NativeAllocation)> {
-        let mut input = super::pi_root_provider::guarded_pi_value(
-            &task_input_schema(PiRootIntent::schema_descriptor()), NATIVE_METADATA_MAXIMUM, work,
+        let input_json = work.display(&format_args!(r#"{{
+  "type":"object",
+  "additionalProperties":false,
+  "required":["binding","execution"],
+  "properties":{{
+    "binding":{{"type":"object"}},
+    "execution":{{
+      "oneOf":[
+        {{
+          "type":"object",
+          "additionalProperties":false,
+          "required":["kind","root","preparation"],
+          "properties":{{
+            "kind":{{"const":"host"}},
+            "root":{{
+              "oneOf":[
+                {{"type":"object","additionalProperties":false,"required":["kind"],"properties":{{"kind":{{"const":"scratch_only"}}}}}},
+                {{
+                  "type":"object",
+                  "additionalProperties":false,
+                  "required":["kind","context_id","root_id","paths"],
+                  "properties":{{
+                    "kind":{{"const":"project"}},
+                    "context_id":{{"type":"array","minItems":16,"maxItems":16,"items":{{"type":"integer","minimum":0,"maximum":255}}}},
+                    "root_id":{{"type":"array","minItems":16,"maxItems":16,"items":{{"type":"integer","minimum":0,"maximum":255}}}},
+                    "paths":{{
+                      "type":"object",
+                      "minProperties":1,
+                      "maxProperties":{},
+                      "propertyNames":{{"pattern":"^[0-9a-f]{{32}}$"}},
+                      "additionalProperties":{{"type":"string","minLength":1,"maxLength":{}}}
+                    }}
+                  }}
+                }}
+              ]
+            }},
+            "preparation":{{
+              "type":"object",
+              "additionalProperties":false,
+              "required":["operation_id","kind","payload"],
+              "properties":{{"operation_id":{{"type":"string","format":"uuid"}},"kind":{{"enum":["acyclic.effect.v1","acyclic.pi.native.launch.v1"]}},"payload":{{"type":"object"}}}}
+            }}
+          }}
+        }},
+        {{
+          "type":"object",
+          "additionalProperties":false,
+          "required":["kind","launch"],
+          "properties":{{
+            "kind":{{"const":"child"}},
+            "launch":{{
+              "type":"object",
+              "additionalProperties":false,
+              "required":["operation_id","kind","payload"],
+              "properties":{{"operation_id":{{"type":"string","format":"uuid"}},"kind":{{"enum":["acyclic.effect.v1","acyclic.pi.native.launch.v1"]}},"payload":{{"type":"object"}}}}
+            }}
+          }}
+        }}
+      ]
+    }}
+  }}
+}}"#, super::MAXIMUM_ADAPTER_ROOTS, super::pi_root::MAXIMUM_ROOT_PATH_BYTES)).map_err(native_work_error)?;
+        let mut input = super::pi_root_provider::guarded_pi_decode(
+            input_json.0.as_bytes(), NATIVE_METADATA_MAXIMUM, std::mem::size_of::<Value>() as u64,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::Root, 0, work,
         )?;
-        let mut output = super::pi_root_provider::guarded_pi_value(
-            &TypeSchema { kind: "object" }, NATIVE_METADATA_MAXIMUM, work,
+        drop(input_json.0);
+        drop(input_json.1);
+        let mut output = super::pi_root_provider::guarded_pi_decode(
+            br#"{"type":"object"}"#, NATIVE_METADATA_MAXIMUM, std::mem::size_of::<Value>() as u64,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::Root, 0, work,
         )?;
         input.1.absorb(&mut output.1).map_err(native_work_error)?;
         TaskDefinition::resumable_with_native_work(
@@ -235,214 +302,58 @@ fn machine_digest() -> [u8; 32] {
     *digest.finalize().as_bytes()
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ObjectSchema<R, P> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    additional_properties: bool,
-    required: R,
-    properties: P,
-}
-
-fn object_schema<R, P>(required: R, properties: P) -> ObjectSchema<R, P> {
-    ObjectSchema { kind: "object", additional_properties: false, required, properties }
-}
-
-#[derive(Serialize)]
-struct TypeSchema {
-    #[serde(rename = "type")]
-    kind: &'static str,
-}
-
-#[derive(Serialize)]
-struct ConstantSchema {
-    #[serde(rename = "const")]
-    value: &'static str,
-}
-
-#[derive(Serialize)]
-struct UuidSchema {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    format: &'static str,
-}
-
-#[derive(Serialize)]
-struct CommandKindSchema {
-    #[serde(rename = "enum")]
-    kinds: [&'static str; 2],
-}
-
-#[derive(Serialize)]
-struct CommandProperties {
-    operation_id: UuidSchema,
-    kind: CommandKindSchema,
-    payload: TypeSchema,
-}
-
-fn command_schema_descriptor() -> ObjectSchema<[&'static str; 3], CommandProperties> {
-    object_schema(["operation_id", "kind", "payload"], CommandProperties {
-        operation_id: UuidSchema { kind: "string", format: "uuid" },
-        kind: CommandKindSchema { kinds: [EFFECT_TASK_COMMAND_KIND, NATIVE_LAUNCH_TASK_COMMAND_KIND] },
-        // FileRef's shared constructor validates shape and semantic invariants.
-        payload: TypeSchema { kind: "object" },
-    })
-}
-
-#[derive(Serialize)]
-struct OneOfSchema<T> {
-    #[serde(rename = "oneOf")]
-    alternatives: T,
-}
-
-#[derive(Serialize)]
-struct TaggedStateProperties<T> {
-    state: ConstantSchema,
-    #[serde(flatten)]
-    fields: T,
-}
-
-#[derive(Serialize)]
-struct CommandStateProperties {
-    command: ObjectSchema<[&'static str; 3], CommandProperties>,
-}
-
-#[derive(Serialize)]
-struct OperationStateProperties {
-    operation: UuidSchema,
-}
-
-#[derive(Serialize)]
-struct HostingStateProperties {
-    allocation: TypeSchema,
-    reply: ReplySchema,
-}
-
-#[derive(Serialize)]
-struct ControllingStateProperties {
-    allocation: TypeSchema,
-    operation: UuidSchema,
-}
-
-#[derive(Serialize)]
-struct CompletedStateProperties {
-    result: TypeSchema,
-}
-
-#[derive(Serialize)]
-struct FailedStateProperties {
-    message: TypeSchema,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ReplySchema {
-    #[serde(rename = "type")]
-    kinds: [&'static str; 2],
-    additional_properties: bool,
-    required: [&'static str; 2],
-    properties: ReplyProperties,
-}
-
-#[derive(Serialize)]
-struct ReplyProperties {
-    operation_id: UuidSchema,
-    value: EmptySchema,
-}
-
-struct EmptySchema;
-
-impl Serialize for EmptySchema {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap as _;
-        serializer.serialize_map(Some(0))?.end()
-    }
-}
-
-fn state_schema_descriptor() -> impl Serialize {
-    fn tagged<T>(state: &'static str, fields: T) -> TaggedStateProperties<T> {
-        TaggedStateProperties { state: ConstantSchema { value: state }, fields }
-    }
-    fn operation() -> UuidSchema {
-        UuidSchema { kind: "string", format: "uuid" }
-    }
-    OneOfSchema { alternatives: (
-        object_schema(["state", "command"], tagged("preparing", CommandStateProperties {
-            command: command_schema_descriptor(),
-        })),
-        object_schema(["state", "operation"], tagged("allocating", OperationStateProperties {
-            operation: operation(),
-        })),
-        object_schema(["state", "allocation"], tagged("hosting", HostingStateProperties {
-            allocation: TypeSchema { kind: "object" },
-            reply: ReplySchema {
-                kinds: ["object", "null"], additional_properties: false,
-                required: ["operation_id", "value"],
-                properties: ReplyProperties { operation_id: operation(), value: EmptySchema },
-            },
-        })),
-        object_schema(["state", "allocation", "operation"], tagged("controlling", ControllingStateProperties {
-            allocation: TypeSchema { kind: "object" }, operation: operation(),
-        })),
-        object_schema(["state", "command"], tagged("ready", CommandStateProperties {
-            command: command_schema_descriptor(),
-        })),
-        object_schema(["state", "operation"], tagged("awaiting", OperationStateProperties {
-            operation: operation(),
-        })),
-        object_schema(["state", "result"], tagged("completed", CompletedStateProperties {
-            result: TypeSchema { kind: "object" },
-        })),
-        object_schema(["state", "message"], tagged("failed", FailedStateProperties {
-            message: TypeSchema { kind: "string" },
-        })),
-    ) }
-}
-
-#[derive(Serialize)]
-struct InputProperties<R> {
-    binding: TypeSchema,
-    execution: ExecutionSchema<R>,
-}
-
-#[derive(Serialize)]
-struct ExecutionSchema<R> {
-    #[serde(rename = "oneOf")]
-    alternatives: (
-        ObjectSchema<[&'static str; 3], HostProperties<R>>,
-        ObjectSchema<[&'static str; 2], ChildProperties>,
-    ),
-}
-
-#[derive(Serialize)]
-struct HostProperties<R> {
-    kind: ConstantSchema,
-    root: R,
-    preparation: ObjectSchema<[&'static str; 3], CommandProperties>,
-}
-
-#[derive(Serialize)]
-struct ChildProperties {
-    kind: ConstantSchema,
-    launch: ObjectSchema<[&'static str; 3], CommandProperties>,
-}
-
-fn task_input_schema<R>(root: R) -> ObjectSchema<[&'static str; 2], InputProperties<R>> {
-    object_schema(["binding", "execution"], InputProperties {
-        binding: TypeSchema { kind: "object" },
-        execution: ExecutionSchema {
-            alternatives: (
-                object_schema(["kind", "root", "preparation"], HostProperties {
-                    kind: ConstantSchema { value: "host" }, root, preparation: command_schema_descriptor(),
-                }),
-                object_schema(["kind", "launch"], ChildProperties {
-                    kind: ConstantSchema { value: "child" }, launch: command_schema_descriptor(),
-                }),
-            ),
-        },
-    })
-}
+const STATE_SCHEMA: &str = r#"{
+  "oneOf":[
+    {
+      "type":"object",
+      "additionalProperties":false,
+      "required":["state","command"],
+      "properties":{
+        "state":{"const":"preparing"},
+        "command":{
+          "type":"object",
+          "additionalProperties":false,
+          "required":["operation_id","kind","payload"],
+          "properties":{"operation_id":{"type":"string","format":"uuid"},"kind":{"enum":["acyclic.effect.v1","acyclic.pi.native.launch.v1"]},"payload":{"type":"object"}}
+        }
+      }
+    },
+    {"type":"object","additionalProperties":false,"required":["state","operation"],"properties":{"state":{"const":"allocating"},"operation":{"type":"string","format":"uuid"}}},
+    {
+      "type":"object",
+      "additionalProperties":false,
+      "required":["state","allocation"],
+      "properties":{
+        "state":{"const":"hosting"},
+        "allocation":{"type":"object"},
+        "reply":{"type":["object","null"],"additionalProperties":false,"required":["operation_id","value"],"properties":{"operation_id":{"type":"string","format":"uuid"},"value":{}}}
+      }
+    },
+    {
+      "type":"object",
+      "additionalProperties":false,
+      "required":["state","allocation","operation"],
+      "properties":{"state":{"const":"controlling"},"allocation":{"type":"object"},"operation":{"type":"string","format":"uuid"}}
+    },
+    {
+      "type":"object",
+      "additionalProperties":false,
+      "required":["state","command"],
+      "properties":{
+        "state":{"const":"ready"},
+        "command":{
+          "type":"object",
+          "additionalProperties":false,
+          "required":["operation_id","kind","payload"],
+          "properties":{"operation_id":{"type":"string","format":"uuid"},"kind":{"enum":["acyclic.effect.v1","acyclic.pi.native.launch.v1"]},"payload":{"type":"object"}}
+        }
+      }
+    },
+    {"type":"object","additionalProperties":false,"required":["state","operation"],"properties":{"state":{"const":"awaiting"},"operation":{"type":"string","format":"uuid"}}},
+    {"type":"object","additionalProperties":false,"required":["state","result"],"properties":{"state":{"const":"completed"},"result":{"type":"object"}}},
+    {"type":"object","additionalProperties":false,"required":["state","message"],"properties":{"state":{"const":"failed"},"message":{"type":"string"}}}
+  ]
+}"#;
 
 fn validate_effect_command(command: &WorkflowCommand) -> acyclic_harness::Result<()> {
     command.validate()?;
@@ -823,7 +734,7 @@ fn native_metadata<T: NativeMetadata>(
         }
     };
     let decoded = super::pi_root_provider::guarded_pi_decode::<T>(
-        &bytes, NATIVE_METADATA_MAXIMUM, quota, T::VALUE_SCHEMA, T::DIAGNOSTIC_LABEL_BYTES, work,
+        &bytes, NATIVE_METADATA_MAXIMUM, quota, acyclic_harness::wire::ErrorCode::Invalid, T::VALUE_SCHEMA, T::DIAGNOSTIC_LABEL_BYTES, work,
     );
     drop(bytes);
     drop(bytes_custody);

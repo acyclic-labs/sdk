@@ -255,7 +255,7 @@ fn assemble(
         output_schema,
         projection_schema,
     };
-    definition.validate()?;
+    definition.validate(&mut None)?;
     Ok(Tool {
         definition,
         executor: adapter,
@@ -286,7 +286,7 @@ struct TextTool {
 impl TextTool {
     // This preflight is also used when the executor authorizes durable replay.
     fn preflight(&self, scope: &RuntimeScope, invocation: &ToolInvocation) -> Result<FileRef> {
-        invocation.validate()?;
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
         crate::contract::validate_json_byte_bound(
             &invocation.arguments,
             scope.limits().file_bytes,
@@ -327,7 +327,7 @@ impl TextTool {
                 input.file
             }
         };
-        crate::conversation::validate_content_path(file.path())?;
+        crate::conversation::validate_content_path(file.path(), &mut None)?;
         if crate::conversation::is_internal_path(file.path())
             || !crate::runtime::read_granted(scope.grants(), &file)?
         {

@@ -264,7 +264,7 @@ fn decoded_tool_request(
         &invocation.arguments, MAXIMUM_BUILTIN_BYTES * 2, work)?;
     let decoded = crate::pi_root_provider::guarded_pi_decode::<PiBuiltinRequest>(
         &encoded.0, MAXIMUM_BUILTIN_BYTES * 2, MAXIMUM_BUILTIN_BYTES * 4,
-        acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, work)?;
+        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, work)?;
     drop(encoded.0);
     drop(encoded.1);
     decoded.0.validate()?;
@@ -361,7 +361,7 @@ async fn accepted_builtin_io(
         &admission.0.input, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?;
     let input = crate::pi_root_provider::guarded_pi_decode::<crate::pi_task::PiTaskInput>(
         &encoded.0, crate::MAXIMUM_ADAPTER_STATE_BYTES, crate::MAXIMUM_ADAPTER_STATE_BYTES,
-        acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
+        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
     drop(encoded.0);
     drop(encoded.1);
     let _input_custody = input.1;
@@ -479,45 +479,15 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
 type Owner = acyclic_harness::durable_host::TaskJournalOwner<acyclic_stream::LocalStream>;
 
 /// Borrows original providers and creator handles; it owns no second journal, route registry, root credential, or independent filesystem.
-pub(crate) struct PiBuiltinHost<'a> {
-    runtime: std::sync::Arc<crate::pi_native_host::PiNativeRuntime>,
-    filesystem: std::sync::Arc<crate::pi_native_host::PiNativeFilesystem>,
-    stream: acyclic_stream::StreamClient<acyclic_stream::LocalStream>,
-    resources: &'a crate::ServiceResources,
-    protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
-    retained: &'a crate::AdapterState,
-    roots: &'a std::collections::BTreeMap<String, crate::pi_root_provider::PiRootHandle>,
-    native: std::sync::Arc<crate::pi_native_host::PiNativeCommandHost>,
-    work: NativeMaterializationWork,
-}
-
-impl<'a> PiBuiltinHost<'a> {
-    #[allow(clippy::too_many_arguments, reason = "original providers and authentic creator handles")]
-    pub(crate) fn new(
-        runtime: std::sync::Arc<crate::pi_native_host::PiNativeRuntime>,
-        filesystem: std::sync::Arc<crate::pi_native_host::PiNativeFilesystem>,
-        stream: acyclic_stream::StreamClient<acyclic_stream::LocalStream>,
-        resources: &'a crate::ServiceResources, protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
-        retained: &'a crate::AdapterState,
-        roots: &'a std::collections::BTreeMap<String, crate::pi_root_provider::PiRootHandle>,
-        native: std::sync::Arc<crate::pi_native_host::PiNativeCommandHost>,
-        work: NativeMaterializationWork,
-    ) -> Result<Self> {
-        runtime.verify_owner_with_native_work(&protected, &work)?;
-        Ok(Self { runtime, filesystem, stream, resources, protected, retained, roots, native, work })
-    }
-
+impl<'a> crate::pi_selected_host::PiControlHost<'a> {
     async fn root_read(&self, native_context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
         owner: std::sync::Arc<Owner>, request: &PiBuiltinRequest) -> Result<(serde_json::Value, NativeAllocation)> {
         request.validate()?;
         request.require_root_source_read(self.protected.policy().root_task)?;
         let context = native_context.context();
         authorize_owner(context, &owner, request.caller, &self.work).await?;
-        let selected = crate::pi_selected_host::PiSelectedHost::new(
-            self.runtime.clone(), self.filesystem.clone(), self.stream.clone(), self.resources,
-            std::sync::Arc::clone(&self.protected), self.retained, self.roots,
-            self.native.clone(), &self.work)?;
-        let decoded = selected.admission_input(request.caller, &self.work).await?;
+        let work = &self.work;
+        let decoded = self.admission_input(request.caller, &self.work).await?;
         let _input_custody = decoded.1;
         let input = decoded.0;
         if input.binding.task_id != request.caller || input.binding.agent_id != self.protected.policy().agent {
@@ -526,15 +496,14 @@ impl<'a> PiBuiltinHost<'a> {
         let crate::pi_task::PiTaskExecution::Host { root, .. } = input.execution else {
             return Err(denied("builtin Root has no original host admission"));
         };
-        let original_request = crate::pi_root_inputs::PiRootRequest { binding: input.binding, root };
-        let crate::pi_root::PiRootIntent::Project { paths, root_id, .. } = &original_request.root else {
+        let crate::pi_root::PiRootIntent::Project { paths, root_id, .. } = &root else {
             return Err(denied("builtin Root has no original physical SOURCE"));
         };
         let (key, relative) = select_root_path(&request.path, paths, root_id)?;
         let root = Path::new(&paths[key]);
         let PiBuiltinIo::Read { maximum_bytes, variants } = &request.io else { unreachable!("read checked") };
         let relatives = scoped_variants(variants, root)?;
-        let selection = selected.selected(context, &native_context, &owner, request.caller,
+        let selection = self.selected(context, &native_context, &owner, request.caller,
             Some(key), None, request.operation(self.protected.policy().root_task, work)?,
             self.work.cancellation(), &self.work).await?;
         let (_, volume, workspace, frozen, inspection, _) = &selection;
@@ -562,14 +531,15 @@ impl<'a> PiBuiltinHost<'a> {
         Err(last_absence.expect("the requested candidate is always checked"))
     }
 
-    async fn run_native(&self, context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    pub(crate) async fn run_builtin(&self, context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
         fence: acyclic_harness::scheduler::LeaseFence, command: acyclic_harness::workflow::WorkflowCommand,
         payload: serde_json::Value,
     ) -> Result<acyclic_harness::filesystem::TaskCommandProgress> {
+        let work = &self.work;
         let encoded = crate::pi_root_provider::guarded_pi_bytes(&payload, MAXIMUM_BUILTIN_BYTES * 2, &self.work)?;
         let decoded = crate::pi_root_provider::guarded_pi_decode::<PiBuiltinRequest>(
             &encoded.0, MAXIMUM_BUILTIN_BYTES * 2, MAXIMUM_BUILTIN_BYTES * 4,
-            acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, &self.work)?;
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, &self.work)?;
         drop(encoded.0);
         drop(encoded.1);
         let _request_custody = decoded.1;
@@ -674,46 +644,6 @@ fn is_absent(error: &Error) -> bool {
         Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Io(source), .. } =>
             source.kind() == std::io::ErrorKind::NotFound,
         _ => false,
-    }
-}
-
-impl acyclic_harness::filesystem::TaskCommandHost for PiBuiltinHost<'_> {
-    fn execute(&self, _context: acyclic_harness::runtime::TaskContext,
-        _fence: acyclic_harness::scheduler::LeaseFence, _command: acyclic_harness::workflow::WorkflowCommand,
-        _payload: serde_json::Value,
-    ) -> acyclic_stream::BoxProviderFuture<'_, Result<acyclic_harness::filesystem::TaskCommandProgress>> {
-        Box::pin(async { Err(Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Unsupported,
-            reason: "builtin commands require their original native execution context",
-        }) })
-    }
-
-    fn reconcile<'a>(&'a self, context: acyclic_harness::runtime::TaskContext,
-        fence: acyclic_harness::scheduler::LeaseFence, command: acyclic_harness::workflow::WorkflowCommand,
-        payload: serde_json::Value,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_harness::filesystem::TaskCommandProgress>> {
-        self.execute(context, fence, command, payload)
-    }
-
-    fn execute_with_native_work<'a>(&'a self,
-        context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
-        fence: acyclic_harness::scheduler::LeaseFence, command: acyclic_harness::workflow::WorkflowCommand,
-        payload: serde_json::Value, work: &'a NativeMaterializationWork,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'a, acyclic_harness::filesystem::TaskCommandProgress>> {
-        if !self.work.shares_ledger(work) {
-            return Err(denied("builtin command substituted its original native work"));
-        }
-        acyclic_harness::NativeFutureBundle::new(work, || async move {
-            self.run_native(context, fence, command, payload).await
-        })
-    }
-
-    fn reconcile_with_native_work<'a>(&'a self,
-        context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
-        fence: acyclic_harness::scheduler::LeaseFence, command: acyclic_harness::workflow::WorkflowCommand,
-        payload: serde_json::Value, work: &'a NativeMaterializationWork,
-    ) -> Result<acyclic_harness::NativeFutureBundle<'a, acyclic_harness::filesystem::TaskCommandProgress>> {
-        self.execute_with_native_work(context, fence, command, payload, work)
     }
 }
 

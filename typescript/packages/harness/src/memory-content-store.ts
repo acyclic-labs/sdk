@@ -3,17 +3,7 @@ import { WasmContentStore } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { FileRef, VolumeRef } from "./conversation.js";
 import type { PrivateDirectoryPage } from "./runtime.js";
 
-interface NativeContentPage {
-  readonly generation: bigint;
-  readonly entries: readonly PrivateDirectoryPage["entries"][number][];
-  readonly hasMore: boolean;
-}
-
-/**
- * Keeps mutable bytes, immutable file versions, path history, and retention
- * accounting in the Rust WASM provider. TypeScript retains only the typed
- * public conversion and authorization surrounding that provider.
- */
+/** Bounded immutable content owned by the Rust WASM provider. */
 export class MemoryContentStore {
   readonly #native: WasmContentStore;
 
@@ -59,13 +49,8 @@ export class MemoryContentStore {
     return this.#native.generation() as bigint;
   }
 
-  list(path: string, generation: bigint | null, after: string | null, maximum: number): NativeContentPage {
-    const page = this.#native.list(path, generation, after, maximum) as NativeContentPage;
-    return {
-      generation: BigInt(page.generation),
-      entries: page.entries,
-      hasMore: page.hasMore,
-    };
+  list(path: string, generation: bigint | null, after: string | null, maximum: number) {
+    return this.#native.list(path, generation, after, maximum) as Pick<PrivateDirectoryPage, "entries" | "hasMore">;
   }
 
   readPath(path: string, generation: bigint): FileRef {

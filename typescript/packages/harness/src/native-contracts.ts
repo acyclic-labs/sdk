@@ -3,7 +3,7 @@ export type { ExecutionEvent } from "../generated/wasm/acyclic_harness_wasm.js";
 /** Explicitly initialized Rust contract validator with strongly typed v2 inputs. */
 import * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
-  CompactionPolicy, ThresholdCompaction, ModelContextCapacity, ModelTokenCount, WasmModelRequestWire,
+  CompactionPolicy, ThresholdCompaction, ModelContextCapacity, ModelTokenCount, ModelRequest as ModelRequestWire,
   Context, ContextSelection, ContextRenderMode, ContextPlacement, WasmModelMessageInput, WasmModelContentInventoryWire,
   ContextDiscovery, ContextDiscoveryReader, ContextPathResult, ContextReloadPolicy,
   DiscoveredContext, PinnedContextPath, SkillMetadata,
@@ -11,8 +11,8 @@ import type {
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
   WasmMachineIdentityWire, WasmNativeLimitsWire, WasmTaskRunLimitsWire,
   WasmExecutionPlacementWire, WasmWorkflowAdmissionWire,
-  WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
-  WasmModelEvent, WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelEventInput, WasmModelRole,
+  WasmTaskIdentityInput, WasmTurnPreparation, ModelContent as ModelContentWire, ModelContentPart as ModelContentPartWire,
+  ModelEvent as ModelEventWire, WasmModelEventAdmission, WasmModelEventAdmissionState, ModelRole as ModelRoleWire,
   WasmTaskDependencyInput,
   McpCatalog, McpStdioRequest, McpCallbackRequest,
 } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -25,9 +25,9 @@ import type {
 import type { ExtensionAdmission, ExtensionConfiguration, ExtensionDependency, ExtensionRecord, ExtensionStateMigration } from "./extension.js";
 import type { ApprovalBinding, InteractionId, InteractionResolution, InteractionTicket, ResolutionReceipt } from "./interaction.js";
 import type { ProjectMergeReceipt } from "./project.js";
-import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, RuntimeTaskId, TaskChildrenPage } from "./runtime.js";
+import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, TaskChildrenPage } from "./runtime.js";
 import type { ModelContent, ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult, ToolResultContent } from "./model.js";
-import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
+import type { IdentityKind, IdentityKindMap, OperationId, TaskId } from "./index.js";
 import { assertHarnessWasmExports, ensureHarnessWasm, REQUIRED_HARNESS_WASM_EXPORTS } from "./wasm-runtime.js";
 import { HARNESS_MAX_ATTACHMENT_COUNT } from "./limits-contract.js";
 
@@ -73,8 +73,8 @@ export type ModelEventAdmission = Omit<WasmModelEventAdmission, "event" | "state
 export type NativeFileRef = Omit<FileRef, "descriptor"> & Readonly<{
   descriptor: Omit<FileDescriptor, "byte_length"> & Readonly<{ byte_length: number | bigint }>;
 }>;
-export type NativeModelContentPart = WasmModelContentPart;
-export type NativeModelContent = WasmModelContent;
+export type NativeModelContentPart = ModelContentPartWire;
+export type NativeModelContent = ModelContentWire;
 export interface NativeSelectedModelContext {
   readonly selection: Readonly<{
     readonly conversation_revision: bigint;
@@ -82,7 +82,7 @@ export interface NativeSelectedModelContext {
     readonly checkpoint?: NativeFileRef;
   }>;
   readonly messages: readonly Readonly<{
-    role: WasmModelRole;
+    role: ModelRoleWire;
     content: NativeModelContent;
   }>[];
 }
@@ -159,7 +159,7 @@ export class NativeContracts {
   }
 
   /** Rust prepares the canonical request and binds the provider's exact additive counts. */
-  validateModelTokenCount(request: WasmModelRequestWire, count: ModelTokenCount, limits: Limits): bigint {
+  validateModelTokenCount(request: ModelRequestWire, count: ModelTokenCount, limits: Limits): bigint {
     return this.native.validateModelTokenCount(request, count, limits);
   }
 
@@ -178,9 +178,7 @@ export class NativeContracts {
     ticket: InteractionTicket): InteractionResolution;
   validate(kind: keyof ContractValues, value: ContractValues[keyof ContractValues],
     context?: Limits | InteractionTicket): ContractValues[keyof ContractValues] {
-    // Contract envelopes retain Rust u64/usize values as BigInt. Converting
-    // them to Number here would silently change the wire shape and can lose
-    // precision on retry/reconciliation paths.
+    // Retain native u64/usize counters as BigInt.
     const admitted = normalizeNativeValue(
       kind === "workflow_admission"
         ? this.native.validateWorkflowAdmission(value as WorkflowAdmissionWire)
@@ -295,13 +293,13 @@ export class NativeContracts {
   }
 
   /** Project explicitly selected schemas without granting tool authority. */
-  mcpModelDefinitions(catalog: McpCatalog, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").WasmModelToolDefinitionWire[] {
+  mcpModelDefinitions(catalog: McpCatalog, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").ToolDefinition[] {
     return this.native.mcpModelDefinitions(catalog, maximumTools, maximumBytes);
   }
 
   /** Pure bounded search; returned definitions convey no invocation authority. */
   searchMcpCatalog(catalog: McpCatalog, query: string, after: string | undefined,
-    maximumResults: number, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").WasmModelToolDefinitionWire[] {
+    maximumResults: number, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").ToolDefinition[] {
     return this.native.searchMcpCatalog(catalog, query, after, maximumResults, maximumTools, maximumBytes);
   }
 
@@ -342,12 +340,10 @@ export class NativeContracts {
 
   /** Rust owns model stream event, tool-call, completion, and UTF-8 byte admission. */
   admitModelEvent(event: ModelEvent, limits: Limits, state?: ModelEventAdmissionState): ModelEventAdmission {
-    // Model arguments and completion metadata are provider JSON and may carry
-    // full-width integers. Preserve those BigInts while normalizing the
-    // bounded admission counters below to the public Number state shape.
+    // Preserve provider BigInts while projecting bounded admission counters to Numbers.
     const admitted = normalizeNativeValue(
       this.native.admitModelEvent(
-        wasmModelEventInput(event),
+        event,
         limits,
         state === undefined ? null : { ...state, calls: [...state.calls] },
       ),
@@ -504,7 +500,7 @@ export class NativeContracts {
       ...projected,
       groupId: projected.groupId as GroupId,
       batchId: projected.batchId as BatchId,
-      parentTaskId: projected.parentTaskId as RuntimeTaskId | null,
+      parentTaskId: projected.parentTaskId as TaskId | null,
     });
   }
 
@@ -542,15 +538,13 @@ export class NativeContracts {
 
   /** Rust validates and reprojects owner-retained child pages and their request bounds. */
   validateTaskChildrenPage(
-    parent: RuntimeTaskId,
+    parent: TaskId,
     expectedRevision: bigint | null,
     afterSlot: string | null,
     maximum: number,
     page: TaskChildrenPage,
   ): TaskChildrenPage {
-    // Snapshot host objects before checking them and crossing the WASM ABI.
-    // Passing the original object would let a getter return a different value
-    // when Rust traverses it, defeating the boundary's single-read guarantee.
+    // Snapshot getters once before crossing WASM.
     const revision = page.revision;
     const entries = page.entries.map(entry => ({ slot: entry.slot, taskId: entry.taskId }));
     const nextAfter = page.nextAfter;
@@ -602,26 +596,12 @@ function nativeToolDefinition(
 }
 
 /** Map only the Rust serde spelling that is intentionally hidden by the public facade. */
-function publicModelEvent(event: WasmModelEvent): ModelEvent {
+function publicModelEvent(event: ModelEventWire): ModelEvent {
   if (event.kind === "tool_call") {
     const { call_id: callId, ...rest } = event;
     return { ...rest, callId } as ModelEvent;
   }
   return event as ModelEvent;
-}
-
-/** Keep the public camelCase event boundary explicit when entering generated WASM. */
-function wasmModelEventInput(event: ModelEvent): WasmModelEventInput {
-  switch (event.kind) {
-    case "tool_call":
-      return { ...event, callId: event.callId };
-    case "completed":
-      return event;
-    case "content":
-      return event;
-    case "reasoning":
-      return event;
-  }
 }
 
 /** Rust owns typed integer projection; JS only unwraps bytes and maps. */

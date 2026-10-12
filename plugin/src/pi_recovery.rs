@@ -119,26 +119,39 @@ fn session_tasks<'a>(
 }
 
 /// Read-only service observations.
+#[derive(serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub(crate) enum PiTaskObservation {
     Pending {
+        #[serde(rename = "task")]
         task_id: TaskId,
     },
     Reserved {
+        #[serde(rename = "task", serialize_with = "serialize_lease_task")]
         lease: WorkLease,
     },
     Unresolved {
+        #[serde(rename = "task", serialize_with = "serialize_lease_task")]
         lease: WorkLease,
+        #[serde(serialize_with = "crate::service::serialize_control_error")]
         error: Error,
     },
+    #[serde(rename = "preparing")]
     Preparation {
+        #[serde(rename = "task")]
         task_id: TaskId,
         preparation: TaskId,
         phase: PiPreparationPhase,
     },
     Outcome {
+        #[serde(rename = "task")]
         task_id: TaskId,
         outcome: Outcome<FileRef>,
     },
+}
+
+fn serialize_lease_task<S: serde::Serializer>(lease: &WorkLease, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(&TaskId::from_bytes(lease.operation.operation_id.into_bytes()), serializer)
 }
 
 #[derive(serde::Serialize)]
@@ -147,19 +160,6 @@ pub(crate) enum PiPreparationPhase { Pending, Reserved, Uncertain, Succeeded, Fa
 
 /// The same complete graph observer, supplied the caller's ORIGINAL native work.
 pub(crate) async fn observe_pi_session<P, A, O>(
-    runtime: &FilesystemTaskRuntime<P, A, O>, state: &AdapterState,
-    work: &NativeMaterializationWork,
-) -> Result<(Vec<PiTaskObservation>, NativeAllocation)>
-where
-    P: acyclic_stream::StreamProvider + 'static,
-    A: acyclic_fs::AsyncAuthorityStore + 'static,
-    O: acyclic_fs::AsyncObjectStore + 'static,
-{
-    let observed = observe_pi_session_inner(runtime, state, work).await?;
-    Ok((observed.0, observed.1))
-}
-
-async fn observe_pi_session_inner<P, A, O>(
     runtime: &FilesystemTaskRuntime<P, A, O>, state: &AdapterState,
     work: &NativeMaterializationWork,
 ) -> Result<(Vec<PiTaskObservation>, NativeAllocation)>
@@ -180,7 +180,7 @@ where
             let mut request = decode_recovery_value::<acyclic_harness::resource_preparation::ResourcePreparationRequest>(
                 std::mem::take(&mut admission.0.input),
                 acyclic_harness::JsonValueSchema::ResourcePreparationRequest, work)?;
-            request.0.validate()?;
+            request.0.validate(&mut None)?;
             let child = decode_recovery_value::<PiTaskInput>(
                 std::mem::take(&mut request.0.child.input), acyclic_harness::JsonValueSchema::None, work)?;
             if admission.0.task != *preparation_definition.as_ref()
@@ -296,7 +296,7 @@ where
             let intent = super::pi_root_provider::guarded_pi_decode::<super::pi_native::PiNativeLaunchIntent>(
                 &bytes.0, super::MAXIMUM_ADAPTER_STATE_BYTES,
                 std::mem::size_of::<super::pi_native::PiNativeLaunchIntent>() as u64,
-                acyclic_harness::JsonValueSchema::None,
+                acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
                 super::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)?;
             intent.0.validate(work)?;
             if intent.0.agent_alias != alias {
@@ -574,12 +574,12 @@ mod allocation_tests {
             &cancellation).unwrap();
         let second = NativeMaterializationWork::new(super::super::pi_root_provider::allocation_budget(),
             &cancellation).unwrap();
-        let mut retained = Some(first.retain_owned(8).unwrap());
-        let mut observed = NativeOwned::native(("original producer", second.retain_owned(16).unwrap()));
-        assert!(matches!(transfer_custody(&mut retained, &mut observed),
+        let mut retained = first.retain_owned(8).unwrap();
+        let mut observed = ("original producer", second.retain_owned(16).unwrap());
+        assert!(matches!(retained.absorb(&mut observed.1).map_err(native_error),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::InvalidLayout, .. })));
-        assert_eq!(retained.as_ref().unwrap().bytes(), 8);
-        assert_eq!(observed.custody.as_ref().unwrap().bytes(), 16);
+        assert_eq!(retained.bytes(), 8);
+        assert_eq!(observed.1.bytes(), 16);
         assert_eq!(second.live_allocation_bytes(), 16);
         drop(observed);
         drop(retained);

@@ -466,18 +466,18 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
     #[cfg(not(target_arch = "wasm32"))]
     async fn read_with_native_work(&self, object_id: ObjectId, maximum_bytes: u64,
         work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
-        -> Result<async_storage::NativeObjectRead, ObjectStoreError> {
+        -> Result<crate::storage::ObjectRead, ObjectStoreError> {
         let mut accounting = KernelAccounting::native(work, cancellation);
         accounting.check().map_err(object_error)?;
         if let Some(value) = self.probe(object_id, &mut accounting).map_err(object_error)? {
             if usize_to_u64(value.bytes.len()) > maximum_bytes {
                 return Err(ObjectStoreError::TooLarge { observed: usize_to_u64(value.bytes.len()), maximum: maximum_bytes });
             }
-            return async_storage::NativeObjectRead::shared(value);
+            return Ok(value);
         }
         // No cache lock or original ledger borrow spans this backend await.
         let read = self.store.read_with_native_work(object_id, maximum_bytes, work, cancellation).await?;
-        self.admit(object_id, &read.read().bytes, 0, &mut accounting).map_err(object_error)?;
+        self.admit(object_id, &read.bytes, 0, &mut accounting).map_err(object_error)?;
         Ok(read)
     }
     async fn read_with_custody(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,

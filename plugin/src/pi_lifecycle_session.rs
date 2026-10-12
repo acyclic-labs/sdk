@@ -6,39 +6,25 @@ use acyclic_harness::distributed::WorkPull;
 use acyclic_harness::{Error, Result as RootResult};
 use std::future::Future;
 
-pub(super) struct PiNativeJob<T> {
-    handle: tokio::task::JoinHandle<RootResult<T>>,
-    custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-impl<T> Future for PiNativeJob<T> {
-    type Output = RootResult<T>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>)
-        -> std::task::Poll<Self::Output>
-    {
-        let job = self.get_mut();
-        match Future::poll(std::pin::Pin::new(&mut job.handle), context) {
-            std::task::Poll::Pending => std::task::Poll::Pending,
-            std::task::Poll::Ready(Ok(result)) => std::task::Poll::Ready(result),
-            std::task::Poll::Ready(Err(source)) => std::task::Poll::Ready(
-                Err(Error::NativeSupervisor { source, custody: job.custody.take() })),
-        }
+async fn join_native_job<T>(mut job: (tokio::task::JoinHandle<RootResult<T>>, acyclic_fs::NativeAllocation)) -> RootResult<T> {
+    match (&mut job.0).await {
+        Ok(result) => result,
+        Err(source) => Err(Error::NativeSupervisor { source, custody: Some(job.1) }),
     }
 }
 
 pub(super) fn spawn_native_job<T, F, B>(
     work: &acyclic_fs::NativeMaterializationWork, build: B,
-) -> RootResult<PiNativeJob<T>>
+) -> RootResult<(tokio::task::JoinHandle<RootResult<T>>, acyclic_fs::NativeAllocation)>
 where
     T: Send + 'static,
     F: Future<Output = RootResult<T>> + Send + 'static,
     B: FnOnce() -> F,
 {
-    let custody = work.retain_owned(std::mem::size_of::<(TaskId, PiNativeJob<T>)>() as u64)
+    let custody = work.retain_owned(std::mem::size_of::<(TaskId, tokio::task::JoinHandle<RootResult<T>>, acyclic_fs::NativeAllocation)>() as u64)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let future = acyclic_harness::NativeFutureBundle::new(work, build)?;
-    Ok(PiNativeJob { handle: tokio::spawn(future), custody: Some(custody) })
+    Ok((tokio::spawn(future), custody))
 }
 
 impl PiSession {
@@ -183,7 +169,6 @@ impl PiSession {
         let _remaining_custody = pi_recovery::vector_slots::<TaskId>(plans.len(), query_work)?;
         let mut remaining = Vec::with_capacity(plans.len());
         remaining.extend(plans.keys().copied());
-        let mut root_sources = BTreeMap::new();
         let mut child_sources = BTreeMap::new();
         while !remaining.is_empty() {
             let before = remaining.len();
@@ -196,14 +181,7 @@ impl PiSession {
                     .ok_or_else(|| Error::Invalid("Pi original selected Root was not restored before child recovery".to_owned()))?
                     .as_str();
                 let source = if plan.commit.source_task == root_task {
-                    if let Some(source) = root_sources.get(root_key) {
-                        Arc::clone(source)
-                    } else {
-                        let root = self.roots.get(root_key).ok_or_else(|| Error::Invalid("Pi original selected Root was not restored before child recovery".to_owned()))?;
-                        let source = Arc::clone(&root.workspace);
-                        root_sources.insert(root_key, source.clone());
-                        source
-                    }
+                    Arc::clone(&self.roots[root_key].workspace)
                 } else if let Some(source) = child_sources.get(&plan.commit.source_task) {
                     Arc::clone(source)
                 } else {
@@ -347,7 +325,7 @@ impl PiSession {
         mode: NativeDrainMode, work: &acyclic_fs::NativeMaterializationWork,
         failure: &mut Option<Error>,
     ) {
-        let _drain_custody = match pi_recovery::vector_slots::<(TaskId, PiNativeJob<()>)>(
+        let _drain_custody = match pi_recovery::vector_slots::<(TaskId, tokio::task::JoinHandle<RootResult<()>>, acyclic_fs::NativeAllocation)>(
             tasks.len(), work,
         ) {
             Ok(custody) => custody,
@@ -370,7 +348,7 @@ impl PiSession {
             }
         }
         for (task, drain) in drains {
-            match drain.await {
+            match join_native_job(drain).await {
                 Ok(()) if mode != NativeDrainMode::Preserve => {
                     for route in self.state.routes.values_mut() {
                         if matches!(&route.task_binding, PluginTaskBinding::Pi(binding)
@@ -405,7 +383,7 @@ impl PiSession {
     async fn join_native_jobs(&mut self, tasks: &[TaskId], failure: &mut Option<Error>) {
         for task in tasks {
             let Some(job) = self.native_jobs.remove(task) else { continue; };
-            let result = match job.await {
+            let result = match join_native_job(job).await {
                 Ok((attempt, allocation)) => {
                     let result = match attempt {
                         Some(TaskWorkerAttempt::Unresolved { error, .. }) => Err(error),
@@ -482,7 +460,7 @@ fn validate_created_native_report(
 }
 
 async fn original_native_first_dispatch_pending(
-    runtime: &PiRuntime, stream: &StreamClient<LocalStream>,
+    runtime: &PiRuntime, stream: &std::sync::Arc<LocalStream>,
     protected: &pi_owner::PiOwnerConfig, plan: &pi_fork::PiForkPlan,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> RootResult<bool> {
@@ -498,7 +476,7 @@ async fn original_native_first_dispatch_pending(
         return Ok(false);
     }
     let outcome = host.outcome_with_native_work(task, work).await?;
-    if host.cancellation_requested_with_native_work(task, work).await?
+    if host.cancellation_requested(task, Some(work)).await?
         || outcome.0.is_some()
     {
         return Ok(false);

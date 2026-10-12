@@ -13,12 +13,11 @@ import {
 import {
   ProtocolIdentitySchema,
 } from "../generated/proto/protocol/v1/protocol_pb.js";
-import { AgentHarness, HarnessBuilder, type AgentHarnessHost } from "./runtime.js";
-import type { Attachment, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, FileDescriptor, FileRef, Limits, ReferencedAttachments, VolumeRef } from "./conversation.js";
+import { HarnessBuilder } from "./runtime.js";
+import type { ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, FileRef, Limits, VolumeRef } from "./conversation.js";
 import type { ToolJsonSchema } from "./model.js";
 import type { InteractionId } from "./interaction.js";
-import type { ForkHistoryPolicy, ForkRequest, ResourceRef } from "./fork.js";
-import type { PrivateDirectoryPage } from "./runtime.js";
+import type { ForkHistoryPolicy, ForkRequest } from "./fork.js";
 import { NativeContracts } from "./native-contracts.js";
 import { aggregateKindToWire, decodeAggregateKind } from "./enums.js";
 import type { AggregateKind, AuthorityLevel } from "./enums.js";
@@ -30,7 +29,6 @@ export * from "./conversation.js";
 export * from "./native-contracts.js";
 export { createBrowserMcpHttpProvider } from "./mcp-http.js";
 export { WasmMcpHttpTransport, WasmMcpHttpInitialization } from "../generated/wasm/acyclic_harness_wasm.js";
-export type * from "./file-tools.js";
 export type { SessionLimitsWire } from "./limits-contract.js";
 export * from "./fork.js";
 export * from "./project.js";
@@ -44,7 +42,7 @@ export * from "./client-transport.js";
 export type { ClientSnapshot } from "./client-snapshot.js";
 export * from "./pagination.js";
 export * from "./wire-transport.js";
-export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";
+export { performanceObserver, type AcyclicObserver, type OperationEvent } from "@acyclic-labs/actors/observe";
 export * from "./runtime.js";
 export * from "./openai.js";
 export * from "./projection.js";
@@ -75,12 +73,6 @@ export interface IdentityKindMap {
 }
 export type IdentityKind = keyof IdentityKindMap;
 
-/** Parses and canonicalizes a branded identity through the Rust contract. */
-export async function parseIdentity<Kind extends IdentityKind>(
-  kind: Kind, value: string,
-): Promise<IdentityKindMap[Kind]> {
-  return (await NativeContracts.create()).validateIdentity(kind, value);
-}
 export interface Authority<Kind extends AggregateKind = AggregateKind> {
   readonly kind: Kind;
   readonly id: string;
@@ -183,6 +175,8 @@ export class Harness {
   readonly #contracts: NativeContracts;
   readonly #protocol: ProtocolIdentityValue;
 
+  get contracts(): NativeContracts { return this.#contracts; }
+
   private constructor(core: WasmReducer, contracts: NativeContracts) {
     this.#core = core;
     this.#contracts = contracts;
@@ -191,9 +185,6 @@ export class Harness {
 
   /** Starts a typed runtime with already initialized Rust contract admission. */
   static builder(contracts: NativeContracts): HarnessBuilder { return new HarnessBuilder(contracts); }
-
-  /** Connects to a durable runtime host through its explicit typed capability. */
-  static connect(host: AgentHarnessHost): Promise<AgentHarness> { return host.connect(); }
 
   /** Initializes the shared Rust core and creates an empty aggregate. */
   static async create(options: HarnessOptions): Promise<Harness> {
@@ -314,21 +305,13 @@ export class Harness {
     return this.#core.volumeStorageName(volume);
   }
 
-  /** Returns a detached, immutable volume admitted by the Rust contract. */
-  validateVolumeRef<Class extends VolumeRef["class"], Family extends string>(
-    volume: VolumeRef<Class, Family>,
-  ): VolumeRef<Class, Family> {
-    return this.#contracts.validate("volume_ref", volume);
-  }
-
   /** Selects the exact logical parent boundary before any fork preparation.
    * The default inherits logical history; fresh history is explicitly selected.
    * Providers, child volumes, grants and finite bounds remain caller supplied. */
   prepareForkRequest(request: ForkRequest, policy: ForkHistoryPolicy | null = null): ForkRequest {
     const prepared = this.#core.prepareForkRequest(request, policy);
     const summary = prepared.preparation.summary;
-    // Rust validates every limit within JavaScript's exact integer range. The
-    // native wire retains bigint; the public Limits boundary uses numbers.
+    // Public Limits use exact Numbers; native counters retain BigInt.
     const numericLimit = (value: bigint): number => {
       if (typeof value !== "bigint" || value <= 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
         throw new RangeError("native Summary limit is not an exact positive integer");
@@ -349,101 +332,9 @@ export class Harness {
     } } } as ForkRequest;
   }
 
-  /** Returns a detached provider-owned resource address admitted by Rust. */
-  validateResourceRef<Kind extends ResourceRef["kind"]>(reference: ResourceRef<Kind>): ResourceRef<Kind> {
-    return this.#contracts.validate("resource_ref", reference) as ResourceRef<Kind>;
-  }
-
-  /** Validates an owner's bounded, ordered directory page in Rust. */
-  validatePrivateDirectoryPage(page: PrivateDirectoryPage): PrivateDirectoryPage {
-    return this.#contracts.validate("private_directory_page", page);
-  }
-
-  /** Returns limits validated and detached by the Rust contract. */
-  validateLimits(limits: Limits): Limits {
-    return this.#contracts.validate("limits", limits);
-  }
-
-  /** Compares two public contract values by their canonical Rust encoding. */
-  canonicalEqual<Value>(left: Value, right: Value): boolean {
-    return this.#contracts.canonicalEqual(left, right);
-  }
-
-  /** Returns a detached, immutable file reference admitted by the Rust contract. */
-  validateFileRef(file: FileRef): FileRef {
-    return this.#contracts.validate("file_ref", file);
-  }
-
-  /** Constructs a content descriptor in Rust; JS owns only the byte transport. */
-  fileDescriptor(bytes: Uint8Array, mediaType: string): FileDescriptor {
-    return this.#contracts.fileDescriptor(bytes, mediaType);
-  }
-
   /** Applies Rust's checked file/path limits before admission. */
   validateFileUnderLimits(file: FileRef, limits: Limits): void {
     this.#core.validateFileUnderLimits(file, limits);
-  }
-
-  /** Applies the native Rust ref-only message and configured-limit contracts. */
-  validateConversationMessage(message: ConversationMessage, limits: Limits): ConversationMessage {
-    return this.#contracts.validate("conversation_message", message, limits);
-  }
-
-  /** Rust-owned deterministic admission and retry plan for one conversation turn. */
-  prepareConversationTurn(
-    conversation: Readonly<{ agent: string | null; messages: readonly ConversationMessage[] }>,
-    operationId: OperationId,
-    content: FileRef,
-    attachments: ReferencedAttachments,
-    limits: Limits,
-    existingSelection: Readonly<{ conversation_revision: bigint; message_ids: readonly ConversationMessageId[] }> | null,
-    hasCompletedOutput: boolean,
-    canReconcile: boolean,
-  ): ReturnType<NativeContracts["prepareConversationTurn"]> {
-    return this.#contracts.prepareConversationTurn(
-      conversation, operationId, content, attachments, limits, existingSelection,
-      hasCompletedOutput, canReconcile,
-    );
-  }
-
-  /** Brands an exact message identity using this reducer's initialized Rust module. */
-  conversationMessageId(value: string): ConversationMessageId {
-    return this.#contracts.validateConversationMessageId(value);
-  }
-
-  /** Stable child identity derived by Rust from an admitted operation and role. */
-  deriveOperationId(operation: OperationId, label: string): OperationId {
-    return this.#contracts.deriveOperationId(operation, label);
-  }
-
-  /** Brands a canonical UUID using this reducer's initialized Rust module. */
-  identity<Kind extends IdentityKind>(kind: Kind, value: string): IdentityKindMap[Kind] {
-    return this.#contracts.validateIdentity(kind, value);
-  }
-
-  /** Canonical Rust JSON bytes for ref-valued local artifacts and manifests. */
-  canonicalJsonBytes(value: unknown): Uint8Array {
-    return this.#contracts.encodeCanonicalJson(value);
-  }
-
-  /** Exact BLAKE3 of those canonical bytes, without a TypeScript encoder. */
-  canonicalJsonDigest(value: unknown): Uint8Array {
-    return this.#contracts.digestCanonicalJson(value);
-  }
-
-  /** Checks resident bytes against the Rust SHA-256 and length descriptor. */
-  verifyFileBytes(file: FileRef, bytes: Uint8Array): void {
-    this.#contracts.verifyFileBytes(file, bytes);
-  }
-
-  /** Resolves a pinned manifest with Rust's canonical list validation. */
-  decodeAttachmentManifest(manifest: FileRef, bytes: Uint8Array, itemCount: number): readonly Attachment[] {
-    return this.#contracts.decodeAttachmentManifest(manifest, bytes, itemCount);
-  }
-
-  /** Produces the exact typed Rust serde bytes required for a complete manifest. */
-  encodeAttachmentManifest(items: readonly Attachment[]): Uint8Array {
-    return this.#contracts.encodeAttachmentManifest(items);
   }
 
   /** Reads one bounded immutable page from the Rust reducer. */

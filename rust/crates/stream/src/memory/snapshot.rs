@@ -7,9 +7,9 @@ use std::sync::Arc;
 use crate::OwnedBytes;
 use tokio::sync::watch;
 
-use super::{History, MemoryStream, PathState, Replay, Retained, State, recount};
+use super::{History, MemoryOutput, MemoryStream, PathState, Replay, Retained, State, recount};
 use crate::wire_codec::{
-    CanonicalWire, ObservedWire, WireFunding, WireMeter,
+    CanonicalWire, WireFunding, WireMeter,
 };
 use crate::{CommitId, Record, StreamError, StreamPath};
 #[cfg(test)]
@@ -29,7 +29,7 @@ impl MemoryStream {
     pub(crate) async fn encode_state(
         &self,
         meter: WireMeter<'_>,
-    ) -> std::io::Result<ObservedWire<Vec<u8>>> {
+    ) -> std::io::Result<MemoryOutput<Vec<u8>>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(meter) = meter { meter.check()?; }
         let state = self.state.read().await;
@@ -55,7 +55,7 @@ impl MemoryStream {
     }
 }
 
-fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<ObservedWire<Vec<u8>>> {
+fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<MemoryOutput<Vec<u8>>> {
     let mut writer = SnapshotWriter { out: Vec::new(), funding: WireFunding::new(meter) };
     writer.write(MAGIC)?;
     writer.u64(state.decision)?;
@@ -101,8 +101,8 @@ fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<ObservedWire<V
                 writer.write(&[NODE_BATCH])?;
                 let reference = node_reference(&indices, parent, &writer.funding)?;
                 writer.len(reference)?;
-                writer.len(records.len())?;
-                for record in records.iter() {
+                writer.len(records.value.len())?;
+                for record in records.value.iter() {
                     writer.funding.examine(1)?;
                     writer.u64(record.sequence)?;
                     writer.write(record.commit_id.as_bytes())?;
@@ -266,7 +266,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
         }
     }
     if nodes.0.iter().any(|node| match node.as_ref() {
-        History::Batch { records, .. } => records
+        History::Batch { records, .. } => records.value
             .iter()
             .any(|record| record.committed_at_micros > last_committed_at_micros),
         History::Prefix { .. } => false,
@@ -277,7 +277,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
         return None;
     }
     validate_inventory(&state)?;
-    recount(&mut state, &super::MemoryObserver::default()).expect("unmetered recount cannot fail");
+    recount(&mut state, None).expect("unmetered recount cannot fail");
     Some(state)
 }
 
@@ -294,9 +294,9 @@ fn validate_inventory(state: &State) -> Option<()> {
             }
             match node.as_ref() {
                 History::Batch { parent, records, .. } => {
-                    let fact = (records.as_ref().as_ref(), pointer, parent.as_ref().map(Arc::as_ptr));
+                    let fact = (records.value.as_slice(), pointer, parent.as_ref().map(Arc::as_ptr));
                     if batches
-                        .insert((path, records.first()?.commit_id), fact)
+                        .insert((path, records.value.first()?.commit_id), fact)
                         .is_some()
                     {
                         return None;
@@ -402,7 +402,7 @@ impl Drop for DecodedNodes {
 fn history_tail(history: Option<&Arc<History>>) -> Option<u64> {
     match history.map(AsRef::as_ref) {
         None => Some(0),
-        Some(History::Batch { records, .. }) => records.last()?.sequence.checked_add(1),
+        Some(History::Batch { records, .. }) => records.value.last()?.sequence.checked_add(1),
         Some(History::Prefix { tail, .. }) => Some(*tail),
     }
 }
@@ -436,8 +436,8 @@ fn decode_nodes(input: &mut Input<'_>) -> Option<DecodedNodes> {
                 }
                 History::Batch {
                     parent,
-                    records: Arc::new(super::MemoryRecords::from(records)),
-                    _allocation: super::MemoryAllocation::default(),
+                    records: Arc::new(MemoryOutput { value: records, allocation: Default::default() }),
+                    _allocation: super::Allocation::default(),
                 }
             }
             NODE_PREFIX => {
@@ -448,7 +448,7 @@ fn decode_nodes(input: &mut Input<'_>) -> Option<DecodedNodes> {
                 History::Prefix {
                     source: parent,
                     tail,
-                    _allocation: super::MemoryAllocation::default(),
+                    _allocation: super::Allocation::default(),
                 }
             }
             _ => return None,
@@ -479,7 +479,7 @@ fn decode_paths(
                 history,
                 tail,
                 changed,
-                _allocation: super::MemoryAllocation::default(),
+                _allocation: super::Allocation::default(),
             },
         );
     }
@@ -520,7 +520,7 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
             }
             None => (None, [0; 32], crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(envelope?)), None),
         };
-        let cached = Arc::new(Replay { digest, result, envelope, _allocation: super::MemoryAllocation::default() });
+        let cached = Arc::new(Replay { digest, result, envelope, _allocation: super::Allocation::default() });
         if let Some(commit_id) = commit {
             if state.commits.insert(commit_id, Arc::clone(&cached)).is_some() { return None; }
         }
@@ -528,8 +528,8 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
             if replay_commit_id(state, &cached.result)? != commit { return None; }
             if state.replays.insert(key.clone(), cached).is_some() { return None; }
         }
-        state.retained.push_back(Retained {
-            replay, commit, _allocation: super::MemoryAllocation::default(),
+        state.retained.push(Retained {
+            replay, commit, _allocation: super::Allocation::default(),
         });
     }
     Some(())
@@ -1019,7 +1019,7 @@ mod tests {
         let cached = state.replays.get_mut(key.as_bytes()).ok_or(StreamError::Unavailable)?;
         *cached = Arc::new(Replay {
             digest: cached.digest, result: cached.result.clone(), envelope: cached.envelope.clone(),
-            _allocation: crate::memory::MemoryAllocation::default(),
+            _allocation: crate::memory::Allocation::default(),
         });
         let replay = state
             .replays
@@ -1173,7 +1173,7 @@ mod tests {
             .history = Some(Arc::new(History::Prefix {
             source: future,
             tail: 1,
-            _allocation: super::super::MemoryAllocation::default(),
+            _allocation: super::super::Allocation::default(),
         }));
         assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         Ok(())

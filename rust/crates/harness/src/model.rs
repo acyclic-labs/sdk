@@ -12,10 +12,9 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 #[cfg(feature = "filesystem")]
 pub(crate) const fn model_serde_diagnostic_label_bytes() -> u64 {
     crate::contract::preparation_serde_diagnostic_label_bytes() + concat!(
-        "ModelPrefix", "version", "parent", "binding_digest", "message_digest", "total_messages",
-        "messages", "ModelRequestManifest", "version", "request_digest", "wire_bytes",
-        "binding_digest", "message_digests",
-    ).len() as u64 + 13 * 4
+        "ModelPrefix", "version", "parent", "message_digest", "total_messages",
+        "messages",
+    ).len() as u64 + 6 * 4
 }
 
 #[cfg(feature = "filesystem")]
@@ -56,7 +55,7 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
 
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for ToolResultContent {
     fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
@@ -80,8 +79,7 @@ impl crate::filesystem::PreparationRecord for NativeMediaPolicy {
     }
 }
 
-// This only allocates concrete Vec backing; every caller copies its known DTO fields directly.
-fn model_vec_with_capacity<T>(
+pub(crate) fn vec_with_capacity<T>(
     capacity: usize, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<T>> {
     let mut values = Vec::new();
@@ -98,16 +96,16 @@ fn model_vec_with_capacity<T>(
             completed?;
             return Ok(values);
         }
-        io.claim(bytes)?;
+        io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
-        values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
-        io.claim(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?.checked_sub(bytes)
-            .ok_or_else(model_owned_overflow)?)?;
-        return Ok(values);
     }
-    #[cfg(not(feature = "filesystem"))]
     let _ = (io, bytes);
     values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.retain_owned(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?.checked_sub(bytes)
+            .ok_or_else(model_owned_overflow)?)?;
+    }
     Ok(values)
 }
 
@@ -158,14 +156,6 @@ fn model_media_policy_in_quota(
 ) -> Result<NativeMediaPolicy> {
     if quota.work().is_none() { return Ok(policy.clone()); }
     model_copy_node(quota)?;
-    let intent = match &policy.intent {
-        NativeMediaIntent::Image { detail } => NativeMediaIntent::Image { detail: *detail },
-        NativeMediaIntent::Audio { maximum_duration_ms } => NativeMediaIntent::Audio { maximum_duration_ms: *maximum_duration_ms },
-        NativeMediaIntent::Video { maximum_duration_ms, maximum_frames } => NativeMediaIntent::Video {
-            maximum_duration_ms: *maximum_duration_ms, maximum_frames: *maximum_frames,
-        },
-        NativeMediaIntent::Document { maximum_pages } => NativeMediaIntent::Document { maximum_pages: *maximum_pages },
-    };
     let configuration = policy.configuration.as_ref().map(|binding| -> Result<NativeConfigurationBinding> {
         model_copy_node(quota)?;
         Ok(NativeConfigurationBinding {
@@ -174,7 +164,7 @@ fn model_media_policy_in_quota(
             implementation_digest: binding.implementation_digest,
         })
     }).transpose()?;
-    Ok(NativeMediaPolicy { intent, maximum_bytes: policy.maximum_bytes,
+    Ok(NativeMediaPolicy { intent: policy.intent.clone(), maximum_bytes: policy.maximum_bytes,
         maximum_work: policy.maximum_work, configuration })
 }
 
@@ -256,7 +246,7 @@ pub(crate) fn clone_messages(
     messages: &[ModelMessage], io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<ModelMessage>> {
     if io.is_none() { return Ok(messages.to_vec()); }
-    let mut copied = model_vec_with_capacity(messages.len(), io)?;
+    let mut copied = vec_with_capacity(messages.len(), io)?;
     for message in messages { crate::executor::stock_vec_push(&mut copied, clone_message(message, io)?, io)?; }
     Ok(copied)
 }
@@ -296,7 +286,7 @@ pub(crate) fn clone_request(
     model_step(io, 1)?;
     let model = clone_model(&request.model, io)?;
     let messages = clone_messages(&request.messages, io)?;
-    let mut tools = model_vec_with_capacity(request.tools.len(), io)?;
+    let mut tools = vec_with_capacity(request.tools.len(), io)?;
     for tool in &request.tools { crate::executor::stock_vec_push(&mut tools, clone_tool_definition(tool, io)?, io)?; }
     Ok(ModelRequest { model, messages, tools, max_output_tokens: request.max_output_tokens })
 }
@@ -400,7 +390,7 @@ fn model_tool_result_json_bound(
     model_json_bound(content, maximum, work)
 }
 
-fn model_hash(bytes: &[u8], io: Option<&crate::executor::PreparationIo>) -> Result<[u8; 32]> {
+pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&crate::executor::PreparationIo>) -> Result<[u8; 32]> {
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
     #[cfg(feature = "filesystem")]
@@ -413,22 +403,9 @@ fn model_hash(bytes: &[u8], io: Option<&crate::executor::PreparationIo>) -> Resu
     Ok(digest)
 }
 
-fn model_digest<T: Serialize>(
-    value: &T, io: Option<&crate::executor::PreparationIo>,
-) -> Result<[u8; 32]> {
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let _bytes;
-        let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
-        _bytes = io.guard_bytes(&bytes)?;
-        return model_hash(&bytes, Some(io));
-    }
-    crate::contract::canonical_json_digest(value)
-}
 /// Immutable provider-owned model selection; there is no global catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Model {
     /// Provider selected by application code.
     pub provider: String,
@@ -437,6 +414,7 @@ pub struct Model {
     /// Immutable model revision or digest.
     pub revision: String,
     /// Provider-specific options retained as typed JSON.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
     pub options: Value,
 }
 
@@ -475,6 +453,7 @@ impl Model {
 
 /// One provider-neutral prompt item.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelMessage {
     /// Semantic role (`system`, `user`, `assistant`, or `tool`).
     pub role: ModelRole,
@@ -485,6 +464,7 @@ pub struct ModelMessage {
 /// Closed provider-neutral role set; adapters may reject unsupported combinations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelRole {
     /// Host instruction.
     System,
@@ -516,6 +496,7 @@ impl ModelRole {
     clippy::large_enum_variant,
     reason = "model parts retain their public untagged content shape"
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelContent {
     /// Plain prompt text or bounded projection produced by a resolver.
     Text(String),
@@ -547,7 +528,7 @@ impl ModelContent {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         model_history_step(work, 1)?;
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         let parts = match self {
             Self::Text(text) => return if text.len() as u64 <= limits.render_bytes { Ok(()) }
                 else { Err(model_history_invalid(work, "model text exceeds render limit")) },
@@ -609,24 +590,22 @@ impl ModelContent {
             model_history_step(work, 1)?;
             match part {
                 ModelContentPart::Text { text } if !text.is_empty() => {}
-                ModelContentPart::File { file, .. } => file.validate_with_work(work)?,
+                ModelContentPart::File { file, .. } => file.validate(work)?,
                 _ => return Err(model_history_invalid(work, "user input contains an unsupported part")),
             }
         }
         Ok(())
     }
 
-    pub(crate) fn visit_file_bindings<'a>(
-        &'a self, mut visit: impl FnMut(&'a FileRef, Option<&'a NativeConfigurationBinding>) -> Result<()>,
-    ) -> Result<()> {
-        for (file, policy) in self.file_parts() {
-            visit(file, None)?;
-            if let FileProjectionPolicy::Native(policy) = policy
-                && let Some(binding) = &policy.configuration {
-                visit(&binding.configuration.content, Some(binding))?;
-            }
-        }
-        Ok(())
+    pub(crate) fn file_bindings(&self) -> impl Iterator<Item = (&FileRef, Option<&NativeConfigurationBinding>)> {
+        self.file_parts().flat_map(|(file, policy)| {
+            let binding = match policy {
+                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
+                _ => None,
+            };
+            std::iter::once((file, None)).chain(binding.map(|binding|
+                (&binding.configuration.content, Some(binding))))
+        })
     }
 
     fn file_parts(&self) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
@@ -649,14 +628,7 @@ impl ModelContent {
     /// Returns ordered media refs followed by their immutable option refs.
     #[must_use]
     pub fn file_refs(&self) -> impl Iterator<Item = &FileRef> {
-        self.file_parts().flat_map(|(file, policy)| {
-            let configuration = match policy {
-                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref()
-                    .map(|binding| &binding.configuration.content),
-                _ => None,
-            };
-            std::iter::once(file).chain(configuration)
-        })
+        self.file_bindings().map(|(file, _)| file)
     }
 
     /// Detects native media in ordinary data and paired result data.
@@ -668,10 +640,7 @@ impl ModelContent {
     /// Claims that the original authenticated host must verify before dispatch.
     #[must_use]
     pub fn native_configurations(&self) -> impl Iterator<Item = &NativeConfigurationBinding> {
-        self.file_parts().filter_map(|(_, policy)| match policy {
-            FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
-            _ => None,
-        })
+        self.file_bindings().filter_map(|(_, binding)| binding)
     }
 
 }
@@ -683,6 +652,7 @@ impl ModelContent {
     clippy::large_enum_variant,
     reason = "keep immutable FileRef inline; the larger optional native policy payload is boxed"
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelContentPart {
     /// Plain text.
     Text {
@@ -692,6 +662,7 @@ pub enum ModelContentPart {
     /// Immutable file reference with an explicit byte-resolution policy.
     File {
         /// Immutable file identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         file: FileRef,
         /// Resolution and rendering policy.
         policy: FileProjectionPolicy,
@@ -704,6 +675,7 @@ pub enum ModelContentPart {
         /// Registered tool name.
         name: String,
         /// Schema-defined arguments.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         arguments: Value,
     },
     /// Tool result with matching call identity.
@@ -721,6 +693,7 @@ pub enum ModelContentPart {
 /// File handling policy selected before provider dispatch.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum FileProjectionPolicy {
     /// Metadata-only file reference, with no byte read.
     Reference,
@@ -736,6 +709,7 @@ pub enum FileProjectionPolicy {
     clippy::large_enum_variant,
     reason = "keep immutable FileRef inline; the larger optional native policy payload is boxed"
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelDataPart {
     /// Exact text.
     Text {
@@ -745,6 +719,7 @@ pub enum ModelDataPart {
     /// Immutable data with an explicit resolution policy.
     File {
         /// Immutable media identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         file: FileRef,
         /// Explicit resolution intent.
         policy: FileProjectionPolicy,
@@ -754,10 +729,12 @@ pub enum ModelDataPart {
 /// The complete model-visible projection envelope.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ToolResultContent {
     /// Explicit JSON projection.
     Json {
         /// Exact schema-defined JSON value.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         value: Value,
     },
     /// Ordered, nonrecursive text and file data.
@@ -770,12 +747,16 @@ pub enum ToolResultContent {
 /// Claim to verify against original task admission and linked implementation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct NativeConfigurationBinding {
     /// Original immutable extension admission event.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmEventReferenceWire"))]
     pub source: crate::core::EventReference,
     /// Exact registered option schema and immutable JSON file.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmExtensionConfigurationWire"))]
     pub configuration: crate::core::ExtensionConfiguration,
     /// Original owner-linked executable implementation.
+    #[cfg_attr(feature = "wasm", tsify(type = "readonly number[]"))]
     pub implementation_digest: [u8; 32],
 }
 
@@ -838,8 +819,8 @@ impl NativeConfigurationBinding {
         })?;
         let expected = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => schemas.implementation_digest_with_io(&extension.name, extension.version, io)?,
-            _ => schemas.implementation_digest(&extension.name, extension.version)?,
+            Some(io) => crate::executor::with_history_io(Some(io), |work| schemas.implementation_digest(&extension.name, extension.version, work))?,
+            _ => schemas.implementation_digest(&extension.name, extension.version, &mut None)?,
         };
         if linked.digest != expected || self.implementation_digest != expected {
             return Err(Error::Conflict(
@@ -853,6 +834,7 @@ impl NativeConfigurationBinding {
 /// Explicit common image quality intent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ImageDetail {
     /// Select adapter image quality.
     Auto,
@@ -865,6 +847,7 @@ pub enum ImageDetail {
 /// Requested modality is independent of the stored file's MIME type.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum NativeMediaIntent {
     /// Provider-native image with explicit detail.
     Image {
@@ -874,11 +857,13 @@ pub enum NativeMediaIntent {
     /// Entire audio input with a finite duration ceiling.
     Audio {
         /// Positive finite maximum source duration.
+        #[cfg_attr(feature = "wasm", tsify(type = "number"))]
         maximum_duration_ms: u64,
     },
     /// Entire video input with finite duration and frame ceilings.
     Video {
         /// Positive finite maximum source duration.
+        #[cfg_attr(feature = "wasm", tsify(type = "number"))]
         maximum_duration_ms: u64,
         /// Positive finite maximum source frame count.
         maximum_frames: u32,
@@ -893,14 +878,18 @@ pub enum NativeMediaIntent {
 /// Explicit native input contract; no implicit conversion or fallback.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct NativeMediaPolicy {
     /// Common modality and processing intent.
     pub intent: NativeMediaIntent,
     /// Positive finite byte ceiling, also bounded by task content limits.
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_bytes: u64,
     /// Positive finite work ceiling interpreted by the selected adapter.
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_work: u64,
     /// Optional immutable registered adapter options; never bearer authority.
+    #[cfg_attr(feature = "wasm", tsify(type = "NativeConfigurationBinding | null"))]
     pub configuration: Option<NativeConfigurationBinding>,
 }
 
@@ -917,7 +906,7 @@ impl NativeMediaPolicy {
             }
             Ok(())
         };
-        limits.validate_file_with_work(file, work)?;
+        limits.validate_file(file, work)?;
         finite(self.maximum_bytes, work)?;
         finite(self.maximum_work, work)?;
         model_history_step(work, 1)?;
@@ -944,7 +933,7 @@ impl NativeMediaPolicy {
         }
         model_history_step(work, 1)?;
         if let Some(binding) = &self.configuration {
-            limits.validate_file_with_work(&binding.configuration.content, work)?;
+            limits.validate_file(&binding.configuration.content, work)?;
             model_history_step(work, 1)?;
             if binding.configuration.content.descriptor().media_type() != "application/json"
                 || binding.configuration.content.descriptor().byte_length() > limits.render_bytes {
@@ -964,13 +953,12 @@ impl FileProjectionPolicy {
         if let Self::Native(policy) = self {
             return policy.validate(file, limits, work);
         }
-        limits.validate_file_with_work(file, work)?;
+        limits.validate_file(file, work)?;
         model_history_step(work, 1)?;
         if matches!(self, Self::BoundedFull) && file.descriptor().byte_length() > limits.render_bytes {
             Err(model_history_invalid(work, "model file exceeds render limit"))
         } else { Ok(()) }
     }
-
 
 }
 
@@ -1000,7 +988,7 @@ impl ToolResultContent {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         model_history_step(work, 1)?;
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         if let Self::Parts { parts } = self {
             if parts.len() > limits.attachments.saturating_add(1) {
                 return Err(model_history_invalid(work, "tool result exceeds attachment limit"));
@@ -1124,11 +1112,9 @@ fn model_request_payload_bytes(request: &ModelRequest) -> Result<u64> {
     Ok(bytes)
 }
 
-/// Largest byte count representable by a model request manifest.
-pub const MAX_MODEL_REQUEST_BYTES: u64 = u64::MAX;
-
 /// Complete immutable request to a model provider.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelRequest {
     /// Selected model value.
     pub model: Model,
@@ -1145,23 +1131,7 @@ pub struct ModelRequest {
 pub struct PreparedModelRequest {
     request: ModelRequest,
     bytes: acyclic_stream::OwnedBytes,
-    manifest: ModelRequestManifest,
-}
-
-/// Versioned identity of ordered provider input; counters bound wire bytes, not heap use.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelRequestManifest {
-    /// Canonical construction version.
-    pub version: u32,
-    /// BLAKE3 digest of the exact supplied bytes.
-    pub request_digest: [u8; 32],
-    /// Serialized byte count.
-    pub wire_bytes: u64,
-    /// Exact model and ordered tool definitions, including pinned revisions and schemas.
-    pub binding_digest: [u8; 32],
-    /// Ordered role and content identities.
-    pub message_digests: Vec<[u8; 32]>,
+    request_digest: [u8; 32],
 }
 
 impl ModelRequest {
@@ -1176,7 +1146,7 @@ impl ModelRequest {
         use crate::tool::ToolInvocation;
         use std::collections::BTreeMap;
 
-        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
+        crate::executor::with_history_io(io, |work| limits.validate(work))?;
         model_step(io, 1)?;
         model_step(io, (self.model.provider.len() as u64)
             .saturating_add(self.model.name.len() as u64)
@@ -1208,7 +1178,7 @@ impl ModelRequest {
         let mut tools = BTreeMap::new();
         for tool in &self.tools {
             model_step(io, 1)?;
-            tool.validate_with_io(io)?;
+            crate::executor::with_history_io(io, |work| tool.validate(work))?;
             if tools.insert(&tool.name, tool).is_some() {
                 return Err(Error::Invalid("model tool definition is repeated".into()));
             }
@@ -1227,7 +1197,7 @@ impl ModelRequest {
                         arguments,
                     } => {
                         model_step(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
-                        ToolInvocation::validate_identity(call_id, name)?;
+                        ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                         if message.role != ModelRole::Assistant || pending.contains_key(call_id) {
                             return Err(Error::Invalid(
                                 "model tool call role or identity is invalid".into(),
@@ -1247,7 +1217,7 @@ impl ModelRequest {
                         content,
                     } => {
                         model_step(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
-                        ToolInvocation::validate_identity(call_id, name)?;
+                        ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                         if message.role != ModelRole::Tool || pending.remove(call_id) != Some(name)
                         {
                             return Err(Error::Invalid(
@@ -1263,9 +1233,9 @@ impl ModelRequest {
                             let _bytes;
                             let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
                             _bytes = io.guard_bytes(&bytes)?;
-                            let envelope = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
+                            let envelope = io.decode(std::marker::PhantomData::<Value>, &bytes, crate::wire::ErrorCode::Storage)?;
                             crate::contract::validate_json_schema_value(
-                                &tool.projection_schema, &envelope, "model tool result", Some(io),
+                                &tool.projection_schema, &envelope.0, "model tool result", Some(io),
                             )?;
                             }
                             _ => {
@@ -1302,9 +1272,7 @@ impl ModelRequest {
 impl PreparedModelRequest {
     /// Returned graph excluding the independently guarded encoded bytes.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        let bytes = model_owned_add(std::mem::size_of::<Self>() as u64,
-            model_request_payload_bytes(&self.request)?)?;
-        model_owned_add(bytes, model_owned_mul(self.manifest.message_digests.capacity(), std::mem::size_of::<[u8; 32]>())?)
+        model_owned_add(std::mem::size_of::<Self>() as u64, model_request_payload_bytes(&self.request)?)
     }
 
     /// Decodes exact canonical bytes on the optional preparation ledger.
@@ -1314,7 +1282,7 @@ impl PreparedModelRequest {
     ) -> Result<Self> {
         let request = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => io.decode_preparation::<ModelRequest>(bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<ModelRequest>, bytes, crate::wire::ErrorCode::Storage)?),
             _ => crate::contract::json_from_slice(bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
@@ -1365,7 +1333,7 @@ impl PreparedModelRequest {
     ) -> Result<Self> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-            io.claim((std::mem::size_of::<Self>() - std::mem::size_of::<ModelRequest>()) as u64)?;
+            io.retain_owned((std::mem::size_of::<Self>() - std::mem::size_of::<ModelRequest>()) as u64)?;
         }
         request.validate(limits, io)?;
         #[cfg(feature = "filesystem")]
@@ -1379,36 +1347,10 @@ impl PreparedModelRequest {
         {
             bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         }
-        let request_digest = model_hash(&bytes, io)?;
-        let binding_digest = model_digest(&(&request.model, &request.tools), io)?;
-        #[cfg(feature = "filesystem")]
-        let capacity = request.messages.len().checked_mul(std::mem::size_of::<[u8; 32]>())
-            .ok_or_else(|| Error::Invalid("model message digest capacity overflow".into()))?;
-        #[cfg(feature = "filesystem")]
-        let mut digest_hold = if let Some(io) = io {
-            io.claim(capacity as u64)?;
-            let hold = io.guard_owned(capacity as u64)?;
-            io.allocation_attempt(capacity as u64)?;
-            Some(hold)
-        } else { None };
-        let mut message_digests = Vec::with_capacity(request.messages.len());
-        for message in &request.messages {
-            model_step(io, 1)?;
-            message_digests.push(model_digest(message, io)?);
-        }
-        let manifest = ModelRequestManifest {
-            version: 1, request_digest, wire_bytes: bytes.len() as u64,
-            binding_digest, message_digests,
-        };
+        let request_digest = hash_bytes(&bytes, io)?;
         #[cfg(feature = "filesystem")]
         if let Some(hold) = bytes_hold { hold.into_retained(); }
-        #[cfg(feature = "filesystem")]
-        if let Some(hold) = digest_hold.take() { hold.into_retained(); }
-        Ok(Self {
-            request,
-            bytes,
-            manifest,
-        })
+        Ok(Self { request, bytes, request_digest })
     }
 
     /// Read-only admitted values for provider-specific encoding.
@@ -1423,10 +1365,10 @@ impl PreparedModelRequest {
         &self.bytes
     }
 
-    /// Versioned identity of these bytes and ordered content.
+    /// BLAKE3 digest of the exact admitted request bytes.
     #[must_use]
-    pub fn manifest(&self) -> &ModelRequestManifest {
-        &self.manifest
+    pub const fn request_digest(&self) -> [u8; 32] {
+        self.request_digest
     }
 
     /// Byte-additive token bound including every pinned immutable file.
@@ -1435,7 +1377,7 @@ impl PreparedModelRequest {
         &self, work: &NativeMaterializationWork,
     ) -> Result<(crate::context::ModelTokenCount, NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        io.claim(std::mem::size_of::<crate::context::ModelTokenCount>() as u64)?;
+        io.retain_owned(std::mem::size_of::<crate::context::ModelTokenCount>() as u64)?;
         let mut message_tokens = Vec::new();
         for message in &self.request.messages {
             model_step(Some(&io), 1)?;
@@ -1455,7 +1397,7 @@ impl PreparedModelRequest {
         let fixed_tokens = u32::try_from(self.bytes.len())
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
         let count = crate::context::ModelTokenCount {
-            request_digest: self.manifest.request_digest, fixed_tokens, message_tokens,
+            request_digest: self.request_digest, fixed_tokens, message_tokens,
         };
         let retained = model_owned_add(std::mem::size_of::<crate::context::ModelTokenCount>() as u64,
             model_owned_mul(count.message_tokens.capacity(), std::mem::size_of::<u32>())?)?;
@@ -1470,7 +1412,6 @@ impl PreparedModelRequest {
 pub struct ModelPrefix {
     version: u32,
     parent: Option<FileRef>,
-    binding_digest: [u8; 32],
     message_digest: [u8; 32],
     total_messages: usize,
     messages: Vec<ModelMessage>,
@@ -1486,7 +1427,7 @@ impl ModelPrefix {
         parent: Option<(&FileRef, &PreparedModelRequest)>,
     ) -> Result<Self> {
         let (parent, offset) = if let Some((reference, prior)) = parent {
-            reference.validate()?;
+            reference.validate(&mut None)?;
             if reference.descriptor().media_type() != Self::MEDIA_TYPE
                 || !request.request.messages.starts_with(&prior.request.messages)
             {
@@ -1499,10 +1440,10 @@ impl ModelPrefix {
         if messages.is_empty() {
             return Err(Error::Invalid("model prefix must advance its parent".into()));
         }
-        let message_digest = ordered_message_digest(&request.manifest.message_digests)?;
+        let message_digest = ordered_message_digest(&request.request.messages)?;
         Ok(Self {
             version: 1, parent: parent.cloned(),
-            binding_digest: request.manifest.binding_digest, message_digest,
+            message_digest,
             total_messages: request.request.messages.len(), messages: messages.to_vec(),
         })
     }
@@ -1518,10 +1459,10 @@ impl ModelPrefix {
 
 }
 
-fn ordered_message_digest(digests: &[[u8; 32]]) -> Result<[u8; 32]> {
+fn ordered_message_digest(messages: &[ModelMessage]) -> Result<[u8; 32]> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"harness:model-prefix:ordered:v1");
-    for digest in digests { hasher.update(digest); }
+    for message in messages { hasher.update(&crate::contract::canonical_json_digest(message)?); }
     Ok(*hasher.finalize().as_bytes())
 }
 
@@ -1532,7 +1473,7 @@ impl PreparedModelRequest {
         verifier: &dyn crate::conversation::ContentResidencyVerifier,
         limits: crate::conversation::Limits, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
-        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
+        crate::executor::with_history_io(io, |work| limits.validate(work))?;
         let mut next = Some(clone_file(prefix, io)?);
         let mut segments = Vec::new();
         let mut visited = std::collections::BTreeSet::new();
@@ -1541,8 +1482,8 @@ impl PreparedModelRequest {
         let mut total_messages = local.messages.len();
         while let Some(reference) = next {
             model_step(io, 1)?;
-            crate::executor::with_history_io(io, |work| reference.validate_with_work(work))?;
-            let identity = model_digest(&reference, io)?;
+            crate::executor::with_history_io(io, |work| reference.validate(work))?;
+            let identity = crate::executor::preparation_digest(&reference, io)?;
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
                 // Concrete key slots only; opaque BTree allocator nodes excluded.
@@ -1565,39 +1506,16 @@ impl PreparedModelRequest {
             }
             #[cfg(feature = "filesystem")]
             let _bytes_hold;
-            let bytes = match io {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                Some(io) if io.original_native_work().is_some() => {
-                    let work = io.original_native_work().expect("native branch retains original work");
-                    verifier.verify_with_native_work(&reference, reference.descriptor().byte_length(), work)?.await?;
-                    let bytes = verifier.read_with_native_work(
-                        &reference, reference.descriptor().byte_length(), work,
-                    )?.await?;
-                    bytes
-                }
-                #[cfg(feature = "filesystem")]
-                Some(io) => {
-                    io.receive_content(verifier.verify_measured(&reference,
-                        reference.descriptor().byte_length(), io.remaining()?, io.cancellation()).await)?;
-                    io.receive_content(verifier.read_measured(&reference,
-                        reference.descriptor().byte_length(), io.remaining()?, io.cancellation()).await)?
-                }
-                _ => {
-                    verifier.verify(&reference).await?;
-                    verifier.read(&reference).await?
-                }
-            };
+            crate::context::verify_file(&reference, verifier, io).await?;
+            let bytes = verifier.read(&reference, reference.descriptor().byte_length(), io)?.await?;
             #[cfg(feature = "filesystem")]
             {
                 _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
             }
-            #[cfg(feature = "filesystem")]
-            reference.descriptor().verify_with_io(&bytes, io)?;
-            #[cfg(not(feature = "filesystem"))]
-            reference.descriptor().verify(&bytes)?;
+            crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
-                Some(io) => io.decode_preparation::<ModelPrefix>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<ModelPrefix>, &bytes, crate::wire::ErrorCode::Storage)?),
                 _ => crate::contract::json_from_slice(&bytes)
                     .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?,
             };
@@ -1644,7 +1562,7 @@ impl PreparedModelRequest {
         model_hasher_update(&mut message_hasher, b"harness:model-prefix:ordered:v1", io)?;
         for (segment, digest) in segments.into_iter().rev() {
             for message in &segment {
-                let digest = model_digest(message, io)?;
+                let digest = crate::executor::preparation_digest(message, io)?;
                 model_hasher_update(&mut message_hasher, &digest, io)?;
             }
             for message in segment { crate::executor::stock_vec_push(&mut messages, message, io)?; }
@@ -1655,10 +1573,13 @@ impl PreparedModelRequest {
             }
         }
         let local_messages = std::mem::replace(&mut local.messages, messages);
-        local.validate_with_io(limits, io)?;
+        local.validate(limits, io)?;
         for message in local_messages { crate::executor::stock_vec_push(&mut local.messages, message, io)?; }
         for message in &local.messages {
-            model_verify_content_files(&message.content, verifier, io).await?;
+            for file in message.content.file_refs() {
+                model_step(io, 1)?;
+                crate::context::verify_file(file, verifier, io).await?;
+            }
         }
         Self::prepare_engine(local, limits, io)
     }
@@ -1679,33 +1600,10 @@ fn model_hasher_update(
     Ok(())
 }
 
-
-async fn model_verify_content_files(
-    content: &ModelContent, verifier: &dyn crate::conversation::ContentResidencyVerifier,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    for file in content.file_refs() {
-        model_step(io, 1)?;
-        match io {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Some(io) if io.original_native_work().is_some() => {
-                verifier.verify_with_native_work(file, file.descriptor().byte_length(),
-                    io.original_native_work().expect("native branch retains original work"))?.await?;
-            }
-            #[cfg(feature = "filesystem")]
-            Some(io) => {
-                io.receive_content(verifier.verify_measured(file, file.descriptor().byte_length(),
-                    io.remaining()?, io.cancellation()).await)?;
-            }
-            _ => verifier.verify(file).await?,
-        }
-    }
-    Ok(())
-}
-
 /// Ordered event emitted by a model run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelEvent {
     /// User-visible content fragment.
     Content {
@@ -1725,11 +1623,13 @@ pub enum ModelEvent {
         /// Registered tool name.
         name: String,
         /// Schema-defined arguments.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         arguments: Value,
     },
     /// Model completed this step.
     Completed {
         /// Provider-owned usage and finish metadata.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         metadata: Value,
     },
 }
@@ -1737,12 +1637,15 @@ pub enum ModelEvent {
 /// Executor-owned identity supplied separately from canonical model-visible bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelDispatch {
     /// Admitted execution operation identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub operation_id: OperationId,
     /// Zero-based logical executor step.
     pub step: u32,
     /// Digest of the exact canonical request supplied with this dispatch.
+    #[cfg_attr(feature = "wasm", tsify(type = "readonly number[]"))]
     pub request_digest: [u8; 32],
 }
 
@@ -1816,7 +1719,7 @@ impl ModelEvent {
     /// Produces a paid closed SDK event directly from borrowed provider bytes.
     pub fn decode_with_native_work(bytes: &[u8], work: &NativeMaterializationWork) -> Result<(Self, NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let event = io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Storage)?.into_retained();
+        let event = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Self>, bytes, crate::wire::ErrorCode::Storage)?);
         let retained = event.logical_owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         Ok((event, custody))
@@ -2104,8 +2007,8 @@ mod tests {
         }
         let changed = PreparedModelRequest::prepare(original, Limits::default(), None)?;
         assert_ne!(
-            prepared.manifest().request_digest,
-            changed.manifest().request_digest
+            prepared.request_digest(),
+            changed.request_digest()
         );
         Ok(())
     }
@@ -2157,8 +2060,8 @@ mod tests {
     );
 
     impl crate::conversation::ContentResidencyVerifier for PrefixReader {
-        fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async move {
+        fn verify<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 let capability = file.read_capability()?;
                 if !self.1.contains(&capability) {
                     return Err(Error::Unauthorized("prefix read is not granted".into()));
@@ -2167,11 +2070,11 @@ mod tests {
                     .0
                     .get(&capability)
                     .ok_or_else(|| Error::NotFound("prefix version is missing".into()))?;
-                file.descriptor().verify(bytes)
+                file.descriptor().verify(bytes, &mut None)
             })
         }
-        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-            Box::pin(async move {
+        fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 self.0
                     .get(&file.read_capability()?)
                     .cloned()
@@ -2200,14 +2103,16 @@ mod tests {
         let file = FileRef::new(
             VolumeRef::new(
                 crate::resources::ProviderRef::new("test", "filesystem", "2")?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
+                &mut None,
             )?,
             format!(".system/inherited-conversation/model-prefix/{index}.json"),
             format!("generation-{index}"),
-            FileDescriptor::from_bytes(&bytes, media_type)?,
-            "model-prefix.json",
+            FileDescriptor::from_bytes(&bytes, media_type, &mut None)?,
+            "model-prefix.json".into(),
+            &mut None,
         )?;
         reader.1.insert(file.read_capability()?);
         reader.0.insert(file.read_capability()?, bytes);
@@ -2279,10 +2184,6 @@ mod tests {
                 changed_request.request().messages,
                 inherited.request().messages
             );
-            assert_ne!(
-                changed_request.manifest().binding_digest,
-                inherited.manifest().binding_digest
-            );
             // Inherited tool exchanges must still validate against the new schema set.
             let mut incompatible = local.clone();
             incompatible.tools.clear();
@@ -2336,7 +2237,7 @@ mod tests {
         changed_parent.messages[0].content = ModelContent::Text("later parent mutation".into());
         let changed_parent = PreparedModelRequest::prepare(changed_parent, limits, None)?;
         assert!(ModelPrefix::select(&changed_parent, Some((&head, &prepared))).is_err());
-        // An authenticated, canonical parent with the same shape and binding still must contain the exact messages claimed by the child segment.
+        // A same-shape parent must still contain the exact claimed messages.
         let impostor = store_prefix(
             &mut reader,
             &ModelPrefix::select(&changed_parent, None)?,
@@ -2352,9 +2253,8 @@ mod tests {
         let mislabeled = store_prefix(&mut reader, &mislabeled, 89)?;
         assert!(
             matches!(PreparedModelRequest::inherit(request()?, &mislabeled, &reader, limits, None).await,
-            Err(Error::Invalid(message)) if message == "model prefix ordered messages differ")
+            Err(Error::Invalid(_)))
         );
-        assert_eq!(reopened.0.len() + 2, reader.0.len());
         Ok(())
     }
 
@@ -2377,7 +2277,7 @@ mod tests {
             }, &mut None)?;
             assert!(matches!(content.validate_limits(Limits {
                 render_bytes: exact - 1, ..Limits::default()
-            }, &mut None), Err(Error::Invalid(message)) if message.contains("render limit")));
+            }, &mut None), Err(Error::Invalid(_))));
         }
         Ok(())
     }

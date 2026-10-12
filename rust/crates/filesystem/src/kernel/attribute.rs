@@ -59,7 +59,7 @@ impl AttributeClass {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct AttributeName {
     class: AttributeClass,
-    bytes: Vec<u8>,
+    pub(crate) bytes: Vec<u8>,
 }
 
 impl AttributeName {

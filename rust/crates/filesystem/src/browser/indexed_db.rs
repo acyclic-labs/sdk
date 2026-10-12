@@ -50,28 +50,6 @@ const OPERATION_WINDOWS: &str = "operation_windows";
 const MAXIMUM_WINDOW_BYTES: u64 = 64 * 1024;
 const OBJECT_KEY_BYTES: u64 = 66;
 
-struct WindowEncoder {
-    bytes: Vec<u8>,
-    maximum: usize,
-}
-
-impl std::io::Write for WindowEncoder {
-    fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
-        if input.len() > self.maximum.saturating_sub(self.bytes.len()) {
-            return Err(std::io::Error::other(
-                "operation window exceeds its storage bound",
-            ));
-        }
-        self.bytes.extend_from_slice(input);
-        Ok(input.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy)]
 struct ObjectBatchState {
     work: WorkCounters,
     retained: u64,
@@ -116,6 +94,7 @@ impl From<IndexedDbOpenError> for JsValue {
 /// Transactional `IndexedDB` immutable-object backend.
 pub struct IndexedDbObjectStore {
     database: Database,
+    // Validated at open; copying an admitted object twice fits in u64.
     maximum_object_bytes: u64,
 }
 
@@ -144,12 +123,8 @@ impl IndexedDbObjectStore {
         key.push(char::from(b'0' + object_id.kind.canonical_tag()));
         key.push(':');
         for byte in object_id.digest.as_bytes() {
-            key.push(char::from(
-                *HEX.get(usize::from(byte >> 4)).unwrap_or(&b'0'),
-            ));
-            key.push(char::from(
-                *HEX.get(usize::from(byte & 0x0f)).unwrap_or(&b'0'),
-            ));
+            key.push(char::from(HEX[usize::from(byte >> 4)]));
+            key.push(char::from(HEX[usize::from(byte & 0x0f)]));
         }
         key
     }
@@ -164,18 +139,6 @@ impl IndexedDbObjectStore {
 
     fn backend(error: impl std::fmt::Display, work: WorkCounters) -> ObjectFailure {
         ObjectFailure::new(ObjectStoreError::Rejected(error.to_string()), work)
-    }
-
-    fn doubled(length: u64, work: WorkCounters) -> Result<u64, ObjectFailure> {
-        length
-            .checked_mul(2)
-            .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))
-    }
-
-    fn peak_with_key(length: u64, work: WorkCounters) -> Result<u64, ObjectFailure> {
-        OBJECT_KEY_BYTES
-            .checked_add(length)
-            .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))
     }
 
     async fn get_blob(
@@ -286,10 +249,6 @@ impl IndexedDbObjectStore {
                 ..WorkCounters::default()
             })
             .map_err(|error| ObjectFailure::new(error.into(), state.work))?;
-        state.work.peak_allocation_bytes = state
-            .work
-            .peak_allocation_bytes
-            .max(state.retained.saturating_add(OBJECT_KEY_BYTES));
         state
             .work
             .verify(state.budget)
@@ -330,7 +289,7 @@ impl IndexedDbObjectStore {
         state: &mut ObjectBatchState,
         cancellation: &CancellationToken,
     ) -> Result<ObjectRead, ObjectFailure> {
-        let copied = Self::doubled(length, state.work)?;
+        let copied = length * 2;
         let transient = OBJECT_KEY_BYTES.saturating_add(copied);
         state.work = state
             .work
@@ -343,10 +302,6 @@ impl IndexedDbObjectStore {
                 ..WorkCounters::default()
             })
             .map_err(|error| ObjectFailure::new(error.into(), state.work))?;
-        state.work.peak_allocation_bytes = state
-            .work
-            .peak_allocation_bytes
-            .max(state.retained.saturating_add(transient));
         state
             .work
             .verify(state.budget)
@@ -356,7 +311,6 @@ impl IndexedDbObjectStore {
             .retained
             .checked_add(length)
             .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), state.work))?;
-        state.work.peak_allocation_bytes = state.work.peak_allocation_bytes.max(state.retained);
         Ok(value)
     }
 
@@ -408,8 +362,8 @@ impl IndexedDbObjectStore {
         retained_handles: u64,
         cancellation: &CancellationToken,
     ) -> Result<(Blob, WorkCounters), ObjectFailure> {
-        let copied = Self::doubled(length, work)?;
-        let peak_allocation_bytes = Self::peak_with_key(copied, work)?
+        let copied = length * 2;
+        let peak_allocation_bytes = (OBJECT_KEY_BYTES + copied)
             .checked_add(retained_handles)
             .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))?;
         let prospective = work
@@ -461,8 +415,8 @@ impl IndexedDbObjectStore {
         retained_handles: u64,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, ObjectFailure> {
-        let copied = Self::doubled(length, work)?;
-        let peak_allocation_bytes = Self::peak_with_key(copied, work)?
+        let copied = length * 2;
+        let peak_allocation_bytes = (OBJECT_KEY_BYTES + copied)
             .checked_add(retained_handles)
             .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))?;
         let prospective = work
@@ -522,19 +476,10 @@ pub struct IndexedDbAuthorityStore {
 
 struct PreparedAppend {
     durable: DurableCommit,
-    next_head: Head,
     encoded_commit: Vec<u8>,
     encoded_operation: Vec<u8>,
     encoded_head: Vec<u8>,
     work: WorkCounters,
-}
-
-struct ReplayBlob {
-    sequence: Sequence,
-    blob: Blob,
-    encoded_length: u64,
-    payload_length: u64,
-    is_predecessor: bool,
 }
 
 impl IndexedDbAuthorityStore {
@@ -543,14 +488,12 @@ impl IndexedDbAuthorityStore {
         transaction: &Transaction<'_>,
         workspace: crate::WorkspaceId,
         prior: WorkCounters,
-        budget: Option<WorkBudget>,
+        budget: WorkBudget,
     ) -> AuthorityResult<Option<crate::OperationWindowSnapshot>> {
         let work = prior
-            .checked_add(authority_backend_read_work())
+            .checked_add(authority_fixed_read_work(0))
             .map_err(|error| AuthorityFailure::new(error.into(), prior))?;
-        if let Some(budget) = budget {
-            Self::admit(work, budget)?;
-        }
+        Self::admit(work, budget)?;
         let store = transaction
             .object_store(OPERATION_WINDOWS)
             .map_err(|error| Self::backend(error, work))?;
@@ -580,9 +523,7 @@ impl IndexedDbAuthorityStore {
         }
         let copy_work = WorkCounters {
             bytes_copied: length,
-            // Conservatively admit JSON containers, strings and map nodes
-            // before parsing. An input byte can introduce at most one value;
-            // the retained control state and temporary copy fit this envelope.
+            // Admit a conservative envelope for JSON values, map nodes and the input copy.
             allocation_operations: length.saturating_add(1),
             peak_allocation_bytes: length.saturating_mul(128),
             items_examined: length,
@@ -591,9 +532,7 @@ impl IndexedDbAuthorityStore {
         let work = work
             .checked_add(copy_work)
             .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-        if let Some(budget) = budget {
-            Self::admit(work, budget)?;
-        }
+        Self::admit(work, budget)?;
         let snapshot: crate::OperationWindowSnapshot =
             serde_json::from_slice(&array.to_vec()).map_err(|error| Self::corrupt(error, work))?;
         if !snapshot.is_valid_for(workspace) {
@@ -622,7 +561,7 @@ impl IndexedDbAuthorityStore {
             } => {
                 let workspace = crate::WorkspaceId::from_bytes(workspace_id);
                 let receipt = self
-                    .read_window(transaction, workspace, work, Some(budget))
+                    .read_window(transaction, workspace, work, budget)
                     .await?;
                 let work = receipt.work;
                 let active = match receipt.value {
@@ -667,11 +606,11 @@ impl IndexedDbAuthorityStore {
         })
     }
 
-    fn payload_bytes(
+    fn validate_payload(
         &self,
         commit: &ProposedCommit,
         work: WorkCounters,
-    ) -> Result<u64, AuthorityFailure> {
+    ) -> Result<(), AuthorityFailure> {
         let observed = commit.payload.len() as u64;
         if observed > self.maximum_payload_bytes {
             return Err(AuthorityFailure::new(
@@ -682,7 +621,7 @@ impl IndexedDbAuthorityStore {
                 work,
             ));
         }
-        Ok(observed)
+        Ok(())
     }
 
     fn backend(error: impl std::fmt::Display, work: WorkCounters) -> AuthorityFailure {
@@ -746,10 +685,10 @@ impl IndexedDbAuthorityStore {
 
     fn blob_length(blob: &Blob, work: WorkCounters) -> Result<u64, AuthorityFailure> {
         let size = blob.size();
-        if !size.is_finite() || size < 0.0 || size.fract().abs() > f64::EPSILON {
+        if !size.is_finite() || size < 0.0 || size.fract() != 0.0 {
             return Err(Self::corrupt("commit Blob has a non-integral size", work));
         }
-        if size >= u64::MAX as f64 || size.fract() != 0.0 {
+        if size >= u64::MAX as f64 {
             return Err(Self::corrupt("commit Blob size is not representable", work));
         }
         Ok(size as u64)
@@ -844,7 +783,7 @@ impl IndexedDbAuthorityStore {
         match encoded {
             Some(encoded) => Ok((Some(decode_operation(&encoded)
                 .map_err(|error| Self::corrupt(error, admission))?), admission)),
-            None => Ok((None, work.checked_add(authority_backend_read_work())
+            None => Ok((None, work.checked_add(authority_fixed_read_work(0))
                 .map_err(|error| AuthorityFailure::new(error.into(), work))?)),
         }
     }
@@ -910,8 +849,7 @@ impl IndexedDbAuthorityStore {
         let encoded_length = Self::blob_length(&blob, work)?;
         let payload_length =
             authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
-        let materialize_work = authority_commit_read_work(encoded_length, payload_length)
-            .map_err(|error| AuthorityFailure::new(error.into(), work))?;
+        let materialize_work = authority_commit_read_work(encoded_length, payload_length);
         work = work
             .checked_add(materialize_work)
             .map_err(|error| AuthorityFailure::new(error.into(), work))?;
@@ -936,7 +874,6 @@ impl IndexedDbAuthorityStore {
         epoch: Epoch,
         actual: Head,
         commit: ProposedCommit,
-        payload_bytes: u64,
         budget: WorkBudget,
         work: WorkCounters,
     ) -> Result<PreparedAppend, AuthorityFailure> {
@@ -949,13 +886,22 @@ impl IndexedDbAuthorityStore {
             )
         })?;
         // Admission must precede both hashing and allocating the encoded body.
-        let encoded_commit_bytes = payload_bytes
-            .checked_add((COMMIT_PREFIX_BYTES as u64))
-            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
-        let mut append_work = authority_append_work(payload_bytes, encoded_commit_bytes)
-            .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-        // Multiple first records share this strict transaction and its one commit.
-        append_work.durability_operations = u64::from(work.durability_operations == 0);
+        let payload_bytes = commit.payload.len() as u64;
+        let encoded_commit_bytes = payload_bytes + COMMIT_PREFIX_BYTES as u64;
+        let fixed_bytes = (HEAD_BYTES + OPERATION_BYTES) as u64;
+        let append_work = WorkCounters {
+            authority_records_appended: 1,
+            authority_bytes_written: payload_bytes,
+            backend_write_operations: 3,
+            // Multiple first records share one strict transaction commit.
+            durability_operations: u64::from(work.durability_operations == 0),
+            bytes_hashed: payload_bytes,
+            bytes_copied: encoded_commit_bytes * 2 + fixed_bytes,
+            bytes_encoded: encoded_commit_bytes + fixed_bytes,
+            allocation_operations: 6,
+            peak_allocation_bytes: encoded_commit_bytes * 3 + fixed_bytes * 2,
+            ..WorkCounters::default()
+        };
         let write_work = work
             .checked_add(append_work)
             .map_err(|error| AuthorityFailure::new(error.into(), work))?;
@@ -979,21 +925,15 @@ impl IndexedDbAuthorityStore {
             digest,
             payload: commit.payload,
         };
-        let next_head = Head {
-            epoch,
-            sequence,
-            digest,
-        };
         let encoded_commit = encode_commit(&durable).map_err(|error| Self::backend(error, work))?;
         Ok(PreparedAppend {
             encoded_operation: encode_operation(OperationRecord {
                 sequence,
                 fingerprint: durable.fingerprint,
             }),
-            encoded_head: encode_head(next_head),
+            encoded_head: encode_head(Head { epoch, sequence, digest }),
             encoded_commit,
             durable,
-            next_head,
             work: write_work,
         })
     }
@@ -1027,7 +967,7 @@ impl IndexedDbAuthorityStore {
             let commits = transaction
                 .object_store(AUTHORITY_COMMITS)
                 .map_err(|error| Self::backend(error, prepared.work))?;
-            Self::write_record(&commits, &commit_key(authority_id, prepared.next_head.sequence), JsValue::from(commit_blob), false, cancellation, prepared.work)
+            Self::write_record(&commits, &commit_key(authority_id, prepared.durable.sequence), JsValue::from(commit_blob), false, cancellation, prepared.work)
             .await?;
         }
         {
@@ -1078,7 +1018,7 @@ impl IndexedDbAuthorityStore {
         cancellation: &CancellationToken,
         work: WorkCounters,
     ) -> Result<WorkCounters, AuthorityFailure> {
-        let payload_bytes = self.payload_bytes(&commit, work)?;
+        self.validate_payload(&commit, work)?;
         let gate_work = work
             .checked_add(WorkCounters {
                 durability_operations: 0,
@@ -1096,7 +1036,6 @@ impl IndexedDbAuthorityStore {
             Epoch::GENESIS,
             Head::genesis(Epoch::GENESIS),
             commit,
-            payload_bytes,
             budget,
             gate_work,
         )?;
@@ -1109,19 +1048,11 @@ impl IndexedDbAuthorityStore {
         authority_id: AuthorityId, after: Sequence, requested: u64, maximum_payload_bytes: u64,
         budget: WorkBudget, mut work: WorkCounters,
         cancellation: &CancellationToken,
-    ) -> Result<(Vec<ReplayBlob>, WorkCounters), AuthorityFailure> {
-        let start = after.checked_next().map_err(|error| {
-            AuthorityFailure::new(
-                AuthorityStoreError::Rejected(format!("replay cursor cannot advance: {error}")),
-                work,
-            )
-        })?;
-        let count = requested
-            .checked_add(u64::from(after != Sequence::GENESIS))
-            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
-        let handle_bytes = count
-            .checked_mul((size_of::<ReplayBlob>() as u64))
-            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
+    ) -> Result<(Vec<(Sequence, Blob)>, WorkCounters), AuthorityFailure> {
+        let start = after.get() + u64::from(after == Sequence::GENESIS);
+        // The page limit bounds requested to u32::MAX records.
+        let count = requested + u64::from(after != Sequence::GENESIS);
+        let handle_bytes = count * size_of::<(Sequence, Blob)>() as u64;
         let allocation_work = work
             .checked_add(WorkCounters {
                 allocation_operations: u64::from(count != 0),
@@ -1140,11 +1071,7 @@ impl IndexedDbAuthorityStore {
             .map_err(|error| Self::backend(error, work))?;
         let mut returned_payload_bytes = 0_u64;
         for offset in 0..count {
-            let value = if after != Sequence::GENESIS {
-                after.get().checked_add(offset)
-            } else {
-                start.get().checked_add(offset)
-            }
+            let value = start.checked_add(offset)
             .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
             let sequence = Sequence::new(value);
             let prospective = work
@@ -1173,8 +1100,7 @@ impl IndexedDbAuthorityStore {
             let encoded_length = Self::blob_length(&blob, work)?;
             let payload_length =
                 authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
-            let is_predecessor = sequence == after && after != Sequence::GENESIS;
-            if !is_predecessor {
+            if sequence != after {
                 let next_payload = returned_payload_bytes
                     .checked_add(payload_length)
                     .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
@@ -1192,13 +1118,7 @@ impl IndexedDbAuthorityStore {
                 }
                 returned_payload_bytes = next_payload;
             }
-            blobs.push(ReplayBlob {
-                sequence,
-                blob,
-                encoded_length,
-                payload_length,
-                is_predecessor,
-            });
+            blobs.push((sequence, blob));
         }
         drop(transaction);
         Ok((blobs, work))
@@ -1207,7 +1127,8 @@ impl IndexedDbAuthorityStore {
     async fn decode_replay_blobs(
         &self,
         authority_id: AuthorityId,
-        blobs: Vec<ReplayBlob>,
+        after: Sequence,
+        blobs: Vec<(Sequence, Blob)>,
         head: Head,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -1215,15 +1136,10 @@ impl IndexedDbAuthorityStore {
     ) -> AuthorityResult<Vec<DurableCommit>> {
         let mut previous_digest = crate::Digest::ZERO;
         let count = blobs.len() as u64;
-        let vector_bytes = count
-            .checked_mul((size_of::<DurableCommit>() as u64))
-            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
-        let blob_vector_bytes = (blobs.capacity() as u64)
-            .checked_mul((size_of::<ReplayBlob>() as u64))
-            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
-        let mut retained = vector_bytes
-            .checked_add(blob_vector_bytes)
-            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
+        // wasm32 vector lengths and capacities fit these u64 byte counts.
+        let vector_bytes = count * size_of::<DurableCommit>() as u64;
+        let blob_vector_bytes = blobs.capacity() as u64 * size_of::<(Sequence, Blob)>() as u64;
+        let mut retained = vector_bytes + blob_vector_bytes;
         let prospective = work
             .checked_add(WorkCounters {
                 allocation_operations: u64::from(count != 0),
@@ -1237,10 +1153,10 @@ impl IndexedDbAuthorityStore {
             .try_reserve_exact(blobs.len())
             .map_err(|error| Self::backend(error, work))?;
         work = prospective;
-        for replay in blobs {
-            let mut read_work =
-                authority_commit_read_work(replay.encoded_length, replay.payload_length)
-                    .map_err(|error| AuthorityFailure::new(error.into(), work))?;
+        for (sequence, blob) in blobs {
+            let encoded_length = Self::blob_length(&blob, work)?;
+            let payload_length = authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
+            let mut read_work = authority_commit_read_work(encoded_length, payload_length);
             read_work.peak_allocation_bytes = retained
                 .checked_add(read_work.peak_allocation_bytes)
                 .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
@@ -1249,21 +1165,21 @@ impl IndexedDbAuthorityStore {
                 .map_err(|error| AuthorityFailure::new(error.into(), work))?;
             Self::admit(prospective, budget)?;
             let encoded = Self::materialize_blob(
-                &replay.blob,
-                replay.encoded_length,
+                &blob,
+                encoded_length,
                 cancellation,
                 prospective,
             )
             .await?;
             let commit = decode_commit_owned(authority_id, encoded, self.maximum_payload_bytes)
                 .map_err(|error| Self::corrupt(error, prospective))?;
-            if commit.sequence != replay.sequence {
+            if commit.sequence != sequence {
                 return Err(Self::corrupt(
                     "authority commit key does not match its sequence",
                     prospective,
                 ));
             }
-            if replay.is_predecessor {
+            if sequence == after {
                 previous_digest = commit.digest;
             } else {
                 if commit.previous_digest != previous_digest {
@@ -1275,7 +1191,7 @@ impl IndexedDbAuthorityStore {
                 previous_digest = commit.digest;
                 // Bytes::slice retains the complete canonical encoded buffer.
                 retained = retained
-                    .checked_add(replay.encoded_length)
+                    .checked_add(encoded_length)
                     .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), prospective))?;
                 output.push(commit);
             }
@@ -1349,7 +1265,7 @@ impl IndexedDbAuthorityStore {
                 cancellation,
             )
             .await?;
-        self.decode_replay_blobs(authority_id, blobs, head, budget, cancellation, work)
+        self.decode_replay_blobs(authority_id, after, blobs, head, budget, cancellation, work)
             .await
     }
 }
@@ -1363,7 +1279,7 @@ impl crate::OperationWindowStore for IndexedDbAuthorityStore {
     ) -> Result<Option<crate::OperationWindowSnapshot>, Self::Error> {
         let transaction = transaction(&self.database, &[OPERATION_WINDOWS], TransactionMode::Readonly)
             .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
-        self.read_window(&transaction, workspace, WorkCounters::default(), None)
+        self.read_window(&transaction, workspace, WorkCounters::default(), WorkBudget::UNBOUNDED)
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
@@ -1384,17 +1300,16 @@ impl crate::OperationWindowStore for IndexedDbAuthorityStore {
         }
         let maximum = usize::try_from(self.maximum_payload_bytes.min(MAXIMUM_WINDOW_BYTES))
             .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
-        let mut encoder = WindowEncoder {
-            bytes: Vec::with_capacity(maximum),
-            maximum,
-        };
+        let mut encoded = vec![0; maximum];
+        let mut encoder = std::io::Cursor::new(encoded.as_mut_slice());
         serde_json::to_writer(&mut encoder, &replacement)
             .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
-        let encoded = encoder.bytes;
+        let length = encoder.position() as usize;
+        encoded.truncate(length);
         let transaction = transaction(&self.database, &[OPERATION_WINDOWS], TransactionMode::Readwrite)
             .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
         if self
-            .read_window(&transaction, workspace, WorkCounters::default(), None)
+            .read_window(&transaction, workspace, WorkCounters::default(), WorkBudget::UNBOUNDED)
             .await
             .map_err(|failure| failure.error)?
             .value
@@ -1610,7 +1525,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 work: gate_work,
             });
         }
-        let read_work = authority_backend_read_work();
+        let read_work = authority_fixed_read_work(0);
         let head = Head::genesis(genesis_epoch);
         let encoded = encode_head(head);
         let write_work = read_work
@@ -1700,7 +1615,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let payload_bytes = self.payload_bytes(&commit, WorkCounters::default())?;
+        self.validate_payload(&commit, WorkCounters::default())?;
         let work = authority_fixed_read_work(HEAD_BYTES);
         Self::admit(work, budget)?;
         let transaction = transaction(&self.database, &[ AUTHORITY_HEADS, AUTHORITY_COMMITS, AUTHORITY_OPERATIONS, AUTHORITY_GATES, OPERATION_WINDOWS, ], TransactionMode::Readwrite)
@@ -1771,7 +1686,6 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             epoch,
             actual,
             commit,
-            payload_bytes,
             budget,
             work,
         )?;
@@ -2162,8 +2076,8 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 work,
             ));
         }
-        let copied = Self::doubled(length, work)?;
-        let peak_allocation_bytes = Self::peak_with_key(copied, work)?;
+        let copied = length * 2;
+        let peak_allocation_bytes = OBJECT_KEY_BYTES + copied;
         let prospective = work
             .checked_add(WorkCounters {
                 backend_read_operations: 1,
@@ -2317,13 +2231,6 @@ fn authority_fixed_read_work(record_bytes: usize) -> WorkCounters {
     }
 }
 
-fn authority_backend_read_work() -> WorkCounters {
-    WorkCounters {
-        backend_read_operations: 1,
-        ..WorkCounters::default()
-    }
-}
-
 fn authority_fixed_write_work(record_bytes: usize, operations: u64) -> WorkCounters {
     let bytes = record_bytes as u64;
     WorkCounters {
@@ -2358,11 +2265,10 @@ fn authority_payload_length(
 fn authority_commit_read_work(
     encoded_length: u64,
     payload_length: u64,
-) -> Result<WorkCounters, crate::WorkError> {
-    let copied = encoded_length
-        .checked_mul(2)
-        .ok_or(crate::WorkError::Overflow)?;
-    Ok(WorkCounters {
+) -> WorkCounters {
+    // Payload validation bounds each encoded record to u32::MAX bytes.
+    let copied = encoded_length * 2;
+    WorkCounters {
         authority_records_read: 1,
         authority_bytes_read: payload_length,
         bytes_hashed: payload_length,
@@ -2370,44 +2276,7 @@ fn authority_commit_read_work(
         allocation_operations: 2 * u64::from(encoded_length != 0),
         peak_allocation_bytes: copied,
         ..WorkCounters::default()
-    })
-}
-
-fn authority_append_work(
-    payload_bytes: u64,
-    encoded_commit_bytes: u64,
-) -> Result<WorkCounters, crate::WorkError> {
-    let fixed_bytes = HEAD_BYTES.saturating_add(OPERATION_BYTES) as u64;
-    let encoded_bytes = encoded_commit_bytes
-        .checked_add(fixed_bytes)
-        .ok_or(crate::WorkError::Overflow)?;
-    let copied_commit = encoded_commit_bytes
-        .checked_mul(2)
-        .ok_or(crate::WorkError::Overflow)?;
-    let bytes_copied = copied_commit
-        .checked_add(fixed_bytes)
-        .ok_or(crate::WorkError::Overflow)?;
-    let peak_commit = encoded_commit_bytes
-        .checked_mul(3)
-        .ok_or(crate::WorkError::Overflow)?;
-    let peak_fixed = fixed_bytes
-        .checked_mul(2)
-        .ok_or(crate::WorkError::Overflow)?;
-    let peak_allocation_bytes = peak_commit
-        .checked_add(peak_fixed)
-        .ok_or(crate::WorkError::Overflow)?;
-    Ok(WorkCounters {
-        authority_records_appended: 1,
-        authority_bytes_written: payload_bytes,
-        backend_write_operations: 3,
-        durability_operations: 1,
-        bytes_hashed: payload_bytes,
-        bytes_copied,
-        bytes_encoded: encoded_bytes,
-        allocation_operations: 6,
-        peak_allocation_bytes,
-        ..WorkCounters::default()
-    })
+    }
 }
 
 fn cancellable_failure(
@@ -2472,10 +2341,7 @@ mod tests {
         const SENTINELS: &str = "legacy-sentinel-records";
         const KEY: &str = "original-record";
         const VALUE: &[u8] = b"obsolete-version-4-persisted-record";
-        Database::delete_by_name(NAME)
-            .map_err(js_error)?
-            .await
-            .map_err(js_error)?;
+        delete_database(NAME).await?;
         let obsolete_version = DATABASE_VERSION + 3;
         let old = Database::open(NAME)
             .with_version(obsolete_version)
@@ -2534,20 +2400,14 @@ mod tests {
         assert_eq!(Uint8Array::new(&unchanged).to_vec().as_slice(), VALUE);
         drop(read);
         retained.close();
-        Database::delete_by_name(NAME)
-            .map_err(js_error)?
-            .await
-            .map_err(js_error)?;
+        delete_database(NAME).await?;
         Ok(())
     }
 
     #[wasm_bindgen_test]
     async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result<(), JsValue> {
         const DATABASE_NAME: &str = "acyclic-fs-object-conformance-v2";
-        Database::delete_by_name(DATABASE_NAME)
-            .map_err(js_error)?
-            .await
-            .map_err(js_error)?;
+        delete_database(DATABASE_NAME).await?;
         let store = IndexedDbObjectStore::open(DATABASE_NAME, 1_024)
             .await
             .map_err(js_error)?;
@@ -2667,10 +2527,7 @@ mod tests {
     #[wasm_bindgen_test]
     async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue> {
         const DATABASE_NAME: &str = "acyclic-fs-object-batch-v1";
-        Database::delete_by_name(DATABASE_NAME)
-            .map_err(js_error)?
-            .await
-            .map_err(js_error)?;
+        delete_database(DATABASE_NAME).await?;
         let store = IndexedDbObjectStore::open(DATABASE_NAME, 1_024)
             .await
             .map_err(js_error)?;
@@ -2863,7 +2720,6 @@ mod tests {
             Epoch::GENESIS,
             genesis,
             first_proposal.clone(),
-            5,
             WorkBudget {
                 bytes_hashed: 0,
                 ..WorkBudget::UNBOUNDED
@@ -3243,11 +3099,13 @@ mod tests {
         Ok(())
     }
 
+    async fn delete_database(name: &str) -> Result<(), JsValue> {
+        Database::delete_by_name(name).map_err(js_error)?.await.map_err(js_error)?;
+        Ok(())
+    }
+
     async fn open_clean_authority(database_name: &str) -> Result<IndexedDbAuthorityStore, JsValue> {
-        Database::delete_by_name(database_name)
-            .map_err(js_error)?
-            .await
-            .map_err(js_error)?;
+        delete_database(database_name).await?;
         IndexedDbAuthorityStore::open(database_name, 1_024)
             .await
             .map_err(js_error)

@@ -9,7 +9,7 @@ use tonic::{
 };
 use tracing::field::Empty;
 
-pub use crate::BearerAuth;
+use crate::BearerAuth;
 
 /// Generated client with account authentication on every request.
 pub type Client = wire::workers_service_client::WorkersServiceClient<
@@ -17,24 +17,20 @@ pub type Client = wire::workers_service_client::WorkersServiceClient<
 >;
 
 /// Shared transport-status channel retaining the originating trace context.
-pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel, CallSpan>;
+pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel>;
 
 /// Statically named workers RPC span factory.
-#[derive(Clone, Debug)]
-pub struct CallSpan;
-
-impl acyclic_grpc_observability::CallSpan for CallSpan {
-    fn span(rpc: Option<&str>) -> tracing::Span {
-        tracing::trace_span!(
-            "acyclic.workers.grpc.transport",
-            rpc,
-            rpc.code = Empty,
-            outcome = Empty,
-            outcome.scope = "grpc_transport",
-            error.kind = Empty
-        )
-    }
+pub(crate) fn transport_span(rpc: Option<&str>) -> tracing::Span {
+    tracing::trace_span!(
+        "acyclic.workers.grpc.transport",
+        rpc,
+        rpc.code = Empty,
+        outcome = Empty,
+        outcome.scope = "grpc_transport",
+        error.kind = Empty
+    )
 }
+
 /// Client configuration error.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
@@ -85,13 +81,8 @@ pub async fn connect_channel(
     Ok((configured.connect().await?, authorization))
 }
 
-/// Connect trusting the operating system's roots with account-bound bearer metadata.
-pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError> {
-    connect_with_ca_certificate(endpoint, token, None).await
-}
-
 /// Connect trusting exactly `ca` when supplied, otherwise the platform's roots.
-pub async fn connect_with_ca_certificate(
+pub async fn connect(
     endpoint: &str,
     token: &str,
     ca: Option<&[u8]>,
@@ -100,7 +91,7 @@ pub async fn connect_with_ca_certificate(
     Ok(
         wire::workers_service_client::WorkersServiceClient::with_origin(
             tonic::service::interceptor::InterceptedService::new(
-                TracedChannel::new(channel),
+                TracedChannel::new(channel, transport_span),
                 authorization,
             ),
             endpoint

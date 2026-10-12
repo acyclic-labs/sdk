@@ -329,7 +329,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             if !workers.is_empty() {
                 return Err(Error::Conflict("active worker handles must settle or the process must close before native reopen; no implicit cancellation".into()));
             }
-            let config = api.native()?.config.clone();
+            let config = api.native()?.config();
             drop(backend.take());
             *backend = Some(Backend::Native(std::sync::Arc::new(native::NativeSession::open(config).await?)));
             return Ok("native providers reopened; no admission or effect resent\n".into());
@@ -390,7 +390,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
                     writeln!(output, "worker-claim task={task} lease-json-hex={}", native::lease_hex(&lease)?)
                         .and_then(|()| output.flush()).map_err(|error| Error::Storage(error.to_string()))?;
                     if command.starts_with("/claim ") {
-                        native.runtime.task_host().start_task(&lease).await?;
+                        native.runtime.task_host().start_task(&lease, None).await?;
                         return Ok(format!("worker retained task={task}; no command dispatched\n"));
                     }
                     let _ = workers.spawn(async move { native.resume(lease).await });
@@ -436,7 +436,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let fork: acyclic_harness::fork::ForkRequest =
                 serde_json::from_value(request.request.payload.clone())
                     .map_err(|error| Error::Invalid(format!("invalid exact fork request: {error}")))?;
-            fork.validate()?;
+            fork.validate(&mut None)?;
             writeln!(output, "preparation-attempt operation={} caller-task={} new-child-agent={} child-admission-operation={} fork-operation={}",
                 request.operation, request.parent, fork.child_agent,
                 request.request.child.operation_id, fork.operation_id)
@@ -493,13 +493,13 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             native.caller_context(request.caller, &request.lease).await?;
             let binding = native.caller_binding(request.caller).await?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
-                &binding.issuer, binding.key, binding.authority.clone()).verifier();
+                &binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
             let reader = acyclic_harness::store::HistoryReader::new(
                 &native.stream, &binding.authority, verifier)?;
             let cursor = match request.cursor {
                 Some(cursor) if cursor.authority == binding.authority => cursor,
                 Some(_) => return Err(Error::Unauthorized("history cursor belongs to a different caller conversation".into())),
-                None => reader.pin(0).await?,
+                None => reader.pin(0, None).await?,
             };
             let page = reader.read_page(&cursor, acyclic_harness::store::HistoryReadLimits {
                 maximum_events: terminal::MAX_PAGE_EVENTS as u32,
@@ -530,7 +530,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
                 .or_else(|| if native.config.owner.authority == request.seed.parent { Some(&native.config.owner) } else { None })
                 .ok_or_else(|| Error::Unsupported("original parent history verifier unavailable".into()))?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
-                &parent.issuer, parent.key, parent.authority.clone()).verifier();
+                &parent.issuer, parent.key, parent.authority.clone()).verifier(&mut None).expect("verifier copy");
             let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &parent.authority, verifier)?;
             let messages = reader.inherited_conversation_page(
                 &request.seed, child.agent()?, request.after_sequence,
@@ -574,16 +574,16 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let request: ReadPath = read_json(std::path::Path::new(path))?;
             let native = api.native()?;
             let context = native.caller_context(request.caller, &request.lease).await?;
-            let full = request.volume.capability(acyclic_harness::conversation::VolumeOperation::Read)?;
-            let directory = request.volume.directory_read_capability("")?;
+            let full = request.volume.capability(acyclic_harness::conversation::VolumeOperation::Read, &mut None)?;
+            let directory = request.volume.directory_read_capability("", &mut None)?;
             if !context.scope().grants().contains(&full) && !context.scope().grants().contains(&directory) {
                 return Err(Error::Unauthorized("caller cannot discover this current volume".into()));
             }
             let binding = native.caller_binding(request.caller).await?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
-                &binding.issuer, binding.key, binding.authority.clone()).verifier();
+                &binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
             let grant = acyclic_harness::conversation::ContentGrant::verify_directory_read(
-                &verifier, &binding.scope, &request.volume, "")?;
+                &verifier, &binding.scope, &request.volume, "", &mut None)?;
             let (file, bytes) = native.files.read_private_path(
                 &request.volume, &grant, &request.path, request.generation.as_ref(),
                 terminal::MAX_FRAME_BYTES as u64,

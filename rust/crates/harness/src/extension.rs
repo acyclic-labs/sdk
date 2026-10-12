@@ -389,7 +389,7 @@ impl ExtensionRuntime {
         let admission = reducer
             .extension_admission()?
             .ok_or_else(|| Error::Unsupported("agent has no committed extensions".into()))?;
-        admission.validate()?;
+        admission.validate(&mut None)?;
         let mut roots = Vec::with_capacity(admission.selected().len());
         for dependency in admission.selected() {
             let identity = registry
@@ -486,7 +486,7 @@ impl ExtensionRuntime {
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if let Some(admission) = admission {
-            admission.validate_with_work(work)?;
+            admission.validate(work)?;
             if admission.selected().len() != self.retained.len() {
                 return Err(crate::runtime::scope_metadata_boundary(
                     work, crate::wire::ErrorCode::Conflict,

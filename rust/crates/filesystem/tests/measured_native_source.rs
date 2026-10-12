@@ -95,23 +95,23 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     drop(caller_guard);
     assert!(work.live_allocation_bytes() > before, "provider retains its own root/control custody");
     let identity = source.root_identity();
-    assert_eq!(source.validate_root_with_native_work(&root, identity, &work)?, reference);
-    source.validate_current_with_native_work(reference, &work)?;
-    let advanced = source.invalidate_with_native_work(&work)?;
+    assert_eq!(source.validate_root(&root, identity, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work))?, reference);
+    source.validate_current(reference, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work))?;
+    let advanced = source.invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work))?;
     assert_eq!(advanced.identity, reference.identity);
     assert_eq!(advanced.epoch, reference.epoch + 1);
-    assert!(matches!(source.validate_current_with_native_work(reference, &work), Err(DemandError::StaleSource)));
-    assert_eq!(source.validate_root_with_native_work(&root, identity, &work)?, advanced);
+    assert!(matches!(source.validate_current(reference, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work)), Err(DemandError::StaleSource)));
+    assert_eq!(source.validate_root(&root, identity, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work))?, advanced);
     let ordinary = NativeDemandSource::open(
         &root, FilesystemProfile::Portable, VolumeLimits::default(), Some(reference), None,
     ).await?;
     let prefix = work.receipt();
-    assert!(matches!(ordinary.validate_root_with_native_work(&root, identity, &work), Err(DemandError::NativeWorkUnavailable)));
-    assert!(matches!(ordinary.invalidate_with_native_work(&work), Err(DemandError::NativeWorkUnavailable)));
+    assert!(matches!(ordinary.validate_root(&root, identity, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work)), Err(DemandError::NativeWorkUnavailable)));
+    assert!(matches!(ordinary.invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work)), Err(DemandError::NativeWorkUnavailable)));
     assert_eq!(work.receipt(), prefix);
     std::fs::rename(&root, temporary.path().join("held-original"))?;
     std::fs::create_dir(&root)?;
-    assert!(matches!(source.validate_root_with_native_work(&root, identity, &work), Err(DemandError::SourceUnavailable)));
+    assert!(matches!(source.validate_root(&root, identity, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work)), Err(DemandError::SourceUnavailable)));
     let retained = work.live_allocation_bytes();
     drop(source);
     assert!(work.live_allocation_bytes() < retained, "the physical root spelling retires only with its provider");
@@ -484,7 +484,7 @@ async fn native_continuation_replays_consumed_entries_after_budget_denial() -> T
     let token = CancellationToken::new();
     let budget = finite_budget()?;
     let mut first = source.list_page(source.reference(), &path, None, 1, budget, &token).await?;
-    first.value.publication.accept(first.work.remaining(budget)?, &token).await?;
+    acyclic_fs::demand::accept_publication(&mut first.value.publication, first.work.remaining(budget)?, &token).await?;
     let cursor = first.value.next.ok_or("expected continuation")?;
     let mut limited = budget;
     limited.source_entries_visited = 0;
@@ -498,7 +498,7 @@ async fn native_continuation_replays_consumed_entries_after_budget_denial() -> T
     while let Some(cursor) = next {
         let mut page = source.list_page(source.reference(), &path, Some(cursor), 2, budget, &token).await?;
         page.work.verify(budget)?;
-        page.value.publication.accept(page.work.remaining(budget)?, &token).await?;
+        acyclic_fs::demand::accept_publication(&mut page.value.publication, page.work.remaining(budget)?, &token).await?;
         names.extend(page.value.entries.iter().map(|entry| entry.name().as_bytes().to_vec()));
         next = page.value.next;
     }
@@ -525,7 +525,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
     let budget = finite_budget()?;
     let node = source.lookup(source.reference(), &path, budget, &token).await?.value.ok_or("opaque file absent")?;
     let mut page = source.list_page(source.reference(), &requested("")?, None, 8, budget, &token).await?;
-    page.value.publication.accept(page.work.remaining(budget)?, &token).await?;
+    acyclic_fs::demand::accept_publication(&mut page.value.publication, page.work.remaining(budget)?, &token).await?;
     assert_eq!(page.value.entries.len(), 1);
     assert_eq!(page.value.entries[0].name(), &name);
     page.work.verify(budget)?;
@@ -557,7 +557,7 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
     let token = CancellationToken::new();
     let budget = finite_budget()?;
     let mut first = source.list_page(source.reference(), &root, None, 1, budget, &token).await?;
-    first.value.publication.accept(first.work.remaining(budget)?, &token).await?;
+    acyclic_fs::demand::accept_publication(&mut first.value.publication, first.work.remaining(budget)?, &token).await?;
     let cursor = first.value.next.ok_or("native continuation absent")?;
     let mut denied = budget;
     denied.items_examined = 2;
@@ -569,7 +569,7 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
     assert_eq!(failure.work.allocation_operations, 0);
     failure.work.verify(denied)?;
     let mut next = source.list_page(source.reference(), &root, Some(cursor), 8, budget, &token).await?;
-    next.value.publication.accept(next.work.remaining(budget)?, &token).await?;
+    acyclic_fs::demand::accept_publication(&mut next.value.publication, next.work.remaining(budget)?, &token).await?;
     next.work.verify(budget)?;
     assert!(next.value.next.is_none());
     let mut names = first.value.entries.iter().chain(next.value.entries.iter())
@@ -597,12 +597,12 @@ async fn native_unpublished_pages_restore_initial_and_continuation_positions() -
         drop(page);
         let mut retry = source.list_page(source.reference(), &root, position.clone(), 1, budget, &token).await?;
         assert_eq!(retry.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>(), expected);
-        let aborted = retry.value.publication.abort(retry.work.remaining(budget)?).await?;
+        let aborted = acyclic_fs::demand::abort_publication(&mut retry.value.publication, retry.work.remaining(budget)?)?;
         aborted.work.verify(retry.work.remaining(budget)?)?;
         retry.work.checked_add(aborted.work)?.verify(budget)?;
         let mut accepted = source.list_page(source.reference(), &root, position.clone(), 1, budget, &token).await?;
         assert_eq!(accepted.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>(), expected);
-        let committed = accepted.value.publication.accept(accepted.work.remaining(budget)?, &token).await?;
+        let committed = acyclic_fs::demand::accept_publication(&mut accepted.value.publication, accepted.work.remaining(budget)?, &token).await?;
         accepted.work.checked_add(committed.work)?.verify(budget)?;
         position = accepted.value.next;
         assert!(position.is_some());
@@ -628,7 +628,7 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
         let projected = CancellationToken::new();
         let mut remaining = page.work.remaining(budget)?;
         if cancelled { projected.cancel(); } else { remaining.items_examined = 0; }
-        let failure = page.value.publication.accept(remaining, &projected).await
+        let failure = acyclic_fs::demand::accept_publication(&mut page.value.publication, remaining, &projected).await
             .err().ok_or("unadmitted publication committed native cursor")?;
         if cancelled { assert!(matches!(failure.error, DemandError::Cancelled)); }
         else { assert!(matches!(failure.error, DemandError::Work(_))); }
@@ -639,18 +639,18 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
         assert!(page.work.backend_read_operations > 0);
         let mut cleanup_budget = page.work.remaining(budget)?;
         cleanup_budget.items_examined = 1;
-        let aborted = page.value.publication.abort(cleanup_budget).await?;
+        let aborted = acyclic_fs::demand::abort_publication(&mut page.value.publication, cleanup_budget)?;
         aborted.work.verify(cleanup_budget)?;
         let retained = page.work.checked_add(*failure.work)?.checked_add(aborted.work)?;
         retained.verify(budget)?;
         let mut retry = source.list_page(source.reference(), &root, None, 2, budget, &live).await?;
         assert_eq!(retry.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>(), expected);
-        retry.value.publication.abort(retry.work.remaining(budget)?).await?;
+        acyclic_fs::demand::abort_publication(&mut retry.value.publication, retry.work.remaining(budget)?)?;
     }
     let mut committed = source.list_page(source.reference(), &root, None, 2, budget, &live).await?;
     let mut cleanup_budget = committed.work.remaining(budget)?;
     cleanup_budget.items_examined = 1;
-    let accepted = committed.value.publication.accept(cleanup_budget, &live).await?;
+    let accepted = acyclic_fs::demand::accept_publication(&mut committed.value.publication, cleanup_budget, &live).await?;
     accepted.work.verify(cleanup_budget)?;
     committed.work.checked_add(accepted.work)?.verify(budget)?;
     Ok(())

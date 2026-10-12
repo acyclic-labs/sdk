@@ -5,7 +5,6 @@ use acyclic_harness::{Error, Result,
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
-use serde::Serialize;
 use serde_json::json;
 use std::{fs::File, io::{Read as _, Write as _}, path::Path, sync::Mutex};
 use futures::StreamExt as _;
@@ -17,20 +16,11 @@ use acyclic_harness::{NativeFutureBundle, model::NativeModelStream};
 const MAX_LEDGER_BYTES: u64 = 1024 * 1024;
 const MAX_LEDGER_RECORDS: u64 = 128;
 
-/// Independent finite diagnostic evidence of actual provider entry, never task state, a model result cache, an effect receipt or replay input.
+/// Bounded evidence of actual provider entry.
 struct InvocationLedger {
     file: File,
     bytes: u64,
     records: u64,
-}
-
-#[derive(Serialize)]
-struct InvocationRecord {
-    format_version: u32,
-    phase: &'static str,
-    operation_id: acyclic_harness::OperationId,
-    step: u32,
-    request_digest: String,
 }
 
 pub struct Deterministic {
@@ -67,80 +57,65 @@ impl Deterministic {
         Ok(Self { delay_ms, ledger: Mutex::new(InvocationLedger { file, bytes, records }) })
     }
 
-    fn observe_invocation(&self, phase: &'static str, dispatch: ModelDispatch) -> Result<()> {
-        let record = InvocationRecord {
-            format_version: 1, phase, operation_id: dispatch.operation_id,
-            step: dispatch.step, request_digest: hex::encode(dispatch.request_digest),
-        };
-        let mut bytes = serde_json::to_vec(&record).map_err(|error| Error::Invalid(error.to_string()))?;
-        bytes.push(b'\n');
-        let mut ledger = self.ledger.lock().map_err(|_| Error::Storage("model invocation observer lock poisoned".into()))?;
-        let next_bytes = ledger.bytes.checked_add(bytes.len() as u64)
-            .ok_or_else(|| Error::Invalid("model invocation observer byte count overflow".into()))?;
-        if ledger.records >= MAX_LEDGER_RECORDS || next_bytes > MAX_LEDGER_BYTES {
-            return Err(Error::Invalid("model invocation observer finite allowance exhausted".into()));
-        }
-        ledger.file.write_all(&bytes)
-            .and_then(|()| ledger.file.sync_all())
-            .map_err(|error| Error::Storage(format!("model invocation observer append: {error}")))?;
-        ledger.bytes = next_bytes;
-        ledger.records += 1;
-        Ok(())
-    }
-
-    fn context_capacity_engine(&self, selection: &Model) -> Result<ModelContextCapacity> {
-        if selection.provider != "graphcoder-deterministic" || selection.name != "request-digest"
-            || selection.revision != "1"
-            || !selection.options.as_object().is_some_and(|options|
-                options.len() == 1 && options.get("dispatch_delay_ms").and_then(serde_json::Value::as_u64) == Some(u64::from(self.delay_ms)))
-        {
-            return Err(Error::Unsupported("native terminal has no adapter for this model selection".into()));
-        }
-        Ok(ModelContextCapacity { context_tokens: 131_072, output_tokens: 4096 })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn observe_invocation_native(
-        &self, phase: &'static str, dispatch: ModelDispatch, work: &NativeMaterializationWork,
+    fn observe_invocation(
+        &self, phase: &'static str, dispatch: ModelDispatch,
+        work: Option<&NativeMaterializationWork>,
     ) -> Result<()> {
-        // The complete bounded diagnostic record is built on the stack.
-        work.remaining()?;
+        if let Some(work) = work { work.remaining()?; }
+        let failure = |code, reason: &'static str| {
+            if work.is_some() { Error::NativeBoundary { code, reason } }
+            else if code == acyclic_harness::wire::ErrorCode::Storage { Error::Storage(reason.into()) }
+            else { Error::Invalid(reason.into()) }
+        };
+        let io_error = |error| {
+            if work.is_some() { Error::from(acyclic_fs::NativeTreeMaterializationError::Io(error)) }
+            else { Error::Storage(format!("model invocation observer append: {error}")) }
+        };
         let mut storage = [0u8; 512];
         let digest = digest_hex(dispatch.request_digest);
         let digest = std::str::from_utf8(&digest).expect("hex encoder emits ASCII");
         let mut writer = std::io::Cursor::new(storage.as_mut_slice());
         writeln!(writer, "{{\"format_version\":1,\"phase\":\"{phase}\",\"operation_id\":\"{}\",\"step\":{},\"request_digest\":\"{digest}\"}}",
             dispatch.operation_id, dispatch.step)
-            .map_err(|_| Error::Invalid("model invocation record exceeds stack bound".into()))?;
+            .map_err(|_| failure(acyclic_harness::wire::ErrorCode::Invalid,
+                "model invocation record exceeds stack bound"))?;
         let length = writer.position() as usize;
         let bytes = &storage[..length];
-        let mut ledger = self.ledger.lock().map_err(|_| Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Storage, reason: "model invocation observer lock poisoned" })?;
+        let mut ledger = self.ledger.lock().map_err(|_| failure(
+            acyclic_harness::wire::ErrorCode::Storage, "model invocation observer lock poisoned"))?;
         let next_bytes = ledger.bytes.checked_add(bytes.len() as u64)
-            .ok_or(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
-                reason: "model invocation observer byte count overflow" })?;
+            .ok_or_else(|| failure(acyclic_harness::wire::ErrorCode::Invalid,
+                "model invocation observer byte count overflow"))?;
         if ledger.records >= MAX_LEDGER_RECORDS || next_bytes > MAX_LEDGER_BYTES {
-            return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
-                reason: "model invocation observer finite allowance exhausted" });
+            return Err(failure(acyclic_harness::wire::ErrorCode::Invalid,
+                "model invocation observer finite allowance exhausted"));
         }
         let mut written = 0;
         while written < bytes.len() {
-            work.admit(WorkCounters { object_bytes_written: (bytes.len() - written) as u64, ..Default::default() })?;
-            work.charge(WorkCounters { backend_write_operations: 1, ..Default::default() })?;
-            let count = ledger.file.write(&bytes[written..])
-                .map_err(acyclic_fs::NativeTreeMaterializationError::Io)?;
-            work.spent(WorkCounters { object_bytes_written: count as u64, ..Default::default() })?;
-            if count == 0 { return Err(Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Storage,
-                reason: "model invocation observer write made no progress" }); }
+            if let Some(work) = work {
+                work.admit(WorkCounters { object_bytes_written: (bytes.len() - written) as u64, ..Default::default() })?;
+                work.charge(WorkCounters { backend_write_operations: 1, ..Default::default() })?;
+            }
+            let count = match ledger.file.write(&bytes[written..]) {
+                Err(error) if work.is_none() && error.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => result.map_err(io_error)?,
+            };
+            if let Some(work) = work {
+                work.spent(WorkCounters { object_bytes_written: count as u64, ..Default::default() })?;
+            }
+            if count == 0 { return Err(failure(acyclic_harness::wire::ErrorCode::Storage,
+                "model invocation observer write made no progress")); }
             written += count;
         }
-        work.charge(WorkCounters { durability_operations: 1, ..Default::default() })?;
-        ledger.file.sync_all().map_err(acyclic_fs::NativeTreeMaterializationError::Io)?;
+        if let Some(work) = work {
+            work.charge(WorkCounters { durability_operations: 1, ..Default::default() })?;
+        }
+        ledger.file.sync_all().map_err(io_error)?;
         ledger.bytes = next_bytes;
         ledger.records += 1;
         Ok(())
     }
+
 }
 
 pub fn model(delay_ms: u32) -> Model {
@@ -154,7 +129,6 @@ fn events(dispatch: ModelDispatch) -> Vec<ModelEvent> {
     }, ModelEvent::Completed { metadata: json!({"provider":"graphcoder-deterministic","output_tokens":128}) }]
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn digest_hex(digest: [u8; 32]) -> [u8; 64] {
     let mut encoded = [0; 64];
     hex::encode_to_slice(digest, &mut encoded).expect("exact digest hex capacity");
@@ -180,18 +154,6 @@ fn native_events(
     Ok([content, complete])
 }
 
-#[derive(Default)]
-struct ByteCount(usize);
-
-impl std::io::Write for ByteCount {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0 = self.0.checked_add(bytes.len())
-            .ok_or_else(|| std::io::Error::other("serialized token count overflows"))?;
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-}
-
 impl ModelProvider for Deterministic {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_model(&self, work: &NativeMaterializationWork) -> Result<bool> {
@@ -206,7 +168,7 @@ impl ModelProvider for Deterministic {
             .and_then(|items| items.checked_add(4))
             .ok_or_else(|| Error::Invalid("model selection traversal overflows".into()))?;
         work.charge(WorkCounters { items_examined: examined, ..Default::default() })?;
-        self.context_capacity_engine(selection)
+        self.context_capacity(selection)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -221,12 +183,12 @@ impl ModelProvider for Deterministic {
         work: &'a NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, NativeModelStream<'a>>> {
         work.remaining()?;
-        if request.manifest().request_digest != dispatch.request_digest {
+        if request.request_digest() != dispatch.request_digest {
             return Err(Error::Conflict("model dispatch request changed".into()));
         }
         self.context_capacity_with_native_work(&request.request().model, work)?;
         NativeFutureBundle::new(work, || async move {
-            self.observe_invocation_native("generate", dispatch, work)?;
+            self.observe_invocation("generate", dispatch, Some(work))?;
             if self.delay_ms > 0 {
                 let digest = digest_hex(dispatch.request_digest);
                 eprintln!("graphcoder deterministic-dispatch operation={} step={} request={}",
@@ -243,7 +205,7 @@ impl ModelProvider for Deterministic {
         &'a self, dispatch: ModelDispatch, observed: &'a [ModelEvent], work: &'a NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, (Option<Vec<ModelEvent>>, NativeAllocation)>> {
         NativeFutureBundle::new(work, || async move {
-            self.observe_invocation_native("reconcile", dispatch, work)?;
+            self.observe_invocation("reconcile", dispatch, Some(work))?;
             let complete = native_events(dispatch, work)?;
             work.charge(WorkCounters { items_examined: observed.len() as u64, ..Default::default() })?;
             if observed.len() > complete.len()
@@ -264,16 +226,22 @@ impl ModelProvider for Deterministic {
     }
 
     fn context_capacity(&self, selection: &Model) -> Result<ModelContextCapacity> {
-        self.context_capacity_engine(selection)
+        if selection.provider != "graphcoder-deterministic" || selection.name != "request-digest"
+            || selection.revision != "1"
+            || !selection.options.as_object().is_some_and(|options|
+                options.len() == 1 && options.get("dispatch_delay_ms").and_then(serde_json::Value::as_u64) == Some(u64::from(self.delay_ms)))
+        {
+            return Err(Error::Unsupported("native terminal has no adapter for this model selection".into()));
+        }
+        Ok(ModelContextCapacity { context_tokens: 131_072, output_tokens: 4096 })
     }
 
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
         self.context_capacity(&request.request().model)?;
         let message_tokens = request.request().messages.iter().map(|message| {
-            let mut serialized = ByteCount::default();
-            serde_json::to_writer(&mut serialized, message).map_err(|error| Error::Invalid(error.to_string()))?;
+            let serialized = serde_json::to_vec(message).map_err(|error| Error::Invalid(error.to_string()))?;
             let bytes = message.content.file_refs().try_fold(
-                serialized.0 as u64,
+                serialized.len() as u64,
                 |total, file| total.checked_add(file.descriptor().byte_length())
                     .ok_or_else(|| Error::Invalid("deterministic token count overflows".into())),
             )?;
@@ -281,13 +249,13 @@ impl ModelProvider for Deterministic {
         }).collect::<Result<Vec<_>>>()?;
         let fixed_tokens = u32::try_from(request.bytes().len())
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
-        Ok(ModelTokenCount { request_digest: request.manifest().request_digest, fixed_tokens, message_tokens })
+        Ok(ModelTokenCount { request_digest: request.request_digest(), fixed_tokens, message_tokens })
     }
 
     fn generate<'a>(&'a self, request: PreparedModelRequest, dispatch: ModelDispatch)
         -> BoxProviderStream<'a, Result<ModelEvent>>
     {
-        if request.manifest().request_digest != dispatch.request_digest {
+        if request.request_digest() != dispatch.request_digest {
             return Box::pin(futures::stream::iter([Err(Error::Conflict("model dispatch request changed".into()))]));
         }
         if let Err(error) = self.context_capacity(&request.request().model) {
@@ -295,7 +263,7 @@ impl ModelProvider for Deterministic {
         }
         let delay_ms = self.delay_ms;
         Box::pin(futures::stream::once(async move {
-            self.observe_invocation("generate", dispatch)?;
+            self.observe_invocation("generate", dispatch, None)?;
             if delay_ms > 0 {
                 eprintln!("graphcoder deterministic-dispatch operation={} step={} request={}",
                     dispatch.operation_id, dispatch.step, hex::encode(dispatch.request_digest));
@@ -310,7 +278,7 @@ impl ModelProvider for Deterministic {
 
     fn reconcile<'a>(&'a self, dispatch: ModelDispatch, observed: &'a [ModelEvent]) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async move {
-            self.observe_invocation("reconcile", dispatch)?;
+            self.observe_invocation("reconcile", dispatch, None)?;
             let complete = events(dispatch);
             if !complete.starts_with(observed) {
                 return Err(Error::Conflict("deterministic provider retained prefix changed".into()));

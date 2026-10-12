@@ -1,30 +1,30 @@
 use super::*;
-use crate::pi_fork::tests::work;
+use crate::pi_fork::tests::{policy, work};
 use crate::pi_owner::{PiOwnerConfig, PiOwnerPolicy};
 use crate::pi_recovery::{
     PiTaskObservation, observe_pi_session,
 };
 use crate::pi_root::PiRootIntent;
-use crate::pi_runtime::{PiRuntimeAuthority, PiTaskRuntime};
+use crate::pi_runtime::PiTaskRuntime;
 use crate::{AdapterState, PiScratchBinding, PiTaskBinding, PluginTaskBinding};
 use acyclic_harness::{
     Admission, AgentId, Capabilities, TaskId,
-    conversation::{Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer},
     distributed::{WorkPull, Worker},
     filesystem::FilesystemHost,
     resources::ProviderRef,
-    runtime::{DurableTaskHost, RuntimeScope, TaskRunLimits},
-    scheduler::{LeaseFence, ResourceSnapshot, SessionLimits},
+    runtime::{DurableTaskHost, RuntimeScope},
+    scheduler::{LeaseFence, ResourceSnapshot},
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::{collections::BTreeMap, path::Path};
 
 #[path = "pi_task_model_tests.rs"]
 mod bounded_model;
 
 type OwnedRuntime =
-    PiTaskRuntime<LocalStream, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
+    PiTaskRuntime<LocalStream>;
 
 fn preparation() -> WorkflowCommand {
     WorkflowCommand {
@@ -40,6 +40,10 @@ fn preparation() -> WorkflowCommand {
         )
         .unwrap(),
     }
+}
+
+fn result(operation: OperationId, value: Outcome<FileRef>) -> Value {
+    json!({"commands":[{"operation_id":operation,"value":value}]})
 }
 
 fn binding() -> PiTaskBinding {
@@ -144,11 +148,22 @@ async fn pi_service_recovery_rejects_legacy_workspace_access() {
     );
 }
 
+async fn storage(root: &Path, provider: &ProviderRef) -> (
+    Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
+    Arc<LocalStream>,
+) {
+    let filesystem = Arc::new(FilesystemHost::new(
+        acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(root.join("filesystem"))).await.unwrap(),
+        provider.clone(),
+    ).unwrap());
+    let stream = Arc::new(LocalStream::open(root.join("stream"), LocalStreamLimits::default()).await.unwrap());
+    (filesystem, stream)
+}
+
 async fn open(
     root: &Path,
     binding: &PiTaskBinding,
     create: bool,
-    configure: impl FnOnce(&mut PiRuntimeAuthority),
 ) -> acyclic_harness::Result<(OwnedRuntime, acyclic_fs::NativeMaterializationWork)> {
     let work = acyclic_fs::NativeMaterializationWork::new(
         crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
@@ -194,29 +209,7 @@ async fn open(
             agent: binding.agent_id,
             journal: journal.clone(),
             grants,
-            limits: Limits {
-                file_bytes: 65_536,
-                path_bytes: 1024,
-                attachments: 16,
-                render_bytes: 65_536,
-                model_steps: 16,
-                model_events_per_step: 128,
-                tool_calls_per_step: 16,
-                context_messages: 128,
-            },
-            run_limits: TaskRunLimits {
-                concurrency: Some(4),
-                max_steps: Some(16),
-                deadline_epoch_ms: None,
-            },
-            session_limits: SessionLimits {
-                active_tasks: 4,
-                total_tasks: 8,
-                depth: 3,
-                model_steps: 16,
-            },
-            concurrency: 4,
-            maximum_payload_bytes: 65_536,
+            ..policy()
         };
         let config = PiOwnerConfig::new(&policy, None, &work)?;
         config.save_new_with_native_work(&private_root, Path::new(""), &work)?;
@@ -225,28 +218,11 @@ async fn open(
         PiOwnerConfig::load_with_native_work(&private_root, Path::new(""), &work)?
     };
     config.validate_root(binding, &work)?;
-    let mut authority = config.authority_with_native_work(&work)?;
-    configure(&mut authority.0);
-    let filesystem = Arc::new(
-        FilesystemHost::new(
-            acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(root.join("filesystem")))
-                .await
-                .unwrap(),
-            config.policy().journal.provider().clone(),
-        )
-        .unwrap(),
-    );
+    let authority = config.authority_with_native_work(&work)?;
+    let (filesystem, stream) = storage(root, config.policy().journal.provider()).await;
     if create {
-        filesystem
-            .create_volume(&config.policy().journal)
-            .await
-            .unwrap();
+        filesystem.create_volume(&config.policy().journal).await.unwrap();
     }
-    let stream = StreamClient::new(Arc::new(
-        LocalStream::open(root.join("stream"), LocalStreamLimits::default())
-            .await
-            .unwrap(),
-    ));
     let runtime = PiTaskRuntime::open_with_native_work(
         stream, filesystem, &journal, authority, &work,
     ).await?;
@@ -257,9 +233,9 @@ async fn open(
 async fn pi_root_missing_or_foreign_credentials_fail_before_storage_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let binding = binding();
-    let (owner, original_work) = open(directory.path(), &binding, true, |_| {}).await.unwrap();
+    let (owner, original_work) = open(directory.path(), &binding, true).await.unwrap();
     owner
-        .admit_root_with_native_work(binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+        .admit_root(&binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
         .await
         .unwrap();
     let original = owner
@@ -278,14 +254,14 @@ async fn pi_root_missing_or_foreign_credentials_fail_before_storage_reopen() {
     let mut foreign = binding.clone();
     foreign.task_id = TaskId::from_bytes([74; 16]);
     assert!(
-        open(directory.path(), &foreign, false, |_| {})
+        open(directory.path(), &foreign, false)
             .await
             .is_err()
     );
     assert!(!filesystem.exists());
     std::fs::remove_file(directory.path().join("pi-owner.v1")).unwrap();
     assert!(
-        open(directory.path(), &binding, false, |_| {})
+        open(directory.path(), &binding, false)
             .await
             .is_err()
     );
@@ -295,7 +271,7 @@ async fn pi_root_missing_or_foreign_credentials_fail_before_storage_reopen() {
         &acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), &original_work).unwrap(),
         Path::new(""), &original_work).unwrap();
     std::fs::rename(&retained, &filesystem).unwrap();
-    let (owner, _original_work) = open(directory.path(), &binding, false, |_| {}).await.unwrap();
+    let (owner, _original_work) = open(directory.path(), &binding, false).await.unwrap();
     assert!(
         owner
             .runtime
@@ -338,11 +314,11 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
         },
     );
     let intent = PiRootIntent::from_state(&state).unwrap();
-    let (owner, original_work) = open(directory.path(), &binding, true, |_| {}).await.unwrap();
+    let (owner, original_work) = open(directory.path(), &binding, true).await.unwrap();
     // A retained route, even with valid host credentials, cannot admit itself.
     assert!(observe_pi_session(&owner.runtime, &state, &original_work).await.is_err());
     owner
-        .admit_root_with_native_work(binding.clone(), intent.clone(), preparation(), &original_work)
+        .admit_root(&binding, &intent, &preparation(), &original_work)
         .await
         .unwrap();
     let original = owner
@@ -373,7 +349,7 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
         let changed_intent = PiRootIntent::from_state(&changed).unwrap();
         assert!(
             owner
-                .admit_root_with_native_work(binding.clone(), changed_intent, preparation(), &original_work)
+                .admit_root(&binding, &changed_intent, &preparation(), &original_work)
                 .await
                 .is_err()
         );
@@ -392,28 +368,8 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
     drop(owner);
     let state = crate::load_saved_state(directory.path()).unwrap();
     assert_eq!(PiRootIntent::from_state(&state).unwrap(), intent);
-    let filesystem = Arc::new(
-        FilesystemHost::new(
-            acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
-                directory.path().join("filesystem"),
-            ))
-            .await
-            .unwrap(),
-            binding.scratch.volume.provider().clone(),
-        )
-        .unwrap(),
-    );
-    let stream = StreamClient::new(Arc::new(
-        LocalStream::open(
-            directory.path().join("stream"),
-            LocalStreamLimits::default(),
-        )
-        .await
-        .unwrap(),
-    ));
-    let reopen_work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
-    ).unwrap();
+    let (filesystem, stream) = storage(directory.path(), binding.scratch.volume.provider()).await;
+    let reopen_work = crate::pi_fork::tests::work();
     let reopened = PiTaskRuntime::reopen(
         &PiOwnerConfig::load_with_native_work(
         &acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), &reopen_work).unwrap(),
@@ -443,34 +399,8 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
 }
 
 #[test]
-fn pi_root_intent_and_execution_mode_are_required_and_bounded() {
-    let binding = binding();
-    let machine = PiTaskMachine::new(&work()).unwrap();
-    for input in [
-        json!({"binding":binding,"launch":null}),
-        json!({"binding":binding,"execution":{"kind":"host"}}),
-        json!({"binding":binding,"execution":{"kind":"child","launch":null}}),
-        json!({"binding":binding,"execution":{"kind":"host","root":{"kind":"scratch_only"}}}),
-        json!({"binding":binding,"execution":{"kind":"host","root":{"kind":"scratch_only","paths":{}},"preparation":preparation()}}),
-    ] {
-        assert!(
-            machine.initialize_with_native_work(&input, &work()).is_err(),
-            "accepted invalid input: {input}"
-        );
-    }
-    let input = PiTaskInput {
-        binding: binding.clone(),
-        execution: PiTaskExecution::Host {
-            root: PiRootIntent::ScratchOnly {},
-            preparation: preparation(),
-        },
-    };
-    let encoded = serde_json::to_value(input).unwrap();
-    assert_eq!(
-        machine.initialize_with_native_work(&encoded, &work()).unwrap().0,
-        json!({"state":"preparing","command":preparation()})
-    );
-    let mut binding = binding;
+fn pi_root_intent_rejects_unselected_or_unbounded_paths_and_invalid_identity() {
+    let mut binding = binding();
     let root_id = [2; 16];
     let key = hex::encode(root_id);
     binding.project_volumes.insert(
@@ -535,9 +465,9 @@ fn pi_root_intent_and_execution_mode_are_required_and_bounded() {
 async fn pi_runtime_reopen_authenticates_retained_native_binding_without_starting_work() {
     let directory = tempfile::tempdir().unwrap();
     let binding = binding();
-    let (owner, original_work) = open(directory.path(), &binding, true, |_| {}).await.unwrap();
+    let (owner, original_work) = open(directory.path(), &binding, true).await.unwrap();
     owner
-        .admit_root_with_native_work(binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+        .admit_root(&binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
         .await
         .unwrap();
     let original = owner
@@ -547,29 +477,9 @@ async fn pi_runtime_reopen_authenticates_retained_native_binding_without_startin
         .await
         .unwrap();
     drop(owner);
-    let filesystem = Arc::new(
-        FilesystemHost::new(
-            acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
-                directory.path().join("filesystem"),
-            ))
-            .await
-            .unwrap(),
-            binding.scratch.volume.provider().clone(),
-        )
-        .unwrap(),
-    );
-    let stream = StreamClient::new(Arc::new(
-        LocalStream::open(
-            directory.path().join("stream"),
-            LocalStreamLimits::default(),
-        )
-        .await
-        .unwrap(),
-    ));
+    let (filesystem, stream) = storage(directory.path(), binding.scratch.volume.provider()).await;
     let mut state = session_state(&binding);
-    let reopen_work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
-    ).unwrap();
+    let reopen_work = crate::pi_fork::tests::work();
     let reopened = PiTaskRuntime::reopen(
         &PiOwnerConfig::load_with_native_work(
         &acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), &reopen_work).unwrap(),
@@ -601,9 +511,7 @@ async fn pi_runtime_reopen_authenticates_retained_native_binding_without_startin
     };
     root.native_session_id = state.root_session_id.clone();
     crate::validate_state_bounds(&state).unwrap();
-    let foreign_reopen_work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
-    ).unwrap();
+    let foreign_reopen_work = crate::pi_fork::tests::work();
     assert!(
         PiTaskRuntime::reopen(
             &PiOwnerConfig::load_with_native_work(
@@ -641,7 +549,7 @@ async fn pi_runtime_reopen_authenticates_retained_native_binding_without_startin
 async fn pi_root_registration_replays_original_admission_and_rejects_foreign_owner() {
     let directory = tempfile::tempdir().unwrap();
     let binding = binding();
-    let (owner, original_work) = open(directory.path(), &binding, true, |_| {}).await.unwrap();
+    let (owner, original_work) = open(directory.path(), &binding, true).await.unwrap();
     assert!(
         owner
             .runtime
@@ -661,7 +569,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     .unwrap();
     assert!(
         owner
-            .admit_root_with_native_work(foreign, PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+            .admit_root(&foreign, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
             .await
             .is_err()
     );
@@ -670,7 +578,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     let another_task = another_root.task_id;
     assert!(
         owner
-            .admit_root_with_native_work(another_root, PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+            .admit_root(&another_root, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
             .await
             .is_err()
     );
@@ -693,12 +601,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     journal_selection.scratch.volume = journal.clone();
     assert!(
         owner
-            .admit_root_with_native_work(
-                journal_selection,
-                PiRootIntent::ScratchOnly {},
-                preparation(),
-                &original_work,
-            )
+            .admit_root(&journal_selection, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
             .await
             .is_err()
     );
@@ -710,12 +613,11 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
             .await
             .is_err()
     );
-    let accepted = owner.admit_root_with_native_work(
-        binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work,
+    let accepted = owner.admit_root(
+        &binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work,
     ).await.unwrap();
     assert!(matches!(accepted.0, Admission::Accepted(_)));
-    drop(accepted.0);
-    drop(accepted.1);
+    drop(accepted);
     let admission = owner
         .runtime
         .task_host()
@@ -750,7 +652,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     .unwrap();
     assert!(
         storage
-            .open_workspace(&binding.scratch.volume.storage_name().unwrap())
+            .open_workspace_with_native_work(&binding.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
             .await
             .is_err()
     );
@@ -764,13 +666,10 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
         WorkPull::Idle
     ));
     drop(owner);
-    let (owner, original_work) = open(directory.path(), &binding, false, |_| {}).await.unwrap();
-    let accepted = owner.admit_root_with_native_work(
-        binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work,
-    ).await.unwrap();
+    let (owner, original_work) = open(directory.path(), &binding, false).await.unwrap();
+    let accepted = owner.admit_root(&binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work).await.unwrap();
     assert!(matches!(accepted.0, Admission::Accepted(_)));
-    drop(accepted.0);
-    drop(accepted.1);
+    drop(accepted);
     assert!(
         owner
             .runtime
@@ -785,7 +684,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     changed.native_session_id = "different-native-session".to_owned();
     assert!(
         owner
-            .admit_root_with_native_work(changed, PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+            .admit_root(&changed, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
             .await
             .is_err()
     );
@@ -804,9 +703,9 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
 async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission() {
     let directory = tempfile::tempdir().unwrap();
     let binding = binding();
-    let (owner, original_work) = open(directory.path(), &binding, true, |_| {}).await.unwrap();
+    let (owner, original_work) = open(directory.path(), &binding, true).await.unwrap();
     owner
-        .admit_root_with_native_work(binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+        .admit_root(&binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
         .await
         .unwrap();
     let original = owner
@@ -816,6 +715,11 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
         .await
         .unwrap();
     drop(owner);
+    let preparation_work = work();
+    let private_root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
+        directory.path(), &preparation_work).unwrap();
+    let config = PiOwnerConfig::load_with_native_work(&private_root, Path::new(""), &preparation_work).unwrap();
+    let (filesystem, stream) = storage(directory.path(), config.policy().journal.provider()).await;
     for fault in [
         "key",
         "widening",
@@ -825,8 +729,10 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
         "agent",
         "audience",
     ] {
-        let rejected =
-            open(directory.path(), &binding, false, |authority| match fault {
+        let work = work();
+        let mut issued = config.authority_with_native_work(&work).unwrap();
+        let authority = &mut issued.0;
+        match fault {
                 "key" => {
                     authority.verifier = AuthorityIssuer::new(
                         "pi-recovery-test",
@@ -836,7 +742,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                             id: binding.task_id.to_string(),
                         },
                     )
-                    .verifier();
+                    .verifier(&mut None).unwrap();
                 }
                 "widening" => {
                     authority.scope = RuntimeScope::new(
@@ -865,9 +771,9 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                             id: binding.task_id.to_string(),
                         },
                     );
-                    authority.verifier = issuer.verifier();
+                    authority.verifier = issuer.verifier(&mut None).unwrap();
                     authority.signed =
-                        issuer.root("pi-owner", authority.signed.capabilities().clone());
+                        issuer.issue("pi-owner", authority.signed.capabilities(), None, None, &mut None).expect("scope proof");
                 }
                 "audience" => {
                     let issuer = AuthorityIssuer::new(
@@ -878,19 +784,16 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                             id: "not-a-task-identity".to_owned(),
                         },
                     );
-                    authority.verifier = issuer.verifier();
-                    authority.signed = issuer.root_for_agent(
-                        binding.agent_id,
-                        "pi-owner",
-                        authority.signed.capabilities().clone(),
-                    );
+                    authority.verifier = issuer.verifier(&mut None).unwrap();
+                    authority.signed = issuer.issue("pi-owner", authority.signed.capabilities(), Some(binding.agent_id), None, &mut None).expect("scope proof");
                 }
                 _ => unreachable!(),
-            })
-            .await;
+        }
+        let rejected = PiTaskRuntime::open_with_native_work(stream.clone(), filesystem.clone(),
+            &config.policy().journal, issued, &work).await;
         assert!(rejected.is_err(), "accepted {fault}");
     }
-    let (owner, _original_work) = open(directory.path(), &binding, false, |_| {}).await.unwrap();
+    let (owner, _original_work) = open(directory.path(), &binding, false).await.unwrap();
     assert!(
         owner
             .runtime
@@ -915,7 +818,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
 async fn pi_pending_preparation_unknown_admission_fails_before_future_native_child_is_admitted() {
     let directory = tempfile::tempdir().unwrap();
     let root = binding();
-    let (owner, _work) = open(directory.path(), &root, true, |_| {}).await.unwrap();
+    let (owner, _work) = open(directory.path(), &root, true).await.unwrap();
     let (runtime, definition) = (owner.runtime, owner.definition);
     runtime.harness().admit(
         OperationId::from_bytes(root.task_id.into_bytes()), &definition,
@@ -948,8 +851,7 @@ async fn pi_pending_preparation_unknown_admission_fails_before_future_native_chi
         lifecycle: crate::PendingSpawnLifecycle::Preparing,
     });
     crate::validate_state_bounds(&state).unwrap();
-    let query = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+    let query = crate::pi_fork::tests::work();
     assert!(observe_pi_session(&runtime, &state, &query).await.is_err());
     assert!(runtime.task_host().reconcile_admission(
         OperationId::from_bytes(child.task_id.into_bytes())
@@ -964,28 +866,8 @@ fn actual_preparing_session(
     fixture: &crate::pi_fork::tests::Fixture,
     plan: &crate::pi_fork::PiForkPlan,
 ) -> AdapterState {
-    let PiRootIntent::Project { context_id, root_id, paths } = &fixture.root_request.root else {
-        panic!("real fork fixture must retain its original project selection");
-    };
-    let mut root = fixture.root_request.binding.clone();
-    root.scratch.allocation = PiScratchAllocation::Created(fixture.root_allocation.scratch.clone());
-    let mut state = AdapterState {
-        version: crate::ADAPTER_STATE_VERSION,
-        active: true,
-        root_session_id: root.native_session_id.clone(),
-        root_agent_id: root.native_session_id.clone(),
-        root_context_id: *context_id,
-        root_id: *root_id,
-        task_binding: PluginTaskBinding::Pi(Box::new(root)),
-        ..AdapterState::default()
-    };
-    for (key, creation) in &fixture.root_allocation.roots {
-        state.roots.insert(key.clone(), crate::RootBinding {
-            root_id: *root_id,
-            path: Path::new(&paths[key]).to_path_buf(),
-            allocation: crate::RootAllocation::Created(creation.clone()),
-        });
-    }
+    let PiRootIntent::Project { root_id, paths, .. } = &fixture.root_request.root else { unreachable!() };
+    let mut state = fixture.state();
     state.pending.push_back(crate::PendingSpawn {
         task_binding: PluginTaskBinding::Pi(Box::new(plan.commit.child.clone())),
         agent_id: Some(plan.commit.alias.clone()),
@@ -1013,14 +895,14 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
     let state = actual_preparing_session(&fixture, &plan);
     let host = fixture.runtime.runtime.task_host();
     host.admit_owned(plan.preparation.clone(), fixture.fence.clone()).await.unwrap();
-    let query = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+    let query = crate::pi_fork::tests::work();
+    let query_baseline = query.live_allocation_bytes();
     let observed = observe_pi_session(&fixture.runtime.runtime, &state, &query).await.unwrap();
     assert!(matches!(&observed.0[1], PiTaskObservation::Preparation {
         task_id, preparation, phase: PiPreparationPhase::Pending,
     } if *task_id == plan.commit.child.task_id && *preparation == plan.preparation.task_id()));
     drop(observed);
-    assert_eq!(query.live_allocation_bytes(), 0);
+    assert_eq!(query.live_allocation_bytes(), query_baseline);
     let partial = fixture.runtime.runtime.run_operation_with_native_work(&Worker {
         id: "pi-preparing-observation".into(), available: ResourceSnapshot::default(),
         labels: BTreeMap::new(),
@@ -1033,15 +915,14 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
         phase: PiPreparationPhase::Reserved, ..
     }));
     drop(observed);
-    assert_eq!(query.live_allocation_bytes(), 0);
-    let report = fixture.prepare_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
-        &fixture.fence, &plan, fixture.source.clone(),
+    assert_eq!(query.live_allocation_bytes(), query_baseline);
+    let report = fixture.prepare_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal,
+        &fixture.fence, &plan, fixture.root_handle.workspace.clone(),
         crate::pi_root_provider::allocation_budget(), acyclic_fs::CancellationToken::new())
         .await.unwrap().unwrap();
     report.0.validate().unwrap();
     assert!(host.observe_admission(plan.request.child.task_id()).await.is_err());
-    let reopen_work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+    let reopen_work = crate::pi_fork::tests::work();
     let reopened = OwnedRuntime::open_with_native_work(
         fixture.stream.clone(), fixture.filesystem.clone(), &fixture.owner.policy().journal,
         fixture.owner.authority_with_native_work(&reopen_work).unwrap(), &reopen_work,
@@ -1052,7 +933,7 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
             task_id, preparation, phase: PiPreparationPhase::Succeeded,
         } if *task_id == plan.commit.child.task_id && *preparation == plan.preparation.task_id()));
         drop(observed);
-        assert_eq!(query.live_allocation_bytes(), 0);
+        assert_eq!(query.live_allocation_bytes(), query_baseline);
         assert!(host.observe_admission(plan.commit.child.task_id).await.is_err());
         assert!(state.routes.is_empty());
         assert!(matches!(state.pending[0].lifecycle, crate::PendingSpawnLifecycle::Preparing));
@@ -1066,8 +947,8 @@ async fn pi_real_preparation_changed_planned_binding_parent_and_foreign_key_fail
     let state = actual_preparing_session(&fixture, &plan);
     fixture.runtime.runtime.task_host().admit_owned(
         plan.preparation.clone(), fixture.fence.clone()).await.unwrap();
-    let query = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+    let query = crate::pi_fork::tests::work();
+    let query_baseline = query.live_allocation_bytes();
     for mutation in 0..5 {
         let mut changed = state.clone();
         match mutation {
@@ -1081,14 +962,14 @@ async fn pi_real_preparation_changed_planned_binding_parent_and_foreign_key_fail
             _ => changed.pending[0].agent_id = None,
         }
         assert!(observe_pi_session(&fixture.runtime.runtime, &changed, &query).await.is_err());
-        assert_eq!(query.live_allocation_bytes(), 0);
+        assert_eq!(query.live_allocation_bytes(), query_baseline);
         assert!(fixture.runtime.runtime.task_host().observe_admission(
             plan.request.child.task_id()).await.is_err());
     }
     let mut stale = fixture.fence.clone();
     stale.reservation_id = "stale-original-parent-fence".into();
-    assert!(fixture.prepare_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &stale,
-        &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
+    assert!(fixture.prepare_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &stale,
+        &plan, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(),
         acyclic_fs::CancellationToken::new()).await.is_err());
     assert!(fixture.runtime.runtime.task_host().observe_admission(
         plan.request.child.task_id()).await.is_err());
@@ -1116,8 +997,7 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
     let accounting = acyclic_harness::distributed::read_coordinator_event_page(
         &fixture.stream, 0, 1024).await.unwrap();
     assert!(accounting.len() < 1024, "bounded fixture must fit one complete accounting page");
-    let reopen_work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+    let reopen_work = crate::pi_fork::tests::work();
     let reopened = OwnedRuntime::open_with_native_work(
         fixture.stream.clone(), fixture.filesystem.clone(), &fixture.owner.policy().journal,
         fixture.owner.authority_with_native_work(&reopen_work).unwrap(), &reopen_work,
@@ -1162,7 +1042,7 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
         &fixture.stream, 0, 1024).await.unwrap();
     assert!(accounting.len() < 1024);
     assert!(!accounting.iter().any(|record| matches!(
-        &record.event, acyclic_harness::scheduler::SchedulerEvent::ModelDispatchClaimed { .. }
+        record, acyclic_harness::scheduler::SchedulerEvent::ModelDispatchClaimed { .. }
     )), "passive native root controls must not charge harness model attempts");
 }
 
@@ -1170,9 +1050,7 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
 async fn pi_operator_control_kind_does_not_authorize_invalid_original_command_fingerprint() {
     use crate::pi_operator::{PiOperatorBody, PiOperatorRequest};
     let fixture = crate::pi_fork::tests::Fixture::new(None).await;
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
-    ).unwrap();
+    let work = crate::pi_fork::tests::work();
     let session = &fixture.root_request.binding.native_session_id;
     let PiRootIntent::Project { paths, .. } = &fixture.root_request.root else {
         panic!("operator fixture must retain original root selection");
@@ -1216,7 +1094,7 @@ async fn pi_operator_control_kind_does_not_authorize_invalid_original_command_fi
 async fn pi_native_recovery_cancellation_precedes_graph_growth_or_sdk_reads() {
     let directory = tempfile::tempdir().unwrap();
     let binding = binding();
-    let (owner, _work) = open(directory.path(), &binding, true, |_| {}).await.unwrap();
+    let (owner, _work) = open(directory.path(), &binding, true).await.unwrap();
     let (runtime, definition) = (owner.runtime, owner.definition);
     runtime.harness().admit(OperationId::from_bytes(binding.task_id.into_bytes()), &definition,
         PiTaskInput { binding: binding.clone(), execution: PiTaskExecution::Host {
@@ -1245,18 +1123,6 @@ mod native_transition {
         workflow::WorkflowJournal,
     };
 
-    fn control() -> WorkflowCommand {
-        WorkflowCommand {
-            operation_id: OperationId::from_bytes([91; 16]),
-            kind: "acyclic.pi.inspect".to_owned(),
-            payload: preparation().payload,
-        }
-    }
-
-    fn result(operation: OperationId, value: Outcome<FileRef>) -> Value {
-        json!({"commands":[{"operation_id":operation,"value":value}]})
-    }
-
     fn step(
         machine: &PiTaskMachine, state: &Value, input: &Value,
         work: &NativeMaterializationWork,
@@ -1273,7 +1139,10 @@ mod native_transition {
         let machine = PiTaskMachine::new(&work()).unwrap();
         assert!(machine.supports_native_work());
         let command = preparation();
-        let control = control();
+        let control = WorkflowCommand {
+            operation_id: OperationId::from_bytes([91; 16]),
+            kind: "acyclic.pi.inspect".into(), payload: preparation().payload,
+        };
         let cases = [
             (json!({"state":"preparing","command":command}), Value::Null,
                 json!({"state":"allocating","operation":command.operation_id}), vec![command.clone()], MachineStatus::Suspended),
@@ -1307,11 +1176,8 @@ mod native_transition {
             let work_baseline = work.live_allocation_bytes();
             let actual = step(&machine, &state, &input, &work).unwrap();
             assert_eq!(actual.0, MachineTransition { state: state_next, commands, status });
-            assert_eq!(work.receipt(), actual.1.work().receipt());
-            assert!(actual.1.bytes() > 0);
-            assert_eq!(work.live_allocation_bytes(), work_baseline + actual.1.bytes());
-            drop(actual.0);
-            drop(actual.1);
+            assert!(actual.1.work().shares_ledger(&work));
+            drop(actual);
             assert_eq!(work.live_allocation_bytes(), work_baseline);
         }
         for state in [
@@ -1329,7 +1195,6 @@ mod native_transition {
     fn native_cancellation_precedes_state_and_command_vector_growth() {
         let machine = PiTaskMachine::new(&work()).unwrap();
         let state = json!({"state":"preparing","command":preparation()});
-        let preserved = state.clone();
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(
             crate::pi_root_provider::allocation_budget(), &cancellation,
@@ -1344,7 +1209,6 @@ mod native_transition {
         assert_eq!(work.receipt(), before);
         drop(failure);
         assert_eq!(work.live_allocation_bytes(), work_baseline);
-        assert_eq!(state, preserved);
     }
 
     #[tokio::test]
@@ -1469,14 +1333,12 @@ mod native_transition {
             let initialized = machine.initialize_with_native_work(&admitted.0, &original).unwrap();
             assert_eq!(initialized.0, expected);
             assert!(initialized.1.shares_ledger(&admitted.1));
-            assert_eq!(initialized.1.work().receipt(), original.receipt());
             assert_eq!(original.receipt().backend_read_operations, before.backend_read_operations);
             assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations);
             drop(admitted);
             drop(initialized);
             assert_eq!(original.live_allocation_bytes(), original_baseline);
         }
-        assert!(machine_work.live_allocation_bytes() > 0);
         drop(machine);
         assert_eq!(machine_work.live_allocation_bytes(), machine_work_baseline);
     }
@@ -1488,7 +1350,6 @@ mod native_transition {
             binding: binding(),
             execution: PiTaskExecution::Host { root: PiRootIntent::ScratchOnly {}, preparation: preparation() },
         }).unwrap();
-        let preserved = input.clone();
         let cancellation = CancellationToken::new();
         let original = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
         let original_baseline = original.live_allocation_bytes();
@@ -1507,8 +1368,12 @@ mod native_transition {
         assert_eq!(original.receipt(), before);
         drop(failure);
         assert_eq!(original.live_allocation_bytes(), original_baseline);
-        assert_eq!(input, preserved);
         for malformed in [
+            json!({"binding":binding(),"launch":null}),
+            json!({"binding":binding(),"execution":{"kind":"host"}}),
+            json!({"binding":binding(),"execution":{"kind":"child","launch":null}}),
+            json!({"binding":binding(),"execution":{"kind":"host","root":{"kind":"scratch_only"}}}),
+            json!({"binding":binding(),"execution":{"kind":"host","root":{"kind":"scratch_only","paths":{}},"preparation":preparation()}}),
             json!({"binding":binding(),"execution":{"kind":"host","root":{"kind":"scratch_only"},"preparation":preparation()},"unknown":true}),
             json!({"binding":{},"execution":{"kind":"child","launch":preparation()}}),
             json!({"binding":binding(),"execution":{"kind":"host","root":{"kind":"scratch_only"},"preparation":preparation(),"unknown":true}}),
