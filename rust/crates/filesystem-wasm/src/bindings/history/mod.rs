@@ -148,20 +148,15 @@ impl BrowserGeneration {
     /// Reads one complete file from this exact immutable state.
     #[wasm_bindgen]
     pub async fn read(&self, path: String, maximum_bytes: u64) -> Result<Vec<u8>, JsValue> {
-        let bytes = Box::pin(async {
-            self.engine
-                .read(
-                    &path,
-                    maximum_bytes,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-        })
+        let bytes = Box::pin(self.engine.read(
+            &path,
+            maximum_bytes,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        ))
         .await
-        .map_err(js_error)?;
+        .map(|receipt| receipt.value)
+        .map_err(|failure| js_error(failure.error))?;
         Ok(bytes.to_vec())
     }
 
@@ -183,8 +178,7 @@ impl BrowserGeneration {
             )
             .await
             .map(|receipt| receipt.value.bytes)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)?;
+            .map_err(|failure| js_error(failure.error))?;
         Ok(bytes.to_vec())
     }
 
@@ -199,8 +193,7 @@ impl BrowserGeneration {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)?;
+            .map_err(|failure| js_error(failure.error))?;
         ts(browser_workspace_stat(value))
     }
 
@@ -225,8 +218,7 @@ impl BrowserGeneration {
             )
             .await
             .map(|receipt| receipt.value.0)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)?;
+            .map_err(|failure| js_error(failure.error))?;
         ts(browser_workspace_directory_page(value))
     }
 
@@ -241,8 +233,7 @@ impl BrowserGeneration {
             )
             .await
             .map(|receipt| receipt.value.bytes)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)?;
+            .map_err(|failure| js_error(failure.error))?;
         Ok(value.to_vec())
     }
 
@@ -274,8 +265,7 @@ impl BrowserGeneration {
         ))
         .await
         .map(|receipt| receipt.value.1)
-        .map_err(|failure| failure.error)
-        .map_err(js_error)?;
+        .map_err(|failure| js_error(failure.error))?;
         Ok(BrowserGeneration { engine })
     }
 }
@@ -308,8 +298,7 @@ pub(in crate::bindings) async fn browser_join_generation<
         }
     }
     .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)
-    .map_err(js_error)
+    .map_err(|failure| js_error(failure.error))
 }
 
 pub(in crate::bindings) fn browser_join_history(value: &str) -> Result<JoinHistory, JsValue> {

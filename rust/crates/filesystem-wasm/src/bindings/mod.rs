@@ -50,9 +50,9 @@ mod wire;
 pub use wire::*;
 mod workspace;
 pub use workspace::*;
-mod write;
 mod backend;
 mod operation_windows;
+mod write;
 
 use super::{IndexedDbAuthorityStore, IndexedDbObjectStore, OpfsAcceleratedObjectStore};
 use acyclic_fs::compat_wire;
