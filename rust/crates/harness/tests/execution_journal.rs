@@ -26,8 +26,8 @@ use acyclic_harness::{
     },
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{
-        FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent,
-        ModelMessage, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
+        FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
+        ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
     },
     resources::ProviderRef,
     runtime::{Bindings, RuntimeScope, TaskAdmissionRecord, TaskStateProvider, ToolContext},
@@ -37,7 +37,7 @@ use acyclic_harness::{
         ToolResult,
     },
 };
-use acyclic_stream::{MemoryStream};
+use acyclic_stream::MemoryStream;
 use futures::{
     future::BoxFuture,
     stream::{self, BoxStream},
@@ -63,17 +63,36 @@ async fn bind_conversation(
             id: id.into(),
         },
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(),
+        None,
+        crate::store::default_projection_read_limits(),
+        crate::store::DEFAULT_TERMINAL_EFFECTS,
+        None,
+        &mut None,
+    )
     .await?;
     aggregate
-        .execute(Command {
-            operation_id: OperationId::from_bytes([30; 16]),
-            idempotency_key: IdempotencyKey::new(format!("bind:{id}"))?,
-            expected_revision: 0,
-            scope: issuer.issue("owner", &Capabilities::new(["conversation:bind"]), None, None, &mut None).expect("scope proof"),
-            causal_parent: None,
-            action: Action::BindConversation { agent },
-        }, #[cfg(feature = "filesystem")] None, &mut None)
+        .execute(
+            Command {
+                operation_id: OperationId::from_bytes([30; 16]),
+                idempotency_key: IdempotencyKey::new(format!("bind:{id}"))?,
+                expected_revision: 0,
+                scope: issuer
+                    .issue(
+                        "owner",
+                        &Capabilities::new(["conversation:bind"]),
+                        None,
+                        None,
+                        &mut None,
+                    )
+                    .expect("scope proof"),
+                causal_parent: None,
+                action: Action::BindConversation { agent },
+            },
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
         .await?;
     Ok(())
 }
@@ -249,7 +268,10 @@ impl ExecutionJournal for CompletedDescriptorSpy {
     ) -> BoxFuture<'a, Result<FileRef>> {
         self.inner.stage(operation, key, bytes, media)
     }
-    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+    fn load<'a>(
+        &'a self,
+        reference: &'a FileRef,
+    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         if self.completed.iter().any(|original| {
             original.volume() == reference.volume()
                 && original.path() == reference.path()
@@ -312,17 +334,28 @@ impl ToolExecutor for NoopTool {
     }
 }
 impl ToolProjection for NoopTool {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult,
-        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+    fn project(
+        &self,
+        _: &ToolInvocation,
+        result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_harness::NativeCustody)> {
         self.supports_native_projection(work)?;
-        Ok((serde_json::json!({"kind":"json","value":result.value}), None))
+        Ok((
+            serde_json::json!({"kind":"json","value":result.value}),
+            None,
+        ))
     }
 }
 
 struct FixedProjection(Value);
 impl ToolProjection for FixedProjection {
-    fn project(&self, _: &ToolInvocation, _: &ToolResult,
-        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+    fn project(
+        &self,
+        _: &ToolInvocation,
+        _: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_harness::NativeCustody)> {
         self.supports_native_projection(work)?;
         Ok((self.0.clone(), None))
     }
@@ -345,8 +378,6 @@ impl ModelProvider for CapturingModel {
             metadata: Value::Null,
         })]))
     }
-
-
 }
 
 impl ModelProvider for TextModel {
@@ -365,13 +396,16 @@ impl ModelProvider for TextModel {
             }),
         ]))
     }
-
-
 }
 
 #[tokio::test]
 async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
-    let provider = ProviderRef::new("tool-claim-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let provider = ProviderRef::new(
+        "tool-claim-e2e".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([55; 16]);
     let private = VolumeRef::new(
@@ -389,21 +423,39 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             id: "tool-claim-owner".into(),
         },
     );
-    let scope = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-        ]), Some(agent), None, &mut None).expect("scope proof");
+    let scope = issuer
+        .issue(
+            "agent",
+            &Capabilities::new([
+                private.capability(VolumeOperation::Read)?,
+                private.capability(VolumeOperation::Write)?,
+            ]),
+            Some(agent),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     let journal_a = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
         &private,
-        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &acyclic_harness::core::SchemaRegistry::new(),
         &scope,
-        4_096, None,
+        4_096,
+        None,
     )?;
-    let journal_b =
-        FilesystemExecutionJournal::new(stream, host, &private, &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(), &scope, 4_096, None)?;
+    let journal_b = FilesystemExecutionJournal::new(
+        stream,
+        host,
+        &private,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &acyclic_harness::core::SchemaRegistry::new(),
+        &scope,
+        4_096,
+        None,
+    )?;
     let operation = OperationId::from_bytes([56; 16]);
     journal_a
         .append(
@@ -588,7 +640,12 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
 
 #[tokio::test]
 async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
-    let provider = ProviderRef::new("tool-owner-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let provider = ProviderRef::new(
+        "tool-owner-e2e".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([58; 16]);
     let private = VolumeRef::new(
@@ -606,17 +663,27 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             id: "tool-owner".into(),
         },
     );
-    let scope = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-        ]), Some(agent), None, &mut None).expect("scope proof");
+    let scope = issuer
+        .issue(
+            "agent",
+            &Capabilities::new([
+                private.capability(VolumeOperation::Read)?,
+                private.capability(VolumeOperation::Write)?,
+            ]),
+            Some(agent),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let journal = Arc::new(FilesystemExecutionJournal::new(
         Arc::new(MemoryStream::default()),
         host,
         &private,
-        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &acyclic_harness::core::SchemaRegistry::new(),
         &scope,
-        4_096, None,
+        4_096,
+        None,
     )?);
     let definition = ToolDefinition {
         name: "example.noop".into(),
@@ -633,11 +700,18 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         reconciliations: reconciliations.clone(),
     });
     let mut registry = ToolRegistry::default();
-    registry.register(Tool {
-        definition: definition.clone(),
-        executor: counted.clone(),
-        projection: Arc::new(NoopTool),
-    })?;
+    registry.register(
+        (
+            Tool {
+                definition: definition.clone(),
+                executor: counted.clone(),
+                projection: Arc::new(NoopTool),
+            },
+            None,
+        ),
+        &mut None,
+        None,
+    )?;
     let invalid_output = ToolDefinition {
         name: "example.invalid-output".into(),
         revision: "1".into(),
@@ -646,11 +720,18 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         output_schema: json!({"type":"string"}),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({})),
     };
-    registry.register(Tool {
-        definition: invalid_output.clone(),
-        executor: counted.clone(),
-        projection: Arc::new(NoopTool),
-    })?;
+    registry.register(
+        (
+            Tool {
+                definition: invalid_output.clone(),
+                executor: counted.clone(),
+                projection: Arc::new(NoopTool),
+            },
+            None,
+        ),
+        &mut None,
+        None,
+    )?;
     let invalid_projection = ToolDefinition {
         name: "example.invalid-projection".into(),
         revision: "1".into(),
@@ -659,11 +740,18 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         output_schema: json!({}),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"string"})),
     };
-    registry.register(Tool {
-        definition: invalid_projection.clone(),
-        executor: counted,
-        projection: Arc::new(NoopTool),
-    })?;
+    registry.register(
+        (
+            Tool {
+                definition: invalid_projection.clone(),
+                executor: counted,
+                projection: Arc::new(NoopTool),
+            },
+            None,
+        ),
+        &mut None,
+        None,
+    )?;
     let large_definition = ToolDefinition {
         name: "example.large-projection".into(),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"string"})),
@@ -672,14 +760,21 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     let large_executions = Arc::new(AtomicUsize::new(0));
     let large_reconciliations = Arc::new(AtomicUsize::new(0));
     let large_projection = json!({"kind":"json","value":"x".repeat(500)});
-    registry.register(Tool {
-        definition: large_definition.clone(),
-        executor: Arc::new(CountingNoopTool {
-            executions: large_executions.clone(),
-            reconciliations: large_reconciliations.clone(),
-        }),
-        projection: Arc::new(FixedProjection(large_projection.clone())),
-    })?;
+    registry.register(
+        (
+            Tool {
+                definition: large_definition.clone(),
+                executor: Arc::new(CountingNoopTool {
+                    executions: large_executions.clone(),
+                    reconciliations: large_reconciliations.clone(),
+                }),
+                projection: Arc::new(FixedProjection(large_projection.clone())),
+            },
+            None,
+        ),
+        &mut None,
+        None,
+    )?;
     let limits = Limits {
         file_bytes: 256,
         render_bytes: 1_024,
@@ -814,7 +909,8 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     registry.remove_from_model("example.noop")?;
     assert!(registry.get("example.noop").is_none());
-    let rebuilt = DurableToolRunner::new(&registry, racing_journal.clone(), None)?.with_limits(limits)?;
+    let rebuilt =
+        DurableToolRunner::new(&registry, racing_journal.clone(), None)?.with_limits(limits)?;
     assert!(matches!(
         rebuilt
             .run_with_context(
@@ -971,7 +1067,12 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
 
 #[tokio::test]
 async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()> {
-    let provider = ProviderRef::new("journal-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let provider = ProviderRef::new(
+        "journal-e2e".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([42; 16]);
     let private = VolumeRef::new(
@@ -989,18 +1090,28 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
             id: "journal-owner".into(),
         },
     );
-    let scope = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-        ]), Some(agent), None, &mut None).expect("scope proof");
+    let scope = issuer
+        .issue(
+            "agent",
+            &Capabilities::new([
+                private.capability(VolumeOperation::Read)?,
+                private.capability(VolumeOperation::Write)?,
+            ]),
+            Some(agent),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host,
         &private,
-        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &acyclic_harness::core::SchemaRegistry::new(),
         &scope,
-        4_096, None,
+        4_096,
+        None,
     )?;
     let model = Arc::new(TextModel(AtomicUsize::new(0)));
     let executor = StockExecutor::new(
@@ -1067,8 +1178,11 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     assert_eq!(model.0.load(Ordering::SeqCst), 1);
     let records = journal.replay(operation_id, 0, 64).await?;
     assert_eq!(records.len(), 5);
-    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/execution/{operation_id}"))
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    let stream = acyclic_stream::Stream::new(
+        std::sync::Arc::clone(&stream),
+        format!("harness/v2/execution/{operation_id}"),
+    )
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     use futures::TryStreamExt as _;
     let raw = stream
         .read(0, 16)
@@ -1088,7 +1202,12 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
 
 #[tokio::test]
 async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Result<()> {
-    let provider = ProviderRef::new("interaction-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let provider = ProviderRef::new(
+        "interaction-e2e".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let private = VolumeRef::new(
         provider,
@@ -1105,17 +1224,35 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
             id: "interaction-owner".into(),
         },
     );
-    let scope = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-            "interaction:open".to_owned(),
-        ]), Some(AgentId::from_bytes([43; 16])), None, &mut None).expect("scope proof");
+    let scope = issuer
+        .issue(
+            "agent",
+            &Capabilities::new([
+                private.capability(VolumeOperation::Read)?,
+                private.capability(VolumeOperation::Write)?,
+                "interaction:open".to_owned(),
+            ]),
+            Some(AgentId::from_bytes([43; 16])),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let id = InteractionId::from_bytes([11; 16]);
-    let responder = issuer.issue("human", &Capabilities::new([
-            "interaction:resolve".to_owned(),
-            format!("interaction:respond:{id}"),
-        ]), None, None, &mut None).expect("scope proof");
-    let unauthorized = issuer.issue("bystander", &Capabilities::default(), None, None, &mut None).expect("scope proof");
+    let responder = issuer
+        .issue(
+            "human",
+            &Capabilities::new([
+                "interaction:resolve".to_owned(),
+                format!("interaction:respond:{id}"),
+            ]),
+            None,
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
+    let unauthorized = issuer
+        .issue("bystander", &Capabilities::default(), None, None, &mut None)
+        .expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     bind_conversation(
         &stream,
@@ -1141,9 +1278,11 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
         stream.clone(),
         host,
         &private,
-        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &acyclic_harness::core::SchemaRegistry::new(),
         &scope,
-        4_096, None,
+        4_096,
+        None,
     )?;
     let request = Interaction::question("The private prompt".into(), json!({"type":"string"}))?;
     journal.open_interaction(id, request.clone()).await?;
@@ -1211,11 +1350,14 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
             .await
             .is_err()
     );
-    let raw = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v2/conversations/interaction-owner")
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
-        .read(0, 3)
-        .await
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    let raw = acyclic_stream::Stream::new(
+        std::sync::Arc::clone(&stream),
+        "harness/v2/conversations/interaction-owner",
+    )
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
+    .read(0, 3)
+    .await
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     use futures::TryStreamExt as _;
     let records = raw
         .try_collect::<Vec<_>>()
@@ -1241,7 +1383,12 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
 
 #[tokio::test]
 async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> Result<()> {
-    let provider = ProviderRef::new("tool-approval-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let provider = ProviderRef::new(
+        "tool-approval-e2e".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let private = VolumeRef::new(
         provider,
@@ -1258,12 +1405,20 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
             id: "tool-owner".into(),
         },
     );
-    let scope = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-            "tool:install:example.echo".to_owned(),
-            "interaction:open".to_owned(),
-        ]), Some(AgentId::from_bytes([46; 16])), None, &mut None).expect("scope proof");
+    let scope = issuer
+        .issue(
+            "agent",
+            &Capabilities::new([
+                private.capability(VolumeOperation::Read)?,
+                private.capability(VolumeOperation::Write)?,
+                "tool:install:example.echo".to_owned(),
+                "interaction:open".to_owned(),
+            ]),
+            Some(AgentId::from_bytes([46; 16])),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     bind_conversation(
         &stream,
@@ -1276,9 +1431,11 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         stream,
         host,
         &private,
-        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &acyclic_harness::core::SchemaRegistry::new(),
         &scope,
-        4_096, None,
+        4_096,
+        None,
     )?;
     let definition = ToolDefinition {
         name: "example.echo".into(),
@@ -1292,11 +1449,19 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     let operation = OperationId::from_bytes([14; 16]);
     let denied_id = InteractionId::from_bytes([15; 16]);
     let approved_id = InteractionId::from_bytes([16; 16]);
-    let responder = issuer.issue("human", &Capabilities::new([
-            "interaction:resolve".to_owned(),
-            format!("interaction:respond:{denied_id}"),
-            format!("interaction:respond:{approved_id}"),
-        ]), None, None, &mut None).expect("scope proof");
+    let responder = issuer
+        .issue(
+            "human",
+            &Capabilities::new([
+                "interaction:resolve".to_owned(),
+                format!("interaction:respond:{denied_id}"),
+                format!("interaction:respond:{approved_id}"),
+            ]),
+            None,
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let approval = Interaction::approval("Install echo".into(), operation, digest)?;
     journal
         .open_interaction(denied_id, approval.clone())
@@ -1383,7 +1548,12 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
 
 #[tokio::test]
 async fn typed_file_input_requires_resident_authorized_bytes_before_journaling() -> Result<()> {
-    let provider = ProviderRef::new("file-input-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let provider = ProviderRef::new(
+        "file-input-e2e".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let private = VolumeRef::new(
         provider.clone(),
@@ -1414,15 +1584,28 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             id: "file-input-owner".into(),
         },
     );
-    let scope = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-            foreign.capability(VolumeOperation::Read)?,
-            foreign.capability(VolumeOperation::Write)?,
-            project.capability(VolumeOperation::Read)?,
-            project.capability(VolumeOperation::Write)?,
-        ]), Some(AgentId::from_bytes([44; 16])), None, &mut None).expect("scope proof");
-    let grant = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &project, VolumeOperation::Write)?;
+    let scope = issuer
+        .issue(
+            "agent",
+            &Capabilities::new([
+                private.capability(VolumeOperation::Read)?,
+                private.capability(VolumeOperation::Write)?,
+                foreign.capability(VolumeOperation::Read)?,
+                foreign.capability(VolumeOperation::Write)?,
+                project.capability(VolumeOperation::Read)?,
+                project.capability(VolumeOperation::Write)?,
+            ]),
+            Some(AgentId::from_bytes([44; 16])),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
+    let grant = ContentGrant::verify(
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        &project,
+        VolumeOperation::Write,
+    )?;
     let file = host
         .put_content(
             &project,
@@ -1443,9 +1626,23 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             id: AgentId::from_bytes([45; 16]).to_string(),
         },
     );
-    let foreign_scope = foreign_issuer.issue("foreign-owner", &Capabilities::new([foreign.capability(VolumeOperation::Write)?]), Some(AgentId::from_bytes([45; 16])), None, &mut None).expect("scope proof");
+    let foreign_scope = foreign_issuer
+        .issue(
+            "foreign-owner",
+            &Capabilities::new([foreign.capability(VolumeOperation::Write)?]),
+            Some(AgentId::from_bytes([45; 16])),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     assert!(
-        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &foreign, VolumeOperation::Write).is_err()
+        ContentGrant::verify(
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &scope,
+            &foreign,
+            VolumeOperation::Write
+        )
+        .is_err()
     );
     let foreign_grant = ContentGrant::verify(
         &foreign_issuer.verifier(&mut None).expect("verifier copy"),
@@ -1466,8 +1663,16 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         )
         .await?;
     let stream = Arc::new(MemoryStream::default());
-    let journal =
-        FilesystemExecutionJournal::new(stream, host, &private, &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(), &scope, 4_096, None)?;
+    let journal = FilesystemExecutionJournal::new(
+        stream,
+        host,
+        &private,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &acyclic_harness::core::SchemaRegistry::new(),
+        &scope,
+        4_096,
+        None,
+    )?;
     let model = Arc::new(CapturingModel::default());
     let executor = StockExecutor::new(
         Model::new("test".into(), "capture".into(), "1".into(), Value::Null)?,

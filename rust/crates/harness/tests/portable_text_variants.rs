@@ -38,7 +38,10 @@ impl ContentResidencyVerifier for ReaderSpy {
     fn verify<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move { self.inner.verify(file).await })
     }
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+    fn read<'a>(
+        &'a self,
+        file: &'a FileRef,
+    ) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             self.reads.fetch_add(1, Ordering::SeqCst);
             let bytes = self.inner.read(file).await?;
@@ -60,7 +63,12 @@ impl ContentResidencyVerifier for ReaderSpy {
     reason = "one actual admitted live task retains positive and pre-I/O negative controls"
 )]
 async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity() -> Result<()> {
-    let provider = ProviderRef::new("text-variants".into(), "filesystem".into(), "1".into(), &mut None)?;
+    let provider = ProviderRef::new(
+        "text-variants".into(),
+        "filesystem".into(),
+        "1".into(),
+        &mut None,
+    )?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::new();
     let volume = VolumeRef::new(
@@ -80,13 +88,22 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     );
     let read = volume.capability(VolumeOperation::Read)?;
     let write = volume.capability(VolumeOperation::Write)?;
-    let owner = issuer.issue("owner", &Capabilities::new([read.clone(), write.clone()]), Some(agent), None, &mut None).expect("scope proof");
+    let owner = issuer
+        .issue(
+            "owner",
+            &Capabilities::new([read.clone(), write.clone()]),
+            Some(agent),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let writer = Arc::new(FilesystemContentPublisher::new(
         host.clone(),
         &volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &owner,
-        4096, None,
+        4096,
+        None,
     )?);
     let source = writer
         .stage(
@@ -112,7 +129,8 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             host.clone(),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &owner,
-            4096, None,
+            4096,
+            None,
         )?),
         reads: AtomicUsize::new(0),
         corrupt: AtomicBool::new(false),
@@ -140,12 +158,12 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let read_definition = read_tool.definition.clone();
     let search_projector = search_tool.projection.clone();
     let mut tools = ToolRegistry::default();
-    tools.register(read_tool)?;
-    tools.register(search_tool)?;
-    tools.register(files::read_file()?)?;
-    tools.register(files::write_file()?)?;
-    tools.register(files::edit_file()?)?;
-    tools.register(files::patch_file(65_536, 16)?)?;
+    tools.register((read_tool, None), &mut None, None)?;
+    tools.register((search_tool, None), &mut None, None)?;
+    tools.register((files::read_file()?, None), &mut None, None)?;
+    tools.register((files::write_file()?, None), &mut None, None)?;
+    tools.register((files::edit_file()?, None), &mut None, None)?;
+    tools.register((files::patch_file(65_536, 16)?, None), &mut None, None)?;
     let captured_reader = reader.clone();
     let task = TaskDefinition::live("fixture.text_variants", "1", move |context, (): ()| {
         let source = source.clone();
