@@ -62,7 +62,7 @@ async fn tracking_reads_capture_only_their_exact_terminal_regions()
     ))
     .await?
     .value;
-    let mut changed_metadata = empty_metadata();
+    let mut changed_metadata = FileMetadata::default();
     changed_metadata.modified_ns = MetadataField::Value(7);
     (metadata_writer.set_attributes(file.clone(), changed_metadata, None, B, &cancellation))
         .await?;
@@ -651,12 +651,7 @@ async fn repeated_metadata_lookups_preserve_binding_conflicts()
         crate::PublicationPermit::Unrestricted,
         B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
     let rebase = (local.rebase_head(8, B, &cancellation)).await?;
@@ -734,12 +729,7 @@ async fn batch_lookups_preserve_each_binding_conflict() -> Result<(), Box<dyn st
             crate::PublicationPermit::Unrestricted,
             B,
             &cancellation,
-            |_| async {
-                crate::FsResult::Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            },
+            allow::<FsError>,
         ))
         .await?;
         let rebase = (local.rebase_head(8, B, &cancellation)).await?;

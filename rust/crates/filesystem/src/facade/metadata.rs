@@ -107,31 +107,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-    /// Reads metadata for an already authenticated record.
-    pub async fn read_record_metadata<W: FsWork>(
-        &self,
-        record: FileRecord,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<FileMetadata, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                self.validate_native_work(original)?;
-            }
-            read_record_metadata_to_file_root_with_accounting(
-                &self.volume,
-                record,
-                &mut accounting,
-                cancellation,
-            )
-            .await
-        }
-        .await;
-        budget.finish(result, &accounting)
-    }
-
     /// Reads complete canonical metadata for one exact path.
     pub async fn read_metadata<W: FsWork>(
         &self,
@@ -157,7 +132,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 }
 
-pub(super) async fn read_record_metadata_to_file_root_with_accounting<
+pub(crate) async fn read_record_metadata_to_file_root_with_accounting<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 >(

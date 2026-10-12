@@ -6,13 +6,15 @@ pub(super) use super::root_binding::{
 };
 
 use super::{
-    FilesystemHost, NativeVolumeNamespace, NativeViewManifest, NativeViewOptions,
-    NativeVolumeMapping,
+    FilesystemHost, NativeViewManifest, NativeViewOptions, NativeVolumeMapping,
+    NativeVolumeNamespace,
 };
 use crate::{
     Error, Result,
-    conversation::{ContentGrant, ContentPublisher, ContentResidencyVerifier, FileRef,
-        VolumeOperation, VolumeRef},
+    conversation::{
+        ContentGrant, ContentPublisher, ContentResidencyVerifier, FileRef, VolumeOperation,
+        VolumeRef,
+    },
     core::{AuthorityVerifier, Scope},
     durable_host::TaskJournalOwner,
     resources::GenerationRef,
@@ -27,30 +29,30 @@ use std::{
     sync::Arc,
 };
 
-
-
-mod root_output;
-mod working_view;
-mod publication;
+mod journal;
 mod lazy_volume;
 mod preparation;
 mod prepare;
+mod publication;
+mod root_output;
 mod view;
-mod journal;
-use root_output::*;
-use working_view::*;
-use publication::*;
+mod working_view;
+pub(crate) use journal::NativePreparationCompletionTemplate;
+use journal::*;
+pub use lazy_volume::NativeExistingLazyVolume;
 use lazy_volume::*;
 use preparation::*;
-use journal::*;
-pub use root_output::NativeRootOutputSource;
-pub use working_view::{NativeTaskViewDrainReceipt, NativeTaskWorkingView, NativeProcessView};
-pub use publication::{NativePublicationCleanup, NativePublicationReservationFailure,
-    NativePublicationFailure, NativeViewPublicationError, NativeViewPublicationReceipt};
-pub use lazy_volume::NativeExistingLazyVolume;
-pub use preparation::{BorrowedNativeVolumeBinding, NativePreparationRoot,
-    NativePreparationReceipt, NativeRecordedPreparation, observe_preparation};
-pub use view::NativeVolumeView;
-pub use journal::copy_native_mapping_with_work;
-pub(crate) use journal::NativePreparationCompletionTemplate;
+pub use preparation::{
+    BorrowedNativeVolumeBinding, NativePreparationReceipt, NativePreparationRoot,
+    NativeRecordedPreparation, observe_preparation,
+};
 pub(super) use publication::reserve_box;
+use publication::*;
+pub use publication::{
+    NativePublicationCleanup, NativePublicationFailure, NativePublicationReservationFailure,
+    NativeViewPublicationError, NativeViewPublicationReceipt,
+};
+pub use root_output::NativeRootOutputSource;
+pub use view::NativeVolumeView;
+use working_view::*;
+pub use working_view::{NativeProcessView, NativeTaskViewDrainReceipt, NativeTaskWorkingView};

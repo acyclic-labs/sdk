@@ -562,11 +562,10 @@ where
                                     }
                                 };
                             let actual = qualified
-                                .snapshot()
-                                .lazy_snapshot_with_native_work(
+                                .lazy_snapshot(&mut acyclic_fs::kernel::KernelAccounting::native(
                                     lazy.original_work(),
                                     lazy.original_work().cancellation(),
-                                )?
+                                ))?
                                 .ok_or_else(|| {
                                     Error::from(
                                         acyclic_fs::NativeTreeMaterializationError::InvalidLayout,

@@ -243,12 +243,6 @@ impl acyclic_native_runtime::NativeReadMeter for NativeTransportMeter {
     fn admit_read(&self, maximum: usize) -> std::io::Result<()> {
         self.table_event(maximum, &self.reads, &self.read_limit)
     }
-    fn admit_operations(&self, _: u64) -> std::io::Result<()> {
-        Err(std::io::ErrorKind::Unsupported.into())
-    }
-    fn record_operations(&self, _: u64) -> std::io::Result<()> {
-        Err(std::io::ErrorKind::Unsupported.into())
-    }
     fn record_read(&self, _: usize) -> std::io::Result<()> {
         Err(std::io::ErrorKind::Unsupported.into())
     }
@@ -259,12 +253,6 @@ impl acyclic_native_runtime::NativeReadMeter for NativeTransportMeter {
         self.table_event(maximum, &self.writes, &self.write_limit)
     }
     fn record_write(&self, _: usize) -> std::io::Result<()> {
-        Err(std::io::ErrorKind::Unsupported.into())
-    }
-    fn admit_write_operations(&self, _: u64) -> std::io::Result<()> {
-        Err(std::io::ErrorKind::Unsupported.into())
-    }
-    fn record_write_operations(&self, _: u64) -> std::io::Result<()> {
         Err(std::io::ErrorKind::Unsupported.into())
     }
     fn admit_durability(&self) -> std::io::Result<()> {

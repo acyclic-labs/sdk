@@ -32,7 +32,6 @@ pub(super) enum NativePreparationAuthority<'a, P: StreamProvider> {
 pub(crate) struct NativePreparationCompletionTemplate {
     pub(super) journal: acyclic_fs::MaterializationJournal,
     pub(super) binding: (crate::TaskId, crate::scheduler::LeaseFence),
-    pub(super) volumes: Vec<NativeVolumeMapping>,
     pub(super) path: acyclic_stream::StreamPath,
     pub(super) key: acyclic_stream::IdempotencyKey,
     pub(super) value: serde_json::Value,
@@ -80,20 +79,6 @@ impl NativePreparationCompletionTemplate {
                 crate::wire::ErrorCode::Unauthorized,
                 "native completion differs from its original protected preparation",
             ));
-        }
-        for mapping in &self.volumes {
-            owner.require_volume_grant(
-                &mapping.volume,
-                VolumeOperation::Read,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
-            )?;
-            if mapping.writable {
-                owner.require_volume_grant(
-                    &mapping.volume,
-                    VolumeOperation::Write,
-                    &mut Some(&mut crate::store::history::native_work_io(work)?),
-                )?;
-            }
         }
         Ok(())
     }
@@ -168,7 +153,6 @@ impl NativePreparationCompletionTemplate {
         let Self {
             mut journal,
             binding,
-            volumes,
             path,
             key,
             value,
@@ -177,7 +161,7 @@ impl NativePreparationCompletionTemplate {
             custody,
         } = self;
         journal.revision += 1;
-        drop((binding, volumes, path, key, value));
+        drop((binding, path, key, value));
         (journal, output, custody)
     }
 }
@@ -432,18 +416,20 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
                 )?;
             }
         }
-        let retained = intent_custody.bytes()
-            - intent.operation_directory.capacity() as u64
-            - intent.manifest.options.root.capacity() as u64;
         let NativePreparationIntent {
             task,
             original_fence,
             manifest,
             operation_directory,
         } = intent;
-        let NativeViewManifest { options, volumes } = manifest;
-        drop((options, operation_directory));
-        intent_custody.substitute(retained)?;
+        drop((manifest, operation_directory));
+        let retained = original_fence
+            .reservation_id
+            .capacity()
+            .checked_add(original_fence.placement.capacity())
+            .ok_or(acyclic_fs::WorkError::Overflow)
+            .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+        intent_custody.substitute(retained as u64)?;
         let (encoded, encoded_custody) = encode_record(&journal, &self.work)?;
         self.work.charge(acyclic_fs::WorkCounters {
             bytes_hashed: encoded.len() as u64,
@@ -510,7 +496,6 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
         let template = NativePreparationCompletionTemplate {
             journal,
             binding: (task, original_fence),
-            volumes,
             path,
             key,
             value,
@@ -524,7 +509,6 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
                 &mut Some(&mut crate::store::history::native_work_io(&self.work)?),
             )
             .await?;
-        template.verify_owner(owner, &self.work)?;
         crate::distributed::prepare_materialization_commit(owner, template, &self.work).await
     }
 

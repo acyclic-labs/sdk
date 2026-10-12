@@ -101,10 +101,10 @@ pub(super) fn reparse_tag(
         .map_err(|error| NativeMountError::Driver(error.to_string()))?;
     let identity = crate::NativeRootIdentity::from_file(&file)
         .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-    match reparse_data(&file) {
+    match reparse_data(&file, |data| data.first_chunk().copied()) {
         Ok(None) => Ok((None, identity)),
         Ok(Some(data)) => {
-            let tag = data.first_chunk().copied().ok_or_else(|| {
+            let tag = data.ok_or_else(|| {
                 NativeMountError::Driver("reparse response omitted its tag".to_owned())
             })?;
             Ok((Some(u32::from_le_bytes(tag)), identity))
@@ -122,16 +122,17 @@ pub(super) fn reparse_tag(
     }
 }
 
-pub(super) fn reparse_data(file: &std::fs::File) -> std::io::Result<Option<Vec<u8>>> {
+pub(super) fn reparse_data<T>(
+    file: &impl std::os::windows::io::AsRawHandle,
+    inspect: impl FnOnce(&[u8]) -> T,
+) -> std::io::Result<Option<T>> {
     use std::os::windows::io::AsRawHandle as _;
     use windows::Win32::Foundation::{ERROR_NOT_A_REPARSE_POINT, HANDLE};
     use windows::Win32::Storage::FileSystem::MAXIMUM_REPARSE_DATA_BUFFER_SIZE;
     use windows::Win32::System::IO::DeviceIoControl;
     use windows::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT;
 
-    let capacity = usize::try_from(MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
-        .map_err(|_| std::io::Error::other("reparse buffer size overflow"))?;
-    let mut output = vec![0_u8; capacity];
+    let mut output = [0_u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize];
     let mut returned = 0_u32;
     // SAFETY: the handle and output buffer remain valid for the synchronous
     let result = unsafe {
@@ -148,8 +149,10 @@ pub(super) fn reparse_data(file: &std::fs::File) -> std::io::Result<Option<Vec<u
     };
     match result {
         Ok(()) => {
-            output.truncate(usize::try_from(returned).unwrap_or(capacity));
-            Ok(Some(output))
+            let data = output
+                .get(..returned as usize)
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+            Ok(Some(inspect(data)))
         }
         Err(error) if error.code() == ERROR_NOT_A_REPARSE_POINT.to_hresult() => Ok(None),
         Err(error) => Err(error.into()),

@@ -57,12 +57,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
         crate::PublicationPermit::Unrestricted,
         B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     )
     .await?;
     let original =
@@ -116,12 +111,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
             crate::PublicationPermit::Unrestricted,
             B,
             &cancellation,
-            |_| async {
-                crate::FsResult::Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            },
+            allow::<FsError>,
         )
         .await?;
     let callbacks = Arc::new(AtomicUsize::new(0));
@@ -834,7 +824,7 @@ async fn authored_live_transaction_preserves_create_ids_and_publishes_atomically
             AuthoredMutation::CreateFile {
                 path: file.clone(),
                 bytes: OwnedBytes::from_static(b"initial"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::Write {
                 path: file.clone(),

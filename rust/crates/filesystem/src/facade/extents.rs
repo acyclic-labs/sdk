@@ -98,7 +98,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 }
 
-pub(super) async fn seek_record_extent_with_accounting<
+pub(crate) async fn seek_record_extent_with_accounting<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 >(

@@ -40,12 +40,12 @@ async fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, _) = object(b"x");
-    let rejected_result = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects.contains(object_id, &mut __object_work).await;
-        __object_result
-    })
-    .await;
+    let rejected_result = (objects
+        .contains(
+            object_id,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await);
     let Err(rejected) = rejected_result else {
         return Err("scheduled contains rejection succeeded".into());
     };
@@ -64,12 +64,12 @@ async fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::
         SimulationFault::PartitionBefore,
     )?;
     assert_eq!(next.occurrence, 2);
-    let second_result = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects.contains(object_id, &mut __object_work).await;
-        __object_result
-    })
-    .await;
+    let second_result = (objects
+        .contains(
+            object_id,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await);
     let Err(second) = second_result else {
         return Err("scheduled next partition succeeded".into());
     };

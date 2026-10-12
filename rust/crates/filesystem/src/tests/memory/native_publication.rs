@@ -632,15 +632,13 @@ async fn ordinary_guarded_first_record_seals_atomic_creation_and_successful_reco
                     ..
                 })
             ));
-            Err::<crate::facade::OperationReceipt<()>, _>(
-                crate::performance::OperationFailure::new(
-                    crate::facade::FsError::Cancelled(crate::CancellationError),
-                    WorkCounters {
-                        items_examined: 3,
-                        ..WorkCounters::default()
-                    },
-                ),
-            )
+            Err::<crate::OperationReceipt<()>, _>(crate::performance::OperationFailure::new(
+                crate::facade::FsError::Cancelled(crate::CancellationError),
+                WorkCounters {
+                    items_examined: 3,
+                    ..WorkCounters::default()
+                },
+            ))
         }
     };
     let failure = (async {
@@ -700,7 +698,7 @@ async fn ordinary_guarded_first_record_seals_atomic_creation_and_successful_reco
                 __authority_work.receipt(__authority_result)
             });
             Ok::<_, crate::performance::OperationFailure<crate::facade::FsError>>(
-                crate::facade::OperationReceipt {
+                crate::OperationReceipt {
                     value: (),
                     work: WorkCounters::default(),
                 },

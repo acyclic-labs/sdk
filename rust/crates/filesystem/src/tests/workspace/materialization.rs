@@ -49,13 +49,14 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
     };
     let destination = tempfile::tempdir()?;
     let receipt = generation
-        .materialize_path(
-            "/output/nested/status",
+        .materialize(
+            std::iter::once("/output/nested/status"),
             &crate::MaterializeOptions {
                 destination: destination.path().to_path_buf(),
                 maximum_directory_entries: 32,
                 maximum_extent_spans: 32,
                 transfer_bytes: 4096,
+                expected_root_identity: None,
             },
             B,
             &cancel,
@@ -68,13 +69,14 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
     );
     let directory_destination = tempfile::tempdir()?;
     generation
-        .materialize_path(
-            "/output/nested",
+        .materialize(
+            std::iter::once("/output/nested"),
             &crate::MaterializeOptions {
                 destination: directory_destination.path().to_path_buf(),
                 maximum_directory_entries: 32,
                 maximum_extent_spans: 32,
                 transfer_bytes: 4096,
+                expected_root_identity: None,
             },
             B,
             &cancel,
@@ -134,12 +136,14 @@ async fn public_generation_materialize_paths_shares_parents_and_hard_link_identi
     };
     let destination = tempfile::tempdir()?;
     let receipt = generation
-        .materialize_paths(
-            &[
+        .materialize(
+            (&[
                 "/nested/a".to_owned(),
                 "/nested/b".to_owned(),
                 "/nested/c".to_owned(),
-            ],
+            ])
+                .iter()
+                .map(String::as_str),
             &crate::MaterializeOptions::native(destination.path()),
             B,
             &cancel,
@@ -201,6 +205,7 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
         maximum_directory_entries: 32,
         maximum_extent_spans: 32,
         transfer_bytes: 4096,
+        expected_root_identity: None,
     };
     let restored = generation
         .restore_host_path(
@@ -273,6 +278,7 @@ async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Resul
                 maximum_directory_entries: 32,
                 maximum_extent_spans: 32,
                 transfer_bytes: 4096,
+                expected_root_identity: None,
             },
             B,
             &cancel,
@@ -313,6 +319,7 @@ async fn public_generation_restore_host_path_rejects_reparse_parent_when_availab
                 maximum_directory_entries: 32,
                 maximum_extent_spans: 32,
                 transfer_bytes: 4096,
+                expected_root_identity: None,
             },
             B,
             &cancel,

@@ -72,7 +72,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             caller.private_volume.validate(&mut None)?;
             let agent = caller.owner.scope.agent().ok_or_else(|| Error::Unauthorized("configured caller has no signed agent".into()))?;
             if let Some(native) = &caller.native_snapshot {
-                crate::contract::validate_json_byte_bound(native, limits.file_bytes)?;
+                crate::contract::json_byte_length(native, limits.file_bytes, &mut None).map(|_| ())?;
             }
             if let Some(result) = &caller.result_volume {
                 validate_result_volume(result, &caller.private_volume, agent, provider)?;
@@ -119,7 +119,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 || config.original_sources[..index].iter().any(|prior| prior.request.operation_id == original.request.operation_id) {
                 return Err(Error::Unauthorized("original source record changed its unique caller or exact canonical cut".into()));
             }
-            crate::contract::validate_json_byte_bound(&original.snapshot, limits.file_bytes)?;
+            crate::contract::json_byte_length(&original.snapshot, limits.file_bytes, &mut None).map(|_| ())?;
         }
         Ok(Arc::new(Self { config, stream, filesystem, limits, runtime: OnceLock::new(), project_policy: OnceLock::new() }))
     }
@@ -295,7 +295,8 @@ fn allocation_digest(
         message_file_pointer: allocation.child_message_file_pointer.as_deref(),
         input_files: &allocation.input_files, limits: allocation.limits,
     };
-    super::task_runtime::observed::digest(&descriptor, io, acyclic_stream::MAX_RECORD_BYTES as u64)
+    crate::executor::with_history_io(io, |work| crate::contract::canonical_json_digest_with_work(
+        &descriptor, if io.is_some() { acyclic_stream::MAX_RECORD_BYTES as u64 } else { u64::MAX }, work))
 }
 
 fn checkpoint_operation(effect: OperationId) -> OperationId {

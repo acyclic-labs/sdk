@@ -81,12 +81,7 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
             crate::PublicationPermit::Unrestricted,
             B,
             &cancellation,
-            |_| async {
-                crate::FsResult::Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            },
+            allow::<FsError>,
         ))
         .await;
         match outcome {

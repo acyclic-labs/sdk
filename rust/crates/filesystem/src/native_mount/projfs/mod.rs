@@ -14,7 +14,8 @@ use super::{
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
-use crate::native_host::HostRoot;
+use crate::materializer::NativeResourceCredit::{ReadOperations, WriteOperations};
+use crate::native_host::{HostRoot, NativeHostWork};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -42,7 +43,7 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFY_TYPES, PRJ_PLACEHOLDER_INFO, PRJ_STARTVIRTUALIZING_OPTIONS,
     PRJ_UPDATE_ALLOW_READ_ONLY, PRJ_UPDATE_ALLOW_TOMBSTONE, PRJ_UPDATE_TYPES, PrjDeleteFile,
     PrjFileNameCompare, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
-    PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
+    PrjWritePlaceholderInfo2,
 };
 use windows::core::{GUID, HRESULT, HSTRING, PCWSTR};
 

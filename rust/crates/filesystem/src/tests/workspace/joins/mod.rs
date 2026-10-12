@@ -108,7 +108,9 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     let JoinOutcome::Applied(joined) = outcome else {
         return Err("join did not publish".into());
     };
-    let witness = plan.commit_witness(&joined, idempotency_key)?;
+    let witness = plan
+        .commit_witness(&joined, idempotency_key, B, &cancel)?
+        .value;
     assert!(main.verify_join_commit(&witness).await?);
     let mut forged = serde_json::to_value(witness)?;
     forged["source_generation"] =
@@ -121,7 +123,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
             .value
             .ok_or("join operation was not recoverable")?
             .id(),
-        joined.id()
+        joined.generation.id()
     );
     assert!(
         main.operation_generation(IdempotencyKey::new(), B, &cancel)
@@ -130,7 +132,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
             .is_none()
     );
     assert_eq!(
-        joined.read("/base", 16, B, &cancel).await?.value,
+        joined.generation.read("/base", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"base")
     );
     assert_eq!(
@@ -229,14 +231,20 @@ async fn exact_generation_join_matches_head_plan_and_rejects_stale_target()
             .join_into(&main)
             .plan_at(&source, &target, B, &cancel)
             .await,
-        Err(WorkspaceError::StaleTarget)
+        Err(OperationFailure {
+            error: WorkspaceError::StaleTarget,
+            ..
+        })
     ));
     assert!(matches!(
         agent
             .join_into(&main)
-            .plan_at(&target, &main.head(B, &cancel).await?, B, &cancel.value)
+            .plan_at(&target, &main.head(B, &cancel).await?.value, B, &cancel)
             .await,
-        Err(WorkspaceError::ForeignGeneration)
+        Err(OperationFailure {
+            error: WorkspaceError::ForeignGeneration,
+            ..
+        })
     ));
     Ok(())
 }
@@ -321,8 +329,12 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
         return Err("resolved join did not publish".into());
     };
     assert!(
-        main.verify_join_commit(&plan.commit_witness(&application, join_key)?)
-            .await?
+        main.verify_join_commit(
+            &plan
+                .commit_witness(&application, join_key, B, &cancel)?
+                .value
+        )
+        .await?
     );
     assert_eq!(
         main.read("/shared", 16, B, &cancel).await?.value,

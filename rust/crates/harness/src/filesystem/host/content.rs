@@ -96,14 +96,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         internal_class: Option<InternalContentClass>,
         io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        } else {
-            volume.validate(&mut None)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        volume.validate(&mut None)?;
+        crate::executor::with_history_io(io, |work| volume.validate(work))?;
         if volume.provider() != &self.provider {
             return Err(fork_preparer_io::failure(
                 io,
@@ -145,32 +138,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             * (crate::conversation::MAX_PATH_BYTES as u64
                 + 32 * crate::conversation::MAX_LABEL_BYTES as u64
                 + 1024);
-        let receipt = match io {
-            Some(io) => read_generation_with_io(&original, &receipt_path, RECORD_BYTES, io).await?,
-            None => original
-                .read(
-                    &receipt_path,
-                    RECORD_BYTES,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| map_error(failure.error))?,
-        };
+        let receipt = read_generation(&original, &receipt_path, RECORD_BYTES, io).await?;
         let (recorded, expected): (FileRef, Option<GenerationRef>) = match io {
             Some(io) => io.decode_json(&receipt)?,
             None => crate::contract::json_from_slice(&receipt)
                 .map_err(|error| Error::Storage(error.to_string()))?,
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            recorded.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        } else {
-            recorded.validate(&mut None)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        recorded.validate(&mut None)?;
+        crate::executor::with_history_io(io, |work| recorded.validate(work))?;
         if recorded.volume() != volume
             || recorded.version() != "pending"
             || expected_path.is_some_and(|path| path != recorded.path())
@@ -210,21 +184,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         let metadata_path = content_metadata_path_io(recorded.path(), true, io)?;
-        let metadata = match io {
-            Some(io) => {
-                read_generation_with_io(&original, &metadata_path, RECORD_BYTES, io).await?
-            }
-            None => original
-                .read(
-                    &metadata_path,
-                    RECORD_BYTES,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| map_error(failure.error))?,
-        };
+        let metadata = read_generation(&original, &metadata_path, RECORD_BYTES, io).await?;
         let encoded = match io {
             Some(io) => io.encode(&recorded, RECORD_BYTES, false)?,
             None => serde_json::to_vec(&recorded)
@@ -275,11 +235,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(Some(reference))
     }
 
-    /// Trusted journal staging retains the same atomic metadata and retry checks as public uploads, but may write only its assigned subtree.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal stage mirrors the complete file contract"
-    )]
+    /// Stages journal payloads under the assigned internal subtree.
+    #[allow(clippy::too_many_arguments, reason = "complete internal file identity")]
     pub(crate) async fn put_internal_content(
         &self,
         volume: &VolumeRef,
@@ -289,8 +246,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         media_type: &str,
         display_name: &str,
         maximum_bytes: u64,
-        idempotency_key: &IdempotencyKey,
+        key: &IdempotencyKey,
         class: InternalContentClass,
+        io: Option<&PreparationIo>,
     ) -> Result<FileRef>
     where
         A: 'static,
@@ -304,69 +262,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             media_type,
             display_name,
             maximum_bytes,
-            idempotency_key,
+            key,
             Some(class),
             None,
-            None,
+            io,
             None,
             None,
         )
         .await
-    }
-
-    /// Internal staging keeps the same original whole-volume authority and publisher engine; only its assigned private path class is different.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "complete original internal publication identity"
-    )]
-    pub(crate) async fn put_internal_content_original_with_io(
-        &self,
-        volume: &VolumeRef,
-        verifier: &AuthorityVerifier,
-        scope: &Scope,
-        path: &str,
-        bytes: &[u8],
-        media_type: &str,
-        display_name: &str,
-        maximum_bytes: u64,
-        idempotency_key: &IdempotencyKey,
-        class: InternalContentClass,
-        io: &PreparationIo,
-    ) -> Result<FileRef>
-    where
-        A: 'static,
-        O: 'static,
-    {
-        let grant_hold;
-        let grant = ContentGrant::verify(
-            verifier,
-            scope,
-            volume,
-            VolumeOperation::Write,
-            (io).remaining()?.bytes_encoded,
-            &mut Some(&mut (io).history_io()),
-        )?;
-        grant_hold = io.guard_owned(grant.logical_owned_bytes()?)?;
-        let result = self
-            .put_content_impl(
-                volume,
-                &grant,
-                path,
-                bytes,
-                media_type,
-                display_name,
-                maximum_bytes,
-                idempotency_key,
-                Some(class),
-                None,
-                Some(io),
-                None,
-                None,
-            )
-            .await;
-        drop(grant);
-        drop(grant_hold);
-        result
     }
 
     /// Stages a complete canonical attachment list for a manifest-backed event.

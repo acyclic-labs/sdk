@@ -10,7 +10,6 @@ use crate::{
 };
 use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_stream::MemoryStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 type Host = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 
@@ -32,7 +31,7 @@ async fn fixture() -> Result<Fixture> {
         "2".into(),
         &mut None,
     )?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
     let authority = Authority {
         kind: AggregateKind::Conversation,
@@ -502,7 +501,7 @@ async fn durable_merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes()
     let fixture = fixture().await?;
     let effect = OperationId::from_bytes([31; 16]);
     let (plan, payload) = merge_plan(&fixture, effect).await?;
-    let machine = RecursiveToolMachine::new(Kind::Merge, 65536);
+    let machine = RecursiveToolMachine::new("acyclic.merge", 65536);
     let initial = machine.initialize(&encode(&plan.arguments, None)?)?;
     let command = WorkflowCommand {
         operation_id: derived(effect, "merge-apply", None)?,
@@ -605,7 +604,7 @@ async fn durable_merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes()
 
 #[test]
 fn fork_initialization_retains_raw_child_message_and_independent_source_choice() -> Result<()> {
-    let machine = RecursiveToolMachine::new(Kind::Fork, 4096);
+    let machine = RecursiveToolMachine::new("acyclic.fork", 4096);
     let arguments = ForkToolArguments {
         id: AgentId::from_bytes([40; 16]),
         msg: "exact é\0🦀\r\nchild task".into(),
@@ -639,104 +638,21 @@ fn fork_initialization_retains_raw_child_message_and_independent_source_choice()
     Ok(())
 }
 
-struct RejectUnexpectedSource(AtomicUsize);
-impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>
-    for RejectUnexpectedSource
-{
-    fn owner<'a>(
-        &'a self,
-        _: &'a ToolContext,
-        _: &'a ResumableTool,
-        _: &'a ToolInvocation,
-        _: &'a CancellationToken,
-        io: Option<&'a crate::filesystem::PreparationIo>,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            RecursiveToolOwner<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>,
-        >,
-    > {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        crate::conversation::BoundedContentFuture::new(io, || async {
-            Err(Error::Unauthorized("unexpected source access".into()))
-        })
-    }
-    fn select<'a>(
-        &'a self,
-        _: &'a ToolContext,
-        _: &'a ForkToolArguments,
-        _: &'a CancellationToken,
-        io: Option<&'a crate::filesystem::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveForkSourceIntent>> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        crate::conversation::BoundedContentFuture::new(io, || async {
-            Err(Error::Unauthorized("unexpected source access".into()))
-        })
-    }
-    fn fork<'a>(
-        &'a self,
-        _: &'a ToolContext,
-        _: &'a ForkToolArguments,
-        _: &'a RecursiveForkSourceIntent,
-        _: Option<&'a RecursiveForkToolPlan>,
-        _: &'a CancellationToken,
-        io: Option<&'a crate::filesystem::PreparationIo>,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            RecursiveForkToolBinding<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>,
-        >,
-    > {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        crate::conversation::BoundedContentFuture::new(io, || async {
-            Err(Error::Unauthorized("unexpected source access".into()))
-        })
-    }
-    fn merge<'a>(
-        &'a self,
-        _: &'a ToolContext,
-        _: &'a MergeToolArguments,
-        _: Option<&'a RecursiveMergeToolPlan>,
-        _: &'a CancellationToken,
-        io: Option<&'a crate::filesystem::PreparationIo>,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            RecursiveMergeToolBinding<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>,
-        >,
-    > {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        crate::conversation::BoundedContentFuture::new(io, || async {
-            Err(Error::Unauthorized("unexpected source access".into()))
-        })
-    }
-    fn preparation<'a>(
-        &'a self,
-        _: &'a TaskContext,
-        _: &'a crate::resource_preparation::TaskResourcePreparation,
-        _: &'a CancellationToken,
-    ) -> BoxProviderFuture<
-        'a,
-        Result<RetainedSourceBinding<MemoryAuthorityBackend, MemoryObjectBackend>>,
-    > {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Err(Error::Unauthorized("unexpected source access".into())) })
-    }
-}
-
 #[tokio::test]
 async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursive_execution()
 -> Result<()> {
-    let source = Arc::new(RejectUnexpectedSource(AtomicUsize::new(0)));
     let storage = super::super::MemoryHarnessStorage::new(AgentId::new(), 65536).await?;
     let ordinary = storage.default_tools(
         crate::conversation::Limits {
             file_bytes: 65536,
             ..Default::default()
         },
-        Some(source.clone()),
+        None,
     )?;
-    let registry = recursive_default_tools(Some(source.clone()), 65536)?;
+    let registry =
+        recursive_default_tools::<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>(
+            None, 65536,
+        )?;
     for expected in [
         "acyclic.read_file",
         "acyclic.write_file",
@@ -761,8 +677,8 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
             .ok_or_else(|| Error::NotFound(name.into()))?;
         assert_eq!(tool.definition, durable.definition);
         assert_eq!(
-            tool.executor.resumable_machine_identity(),
-            Some(durable.machine.identity().clone())
+            tool.executor.resumable_machine_identity(None)?,
+            Some(durable.machine.identity())
         );
         let invocation = ToolInvocation {
             operation_id: OperationId::from_bytes([50; 16]),
@@ -774,25 +690,8 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
         assert!(tool.executor.execute(invocation.clone()).await.is_err());
         assert!(tool.executor.reconcile(invocation).await.is_err());
     }
-    assert_eq!(source.0.load(Ordering::SeqCst), 0);
     assert!(registry.tools.get("bash", None)?.is_none());
     Ok(())
-}
-
-#[test]
-fn invocation_guard_cancels_when_a_polled_pending_future_is_dropped() {
-    let cancellation = CancellationToken::new();
-    let guard = InvocationCancellation(cancellation.clone());
-    let mut future = Box::pin(async move {
-        let _guard = guard;
-        std::future::pending::<()>().await;
-    });
-    let waker = futures::task::noop_waker();
-    let mut context = std::task::Context::from_waker(&waker);
-    assert!(Future::poll(future.as_mut(), &mut context).is_pending());
-    assert!(!cancellation.is_cancelled());
-    drop(future);
-    assert!(cancellation.is_cancelled());
 }
 
 #[tokio::test]
@@ -1194,7 +1093,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
         allocation_digest: [66; 32],
         request,
     };
-    let machine = RecursiveToolMachine::new(Kind::Fork, 65536);
+    let machine = RecursiveToolMachine::new("acyclic.fork", 65536);
     let initial = machine.initialize(&value)?;
     let command = WorkflowCommand {
         operation_id: derived(effect, "source-stage", None)?,

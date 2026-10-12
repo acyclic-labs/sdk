@@ -176,7 +176,8 @@ async fn sequential_async_batch_preserves_precancel_midbatch_and_nested_overflow
     assert!(failure.work.peak_allocation_bytes >= 5);
 
     let overflow = {
-        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+        let cancellation = CancellationToken::new();
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let result = read_many_sequential(
             &ScriptedAsyncObjectStore {
                 read: ScriptedRead::FailWithOverflowingWork,
@@ -672,7 +673,7 @@ async fn default_guarded_fork_rejects_managed_permit_before_retention_or_guard()
     let mut calls = 0;
     let mut guard = |_budget: WorkBudget| {
         calls += 1;
-        std::future::ready(Ok(crate::facade::OperationReceipt {
+        std::future::ready(Ok(crate::OperationReceipt {
             value: (),
             work: WorkCounters::default(),
         }))
@@ -706,16 +707,14 @@ async fn default_guarded_fork_rejects_managed_permit_before_retention_or_guard()
     assert_eq!(*failure.work, WorkCounters::default());
     assert_eq!(calls, 0);
     for authority in [fork.retention, fork.destination] {
-        let failure = (async {
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __authority_result =
-                AsyncAuthorityStore::head(&store, authority, &mut __authority_work).await;
-            __authority_result
-        })
-        .await
-        .err()
-        .ok_or("managed rejection created authority")?;
+        let failure = (AsyncAuthorityStore::head(
+            &store,
+            authority,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)
+            .err()
+            .ok_or("managed rejection created authority")?;
         assert!(matches!(failure, AuthorityStoreError::Missing));
     }
     Ok(())

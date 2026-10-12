@@ -67,6 +67,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 u64::MAX,
                 &IdempotencyKey::new(format!("model-prefix:{digest}"))?,
                 InternalContentClass::ModelPrefix,
+                None,
             )
             .await
     }
@@ -618,7 +619,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     path: fork_preparer_io::clone_text("/.system/inherited-conversation", io)?,
                 },
                 WorkspaceMutation::PutFile {
-                    path: crate::contract::preparation_format(format_args!("/{path}"), io)?,
+                    path: crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/{path}"), work))?,
                     bytes: copied,
                 },
             ];

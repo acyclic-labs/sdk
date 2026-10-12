@@ -105,6 +105,7 @@ async fn detached_open_file_remains_sparse_and_mutable_after_last_binding_remova
         (detached.read_named_attribute(&attribute, B, &cancellation,))
             .await?
             .value
+            .map(|chunk| chunk.bytes)
             .as_deref(),
         Some(b"first".as_slice())
     );
@@ -148,7 +149,16 @@ async fn detached_open_file_remains_sparse_and_mutable_after_last_binding_remova
     assert_eq!(detached.logical_bytes(), 128);
     (detached.set_attributes(metadata, Some(160), B, &cancellation)).await?;
     assert_eq!(detached.logical_bytes(), 160);
-    (checkout.remove(file.clone(), Some(file_id), B, &cancellation)).await?;
+    (checkout.mutate(
+        vec![Mutation::Remove {
+            path: file.clone(),
+            expected_file_id: Some(file_id)
+                .map_or(MetadataField::Unavailable, MetadataField::Value),
+        }],
+        B,
+        &cancellation,
+    ))
+    .await?;
     let absent = (checkout.lookup_no_follow(&file, B, &cancellation)).await?;
     assert!(absent.value.record.is_none());
 
@@ -285,7 +295,7 @@ async fn detached_inline_file_seek_and_attribute_absence_are_exact()
     .await?;
     (detached.change_named_attribute(&attribute.clone(), None, B, &cancellation)).await?;
     let absent = (detached.read_named_attribute(&attribute, B, &cancellation)).await?;
-    assert_eq!(absent.value, None);
+    assert!(absent.value.is_none());
 
     detached.record.kind = FileKind::Fifo;
     detached.record.payload = FilePayload::Empty;

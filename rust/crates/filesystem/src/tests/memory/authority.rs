@@ -1,4 +1,5 @@
 use super::*;
+use bytes::Bytes;
 
 #[tokio::test]
 async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::error::Error>> {

@@ -344,7 +344,7 @@ async fn launch_only(
         ("command", serde_json::to_value(seed.command)?),
         (
             "approval_digest",
-            serde_json::to_value(seed.request.approval_digest(seed.task, seed.command)?)?,
+            serde_json::to_value(seed.request.approval_digest(seed.task, seed.command, None)?)?,
         ),
     ] {
         if value.get(field) != Some(&expected) {
@@ -361,10 +361,10 @@ async fn verify_pending_task(
     seed: &super::Restart,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let issuer = super::issuer();
-    let files = Arc::new(FilesystemHost::new(
+    let files = FilesystemHost::new(
         filesystem,
-        seed.destination.provider().clone(),
-    )?);
+        seed.destination.provider(), None,
+    )?;
     let task = super::runtime(
         stream.clone(),
         files.clone(),

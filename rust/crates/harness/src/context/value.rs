@@ -121,7 +121,7 @@ impl BorrowedContext<'_> {
             if let Some(content) = self.messages.user {
                 content.validate_limits(limits, work)?;
             }
-            crate::contract::validate_trusted_json_byte_bound(self, limits.render_bytes, work)
+            crate::contract::json_byte_length(self, limits.render_bytes, work).map(|_| ())
         })
     }
 }
@@ -229,6 +229,6 @@ pub(crate) fn copy_context(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Context> {
     crate::executor::with_history_io(io, |work| {
-        compaction::clone_context(context, work).map(|(copy, _)| copy)
+        compaction::clone_context(context, None, work).map(|(copy, _)| copy)
     })
 }

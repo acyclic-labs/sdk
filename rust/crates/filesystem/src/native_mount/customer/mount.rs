@@ -31,24 +31,6 @@ where
         Ok(())
     }
 
-    /// Publishes all pending effects under one active operation lease.
-    pub async fn sync_with_permit(
-        &self,
-        permit: crate::PublicationPermit,
-    ) -> Result<(), MountLifecycleError> {
-        flush_session_callbacks(&self.session)?;
-        self.source
-            .sync_async(permit)
-            .await
-            .map_err(MountLifecycleError::Source)
-    }
-
-    /// Publishes pending writes and advances the live checkout to workspace head.
-    pub async fn refresh(&self) -> Result<(), MountLifecycleError> {
-        self.sync().await?;
-        self.advance_to_head().await
-    }
-
     /// Advances an already-clean live checkout to the workspace head.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
         let advanced = self.source.advance_to_head_async().await;
@@ -106,19 +88,10 @@ where
         destination: impl AsRef<Path>,
         options: MountOptions,
     ) -> Result<Mount<A, O>, MountLifecycleError> {
-        let work = match options.work.as_ref() {
-            Some(work) => work.clone(),
-            None => {
-                acyclic_native_runtime::initialize_native_io_services()
-                    .map_err(NativeMountError::from)?;
-                super::super::initialize_native_mount_services()?;
-                NativeMaterializationWork::new(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?
-            }
-        };
+        let work = options.work(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )?;
         let cancellation = work.cancellation();
         super::super::adapter::validate_native_source_io_binding(
             &work,
@@ -156,14 +129,7 @@ where
         if selected.kind != FileKind::Directory {
             return Err(MountLifecycleError::Workspace(WorkspaceError::NotDirectory));
         }
-        let source = options::checkout_source(
-            checkout,
-            (root, root_custody),
-            options.publication,
-            &work,
-            options.native_original.as_ref(),
-            options.callback_guard.as_ref(),
-        )?;
+        let source = options::checkout_source(checkout, (root, root_custody), &options, &work)?;
         let session_destination = work.path(&destination, None)?;
         let prepared =
             super::super::prepare_native_mount_start(&work).map_err(NativeMountError::from)?;

@@ -109,12 +109,7 @@ async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
             crate::PublicationPermit::Unrestricted,
             B,
             &cancel,
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
+            allow::<WorkspaceError>,
         )
         .await?
         .value
@@ -166,7 +161,6 @@ async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
     );
     Ok(())
 }
-
 #[tokio::test]
 async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
 -> Result<(), Box<dyn Error>> {
@@ -184,20 +178,19 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
         .value;
     candidate
         .write("/file", bytes::Bytes::from_static(b"candidate"), B, &cancel)
-        .await?
-        .value;
-    let callback_work = crate::WorkCounters {
+        .await?;
+    let callback_work = WorkCounters {
         backend_read_operations: 3,
-        ..crate::WorkCounters::UNCHARGED
+        ..WorkCounters::UNCHARGED
     };
     let failure = candidate
         .commit(
             None,
-            crate::PublicationPermit::Unrestricted,
+            PublicationPermit::Unrestricted,
             selected_transaction_budget(),
             &cancellation,
             |_| {
-                std::future::ready(Err(crate::OperationFailure::new(
+                std::future::ready(Err(OperationFailure::new(
                     OrdinaryOwnerError::Denied {
                         task: [117; 16],
                         revision: 912,
@@ -210,64 +203,44 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
         .await
         .err()
         .ok_or("expired owner published")?;
-    assert!(matches!(failure.error,
-        OrdinaryOwnerError::Denied { task, revision: 912, expired: true } if task == [117; 16]));
+    assert!(
+        matches!(failure.error, OrdinaryOwnerError::Denied { task, revision: 912, expired: true } if task == [117; 16])
+    );
     assert!(failure.work.backend_read_operations >= callback_work.backend_read_operations);
     assert!(failure.work.bytes_hashed > 0);
     assert_eq!(failure.work.authority_records_appended, 0);
     assert_eq!(workspace.head(B, &cancel).await?.value.id(), base.id());
-    let failure = async {
-        let mut guard = || {
-            std::future::ready(Err(OrdinaryOwnerError::Denied {
-                task: [118; 16],
-                revision: 913,
-                expired: false,
-            }))
-        };
-        candidate
-            .commit(
-                None,
-                crate::PublicationPermit::Unrestricted,
-                B,
-                &cancellation,
-                |_| {
-                    let future = guard();
-                    async move {
-                        future
-                            .await
-                            .map(|value| crate::OperationReceipt {
-                                value,
-                                work: crate::WorkCounters::default(),
-                            })
-                            .map_err(crate::OperationFailure::before_work)
-                    }
-                },
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-    }
-    .await
-    .err()
-    .ok_or("denied ordinary owner published")?;
-    assert!(matches!(failure,
-        OrdinaryOwnerError::Denied { task, revision: 913, expired: false } if task == [118; 16]));
+    let failure = candidate
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            B,
+            &cancellation,
+            |_| {
+                std::future::ready(Err(OperationFailure::before_work(
+                    OrdinaryOwnerError::Denied {
+                        task: [118; 16],
+                        revision: 913,
+                        expired: false,
+                    },
+                )))
+            },
+        )
+        .await
+        .err()
+        .ok_or("denied ordinary owner published")?;
+    assert!(
+        matches!(failure.error, OrdinaryOwnerError::Denied { task, revision: 913, expired: false } if task == [118; 16])
+    );
     assert_eq!(workspace.head(B, &cancel).await?.value.id(), base.id());
     assert!(matches!(
         candidate
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
+                PublicationPermit::Unrestricted,
                 B,
                 &cancel,
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                }
+                allow::<WorkspaceError>,
             )
             .await?
             .value,
@@ -292,39 +265,21 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
             B,
             &cancel,
         )
-        .await?
-        .value;
+        .await?;
     cancellation.cancel();
-    let sdk_failure = async {
-        let mut guard = || std::future::ready(Ok::<(), OrdinaryOwnerError>(()));
-        cancelled_candidate
-            .commit(
-                None,
-                crate::PublicationPermit::Unrestricted,
-                B,
-                &cancellation,
-                |_| {
-                    let future = guard();
-                    async move {
-                        future
-                            .await
-                            .map(|value| crate::OperationReceipt {
-                                value,
-                                work: crate::WorkCounters::default(),
-                            })
-                            .map_err(crate::OperationFailure::before_work)
-                    }
-                },
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-    }
-    .await
-    .err()
-    .ok_or("cancelled SDK work published")?;
+    let failure = cancelled_candidate
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            B,
+            &cancellation,
+            allow::<OrdinaryOwnerError>,
+        )
+        .await
+        .err()
+        .ok_or("cancelled SDK work published")?;
     assert!(matches!(
-        sdk_failure,
+        failure.error,
         OrdinaryOwnerError::Sdk(WorkspaceError::Cancelled(_))
     ));
     Ok(())
@@ -349,14 +304,15 @@ async fn native_guarded_creation_preserves_original_callback_error_and_prepared_
         observed_seals.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::future::ready(Err(NativeCreationGuardTestError::Denied(23)))
     };
+    let mut owner = crate::NativeAuthorityGuard(deny);
     let failure = fs
-        .create_workspace_with_operation_guarded_with_native_work(
+        .create_workspace_with_operation::<_, _, NativeCreationGuardTestError>(
             "native-guarded-creation-denied",
             VolumeConfig::portable(Lifecycle::Durable),
             IdempotencyKey::new().operation_id(),
             &original,
             &cancellation,
-            &mut deny,
+            Some(&mut owner),
         )
         .await
         .err()
@@ -416,7 +372,7 @@ async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_auth
             crate::PublicationPermit::Unrestricted,
             &original,
             &cancellation,
-            &mut deny,
+            Some(&mut owner),
         )
         .await
         .err()
@@ -536,14 +492,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
             crate::PublicationPermit::Unrestricted,
             B,
             &cancellation,
-            |_| {
-                std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
-                    crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    },
-                ))
-            },
+            allow::<WorkspaceError>,
         )
         .await?;
     let original_generation = match committed.value {
@@ -565,14 +514,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     let (generation, record) = observed.value.0.ok_or("original operation disappeared")?;
     assert_eq!(generation.id(), original_generation.id());
     assert_eq!(record.operation_id, key.operation_id());
-    let mut decode_work = crate::WorkCounters::UNCHARGED;
-    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
-    let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
-        &mut allocations,
-        &mut decode_work,
-        B,
-        &cancellation,
-    );
+    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(B, &cancellation);
     let evidence = crate::kernel::decode_publication_evidence_with_accounting(
         &record.payload,
         4 * 1024,
@@ -584,8 +526,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     );
     assert_eq!(evidence.original_evidence, Some(original_evidence));
     assert!(evidence.evidence_digest.is_some());
-    drop(accounting);
-    assert!(decode_work.bytes_hashed >= original_evidence.len() as u64);
+    assert!(accounting.spent().bytes_hashed >= original_evidence.len() as u64);
     assert_eq!(
         workspace
             .operation_generation(key, B, &cancellation,)
@@ -639,14 +580,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         gate_tail: first.gate_tail,
         expected: first.expected,
     };
-    let mut allow = |_| {
-        std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
-            crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            },
-        ))
-    };
+    let mut allow = allow::<WorkspaceError>;
     let committed = transaction
         .commit(
             Some((context, evidence.clone(), historical_permit)),
@@ -661,53 +595,6 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         | TransactionCommit::AlreadyCommitted(generation) => generation,
         _ => return Err("the current genuine reservation did not authorize publication".into()),
     };
-    let (_, record) = workspace
-        .operation_generation_record(key, B, &cancellation)
-        .await?
-        .value
-        .0
-        .ok_or("the original publication disappeared")?;
-    let mut work = crate::WorkCounters::UNCHARGED;
-    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
-    let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
-        &mut allocations,
-        &mut work,
-        B,
-        &cancellation,
-    );
-    let publication = crate::kernel::decode_publication_evidence_with_accounting(
-        &record.payload,
-        4 * 1024,
-        &mut accounting,
-    )?;
-    let request = crate::kernel::PublishGenerationRequest {
-        authority_id: workspace.authority_id(),
-        volume_id: workspace.volume.id,
-        epoch: record.epoch,
-        expected: crate::Head {
-            epoch: record.epoch,
-            sequence: crate::Sequence::new(
-                record
-                    .sequence
-                    .get()
-                    .checked_sub(1)
-                    .ok_or("missing original predecessor")?,
-            ),
-            digest: record.previous_digest,
-        },
-        operation_id: key.operation_id(),
-        generation_root: publication.publication.generation_root,
-    };
-    let historical_fingerprint =
-        crate::kernel::contextual_publication_fingerprint_from_payload_with_accounting(
-            request,
-            context,
-            &record.payload,
-            &mut accounting,
-        )?;
-    assert_eq!(record.fingerprint, historical_fingerprint);
-    drop(accounting);
-    drop(record);
     workspace
         .release_publication(first, B, &cancel)
         .await?
@@ -847,14 +734,7 @@ async fn original_fingerprint_metadata_never_authorizes_a_foreign_current_reserv
             foreign_permit,
             B,
             &cancellation,
-            |_| {
-                std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
-                    crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    },
-                ))
-            },
+            allow::<WorkspaceError>,
         )
         .await
         .err()

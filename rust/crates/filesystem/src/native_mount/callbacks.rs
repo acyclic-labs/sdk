@@ -143,15 +143,12 @@ impl NativeMountMeterActivation {
             Some(execution) => Some(execution.upgrade()?),
             None => None,
         };
-        let cancellation = meter.lock().cancellation().clone();
-        Some(NativeMaterializationWork {
-            cancellation,
-            state: meter,
-            resource: resource_allowance,
-            capture_origin: self.capture_origin.clone(),
-            invocation,
-            execution,
-        })
+        let mut work = NativeMaterializationWork::from_meter(meter);
+        work.resource = resource_allowance;
+        work.capture_origin = self.capture_origin.clone();
+        work.invocation = invocation;
+        work.execution = execution;
+        Some(work)
     }
 
     pub(super) fn matches(&self, work: &NativeMaterializationWork) -> bool {

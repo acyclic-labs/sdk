@@ -42,7 +42,7 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         &cancellation,
     ))
     .await?;
-    let mut metadata = empty_metadata();
+    let mut metadata = FileMetadata::default();
     metadata.modified_ns = MetadataField::Value(99);
     (checkout.set_attributes(source.clone(), metadata, None, B, &cancellation)).await?;
     (checkout.change_content(
@@ -132,8 +132,25 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
     .await?;
     let alias = path("source-alias")?;
     let renamed = path("source-renamed")?;
-    (checkout.hard_link(source.clone(), alias.clone(), B, &cancellation)).await?;
-    (checkout.rename(alias, renamed.clone(), false, B, &cancellation)).await?;
+    (checkout.mutate(
+        vec![Mutation::Link {
+            source: source.clone(),
+            destination: alias.clone(),
+        }],
+        B,
+        &cancellation,
+    ))
+    .await?;
+    (checkout.mutate(
+        vec![Mutation::Rename {
+            source: alias,
+            destination: renamed.clone(),
+            replace: false,
+        }],
+        B,
+        &cancellation,
+    ))
+    .await?;
     let lookup = (checkout.lookup_no_follow_with_metadata(&renamed, B, &cancellation))
         .await?
         .value
@@ -156,8 +173,14 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         Some(source_id)
     );
     assert!(batch.value.entries[2].record.is_none());
-    let records =
-        (checkout.list_directory_records(&root_path()?, None, 16, B, &cancellation)).await?;
+    let records = (checkout.list_directory_records(
+        &root_path()?,
+        std::ops::Bound::Unbounded,
+        16,
+        B,
+        &cancellation,
+    ))
+    .await?;
     assert_eq!(records.value.entries.len(), 3);
     let plan = (checkout.plan_file_extents(
         &source,
@@ -183,7 +206,16 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
             .value,
         metadata
     );
-    (checkout.remove(renamed, Some(source_id), B, &cancellation)).await?;
+    (checkout.mutate(
+        vec![Mutation::Remove {
+            path: renamed,
+            expected_file_id: Some(source_id)
+                .map_or(MetadataField::Unavailable, MetadataField::Value),
+        }],
+        B,
+        &cancellation,
+    ))
+    .await?;
 
     let mut empty = std::io::Cursor::new(OwnedBytes::new());
     assert!(

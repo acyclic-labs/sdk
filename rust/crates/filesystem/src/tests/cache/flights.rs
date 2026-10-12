@@ -251,11 +251,12 @@ async fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
             state.flights.insert(object_id, Arc::clone(&abandoned));
         }
 
+        let maximum_bytes = u64::try_from(bytes.len())?;
         if batch {
             let receipt = (async {
                 let authority_input_0 = &[ObjectReadRequest {
                     object_id,
-                    maximum_bytes: u64::try_from(bytes.len())?,
+                    maximum_bytes,
                 }];
 
                 let mut __object_work =
@@ -273,7 +274,7 @@ async fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
                 let mut __object_work =
                     crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
                 let __object_result = cached
-                    .read(object_id, u64::try_from(bytes.len())?, &mut __object_work)
+                    .read(object_id, maximum_bytes, &mut __object_work)
                     .await;
                 __object_work.receipt(__object_result)
             })

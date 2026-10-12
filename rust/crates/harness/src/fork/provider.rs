@@ -20,13 +20,7 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
         _seed: &'a ForkSeed,
         work: &'a mut Option<&'w mut dyn HistoryIo>,
     ) -> Result<HistoryContentFuture<'a, ObservedForkPublicationGuard>> {
-        admit_fork_future(work, |work| async move {
-            Err(boundary_error(
-                work,
-                crate::wire::ErrorCode::Unsupported,
-                "fork private publication fence is not bound",
-            ))
-        })
+        unsupported(work, "fork private publication fence is not bound")
     }
     /// Performs the provider's read manifest operation.
     fn read_manifest<'a, 'w: 'a>(
@@ -35,13 +29,7 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
         _manifest: &'a FileRef,
         work: &'a mut Option<&'w mut dyn HistoryIo>,
     ) -> Result<HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
-        admit_fork_future(work, |work| async move {
-            Err(boundary_error(
-                work,
-                crate::wire::ErrorCode::Unsupported,
-                "fork attachment manifest reader is not bound",
-            ))
-        })
+        unsupported(work, "fork attachment manifest reader is not bound")
     }
     /// Performs the provider's verify file operation.
     fn verify_file<'a, 'w: 'a>(
@@ -50,13 +38,7 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
         _file: &'a FileRef,
         work: &'a mut Option<&'w mut dyn HistoryIo>,
     ) -> Result<HistoryContentFuture<'a, ()>> {
-        admit_fork_future(work, |work| async move {
-            Err(boundary_error(
-                work,
-                crate::wire::ErrorCode::Unsupported,
-                "fork file verifier is not bound",
-            ))
-        })
+        unsupported(work, "fork file verifier is not bound")
     }
     /// Performs the provider's verify boundary operation.
     fn verify_boundary<'a, 'w: 'a>(
@@ -64,16 +46,20 @@ pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
         _boundary: &'a AttestedBoundary,
         work: &'a mut Option<&'w mut dyn HistoryIo>,
     ) -> Result<HistoryContentFuture<'a, ()>> {
-        admit_fork_future(work, |work| async move {
-            Err(boundary_error(
-                work,
-                crate::wire::ErrorCode::Unsupported,
-                "provider does not attest fork boundaries",
-            ))
-        })
+        unsupported(work, "provider does not attest fork boundaries")
     }
 }
 
+fn unsupported<T>(work: &Option<&mut dyn HistoryIo>, reason: &'static str) -> Result<T> {
+    if let Some(io) = work.as_deref() {
+        io.check_cancellation()?;
+    }
+    Err(boundary_error(
+        work,
+        crate::wire::ErrorCode::Unsupported,
+        reason,
+    ))
+}
 /// A provider-owned fence retained through publication or reconciliation.
 pub trait ForkPublicationGuard: acyclic_stream::ProviderPlatform {
     /// Idempotently releases the exact fence after publication.

@@ -24,31 +24,31 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
             AuthoredMutation::CreateEmptySpecial {
                 path: path("fifo")?,
                 kind: FileKind::Fifo,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateEmptySpecial {
                 path: path("socket")?,
                 kind: FileKind::Socket,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateEmptySpecial {
                 path: path("mount")?,
                 kind: FileKind::MountBoundary,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateDevice {
                 path: path("character")?,
                 kind: FileKind::CharacterDevice,
                 major: 1,
                 minor: 3,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateDevice {
                 path: path("block")?,
                 kind: FileKind::BlockDevice,
                 major: 8,
                 minor: 0,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
         ],
         B,
@@ -62,7 +62,7 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
             AuthoredMutation::CreateEmptySpecial {
                 path: path("invalid-special")?,
                 kind: FileKind::Regular,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             path("invalid-special")?,
         ),
@@ -72,7 +72,7 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
                 kind: FileKind::Regular,
                 major: 0,
                 minor: 0,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             path("invalid-device")?,
         ),
@@ -108,7 +108,7 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
         vec![AuthoredMutation::CreateReparsePoint {
             path: reparse.clone(),
             payload: reparse_payload.clone(),
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
         }],
         B,
         &cancellation,
@@ -170,7 +170,7 @@ async fn windows_reparse_payload_round_trips_without_interpretation()
     .await?;
     let empty_reparse_read =
         (checkout.read_reparse_point(&empty_reparse, B, &cancellation)).await?;
-    assert!(empty_reparse_read.value.is_empty());
+    assert!(empty_reparse_read.value.bytes.is_empty());
 
     let empty_link = path("empty-link")?;
     (checkout.create(
@@ -184,6 +184,6 @@ async fn windows_reparse_payload_round_trips_without_interpretation()
     ))
     .await?;
     let empty_link_read = (checkout.read_symbolic_link(&empty_link, B, &cancellation)).await?;
-    assert!(empty_link_read.value.is_empty());
+    assert!(empty_link_read.value.bytes.is_empty());
     Ok(())
 }

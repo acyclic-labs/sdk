@@ -6,7 +6,6 @@ pub struct LazyMount<A, O, D, S> {
     pub(super) session: Mutex<Option<NativeMountSession>>,
     pub(super) destination: PathBuf,
     pub(super) _destination_custody: NativeAllocation,
-    pub(super) payload_custody: Option<NativeAllocation>,
 }
 
 impl<A, O, D, S> LazyMount<A, O, D, S> {
@@ -36,12 +35,9 @@ where
         &mut self,
         incoming: &mut NativeAllocation,
     ) -> Result<(), MountLifecycleError> {
-        if let Some(custody) = self.payload_custody.as_mut() {
-            custody.absorb(incoming)?;
-        } else {
-            self.payload_custody = Some(incoming.split_off(incoming.bytes())?);
-        }
-        Ok(())
+        self._destination_custody
+            .absorb(incoming)
+            .map_err(Into::into)
     }
 
     /// Authenticated post-mount native root witness.
@@ -152,7 +148,6 @@ where
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         let input = (plan, allocation);
-        let cancellation = cancellation.clone();
         async move {
             let allocation = input.1;
             let plan = input.0;
@@ -178,7 +173,7 @@ where
                         operation,
                         permit,
                         super::super::adapter::NativeDemandCarrier::Native(work),
-                        &cancellation,
+                        cancellation,
                         before_publication,
                     )
                     .await?;
@@ -212,12 +207,6 @@ where
             .selected_import_snapshot(operation, work, cancellation)
             .await
             .map_err(Into::into)
-    }
-
-    /// Publishes and advances this live checkout to workspace head.
-    pub async fn refresh(&self) -> Result<(), MountLifecycleError> {
-        self.sync().await?;
-        self.advance_to_head().await
     }
 
     /// Advances a clean checkout and settles its native visibility.
@@ -279,21 +268,9 @@ where
             .map_err(|(cause, accounting)| (cause.into(), accounting))
     }
 
-    /// Publishes through the source's dedicated callback runtime.
-    pub fn sync_blocking(&self) -> Result<(), MountLifecycleError> {
-        flush_session_callbacks(&self.session)?;
-        self.source.sync().map_err(Into::into)
-    }
-
     /// Publishes and detaches, retaining the owner on any failure.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
-        self.retire(&crate::CancellationToken::new()).map(drop)
-    }
-
-    /// Publishes and detaches for foreign-runtime worker threads.
-    pub fn unmount_blocking(&self) -> Result<(), MountLifecycleError> {
-        self.sync_blocking()?;
         self.retire(&crate::CancellationToken::new()).map(drop)
     }
 
@@ -335,5 +312,4 @@ where
         }
         result
     }
-
 }

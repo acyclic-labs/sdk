@@ -99,7 +99,7 @@ async fn local_root_lifecycle_outlives_provider_destruction()
         objects: (),
         capabilities: EmbeddedCapabilities::MEMORY,
         workspace_namespace: [0; 16],
-        path_index: Arc::new(crate::path_index::MemoryGenerationPathIndex::default()),
+        path_index: crate::path_index::MemoryGenerationPathIndex::default(),
         _local_root_lifecycle: Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),
     };
     let dropping = std::thread::spawn(move || drop(inner));
@@ -359,12 +359,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
             crate::PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
             &cancellation,
-            |_| async {
-                crate::FsResult::Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            },
+            allow::<FsError>,
         )
         .await?;
     let pending = path("pending.txt")?;
@@ -389,12 +384,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
             crate::PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
             &cancellation,
-            |_| async {
-                crate::FsResult::Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            },
+            allow::<FsError>,
         )
         .await?;
     fs.collect_local_garbage(None, &cancellation).await?;

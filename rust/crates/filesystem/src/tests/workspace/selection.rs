@@ -329,9 +329,9 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                 .join_into(&parent)
                 .plan_at(
                     &selected_head,
-                    &parent.head(B, &cancel).await?,
+                    &parent.head(B, &cancel).await?.value,
                     B,
-                    &cancel.value,
+                    &cancel,
                 )
                 .await?
                 .value;

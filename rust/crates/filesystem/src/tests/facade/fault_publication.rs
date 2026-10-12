@@ -58,12 +58,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
         crate::PublicationPermit::Unrestricted,
         B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
 
@@ -172,12 +167,7 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
         crate::PublicationPermit::Unrestricted,
         B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
 
@@ -296,12 +286,7 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
             crate::PublicationPermit::Unrestricted,
             B,
             &cancellation,
-            |_| async {
-                crate::FsResult::Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            },
+            allow::<FsError>,
         ))
         .await
         {
@@ -373,12 +358,7 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
         crate::PublicationPermit::Unrestricted,
         B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await
     .err()
@@ -415,12 +395,7 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
         crate::PublicationPermit::Unrestricted,
         B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
     assert!(matches!(

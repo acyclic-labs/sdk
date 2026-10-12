@@ -23,7 +23,6 @@ impl Projector {
         lock_recover(&self.state).written.insert(
             path,
             WrittenEntry {
-                file_id: facts.lookup.node.file_id,
                 owned,
                 facts: Some(facts),
                 basis,
@@ -52,23 +51,18 @@ impl Projector {
             .map_or(1, usize::from)
             .min(MATERIALIZE_WORKERS);
         let queue = MaterializeQueue::new(directories);
-        let shared = SharedProjection(projection);
         std::thread::scope(|scope| {
             for _ in 1..workers {
-                scope.spawn(|| self.materialize_from(&shared, &queue));
+                scope.spawn(|| self.materialize_from(&projection, &queue));
             }
-            self.materialize_from(&shared, &queue);
+            self.materialize_from(&projection, &queue);
         });
         queue.finish()
     }
 
-    pub(super) fn materialize_from(
-        &self,
-        projection: &SharedProjection<'_>,
-        queue: &MaterializeQueue,
-    ) {
+    pub(super) fn materialize_from(&self, projection: &Projection<'_>, queue: &MaterializeQueue) {
         while let Some(directory) = queue.next() {
-            let written = self.materialize_directory(projection.0, directory);
+            let written = self.materialize_directory(*projection, directory);
             queue.done(written);
         }
     }
@@ -78,19 +72,27 @@ impl Projector {
         projection: Projection<'_>,
         directory: MountPath,
     ) -> Result<Vec<MountPath>, String> {
+        let known = lock_recover(&self.state)
+            .directories
+            .get(&directory)
+            .map(|materialized| materialized.names.clone())
+            .unwrap_or_default();
         let basis = ReadBasis::sample(projection.runtime.source.as_ref());
         let entries = match source_listing(projection, &directory) {
             Ok(entries) => entries,
-            Err(MountSourceError::NotFound) => return Ok(Vec::new()),
+            Err(MountSourceError::NotFound) => {
+                self.remove_tree(projection, &directory);
+                return Ok(Vec::new());
+            }
             Err(MountSourceError::Stale) => {
                 let mut state = lock_recover(&self.state);
-                state.directories.insert(
-                    directory.clone(),
-                    Materialized {
+                state
+                    .directories
+                    .entry(directory.clone())
+                    .or_insert(Materialized {
                         basis: None,
                         names: HashMap::new(),
-                    },
-                );
+                    });
                 state.stale.insert(directory);
                 self.changed.notify_all();
                 return Ok(Vec::new());
@@ -98,140 +100,89 @@ impl Projector {
             Err(error) => return Err(format!("listing {directory:?}: {error}")),
         };
         let mut names = HashMap::with_capacity(entries.0.len());
-        let mut found = Vec::new();
-        let mut written = Vec::with_capacity(entries.0.len());
-        let mut retry = false;
-        for entry in &entries.0 {
-            let child = directory.child(entry.component.clone());
-            let is_directory = entry.info.IsDirectory;
-            let placed = write_entry(projection, &child, entry)?;
-            if placed == Placed::Retry {
-                retry = true;
-                continue;
-            }
-            if is_directory {
-                found.push(child);
-            } else if placed != Placed::Nothing {
-                written.push((child, entry.facts, placed.owned()));
-            }
-            names.insert(entry.component.clone(), is_directory);
-        }
-        let mut state = lock_recover(&self.state);
-        if retry {
-            state.stale.insert(directory.clone());
-            self.changed.notify_all();
-        }
-        for (path, facts, owned) in written {
-            state.written.insert(
-                path,
-                WrittenEntry {
-                    file_id: facts.lookup.node.file_id,
-                    owned,
-                    facts: Some(facts),
-                    basis,
-                },
-            );
-        }
-        state
-            .directories
-            .insert(directory, Materialized { basis, names });
-        Ok(found)
-    }
-
-    pub(super) fn reconcile(
-        &self,
-        projection: Projection<'_>,
-        directory: &MountPath,
-    ) -> Result<(), String> {
-        let _tree = lock_recover(&self.tree);
-        let Some(known) = lock_recover(&self.state)
-            .directories
-            .get(directory)
-            .map(|materialized| materialized.names.clone())
-        else {
-            return Ok(());
-        };
-        let basis = ReadBasis::sample(projection.runtime.source.as_ref());
-        let entries = match source_listing(projection, directory) {
-            Ok(entries) => entries,
-            Err(MountSourceError::NotFound) => {
-                self.remove_tree(projection, directory);
-                return Ok(());
-            }
-            Err(MountSourceError::Stale) => {
-                lock_recover(&self.state).stale.insert(directory.clone());
-                return Ok(());
-            }
-            Err(error) => return Err(format!("listing {directory:?}: {error}")),
-        };
-        let mut names = HashMap::with_capacity(entries.0.len());
         let mut created = Vec::new();
-        for entry in &entries.0 {
-            let is_directory = entry.info.IsDirectory;
-            let child = directory.child(entry.component.clone());
-            names.insert(entry.component.clone(), is_directory);
-            let written_before = known.get(&entry.component).copied().or_else(|| {
-                lock_recover(&self.state)
-                    .pending
-                    .contains_key(&child)
-                    .then_some(false)
-            });
-            match written_before.as_ref() {
-                Some(&was_directory) if was_directory == is_directory => continue,
-                Some(&true) => self.remove_tree(projection, &child),
-                Some(&false) => {
-                    let (owned, released) = self.release_recorded(projection, &child);
-                    if released? == Release::Busy {
-                        let mut state = lock_recover(&self.state);
-                        let written = state.written.remove(&child).unwrap_or(WrittenEntry {
-                            file_id: FileId::from_bytes([0; 16]),
-                            owned,
-                            facts: None,
-                            basis: None,
-                        });
-                        state.relist.insert(child.clone());
-                        state.pending.entry(child).or_insert(written);
-                        return Ok(());
+        let mut written = Vec::with_capacity(entries.0.len());
+        let result = (|| {
+            for entry in &entries.0 {
+                let is_directory = entry.info.IsDirectory;
+                let child = directory.child(entry.component.clone());
+                names.insert(entry.component.clone(), is_directory);
+                let previous = known.get(&entry.component).copied().or_else(|| {
+                    lock_recover(&self.state)
+                        .pending
+                        .contains_key(&child)
+                        .then_some(false)
+                });
+                match previous {
+                    Some(was_directory) if was_directory == is_directory => continue,
+                    Some(true) => self.remove_tree(projection, &child),
+                    Some(false) => {
+                        let (owned, released) = self.release_recorded(projection, &child);
+                        if released? == Release::Busy {
+                            let mut state = lock_recover(&self.state);
+                            let pending = state.written.remove(&child).unwrap_or(WrittenEntry {
+                                owned,
+                                facts: None,
+                                basis: None,
+                            });
+                            state.relist.insert(child.clone());
+                            state.pending.entry(child).or_insert(pending);
+                            return Ok(Vec::new());
+                        }
                     }
+                    None => {}
                 }
-                None => {}
+                let placed = write_entry(projection, &child, entry)?;
+                if placed == Placed::Retry {
+                    names.remove(entry.component.as_slice());
+                    lock_recover(&self.state).stale.insert(directory.clone());
+                    self.changed.notify_all();
+                    continue;
+                }
+                if is_directory {
+                    created.push(child);
+                } else if placed != Placed::Nothing {
+                    written.push((child, entry.facts, placed.owned()));
+                }
             }
-            let placed = write_entry(projection, &child, entry)?;
-            if placed == Placed::Retry {
-                names.remove(entry.component.as_slice());
-                lock_recover(&self.state).stale.insert(directory.clone());
-                continue;
-            }
-            if is_directory {
-                created.push(child);
-            } else if placed != Placed::Nothing {
-                self.written(child, entry.facts, placed.owned(), basis);
-            }
-        }
-        for (name, was_directory) in &known {
-            if names.contains_key(name) {
-                continue;
-            }
-            let child = directory.child(name.clone());
-            if *was_directory {
-                self.remove_tree(projection, &child);
-            } else {
-                let mut state = lock_recover(&self.state);
-                if !state.pending.contains_key(&child) {
-                    let placeholder = state.written.remove(&child).unwrap_or(WrittenEntry {
-                        file_id: FileId::from_bytes([0; 16]),
+            let mut state = lock_recover(&self.state);
+            for (name, was_directory) in &known {
+                if names.contains_key(name) {
+                    continue;
+                }
+                let child = directory.child(name.clone());
+                if *was_directory {
+                    drop(state);
+                    self.remove_tree(projection, &child);
+                    state = lock_recover(&self.state);
+                } else if !state.pending.contains_key(&child) {
+                    let pending = state.written.remove(&child).unwrap_or(WrittenEntry {
                         owned: None,
                         facts: None,
                         basis: None,
                     });
-                    state.pending.insert(child, placeholder);
+                    state.pending.insert(child, pending);
                 }
             }
+            for (path, facts, owned) in written.drain(..) {
+                state.written.insert(
+                    path,
+                    WrittenEntry {
+                        owned,
+                        facts: Some(facts),
+                        basis,
+                    },
+                );
+            }
+            state
+                .directories
+                .insert(directory, Materialized { basis, names });
+            Ok(created)
+        })();
+        for (path, facts, owned) in written {
+            self.written(path, facts, owned, basis);
         }
-        lock_recover(&self.state)
-            .directories
-            .insert(directory.clone(), Materialized { basis, names });
-        self.materialize_locked(projection, created)
+        result
     }
 
     pub(super) fn release_recorded(
@@ -284,7 +235,6 @@ impl Projector {
                         held = true;
                         let mut state = lock_recover(&self.state);
                         let written = state.written.remove(&child).unwrap_or(WrittenEntry {
-                            file_id: FileId::from_bytes([0; 16]),
                             owned,
                             facts: None,
                             basis: None,
@@ -391,7 +341,6 @@ impl Projector {
             state.written.insert(
                 path,
                 WrittenEntry {
-                    file_id: facts.lookup.node.file_id,
                     owned: written.or(pending).and_then(|written| written.owned),
                     facts: Some(facts),
                     basis: carried.basis,
@@ -509,7 +458,11 @@ impl Projector {
             self.confirm(source, unconfirmed);
             let mut failure = None;
             for directory in listings {
-                if let Err(error) = self.reconcile(projection, &directory) {
+                let _tree = lock_recover(&self.tree);
+                let known = lock_recover(&self.state)
+                    .directories
+                    .contains_key(&directory);
+                if known && let Err(error) = self.materialize_locked(projection, vec![directory]) {
                     failure.get_or_insert(error);
                 }
             }
@@ -541,7 +494,7 @@ impl Projector {
                 let mut state = lock_recover(&self.state);
                 match replaced {
                     Ok(Replaced::Rewritten(current)) => {
-                        state.record_attempt(&path, &written, Some(*current));
+                        state.record_attempt(&path, &written, Some(current));
                         Ok(())
                     }
                     Ok(Replaced::Released) => {

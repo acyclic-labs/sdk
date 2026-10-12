@@ -261,7 +261,7 @@ pub(crate) fn download(
     future: impl Future<Output = Result<crate::v1::Download, crate::Error>>,
 ) -> impl Future<Output = Result<crate::v1::Download, crate::Error>> {
     let mut lifetime = Lifetime(Some(span.clone()));
-    let context = span.context().clone();
+    let context = span.as_ref().clone();
     span.scope(async move {
         let mut future = std::pin::pin!(future);
         let result =
@@ -335,7 +335,7 @@ pub(crate) use record;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use acyclic_grpc_observability::test_support::Capture;
+    use acyclic_grpc_observability::tests::Capture;
     use tracing_subscriber::layer::SubscriberExt;
 
     #[tokio::test]

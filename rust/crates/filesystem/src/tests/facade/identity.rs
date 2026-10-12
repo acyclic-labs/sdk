@@ -668,7 +668,8 @@ async fn public_identity_and_posix_special_surfaces_share_one_candidate()
                 .value
                 .read_symbolic_link(&path("link")?, B, &cancellation,)
         )
-        .value,
+        .value
+        .bytes,
         target
     );
     ready!(checkout.value.create(
@@ -740,23 +741,32 @@ async fn public_identity_and_posix_special_surfaces_share_one_candidate()
         .is_err()
     );
 
-    ready!(
-        checkout
-            .value
-            .hard_link(file.clone(), path("hard-link")?, B, &cancellation,)
-    );
-    ready!(checkout.value.rename(
-        path("hard-link")?,
-        path("renamed-link")?,
-        false,
+    ready!(checkout.value.mutate(
+        vec![Mutation::Link {
+            source: file.clone(),
+            destination: path("hard-link")?
+        }],
         B,
-        &cancellation,
+        &cancellation
     ));
-    ready!(
-        checkout
-            .value
-            .remove(path("renamed-link")?, Some(file_id), B, &cancellation,)
-    );
+    ready!(checkout.value.mutate(
+        vec![Mutation::Rename {
+            source: path("hard-link")?,
+            destination: path("renamed-link")?,
+            replace: false
+        }],
+        B,
+        &cancellation
+    ));
+    ready!(checkout.value.mutate(
+        vec![Mutation::Remove {
+            path: path("renamed-link")?,
+            expected_file_id:
+                Some(file_id).map_or(MetadataField::Unavailable, MetadataField::Value)
+        }],
+        B,
+        &cancellation
+    ));
     let listing =
         ready!(
             checkout
@@ -829,11 +839,14 @@ async fn remaining_facade_guards_are_fast_typed_and_non_mutating()
         })
     ));
     assert!(matches!(
-        (checkout.stage_content(
-            &mut std::io::Cursor::new(OwnedBytes::from_static(b"xx")),
-            2,
+        (checkout.create(
+            AuthoredMutation::CreateFile {
+                path: path("oversized-inline")?,
+                bytes: OwnedBytes::from_static(b"xx"),
+                metadata: FileMetadata::default(),
+            },
             B,
-            &cancellation
+            &cancellation,
         ))
         .await,
         Err(OperationFailure {
@@ -914,9 +927,12 @@ async fn detached_payload_bounds_and_authority_volume_identity_fail_closed()
         })
     ));
     assert!(matches!(
-        (detached.stage_content(
-            &mut std::io::Cursor::new(OwnedBytes::from_static(b"xx")),
-            2,
+        (detached.change_content(
+            ContentChange::Write {
+                offset: 0,
+                bytes: OwnedBytes::from_static(b"xx")
+            },
+            None,
             B,
             &cancellation
         ))
@@ -927,7 +943,7 @@ async fn detached_payload_bounds_and_authority_volume_identity_fail_closed()
         })
     ));
 
-    assert_authority_volume_identity_fails_closed()
+    assert_authority_volume_identity_fails_closed().await
 }
 
 #[tokio::test]

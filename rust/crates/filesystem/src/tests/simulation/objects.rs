@@ -21,12 +21,13 @@ async fn delayed_objects_are_invisible_until_bounded_flush()
             )
             .await
     })?;
-    let missing_result = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects.read(object_id, 64, &mut __object_work).await;
-        __object_result
-    })
-    .await;
+    let missing_result = (objects
+        .read(
+            object_id,
+            64,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await);
     let Err(missing) = missing_result else {
         return Err("delayed object became visible before flush".into());
     };
@@ -110,20 +111,15 @@ async fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (first_id, first_bytes) = object(b"four");
-    let digest_failure = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects
-            .put(
-                first_id,
-                OwnedBytes::from_static(b"bad!"),
-                &mut __object_work,
-            )
-            .await;
-        __object_result
-    })
-    .await
-    .err()
-    .ok_or("digest mismatch was admitted")?;
+    let digest_failure = (objects
+        .put(
+            first_id,
+            OwnedBytes::from_static(b"bad!"),
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)
+        .err()
+        .ok_or("digest mismatch was admitted")?;
     assert!(matches!(digest_failure, ObjectStoreError::DigestMismatch));
     ({
         objects
@@ -179,14 +175,15 @@ async fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
             &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
         )
         .await)?;
-    let corrupt = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects.read(empty_id, 0, &mut __object_work).await;
-        __object_result
-    })
-    .await
-    .err()
-    .ok_or("empty corrupt read succeeded")?;
+    let corrupt = (objects
+        .read(
+            empty_id,
+            0,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)
+        .err()
+        .ok_or("empty corrupt read succeeded")?;
     assert!(matches!(corrupt, ObjectStoreError::Corrupt));
 
     let authority_id = AuthorityId::from_bytes([71; 16]);
@@ -267,16 +264,14 @@ async fn poisoned_simulation_authority_and_object_surfaces_fail_closed()
         authority_failure,
         AuthorityStoreError::CorruptStatic(_)
     ));
-    let object_failure = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects
-            .contains(object(b"poisoned").0, &mut __object_work)
-            .await;
-        __object_result
-    })
-    .await
-    .err()
-    .ok_or("poisoned object lookup unexpectedly succeeded")?;
+    let object_failure = (objects
+        .contains(
+            object(b"poisoned").0,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)
+        .err()
+        .ok_or("poisoned object lookup unexpectedly succeeded")?;
     assert!(matches!(object_failure, ObjectStoreError::Corrupt));
     Ok(())
 }

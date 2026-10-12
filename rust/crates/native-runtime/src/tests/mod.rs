@@ -2,7 +2,6 @@ mod health;
 use super::*;
 use std::fs::OpenOptions;
 use std::io::{Seek as _, SeekFrom};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Poll, Wake};
 use std::thread::Thread;
@@ -13,6 +12,14 @@ mod completion;
 mod custody;
 mod namespace;
 mod positional;
+
+fn wait_until(ready: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(ready());
+}
 
 struct ThreadWake(Thread);
 
@@ -45,6 +52,7 @@ fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
     }
 }
 
+#[derive(Default)]
 pub(super) struct ReadBudgetMeter {
     used_operations: AtomicU64,
     used_bytes: AtomicU64,
@@ -66,22 +74,28 @@ pub(super) struct ReadBudgetMeter {
 impl ReadBudgetMeter {
     pub(super) fn new(operation_limit: u64, byte_limit: u64) -> Self {
         Self {
-            used_operations: AtomicU64::new(0),
-            used_bytes: AtomicU64::new(0),
-            used_allocations: AtomicU64::new(0),
-            read: AtomicU64::new(0),
-            memory: AtomicU64::new(0),
             operation_limit,
             byte_limit,
             allocation_limit: u64::MAX,
             memory_limit: 1024 * 1024,
-            deny_allocations: AtomicBool::new(false),
-            operation_denial: None,
-            cancel_after_operation: false,
-            cancelled: AtomicBool::new(false),
-            cancel_after_read: false,
-            panic_after_read: false,
+            ..Self::default()
         }
+    }
+    fn charge(counter: &AtomicU64, amount: u64, limit: u64) -> io::Result<u64> {
+        counter
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(amount).filter(|total| *total <= limit)
+            })
+            .map_err(|_| Self::refuse())
+    }
+    fn preflight(&self, counter: &AtomicU64, amount: u64, limit: u64) -> io::Result<()> {
+        self.check()?;
+        counter
+            .load(Ordering::Acquire)
+            .checked_add(amount)
+            .filter(|total| *total <= limit)
+            .map(|_| ())
+            .ok_or_else(Self::refuse)
     }
     fn refuse() -> io::Error {
         io::ErrorKind::Other.into()
@@ -101,13 +115,7 @@ impl NativeReadMeter for ReadBudgetMeter {
         if self.operation_denial == Some(kind) {
             return Err(Self::refuse());
         }
-        self.used_operations
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(count)
-                    .filter(|total| *total <= self.operation_limit)
-            })
-            .map(|_| ())
-            .map_err(|_| Self::refuse())
+        Self::charge(&self.used_operations, count, self.operation_limit).map(|_| ())
     }
     fn cancel_reserved_operations(&self, _: NativeOperationKind, count: u64) {
         assert!(self.used_operations.fetch_sub(count, Ordering::AcqRel) >= count);
@@ -121,13 +129,7 @@ impl NativeReadMeter for ReadBudgetMeter {
     fn reserve_bytes(&self, kind: NativeOperationKind, maximum: u64) -> io::Result<()> {
         assert_ne!(kind, NativeOperationKind::Durability);
         self.check()?;
-        self.used_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(maximum)
-                    .filter(|total| *total <= self.byte_limit)
-            })
-            .map(|_| ())
-            .map_err(|_| Self::refuse())
+        Self::charge(&self.used_bytes, maximum, self.byte_limit).map(|_| ())
     }
     fn cancel_reserved_bytes(&self, _: NativeOperationKind, maximum: u64) {
         assert!(self.used_bytes.fetch_sub(maximum, Ordering::AcqRel) >= maximum);
@@ -159,12 +161,7 @@ impl NativeReadMeter for ReadBudgetMeter {
         if self.deny_allocations.load(Ordering::Acquire) {
             return Err(Self::refuse());
         }
-        self.used_allocations
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(1)
-                    .filter(|total| *total <= self.allocation_limit)
-            })
-            .map_err(|_| Self::refuse())?;
+        Self::charge(&self.used_allocations, 1, self.allocation_limit)?;
         if let Err(error) = self.adopt(bytes) {
             self.used_allocations.fetch_sub(1, Ordering::AcqRel);
             return Err(error);
@@ -186,31 +183,20 @@ impl NativeReadMeter for ReadBudgetMeter {
     }
     fn adopt(&self, bytes: u64) -> io::Result<()> {
         self.check()?;
-        self.memory
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(bytes)
-                    .filter(|total| *total <= self.memory_limit)
-            })
-            .map(|_| ())
-            .map_err(|_| Self::refuse())
+        Self::charge(&self.memory, bytes, self.memory_limit).map(|_| ())
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>) {
-        let previous = match self
-            .memory
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(bytes)
-            }) {
-            Ok(previous) => previous,
-            Err(_) => return (0, Err(Self::refuse())),
-        };
-        (
-            bytes,
-            if previous + bytes > self.memory_limit {
-                Err(Self::refuse())
-            } else {
-                self.check()
-            },
-        )
+        match Self::charge(&self.memory, bytes, u64::MAX) {
+            Err(error) => (0, Err(error)),
+            Ok(previous) => (
+                bytes,
+                if previous + bytes > self.memory_limit {
+                    Err(Self::refuse())
+                } else {
+                    self.check()
+                },
+            ),
+        }
     }
     fn release(&self, bytes: u64) {
         assert!(self.memory.fetch_sub(bytes, Ordering::AcqRel) >= bytes);
@@ -225,30 +211,11 @@ impl NativeReadMeter for ReadBudgetMeter {
         Ok(())
     }
     fn admit_bytes(&self, maximum: usize) -> io::Result<()> {
-        self.check()?;
-        self.used_bytes
-            .load(Ordering::Acquire)
-            .checked_add(maximum as u64)
-            .filter(|total| *total <= self.byte_limit)
-            .map(|_| ())
-            .ok_or_else(Self::refuse)
+        self.preflight(&self.used_bytes, maximum as u64, self.byte_limit)
     }
     fn admit_read(&self, maximum: usize) -> io::Result<()> {
         self.admit_bytes(maximum)?;
         self.reserve_operations(NativeOperationKind::Read, 1)
-    }
-    fn admit_operations(&self, count: u64) -> io::Result<()> {
-        self.check()?;
-        self.used_operations
-            .load(Ordering::Acquire)
-            .checked_add(count)
-            .filter(|total| *total <= self.operation_limit)
-            .map(|_| ())
-            .ok_or_else(Self::refuse)
-    }
-    fn record_operations(&self, count: u64) -> io::Result<()> {
-        self.used_operations.fetch_add(count, Ordering::AcqRel);
-        Ok(())
     }
     fn record_read(&self, bytes: usize) -> io::Result<()> {
         self.used_bytes.fetch_add(bytes as u64, Ordering::AcqRel);
@@ -272,12 +239,6 @@ impl NativeReadMeter for ReadBudgetMeter {
     }
     fn record_write(&self, bytes: usize) -> io::Result<()> {
         self.record_read(bytes)
-    }
-    fn admit_write_operations(&self, count: u64) -> io::Result<()> {
-        self.admit_operations(count)
-    }
-    fn record_write_operations(&self, count: u64) -> io::Result<()> {
-        self.record_operations(count)
     }
     fn admit_durability(&self) -> io::Result<()> {
         self.admit_write(0)

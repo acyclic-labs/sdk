@@ -40,12 +40,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
         crate::PublicationPermit::Unrestricted,
         WorkBudget::UNBOUNDED,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
 
@@ -95,12 +90,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
         crate::PublicationPermit::Unrestricted,
         WorkBudget::UNBOUNDED,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
     #[cfg(not(target_arch = "wasm32"))]
@@ -222,12 +212,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
         crate::PublicationPermit::Unrestricted,
         WorkBudget::UNBOUNDED,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
     let unchanged = (

@@ -502,8 +502,14 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     ))
     .await?
     .value;
-    let empty_directory =
-        (checkout.list_directory_records(&directory, None, 8, B, &cancellation)).await?;
+    let empty_directory = (checkout.list_directory_records(
+        &directory,
+        std::ops::Bound::Unbounded,
+        8,
+        B,
+        &cancellation,
+    ))
+    .await?;
     assert!(empty_directory.value.entries.is_empty());
     assert!(!empty_directory.value.has_more);
     let unknown_id = FileId::from_bytes([250; 16]);
@@ -660,6 +666,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         (checkout.read_named_attribute_by_id(file_id, &attribute, B, &cancellation,))
             .await?
             .value
+            .map(|chunk| chunk.bytes)
             .as_deref(),
         Some(b"first".as_slice())
     );
@@ -678,12 +685,12 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     assert!(matches!(repeated_remove.error, FsError::NotFound));
 
     assert!(
-        (checkout.list_directory(&file, None, 8, B, &cancellation,))
+        (checkout.list_directory(&file, std::ops::Bound::Unbounded, 8, B, &cancellation))
             .await
             .is_err()
     );
     assert!(
-        (checkout.list_directory_records(&file, None, 8, B, &cancellation,))
+        (checkout.list_directory_records(&file, std::ops::Bound::Unbounded, 8, B, &cancellation))
             .await
             .is_err()
     );

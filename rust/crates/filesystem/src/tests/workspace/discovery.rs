@@ -203,13 +203,22 @@ async fn string_workspace_paths_match_native_namespace_names() -> Result<(), Box
             .await?
             .value;
         workspace
-            .write_text("/ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©.txt", "native")
+            .write_text("/ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©.txt", "native")
             .await?;
         let mut checkout = workspace
-            .engine_checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned())
-            .await?;
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::read_only_pinned(),
+                B,
+                &cancel,
+            )
+            .await?
+            .value;
         let path = NamespacePath::from_portable_in_profile(
-            &PortablePath::parse("/ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©.txt", config.limits)?,
+            &PortablePath::parse(
+                "/ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©.txt",
+                config.limits,
+            )?,
             profile,
             config.limits,
         )?;
@@ -297,13 +306,27 @@ async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
         .namespace_records_for_file_ids([file_id], 16)
         .await?;
     assert!(complete.complete);
-    assert_eq!(complete.records.get(&file_id).map(Vec::len), Some(2));
+    assert_eq!(
+        complete
+            .records
+            .iter()
+            .find(|(id, _)| *id == file_id)
+            .map(|(_, paths)| paths.len()),
+        Some(2)
+    );
 
     let bounded = generation
         .namespace_records_for_file_ids([file_id], 1)
         .await?;
     assert!(!bounded.complete);
-    assert_eq!(bounded.records.get(&file_id).map(Vec::len), Some(1));
+    assert_eq!(
+        bounded
+            .records
+            .iter()
+            .find(|(id, _)| *id == file_id)
+            .map(|(_, paths)| paths.len()),
+        Some(1)
+    );
     Ok(())
 }
 
@@ -366,12 +389,13 @@ async fn readonly_creation_lookup_keeps_authentic_initial_generation_and_failed_
     }
     let budget: WorkBudget = serde_json::from_value(allowances)?;
     let created = fs
-        .create_workspace_with_operation(
+        .create_workspace_with_operation::<_, _, WorkspaceError>(
             "readonly-original-creation",
             config,
             operation,
             budget,
             &cancellation,
+            None::<&mut ()>,
         )
         .await?
         .value;

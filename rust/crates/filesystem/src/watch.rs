@@ -1123,7 +1123,7 @@ impl NativeWatch {
             return Err(NativeWatchError::RootIsNotDirectory);
         }
         let root_identity = held_root.identity();
-        if metadata.identity().map_err(demand_watch_error)? != root_identity {
+        if metadata.identity() != root_identity {
             return Err(NativeWatchError::RootChanged);
         }
         #[cfg(windows)]
@@ -2038,7 +2038,7 @@ impl NativeWatch {
                 work.release(relative_bytes).map_err(demand_watch_error)?;
             }
             if let Some(allocation) = &mut host.1 {
-                allocation.resize_retained(host.0.capacity() as u64)?;
+                allocation.resize(host.0.capacity() as u64)?;
             }
             if let Some(owned) = &mut replacement.1 {
                 if let Some(incoming) = &mut host.1 { owned.absorb(incoming)?; }
@@ -2062,7 +2062,7 @@ impl NativeWatch {
         allocation: &mut Option<crate::NativeAllocation>, admitted: u64, actual: u64, work: &mut W,
     ) -> Result<(), NativeWatchError> {
         if let Some(allocation) = allocation {
-            allocation.resize_retained(actual)?;
+            allocation.resize(actual)?;
         } else if actual > admitted {
             // This is new allocator-selected capacity, not adopted old data.
             work.adopt(actual - admitted).map_err(demand_watch_error)?;
@@ -2153,7 +2153,7 @@ impl NativeWatch {
         let Some(root) = self.held_root.root.as_ref() else {
             return Ok(false);
         };
-        let held = root.stat(Path::new(""), work)?.identity()?;
+        let held = root.stat(Path::new(""), work)?.identity();
         match crate::native_host::root_path_identity(&self.root, work) {
             Ok(identity) => Ok(held == self.root_identity && identity == self.root_identity),
             Err(crate::demand::DemandError::Io(error))
@@ -2394,7 +2394,7 @@ impl NativeWatch {
                 drop(batch);
                 batch = WatchBatch::RescanRequired { epoch: self.epoch, reason };
                 if let Some(allocation) = &mut owned.2 {
-                    allocation.substitute(0)?;
+                    allocation.resize(0)?;
                 } else if ordinary_bytes != 0 {
                     work.release(ordinary_bytes).map_err(demand_watch_error)?;
                     ordinary_bytes = 0;

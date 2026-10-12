@@ -128,9 +128,13 @@ async fn put_contains_and_decoded_pages_share_one_deterministic_lru()
         )
         .await)?;
     assert!(
-        (cached.inner(canonical_id, WorkBudget::UNBOUNDED, &cancellation,))
+        cached
+            .inner()
+            .contains(
+                canonical_id,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            )
             .await?
-            .value
     );
     assert!(
         (cached

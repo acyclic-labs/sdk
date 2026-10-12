@@ -449,8 +449,8 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
             allow::<FsError>,
         )
     };
-    let first = fork("sibling-times-first", &base).await?;
-    let second = fork("sibling-times-second", &base).await?;
+    let first = fork("sibling-times-first", &base).await?.value;
+    let second = fork("sibling-times-second", &base).await?.value;
     for (workspace, file, modified_ns) in [(&first, "/pkg/a.rs", 20), (&second, "/pkg/b.rs", 30)] {
         let mut transaction = workspace
             .begin_transaction(IdempotencyKey::new(), B, &cancel)

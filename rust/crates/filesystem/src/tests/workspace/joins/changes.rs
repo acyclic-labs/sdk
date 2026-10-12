@@ -179,6 +179,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         .diff_to(&after, 64, B, &cancel)
         .await?
         .value
+        .0
         .changed_paths(64, B, &cancel)
         .await?
         .value
@@ -222,6 +223,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
             .diff_to(&after, 64, B, &cancel)
             .await?
             .value
+            .0
             .changed_paths(1, B, &cancel)
             .await,
         Err(crate::OperationFailure {
@@ -229,7 +231,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
             ..
         })
     ));
-    let exact = before.diff_to(&after, 64, B, &cancel).await?.value;
+    let exact = before.diff_to(&after, 64, B, &cancel).await?.value.0;
     let mut truncated_changes = exact.changes().clone();
     truncated_changes.truncated = true;
     let truncated = ChangeSet {
@@ -250,6 +252,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
             .diff_to(&after, 1, B, &cancel)
             .await?
             .value
+            .0
             .changed_paths(0, B, &cancel)
             .await?
             .value

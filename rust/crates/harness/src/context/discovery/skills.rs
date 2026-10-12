@@ -49,6 +49,33 @@ impl SkillMetadata {
     }
 }
 
+pub(super) fn discovery_error(
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    code: crate::wire::ErrorCode,
+    reason: &'static str,
+) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work
+        .as_deref()
+        .is_some_and(|io| io.original_native_work().is_some())
+    {
+        return crate::Error::NativeBoundary { code, reason };
+    }
+    let _ = work;
+    match code {
+        crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
+        _ => Error::Invalid(reason.into()),
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(super) fn discovery_work_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
+    Error::NativeWork {
+        cause,
+        custody: None,
+    }
+}
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn bound_skill_values(
     skills: &[SkillMetadata],
@@ -368,4 +395,59 @@ pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<
     };
     metadata.validate(&mut None)?;
     Ok(metadata)
+}
+
+pub(super) async fn discover_skills(
+    reader: &dyn ContentResidencyVerifier,
+    skills: &[ContextRoot],
+    name: &str,
+    work: &mut DiscoveryWork,
+) -> Result<Vec<SkillMetadata>> {
+    let mut result: Vec<SkillMetadata> = Vec::new();
+    for root in skills {
+        root.validate(&mut None)?;
+        let (generation, entries) = work.list(reader, root, &root.directory, None).await?;
+        for entry in entries {
+            if entry.kind != PrivateDirectoryEntryKind::Directory {
+                continue;
+            }
+            let directory = child(&root.directory, &entry.name);
+            let (_, files) = work
+                .list(reader, root, &directory, Some(&generation))
+                .await?;
+            let Some(entry) = files.iter().find(|entry| entry.name == name) else {
+                continue;
+            };
+            if entry.kind != PrivateDirectoryEntryKind::File {
+                return Err(Error::Invalid("skill entry is not a file".into()));
+            }
+            let source = PinnedContextPath {
+                root: root.clone(),
+                generation: generation.clone(),
+                path: child(&directory, name),
+            };
+            let prefix = reader
+                .read_private_prefix(
+                    &root.volume,
+                    &root.directory,
+                    &source.path,
+                    &generation,
+                    u64::from(work.limits.header_bytes),
+                    None,
+                )?
+                .await?;
+            if prefix.len() > work.limits.header_bytes as usize {
+                return Err(Error::Storage("prefix reader exceeded bound".into()));
+            }
+            let metadata = parse_skill_metadata(&prefix, source)?;
+            if result.iter().any(|skill| skill.name == metadata.name) {
+                return Err(Error::Conflict(format!(
+                    "skill name {} is declared twice",
+                    metadata.name
+                )));
+            }
+            result.push(metadata);
+        }
+    }
+    Ok(result)
 }

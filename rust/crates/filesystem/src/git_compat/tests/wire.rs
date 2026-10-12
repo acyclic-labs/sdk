@@ -74,11 +74,12 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
         json!("LsFiles"),
         json!({"CheckIgnore": {"paths": ["path"]}}),
     ];
-    let commands = wire_values::<GitCommand>(commands, GitCommand::variant_name)
-        .into_iter()
-        .map(|(_, value)| serde_json::from_value(value).unwrap())
-        .collect();
-    assert_command_typescript_fields_match_serde(commands);
+    assert_typescript_fields_match_serde(
+        "command",
+        GIT_COMPAT_COMMAND_TYPESCRIPT_TYPES,
+        GIT_COMPAT_COMMAND_VARIANTS,
+        wire_values::<GitCommand>(commands, GitCommand::variant_name),
+    );
 
     let commit = GitCommit::new(
         tree(1),

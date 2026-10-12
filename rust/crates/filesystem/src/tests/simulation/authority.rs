@@ -25,26 +25,21 @@ async fn ambiguous_append_is_durable_and_retry_resolves_identity()
         return Err("fresh simulated authority already existed".into());
     };
     let proposed = proposal(3, 4);
-    let ambiguous_result = (async {
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .compare_and_append(
-                crate::GuardedAppend {
-                    authority_id: authority_id,
-                    epoch: Epoch::GENESIS,
-                    expected: head,
-                    commit: proposed.clone(),
-                    permit: crate::PublicationPermit::Unrestricted,
-                },
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
-        __authority_result
-    })
-    .await;
+    let ambiguous_result = (authority
+        .compare_and_append(
+            crate::GuardedAppend {
+                authority_id: authority_id,
+                epoch: Epoch::GENESIS,
+                expected: head,
+                commit: proposed.clone(),
+                permit: crate::PublicationPermit::Unrestricted,
+            },
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity))
+        .map(|(value, _allocation)| value));
     let Err(ambiguous) = ambiguous_result else {
         return Err("scheduled ambiguous append returned success".into());
     };

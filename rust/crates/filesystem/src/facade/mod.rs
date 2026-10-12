@@ -147,6 +147,7 @@ mod diff;
 mod directory;
 mod error;
 mod extents;
+pub(crate) use extents::seek_record_extent_with_accounting;
 mod fork;
 mod fs;
 mod generation;
@@ -267,7 +268,7 @@ pub use local::LocalOptions;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use local::run_local_initialization;
 use metadata::AuthoredMetadataCache;
-use metadata::read_record_metadata_to_file_root_with_accounting;
+pub(crate) use metadata::read_record_metadata_to_file_root_with_accounting;
 use proof::DependencyLedger;
 use proof::ObservedPathMap;
 use proof::Proof;

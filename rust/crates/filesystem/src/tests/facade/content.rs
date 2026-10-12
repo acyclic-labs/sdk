@@ -330,7 +330,7 @@ async fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
             .await?
             .value;
     let file = path("large")?;
-    let stage = |checkout: &Checkout<_, _>, body: &'static [u8]| {
+    let stage = async |checkout: &Checkout<_, _>, body: &'static [u8]| {
         let mut source = std::io::Cursor::new(OwnedBytes::from_static(body));
         (checkout.stage_content(&mut source, 64, B, &cancellation))
             .await
@@ -346,12 +346,12 @@ async fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
     ))
     .await?
     .value;
-    let original = stage(&first, b"0123456789abcdef0123456789abcdef")?;
+    let original = stage(&first, b"0123456789abcdef0123456789abcdef").await?;
     (first.apply_authored_transaction(
         vec![AuthoredMutation::CreateFileFromContent {
             path: file.clone(),
             content: original,
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
             file_id: None,
         }],
         B,
@@ -378,7 +378,7 @@ async fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
     ))
     .await?
     .value;
-    let replacement = stage(&second, b"ZYXWVUTSRQPONMLKzyxwvutsrqponmlk")?;
+    let replacement = stage(&second, b"ZYXWVUTSRQPONMLKzyxwvutsrqponmlk").await?;
     (second.apply_authored_transaction(
         vec![
             AuthoredMutation::Resize {
@@ -437,7 +437,7 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
             .await?
             .value;
     let file = path("large")?;
-    let checkout = || {
+    let checkout = async || {
         (volume.checkout(
             GenerationSelector::Head,
             writable_pinned(),
@@ -448,15 +448,15 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
         .map(|checkout| checkout.value)
         .map_err(|failure| format!("checkout failed: {:?}", failure.error))
     };
-    let stage = |checkout: &Checkout<_, _>, body: &'static [u8]| {
+    let stage = async |checkout: &Checkout<_, _>, body: &'static [u8]| {
         let mut source = std::io::Cursor::new(OwnedBytes::from_static(body));
         (checkout.stage_content(&mut source, 64, B, &cancellation))
             .await
             .map(|staged| staged.value)
             .map_err(|failure| format!("staging failed: {:?}", failure.error))
     };
-    let rewrite = |checkout: &mut Checkout<_, _>, body: &'static [u8]| {
-        let content = stage(checkout, body)?;
+    let rewrite = async |checkout: &mut Checkout<_, _>, body: &'static [u8]| {
+        let content = stage(checkout, body).await?;
         (checkout.apply_authored_transaction(
             vec![
                 AuthoredMutation::Resize {
@@ -481,13 +481,13 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
         .map_err(|failure| format!("rewrite refused: {:?}", failure.error))
     };
 
-    let mut seed = checkout()?;
-    let original = stage(&seed, b"0123456789abcdef0123456789abcdef")?;
+    let mut seed = checkout().await?;
+    let original = stage(&seed, b"0123456789abcdef0123456789abcdef").await?;
     (seed.apply_authored_transaction(
         vec![AuthoredMutation::CreateFileFromContent {
             path: file.clone(),
             content: original,
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
             file_id: None,
         }],
         B,
@@ -506,9 +506,9 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
     ))
     .await?;
 
-    let mut first = checkout()?;
-    let mut stale = checkout()?;
-    rewrite(&mut first, b"FIRSTFIRSTFIRSTFIRSTFIRSTFIRST12")?;
+    let mut first = checkout().await?;
+    let mut stale = checkout().await?;
+    rewrite(&mut first, b"FIRSTFIRSTFIRSTFIRSTFIRSTFIRST12").await?;
     let committed = (first.commit(
         OperationId::from_bytes([234; 16]),
         None,
@@ -525,7 +525,7 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
         matches!(committed, LivePublicationObservation::Committed { .. }),
         "{committed:?}"
     );
-    rewrite(&mut stale, b"STALESTALESTALESTALESTALESTALE12")?;
+    rewrite(&mut stale, b"STALESTALESTALESTALESTALESTALE12").await?;
     let refused = (stale.commit(
         OperationId::from_bytes([235; 16]),
         None,

@@ -74,7 +74,16 @@ async fn profile_folded_admission_covers_directories_links_and_renames()
     ))
     .await?
     .value;
-    (checkout.rename(path("Source")?, path("SOURCE")?, false, B, &cancellation)).await?;
+    (checkout.mutate(
+        vec![Mutation::Rename {
+            source: path("Source")?,
+            destination: path("SOURCE")?,
+            replace: false,
+        }],
+        B,
+        &cancellation,
+    ))
+    .await?;
     let renamed = (checkout.lookup_no_follow(&path("source")?, B, &cancellation))
         .await?
         .value
@@ -92,18 +101,31 @@ async fn profile_folded_admission_covers_directories_links_and_renames()
         &cancellation,
     ))
     .await?;
-    let rename_collision =
-        (checkout.rename(path("SOURCE")?, path("other")?, false, B, &cancellation))
-            .await
-            .err()
-            .ok_or("rename collision unexpectedly succeeded")?;
+    let rename_collision = (checkout.mutate(
+        vec![Mutation::Rename {
+            source: path("SOURCE")?,
+            destination: path("other")?,
+            replace: false,
+        }],
+        B,
+        &cancellation,
+    ))
+    .await
+    .err()
+    .ok_or("rename collision unexpectedly succeeded")?;
     assert!(matches!(rename_collision.error, FsError::NameCollision));
 
-    let link_destination_collision =
-        (checkout.hard_link(path("SOURCE")?, path("source")?, B, &cancellation))
-            .await
-            .err()
-            .ok_or("same-fold link unexpectedly succeeded")?;
+    let link_destination_collision = (checkout.mutate(
+        vec![Mutation::Link {
+            source: path("SOURCE")?,
+            destination: path("source")?,
+        }],
+        B,
+        &cancellation,
+    ))
+    .await
+    .err()
+    .ok_or("same-fold link unexpectedly succeeded")?;
     assert!(matches!(
         link_destination_collision.error,
         FsError::NameCollision
@@ -119,7 +141,15 @@ async fn profile_folded_admission_covers_directories_links_and_renames()
         &cancellation,
     ))
     .await?;
-    (checkout.remove(path("Removed")?, None, B, &cancellation)).await?;
+    (checkout.mutate(
+        vec![Mutation::Remove {
+            path: path("Removed")?,
+            expected_file_id: None.map_or(MetadataField::Unavailable, MetadataField::Value),
+        }],
+        B,
+        &cancellation,
+    ))
+    .await?;
     (checkout.create(
         AuthoredMutation::CreateFile {
             path: path("removed")?,
@@ -153,12 +183,12 @@ async fn profile_folded_authored_batches_reject_intra_batch_collisions()
         vec![
             AuthoredMutation::CreateDirectory {
                 path: path("Batch")?,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
                 path: path("batch")?,
                 bytes: OwnedBytes::from_static(b"body"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
         ],
         B,
@@ -175,7 +205,7 @@ async fn profile_folded_authored_batches_reject_intra_batch_collisions()
             AuthoredMutation::CreateFile {
                 path: path("Source")?,
                 bytes: OwnedBytes::from_static(b"source"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::Rename {
                 source: path("source")?,
@@ -202,12 +232,12 @@ async fn profile_folded_authored_batches_reject_intra_batch_collisions()
         vec![
             AuthoredMutation::CreateDirectory {
                 path: path("Nested")?,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
                 path: path_parts(&["nested", "Child"])?,
                 bytes: OwnedBytes::from_static(b"nested"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
         ],
         B,

@@ -271,8 +271,22 @@ async fn three_way_merge_combines_independent_directory_bindings_and_publishes()
         &cancellation,
     ))
     .value;
-    ready!(left.hard_link(path("ours")?, path("left-link")?, B, &cancellation,));
-    ready!(right.hard_link(path("ours")?, path("right-link")?, B, &cancellation,));
+    ready!(left.mutate(
+        vec![Mutation::Link {
+            source: path("ours")?,
+            destination: path("left-link")?
+        }],
+        B,
+        &cancellation
+    ));
+    ready!(right.mutate(
+        vec![Mutation::Link {
+            source: path("ours")?,
+            destination: path("right-link")?
+        }],
+        B,
+        &cancellation
+    ));
     let right_generation = match ready!(right.commit(
         OperationId::new(),
         None,

@@ -74,7 +74,7 @@ async fn storage(
         .await
         .unwrap();
     (
-        Arc::new(FilesystemHost::new(raw, provider.clone()).unwrap()),
+        FilesystemHost::new(raw, &provider, None).unwrap(),
         Arc::new(
             LocalStream::open(path.join("stream"), LocalStreamLimits::default())
                 .await

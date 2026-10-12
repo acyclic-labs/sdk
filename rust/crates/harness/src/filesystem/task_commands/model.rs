@@ -43,7 +43,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     let work = io.original_native_work().expect("native model has its original work");
                     let item = self.committed_mail_input(task, fence, turn, receive, context.context(), Some(io)).await?;
                     let copy_operation = crate::durable_host::received_copy_operation(task, receive, Some(io))?;
-                    let copy_path = crate::contract::preparation_format(format_args!("mailbox/{receive}/parcel"), Some(io))?;
+                    let copy_path = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("mailbox/{receive}/parcel"), work))?;
                     let _path = io.guard_owned(copy_path.capacity() as u64)?;
                     let (call_id, _call_id) = work.display(&copy_operation)?;
                     let publisher = ToolContext::new_with_native_work(Arc::clone(context), copy_operation, &call_id, work)?;

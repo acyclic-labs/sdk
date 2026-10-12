@@ -183,11 +183,7 @@ impl AsyncObjectStore for ShortBatchStore {
         }
         context.work.remaining(context.budget)?;
 
-        self.inner
-            .read_many(authority_input_0, context)
-            .await
-            .map(|(values, _allocation)| values)
-            .map(|values| (values, None))
+        self.inner.read_many(requests, context).await
     }
 
     async fn contains(

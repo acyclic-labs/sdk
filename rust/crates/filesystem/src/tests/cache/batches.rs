@@ -22,15 +22,13 @@ async fn malformed_backend_batch_cardinality_releases_all_flights()
         object_id,
         maximum_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
     });
-    let failure = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = cached
-            .read_many(&requests, &mut __object_work)
-            .await
-            .map(|(values, _allocation)| values);
-        __object_result
-    })
-    .await
+    let failure = (cached
+        .read_many(
+            &requests,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await
+        .map(|(values, _allocation)| values))
     .err()
     .ok_or("short backend batch was accepted")?;
     assert!(matches!(failure, ObjectStoreError::Corrupt));
@@ -168,15 +166,13 @@ async fn failed_batch_planning_releases_every_unstarted_flight_without_backend_i
         object_id,
         maximum_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
     });
-    let failure = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = cached
-            .read_many(&requests, &mut __object_work)
-            .await
-            .map(|(values, _allocation)| values);
-        __object_result
-    })
-    .await
+    let failure = (cached
+        .read_many(
+            &requests,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await
+        .map(|(values, _allocation)| values))
     .err()
     .ok_or("over-capacity batch unexpectedly succeeded")?;
     assert!(matches!(failure, ObjectStoreError::Rejected(_)));

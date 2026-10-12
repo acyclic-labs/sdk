@@ -1,6 +1,7 @@
 use super::*;
 use crate::distributed::object_key;
 use crate::storage::ObjectKind;
+use crate::{CancellationToken, WorkBudget};
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_objects::v1::ObjectsProvider as _;
 

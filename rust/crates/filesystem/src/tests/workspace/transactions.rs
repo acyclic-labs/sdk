@@ -365,7 +365,10 @@ async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Resul
         workspace
             .begin_transaction_at(&foreign, IdempotencyKey::new(), B, &cancel)
             .await,
-        Err(WorkspaceError::ForeignGeneration)
+        Err(OperationFailure {
+            error: WorkspaceError::ForeignGeneration,
+            ..
+        })
     ));
     Ok(())
 }

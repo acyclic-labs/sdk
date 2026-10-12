@@ -30,31 +30,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         ))
     }
 
-    /// Projects only the first sorted alias; all reverse-query buffers keep
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn first_path_for_file_id_with_native_work(
-        &self,
-        file_id: FileId,
-        maximum_entries: u32,
-        work: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<Option<(String, NativeAllocation)>, WorkspaceError> {
-        let (value, allocation) = self
-            .paths_for_file_id_with_native_work(file_id, maximum_entries, work, cancellation)
-            .await?;
-        let paths = (value, allocation);
-        let Some(path) = paths.0.first() else {
-            return Ok(None);
-        };
-        let mut accounting = KernelAccounting::native(work, cancellation);
-        let (value, allocation) =
-            path.unicode_text_with_accounting(&mut accounting, cancellation)?;
-        Ok(Some((
-            value,
-            native_pinned_allocation(allocation).map_err(WorkspaceError::Filesystem)?,
-        )))
-    }
-
     /// Resolves an exact no-follow path on the original native journal.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn lookup_record_with_native_work(
@@ -576,7 +551,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         )
     }
 
-    pub(super) async fn lookup_file_record_by_id_with_accounting(
+    pub(crate) async fn lookup_file_record_by_id_with_accounting(
         &self,
         file_id: FileId,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,

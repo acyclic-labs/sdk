@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::KernelAccounting;
 #[tokio::test]
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn stopped_projection_cannot_publish_a_late_open_writer()
@@ -150,30 +151,20 @@ async fn a_link_the_user_replaced_stays() -> Result<(), Box<dyn std::error::Erro
 async fn a_held_placeholder_is_replaced_before_revalidation_returns()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
-    use crate::demand::native::NativeDemandSource;
 
     let root = tempfile::tempdir()?;
     let source_root = root.path().join("source");
     std::fs::create_dir(&source_root)?;
     std::fs::write(source_root.join("held.txt"), b"old")?;
-    let demand = NativeDemandSource::open(
-        std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
-        crate::model::FilesystemProfile::Windows,
-        crate::model::VolumeLimits::default(),
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        work.cancellation(),
-    )
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
-    let lazy = crate::LazyWorkspace::attach_with_config(
+    let demand = windows_demand_source(&source_root, work.cancellation()).await?;
+    let (lazy, _) = crate::LazyWorkspace::attach(
         &Fs::memory(),
         "held-placeholder",
         Arc::new(demand),
         crate::MemoryLazyWorkspaceStore::default(),
         VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::OperationId::new(),
+        &mut KernelAccounting::native(&work, work.cancellation()),
     )
     .await?;
     let destination = root.path().join("mount");
@@ -212,7 +203,6 @@ async fn a_held_placeholder_is_replaced_before_revalidation_returns()
 async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
-    use crate::demand::native::NativeDemandSource;
 
     let root = tempfile::tempdir()?;
     let source_root = root.path().join("source");
@@ -225,24 +215,15 @@ async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
     };
     std::fs::write(&source_file, b"old")?;
     set_read_only(true)?;
-    let demand = NativeDemandSource::open(
-        std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
-        crate::model::FilesystemProfile::Windows,
-        crate::model::VolumeLimits::default(),
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        work.cancellation(),
-    )
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
-    let lazy = crate::LazyWorkspace::attach_with_config(
+    let demand = windows_demand_source(&source_root, work.cancellation()).await?;
+    let (lazy, _) = crate::LazyWorkspace::attach(
         &Fs::memory(),
         "read-only-placeholder",
         Arc::new(demand),
         crate::MemoryLazyWorkspaceStore::default(),
         VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::OperationId::new(),
+        &mut KernelAccounting::native(&work, work.cancellation()),
     )
     .await?;
     let destination = root.path().join("mount");
@@ -273,32 +254,22 @@ async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
 async fn projected_directories_rename_and_what_moved_with_them_reads()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
-    use crate::demand::native::NativeDemandSource;
 
     let root = tempfile::tempdir()?;
     let source_root = root.path().join("source");
     std::fs::create_dir_all(source_root.join("pkg").join("sub"))?;
     std::fs::write(source_root.join("pkg").join("shared.rs"), b"shared")?;
     std::fs::write(source_root.join("pkg").join("sub").join("deep.rs"), b"deep")?;
-    let demand = NativeDemandSource::open(
-        std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
-        crate::model::FilesystemProfile::Windows,
-        crate::model::VolumeLimits::default(),
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        work.cancellation(),
-    )
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
+    let demand = windows_demand_source(&source_root, work.cancellation()).await?;
     let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-    let lazy = crate::LazyWorkspace::attach_with_config(
+    let (lazy, _) = crate::LazyWorkspace::attach(
         &engine,
         "renamed-projfs",
         Arc::new(demand),
         crate::LocalCoreStateStore::open_owned(root.path().join("core"))?,
         VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::OperationId::new(),
+        &mut KernelAccounting::native(&work, work.cancellation()),
     )
     .await?;
     let destination = root.path().join("mount");
@@ -337,8 +308,22 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
         b"deep"
     );
     mount.sync().await?;
-    assert!(lazy.lookup("/lib/sub/deep.rs").await.is_ok());
-    assert!(lazy.lookup("/pkg").await.is_err());
+    assert!(
+        lazy.lookup(
+            "/lib/sub/deep.rs",
+            &mut KernelAccounting::native(&work, work.cancellation())
+        )
+        .await
+        .is_ok()
+    );
+    assert!(
+        lazy.lookup(
+            "/pkg",
+            &mut KernelAccounting::native(&work, work.cancellation())
+        )
+        .await
+        .is_err()
+    );
     mount.unmount().await?;
     Ok(())
 }

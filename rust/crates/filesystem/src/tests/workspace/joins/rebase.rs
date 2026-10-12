@@ -180,7 +180,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
     let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let main = fs.create_workspace("main-ranges", B, &cancel).await?.value;
-    main.write("/shared", OwnedBytes::from(vec![b'a'; 128]))
+    main.write("/shared", bytes::Bytes::from(vec![b'a'; 128]))
         .await?;
     let agent = main
         .fork(
