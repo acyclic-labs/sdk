@@ -234,7 +234,7 @@ impl<'a> CaptureScratchAllocation<'a> {
             return Err(MountSourceError::Work(crate::WorkError::Overflow));
         };
         if extra != 0 {
-            let retained = self.work.record_adoption(extra, &self.work.capture_custody());
+            let retained = self.work.record_native_owned_completed(extra, &self.work.capture_custody()).1;
             self.track(extra);
             if let Err(error) = retained {
                 drop(vector);
@@ -283,12 +283,12 @@ impl crate::native_host::NativeHostWork for CaptureScratchAllocation<'_> {
         crate::native_host::NativeHostWork::started_io(self.work, delta)
     }
     fn claim(&mut self, bytes: u64) -> Result<u64, Self::Error> {
-        self.work.allocate(bytes)?;
+        self.work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         self.track(bytes);
         Ok(bytes)
     }
     fn reserve_opaque_decode(&mut self, bytes: u64) -> Result<u64, Self::Error> {
-        self.work.adopt(bytes)?;
+        self.work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED)?;
         self.track(bytes);
         Ok(bytes)
     }
@@ -468,7 +468,7 @@ impl NativeDemandCarrier<'_> {
 
     pub(super) fn new_custody(&mut self) -> Result<std::sync::Arc<super::NativeMountAllocationCustody>, MountSourceError> {
         if let Some(original) = self.original_native_work() {
-            super::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&original))
+            super::NativeMountAllocationCustody::new(&mut crate::NativeMaterializationWork::clone(&original))
                 .map_err(super::lazy::mount_demand_error)
         } else {
             self.with_work(super::NativeMountAllocationCustody::new).map_err(super::lazy::mount_demand_error)
@@ -522,12 +522,12 @@ impl NativeDemandCarrier<'_> {
     ) -> Result<T, MountSourceError> {
         self.with_work(|work| match result {
             Ok(receipt) => {
-                work.merge_with_prior_live(receipt.work, prior_live)
+                work.merge(receipt.work, prior_live)
                     .map_err(super::lazy::mount_demand_error)?;
                 Ok(receipt.value)
             }
             Err(failure) => {
-                work.merge_with_prior_live(*failure.work, prior_live)
+                work.merge(*failure.work, prior_live)
                     .map_err(super::lazy::mount_demand_error)?;
                 Err(map(failure.error))
             }
@@ -719,7 +719,7 @@ impl<'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'w, A,
         let mut owned = Self { value: Some(observer), work, bytes: 0 };
         let retained_bytes = &mut owned.bytes;
         owned.work.with_work(|work| {
-            let adopted = work.record_adoption(bytes, &None).map_err(mount_demand_error);
+            let adopted = work.record_native_owned_completed(bytes, &None).1.map_err(mount_demand_error);
             *retained_bytes = bytes;
             adopted?;
             work.retain_observer_custody(custody).map_err(mount_demand_error)?;
@@ -739,7 +739,7 @@ impl<'w, A, O> LookupObserverOwned<'w, A, O> {
         if matches!(&self.work, NativeDemandCarrier::Native(_)) {
             return Ok(());
         }
-        self.work.with_work(|work| work.merge(pending).map_err(super::lazy::mount_demand_error))
+        self.work.with_work(|work| work.merge(pending, work.live_allocation_bytes()).map_err(super::lazy::mount_demand_error))
     }
 
 }
@@ -783,7 +783,7 @@ impl<'a> BorrowedNativeDemandMeter<'a> {
     pub(super) fn new(original: &'a mut crate::demand::DemandWork) -> Result<Self, MountSourceError> {
         let mut admission = CaptureScratchAllocation::new(original);
         let bytes = std::mem::size_of::<crate::demand::NativeDemandReadMeter>() as u64;
-        admission.work.allocate(bytes).map_err(super::lazy::mount_demand_error)?;
+        admission.work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(super::lazy::mount_demand_error)?;
         admission.track(bytes);
         let mut meter = Arc::new(crate::demand::NativeDemandReadMeter(StdMutex::new(
             admission.work.native_queue_shell(),
@@ -818,7 +818,7 @@ impl<'a> BorrowedNativeDemandMeter<'a> {
             crate::heap_future::in_heap_admitted(
                 (create, Arc::clone(meter), &mut allocation),
                 |(_, _, allocation), bytes| {
-                    meter.lock().allocate(bytes).map_err(super::lazy::mount_demand_error)?;
+                    meter.lock().claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED).map_err(super::lazy::mount_demand_error)?;
                     allocation.bytes = bytes;
                     Ok::<(), MountSourceError>(())
                 },
@@ -1183,7 +1183,7 @@ pub(super) async fn await_lock<F: Future>(
     }
     let native = carrier.original_native_work();
     if let Some(native) = &native {
-        native.check().map_err(MountSourceError::NativeWork)?;
+        crate::native_host::NativeHostWork::check(native).map_err(mount_demand_error)?;
     } else {
         carrier.with_work(|work| work.check().map_err(mount_demand_error))?;
     }
@@ -1259,7 +1259,7 @@ pub(super) async fn await_lock<F: Future>(
         return Err(MountSourceError::Stale);
     }
     if let Some(native) = &waits.native {
-        native.check().map_err(MountSourceError::NativeWork)?;
+        crate::native_host::NativeHostWork::check(native).map_err(mount_demand_error)?;
     } else {
         waits.carrier.with_work(|work| work.check().map_err(mount_demand_error))?;
     }
@@ -1406,7 +1406,7 @@ impl PendingCreate {
             bytes_copied: metadata_bytes,
             ..crate::WorkCounters::default()
         }, &work.budget).map_err(MountSourceError::Work)?;
-        work.allocate(std::mem::size_of::<FileMetadata>() as u64)
+        work.claim_allocation(std::mem::size_of::<FileMetadata>() as u64, u64::from((std::mem::size_of::<FileMetadata>() as u64) != 0), crate::WorkCounters::UNCHARGED)
             .map_err(mount_demand_error)?;
         *claimed_bytes = claimed_bytes.checked_add(metadata_bytes)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
@@ -1709,7 +1709,7 @@ impl GroupedCallbackBindings {
                     Option<Arc<dyn super::NativeMountCallbackGuard>>, CancellationToken,
                 )>()).ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
                 scratch.track(bytes);
-                custody.retain_admitted(bytes, scratch.work).map_err(super::lazy::mount_demand_error)?;
+                scratch.work.check().and_then(|()| custody.retain(bytes, scratch.work).map_err(crate::DemandError::from)).map_err(super::lazy::mount_demand_error)?;
                 scratch.retain();
                 Ok::<_, MountSourceError>(Self { entries, legacy_custody: Some(custody), native_allocation: None })
             })?
@@ -2785,7 +2785,7 @@ impl<A, O> SharedCheckout<A, O> {
                 work.work.admit(&copied, &work.budget).map_err(MountSourceError::Work)?;
                 let vector = mount_vec::<Arc<PendingCreate>>(count, work)?;
                 let bytes = (vector.capacity() * std::mem::size_of::<Arc<PendingCreate>>()) as u64;
-                if let Err(error) = custody.retain_admitted(bytes, work) {
+                if let Err(error) = work.check().and_then(|()| custody.retain(bytes, work).map_err(crate::DemandError::from)) {
                     drop(vector);
                     work.release(bytes).map_err(mount_demand_error)?;
                     return Err(super::lazy::mount_demand_error(error));
@@ -3476,7 +3476,7 @@ impl<A, O> SharedCheckout<A, O> {
             Ok(())
         } else {
             let adopted = carrier.with_work(|work| {
-                work.record_adoption(result_bytes, &None).map_err(mount_demand_error)
+                work.record_native_owned_completed(result_bytes, &None).1.map_err(mount_demand_error)
             });
             *bytes = bytes.checked_add(result_bytes)
                 .expect("grouped outcome slots have exact custody");
@@ -3641,7 +3641,7 @@ impl InstalledCaptureAccounting<'_> {
                     let bytes = (diff.files.capacity() * std::mem::size_of::<crate::FileRecordChange>()
                         + diff.bindings.capacity() * std::mem::size_of::<crate::DirectoryBindingChange>()) as u64
                         + diff.bindings.iter().map(|binding| binding.name.as_bytes().len() as u64).sum::<u64>();
-                    work.adopt(bytes).map_err(mount_demand_error)?;
+                    work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
                 }
                 Ok(diff)
             }
@@ -3723,7 +3723,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
     let result = installed_changes_with_accounting(
         base, candidate, scope, &mut InstalledCaptureAccounting::Ordinary(&mut work), cancellation,
     ).await;
-    carrier.with_work(|original| original.merge_with_prior_live(work.work, prior_live))
+    carrier.with_work(|original| original.merge(work.work, prior_live))
         .map_err(super::lazy::mount_demand_error)?;
     result.map(|effect| (effect, None))
 }
@@ -4012,7 +4012,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
         let read = carrier.with_work(|work| mount_accept(work, result, mount_engine_error))?;
         let logical_owned_bytes = read.logical_owned_bytes();
         let admitted = carrier.with_work(|work| {
-            work.record_adoption(logical_owned_bytes, &None).and_then(|()| work.check())
+            work.record_native_owned_completed(logical_owned_bytes, &None).1.and_then(|()| work.check())
         });
         if let Err(error) = admitted {
             drop(read);
@@ -5341,7 +5341,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let bytes = if output.is_intrinsic() { 0 } else { output.logical_owned_bytes };
         let mut output = NativeCarrierOwned { value: Some(output), carrier: &mut observer.work, bytes };
         if original.is_none() {
-            output.carrier.with_work(|work| work.record_adoption(bytes, &None)).map_err(mount_demand_error)?;
+            output.carrier.with_work(|work| work.record_native_owned_completed(bytes, &None).1).map_err(mount_demand_error)?;
         }
         completed?;
         if let Some(original) = original.as_ref() {
@@ -5812,7 +5812,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             work.check().map_err(mount_demand_error)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             work.work.admit(&copied, &work.budget).map_err(MountSourceError::Work)?;
-            work.allocate(bytes).map_err(mount_demand_error)
+            work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)
         })?;
         let mut owned = NativeCarrierOwned { value: None, carrier, bytes };
         owned.value = Some(Arc::new(CheckoutAttachedFile {
@@ -6186,7 +6186,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         } else {
             let custody = custody.as_ref().expect("legacy detached identity has scalar custody");
             owned.carrier.with_work(|work| {
-                custody.retain_admitted(bytes, work).map_err(super::lazy::mount_demand_error)
+                work.check().and_then(|()| custody.retain(bytes, work).map_err(crate::DemandError::from)).map_err(super::lazy::mount_demand_error)
             })?;
             owned.bytes = 0;
             owned.carrier.with_work(|work| {
@@ -6232,7 +6232,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 self.cancellation.check().map_err(|_| MountSourceError::Stale)?;
                 let budget = work.remaining().map_err(mount_demand_error)?;
                 let file = mount_accept(work, observation.detached_from_record(record, budget, cancellation), mount_engine_error)?;
-                if let Err(error) = work.adopt(file.logical_owned_bytes()) {
+                if let Err(error) = work.claim_allocation(file.logical_owned_bytes(), 0, crate::WorkCounters::UNCHARGED) {
                     drop(file);
                     return Err(mount_demand_error(error));
                 }
@@ -8037,7 +8037,7 @@ where
             self.cancellation.check().map_err(|_| MountSourceError::Stale)?;
             work.work.admit(&copied, &work.budget).map_err(MountSourceError::Work)?;
             let bytes = std::mem::size_of::<ViewReadLease>() as u64;
-            work.allocate(bytes).map_err(mount_demand_error)?;
+            work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
             if let Err(error) = lease.attach_owned_payload(bytes) {
                 work.release(bytes).map_err(mount_demand_error)?;
                 return Err(error);
@@ -9499,7 +9499,7 @@ mod tests {
             let cancellation = CancellationToken::new();
             let budget = WorkBudget { allocation_operations: allocations, ..crate::performance::BOUNDARY_BUDGET };
             let mut work = crate::demand::DemandWork::new(budget, &cancellation);
-            work.allocate(std::mem::size_of::<[u8; 8]>() as u64)?;
+            work.claim_allocation(std::mem::size_of::<[u8; 8]>() as u64, u64::from((std::mem::size_of::<[u8; 8]>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
             let resident = Box::new([0_u8; 8]);
             work.record(crate::WorkCounters { items_examined: 5, ..crate::WorkCounters::UNCHARGED })?;
             match source.namespace_path(&path, &mut NativeDemandCarrier::Borrowed(&mut work)).map(|(path, _)| path) {
@@ -13308,7 +13308,7 @@ fn capture_request(
     let before = work.live_allocation_bytes();
     let cancellation = work.new_cancellation().map_err(MountSourceError::Work)?;
     let bytes = std::mem::size_of::<CaptureCommitGate>() as u64;
-    if let Err(error) = work.allocate(bytes) {
+    if let Err(error) = work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED) {
         drop(cancellation);
         let owned = work.live_allocation_bytes() - before;
         work.release(owned).map_err(mount_demand_error)?;

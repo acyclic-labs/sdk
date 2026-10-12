@@ -283,7 +283,7 @@ impl<const N: usize> NativePreparedAsciiLeaf<N> {
         #[cfg(windows)]
         let mut wide = [0u16; N];
         for index in 0..N - 1 {
-            work.check()?;
+            crate::NativeMaterializationWork::admit(work, WorkCounters::UNCHARGED)?;
             let byte = bytes[index];
             let valid = byte.is_ascii() && !matches!(byte, 0 | b'/' | b'\\' | b':');
             #[cfg(windows)]

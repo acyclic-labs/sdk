@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::demand::{DemandError, DemandWork, NativeSourceWork, SourceDemandReadWork, SourcePayloadOwnership};
+use crate::demand::{DemandError, DemandWork, SourceDemandReadWork, SourcePayloadOwnership};
 use crate::native_host::NativeHostWork;
 use crate::performance::WorkCounters;
 
@@ -37,7 +37,7 @@ pub(super) fn prepare_native_cleanup_credit<W: SourceDemandReadWork>(
     work.check()?;
     if !work.is_native_original() { return Ok(None); }
     let source = work.native_source_work().ok_or(DemandError::NativeWorkUnavailable)?;
-    let original = source.materialization_work()?.allocation_work();
+    let original = { crate::native_host::NativeHostWork::check(&source)?; source.clone() }.allocation_work();
     original.reserve_work(maximum)
         .map(Some)
         .map_err(crate::native_name::original_name_error)
@@ -118,7 +118,7 @@ pub(crate) trait HostChangeSink: Send + Sync {
     ) -> Result<(), crate::demand::DemandError>;
 
     fn host_changed_with_native_work(
-        &self, _changes: &[HostChange], _work: &mut NativeSourceWork<'_>,
+        &self, _changes: &[HostChange], _work: &mut crate::NativeMaterializationWork,
     ) -> Result<(), DemandError> { Err(DemandError::NativeWorkUnavailable) }
 
     #[cfg(windows)]
@@ -128,7 +128,7 @@ pub(crate) trait HostChangeSink: Send + Sync {
 
     #[cfg(windows)]
     fn host_changed_wide_with_native_work(
-        &self, _changes: &[HostChangeWide<'_>], _work: &mut NativeSourceWork<'_>,
+        &self, _changes: &[HostChangeWide<'_>], _work: &mut crate::NativeMaterializationWork,
     ) -> Result<(), DemandError> { Err(DemandError::NativeWorkUnavailable) }
 }
 
@@ -148,10 +148,10 @@ pub(crate) trait NativeEventSink: Send + Sync {
     ) -> Result<(), crate::demand::DemandError>;
     fn event_with_native_work(
         &self, _relative: &std::path::Path, _mask: u32, _cookie: usize,
-        _work: &mut NativeSourceWork<'_>,
+        _work: &mut crate::NativeMaterializationWork,
     ) -> Result<(), DemandError> { Err(DemandError::NativeWorkUnavailable) }
     fn invalidate_with_native_work(
-        &self, _work: &mut NativeSourceWork<'_>,
+        &self, _work: &mut crate::NativeMaterializationWork,
     ) -> Result<(), DemandError> { Err(DemandError::NativeWorkUnavailable) }
 }
 
@@ -176,12 +176,12 @@ impl Drop for RestoreCallback {
 }
 
 /// A callback borrows the original invocation; only legacy watches own a callback-local allowance.
-pub(super) enum CallbackWork<'a> {
+pub(crate) enum CallbackWork {
     Ordinary(DemandWork),
-    Original(NativeSourceWork<'a>),
+    Original(crate::NativeMaterializationWork),
 }
 
-impl CallbackWork<'_> {
+impl CallbackWork {
     pub(super) fn receipt_work(&self) -> WorkCounters {
         match self {
             Self::Ordinary(work) => work.work,
@@ -190,7 +190,7 @@ impl CallbackWork<'_> {
     }
 }
 
-impl NativeHostWork for CallbackWork<'_> {
+impl NativeHostWork for CallbackWork {
     type Error = DemandError;
     type Allocation = u64;
     type CleanupWrite = u64;
@@ -200,48 +200,48 @@ impl NativeHostWork for CallbackWork<'_> {
     fn allocation_failed(error: std::collections::TryReserveError) -> DemandError { DemandError::Allocation(error) }
     fn invalid_request() -> DemandError { DemandError::InvalidRequest }
     fn check(&self) -> Result<(), DemandError> {
-        match self { Self::Ordinary(work) => work.check(), Self::Original(work) => work.check() }
+        match self { Self::Ordinary(work) => work.check(), Self::Original(work) => NativeHostWork::check(work) }
     }
     fn admit(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        match self { Self::Ordinary(work) => work.admit(delta), Self::Original(work) => work.admit(delta) }
+        match self { Self::Ordinary(work) => work.admit(delta), Self::Original(work) => NativeHostWork::admit(work, delta) }
     }
     fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        match self { Self::Ordinary(work) => work.record(delta), Self::Original(work) => work.record(delta) }
+        match self { Self::Ordinary(work) => work.record(delta), Self::Original(work) => NativeHostWork::record(work, delta) }
     }
     fn started_io(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         match self {
             Self::Ordinary(work) => work.started_io(delta),
-            Self::Original(work) => work.started_io(delta),
+            Self::Original(work) => NativeHostWork::started_io(work, delta),
         }
     }
     fn claim(&mut self, bytes: u64) -> Result<u64, DemandError> {
-        match self { Self::Ordinary(work) => work.claim(bytes), Self::Original(work) => work.claim(bytes) }
+        match self { Self::Ordinary(work) => work.claim(bytes), Self::Original(work) => NativeHostWork::claim(work, bytes) }
     }
     fn reserve_opaque_decode(&mut self, maximum: u64) -> Result<u64, DemandError> {
         match self {
             Self::Ordinary(work) => work.reserve_opaque_decode(maximum),
-            Self::Original(work) => work.reserve_opaque_decode(maximum),
+            Self::Original(work) => NativeHostWork::reserve_opaque_decode(work, maximum),
         }
     }
     fn reconcile_allocation(&mut self, allocation: &mut u64, actual: u64) -> Result<(), DemandError> {
         match self {
             Self::Ordinary(work) => work.reconcile_allocation(allocation, actual),
-            Self::Original(work) => work.reconcile_allocation(allocation, actual),
+            Self::Original(work) => NativeHostWork::reconcile_allocation(work, allocation, actual),
         }
     }
     fn release(&mut self, bytes: u64) -> Result<(), DemandError> {
-        match self { Self::Ordinary(work) => work.release(bytes), Self::Original(work) => work.release(bytes) }
+        match self { Self::Ordinary(work) => work.release(bytes), Self::Original(work) => NativeHostWork::release(work, bytes) }
     }
     fn reserve_cleanup_write(&mut self) -> Result<u64, DemandError> {
         match self {
             Self::Ordinary(work) => work.reserve_cleanup_write(),
-            Self::Original(work) => work.reserve_cleanup_write(),
+            Self::Original(work) => NativeHostWork::reserve_cleanup_write(work),
         }
     }
     fn cancel_cleanup_write(&mut self, reservation: u64) {
         match self {
             Self::Ordinary(work) => work.cancel_cleanup_write(reservation),
-            Self::Original(work) => work.cancel_cleanup_write(reservation),
+            Self::Original(work) => NativeHostWork::cancel_cleanup_write(work, reservation),
         }
     }
     fn attempt_cleanup_write<T>(
@@ -249,12 +249,12 @@ impl NativeHostWork for CallbackWork<'_> {
     ) -> (T, Result<(), DemandError>) {
         match self {
             Self::Ordinary(work) => work.attempt_cleanup_write(reservation, operation),
-            Self::Original(work) => work.attempt_cleanup_write(reservation, operation),
+            Self::Original(work) => NativeHostWork::attempt_cleanup_write(work, reservation, operation),
         }
     }
 }
 
-impl SourceDemandReadWork for CallbackWork<'_> {
+impl SourceDemandReadWork for CallbackWork {
     fn with_native_read_meter<T>(
         &mut self, operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
     ) -> T {
@@ -272,14 +272,10 @@ impl SourceDemandReadWork for CallbackWork<'_> {
     fn with_ordinary_work<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> Option<T> {
         match self { Self::Ordinary(work) => Some(operation(work)), Self::Original(_) => None }
     }
-    fn native_source_work(&self) -> Option<NativeSourceWork<'_>> {
+    fn native_source_work(&self) -> Option<crate::NativeMaterializationWork> {
         match self { Self::Ordinary(_) => None, Self::Original(work) => work.native_source_work() }
     }
     fn is_native_original(&self) -> bool { matches!(self, Self::Original(_)) }
-    #[cfg(feature = "native-mount")]
-    fn original_meter(&self) -> Option<&Arc<crate::demand::NativeDemandReadMeter>> {
-        match self { Self::Ordinary(_) => None, Self::Original(work) => work.original_meter() }
-    }
 }
 
 enum CallbackFailure {
@@ -347,7 +343,7 @@ impl Delivery {
     fn new_with_work<W: SourceDemandReadWork>(
         sink: Arc<dyn HostChangeSink>, work: &mut W,
     ) -> Result<Self, DemandError> {
-        let original = work.native_source_work().map(|work| work.owned().allocation_work());
+        let original = work.native_source_work().map(|work| work.clone().allocation_work());
         let controls = |work: &mut DemandWork| (work.budget, work.cancellation().clone());
         let (budget, cancellation) = if original.is_some() {
             work.with_original_leaf(controls)
@@ -381,7 +377,7 @@ impl Delivery {
         }
         let ownership = SourcePayloadOwnership::new(work)?;
         let bytes = arc_control_bytes::<SourceWatchStartupFailure>();
-        work.allocate(bytes)?;
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let failure = Arc::new(SourceWatchStartupFailure {
             cause: std::sync::OnceLock::new(), watch: std::sync::Mutex::new(None),
             stopped: AtomicBool::new(false), owned_bytes: std::sync::atomic::AtomicU64::new(0),
@@ -395,9 +391,9 @@ impl Delivery {
         Ok(failure)
     }
 
-    fn callback_work(&self) -> CallbackWork<'_> {
+    fn callback_work(&self) -> CallbackWork {
         match &self.original {
-            Some(original) => CallbackWork::Original(NativeSourceWork::from_native_materialization_work(original)),
+            Some(original) => CallbackWork::Original(crate::NativeMaterializationWork::clone(original)),
             None => CallbackWork::Ordinary(DemandWork::new(self.budget, &self.cancellation)),
         }
     }
@@ -405,7 +401,7 @@ impl Delivery {
     fn birth_matches<W: SourceDemandReadWork>(&self, work: &W) -> bool {
         let Some(birth) = &self.original else { return false; };
         let Some(current) = work.native_source_work() else { return false; };
-        let current = current.owned();
+        let current = current.clone();
         Arc::ptr_eq(&birth.state, &current.state)
             && match (birth.resource.as_ref(), current.resource.as_ref()) {
                 (None, None) => true,
@@ -570,7 +566,7 @@ impl SourceWatchStartupFailure {
     pub fn stop_with_native_work(
         &self, work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), DemandError> {
-        self.stop_with_work(&mut NativeSourceWork::from_native_materialization_work(work))
+        self.stop_with_work(&mut crate::NativeMaterializationWork::clone(work))
     }
 
     /// Retires the retained original watch using only its birth-paid cleanup.
@@ -658,7 +654,7 @@ impl NativeSourceWatch {
     ) -> Result<Self, DemandError> {
         let delivery = Delivery::new_with_work(sink, work)?;
         let bytes = arc_control_bytes::<Delivery>();
-        work.allocate(bytes)?;
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let delivery = Arc::new(delivery);
         delivery.ownership.retain(bytes, work)?;
         let result = Self::start_held_root_with_work(directory, delivery, complete, recursive, work);
@@ -684,7 +680,7 @@ impl NativeSourceWatch {
     ) -> Result<Self, DemandError> {
         let delivery = Delivery::new_with_work(sink, work)?;
         let bytes = arc_control_bytes::<Delivery>();
-        work.allocate(bytes)?;
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let delivery = Arc::new(delivery);
         delivery.ownership.retain(bytes, work)?;
         let failure = if commit_output {
@@ -710,7 +706,7 @@ impl NativeSourceWatch {
         let mut delivery = Delivery::new_with_work(sink, work)?;
         delivery.events = Some(events);
         let bytes = arc_control_bytes::<Delivery>();
-        work.allocate(bytes)?;
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let delivery = Arc::new(delivery);
         delivery.ownership.retain(bytes, work)?;
         let result = Self::start_driver(directory, delivery, work);
@@ -724,7 +720,7 @@ impl NativeSourceWatch {
     ) -> Result<Self, DemandError> {
         let delivery = Delivery::new_with_work(sink, work)?;
         let bytes = arc_control_bytes::<Delivery>();
-        work.allocate(bytes)?;
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let delivery = Arc::new(delivery);
         delivery.ownership.retain(bytes, work)?;
         let result = Self::start_directory_driver(directory, delivery, complete, work);

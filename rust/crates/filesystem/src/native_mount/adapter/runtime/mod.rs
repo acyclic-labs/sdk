@@ -101,7 +101,7 @@ impl CallbackRuntime {
     ) -> Result<Arc<CallbackWait>, MountSourceError> {
         work.check().map_err(crate::native_mount::lazy::mount_demand_error)?;
         let bytes = std::mem::size_of::<CallbackWait>() as u64;
-        work.allocate(bytes).map_err(crate::native_mount::lazy::mount_demand_error)?;
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(crate::native_mount::lazy::mount_demand_error)?;
         Ok(CallbackWait::new(bytes, None))
     }
 

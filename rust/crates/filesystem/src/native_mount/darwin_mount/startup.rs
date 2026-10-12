@@ -44,7 +44,7 @@ impl DarwinMountSession {
             start_stat(path, work)
         })?;
         let custody = crate::demand::NativeMountAllocationCustody::new(
-            &mut crate::demand::NativeSourceWork::from_native_materialization_work(original),
+            &mut crate::NativeMaterializationWork::clone(original),
         )
         .map_err(crate::native_mount::NativeMountStartupAdmissionError::from)?;
         let mut context = DarwinMountContext::new(

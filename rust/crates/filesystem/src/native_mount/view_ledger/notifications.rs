@@ -7,14 +7,14 @@ pub(super) struct ViewObservers(Mutex<Observers>);
 
 #[derive(Default)]
 struct Observers {
-    entries: Vec<(Weak<dyn ViewObserver>, Option<NativeMountAllocationCustody>)>,
-    custody: Option<NativeMountAllocationCustody>,
+    entries: Vec<(Weak<dyn ViewObserver>, Option<std::sync::Arc<NativeMountAllocationCustody>>)>,
+    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
     pending: Option<PendingNotification>,
 }
 
 struct PendingNotification {
     live: Vec<Arc<dyn ViewObserver>>,
-    custody: Option<NativeMountAllocationCustody>,
+    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
     completion: NativeWorkReservation,
 }
 
@@ -42,7 +42,7 @@ impl ViewObservers {
     ) -> Result<
         (
             Vec<Arc<dyn ViewObserver>>,
-            Option<NativeMountAllocationCustody>,
+            Option<std::sync::Arc<NativeMountAllocationCustody>>,
         ),
         MountSourceError,
     > {
@@ -175,7 +175,7 @@ impl ViewLedger {
                 crate::WorkCounters {
                     bytes_copied: std::mem::size_of::<(
                         Weak<dyn ViewObserver>,
-                        Option<NativeMountAllocationCustody>,
+                        Option<std::sync::Arc<NativeMountAllocationCustody>>,
                     )>() as u64,
                     ..crate::WorkCounters::UNCHARGED
                 },

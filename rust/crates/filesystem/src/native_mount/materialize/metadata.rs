@@ -77,13 +77,13 @@ where
 
 pub(super) async fn generation_blocking<T: Send + 'static>(
     receipt: &mut GenerationReceipt,
-    operation: impl FnOnce(&mut NativeSourceWork<'_>) -> Result<T, DemandError> + Send + 'static,
+    operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, DemandError> + Send + 'static,
 ) -> Result<T, MaterializeError> {
     let observer = receipt.custody.work().runtime_meter();
     let original = receipt.custody.work().clone();
     let task = acyclic_native_runtime::run_blocking_io(
         move || {
-            operation(&mut NativeSourceWork::from_native_materialization_work(
+            operation(&mut crate::NativeMaterializationWork::clone(
                 &original,
             ))
         },
@@ -363,7 +363,7 @@ pub(super) fn create_symlink_measured(
         let mut units = Vec::new();
         receipt.reserve(&mut units, target.len() / 2)?;
         receipt.run(|work| {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 bytes_copied: target.len() as u64,
                 ..WorkCounters::UNCHARGED
             })

@@ -146,7 +146,7 @@ fn close_owned<W: SourceDemandReadWork>(
 
 fn create_reader<W: SourceDemandReadWork>(reader: &Arc<Shared>, work: &mut W) -> Result<OwnedHandle, DemandError> {
     work.admit(WorkCounters { backend_read_operations: 1, backend_write_operations: 1, ..WorkCounters::default() })?;
-    work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
+    work.started_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
     let parameter = Arc::into_raw(Arc::clone(reader));
     // SAFETY: success transfers this real Shared to the existing reader.
     match unsafe { CreateThread(None, 0, Some(reader_thread), Some(parameter.cast()), Default::default(), None) } {
@@ -214,15 +214,15 @@ impl NativeSourceWatch {
             })).transpose().map_err(crate::native_name::original_name_error)?;
             if !native_original { reserve_cleanup(work, 2, 5)?; }
             let overlapped_bytes = size_of::<OVERLAPPED>() as u64;
-            work.allocate(overlapped_bytes)?;
+            work.claim_allocation(overlapped_bytes, u64::from((overlapped_bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             owned_bytes += overlapped_bytes;
             let overlapped = Box::new(OVERLAPPED::default());
             let buffer_bytes = size_of::<[u64; BUFFER_WORDS]>() as u64;
-            work.allocate(buffer_bytes)?;
+            work.claim_allocation(buffer_bytes, u64::from((buffer_bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             owned_bytes += buffer_bytes;
             let buffer = Box::<[u64; BUFFER_WORDS]>::new_uninit();
             let shared_bytes = super::arc_control_bytes::<Shared>();
-            work.allocate(shared_bytes)?;
+            work.claim_allocation(shared_bytes, u64::from((shared_bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             owned_bytes += shared_bytes;
             ownership.retain(owned_bytes, work)?;
             shared = Some(Arc::new(Shared {
@@ -255,7 +255,7 @@ impl NativeSourceWatch {
             if complete.is_none() {
                 state.complete.store(crate::native_host::reports_every_change(&state.directory, work)?, Ordering::Release);
             }
-            work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
             // SAFETY: an unnamed manual-reset event, exclusively owned here.
             let event = unsafe { CreateEventW(None, true, false, None) }.map_err(io::Error::from)?;
             state.completed.install(unsafe { OwnedHandle::from_raw_handle(event.0) });
@@ -312,7 +312,7 @@ impl NativeSourceWatch {
     /// Completes an already-owned native cleanup suffix without introducing a caller token, root, resource allowance or namespace authority.
     pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         let birth = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
-        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(birth);
+        let mut work = crate::NativeMaterializationWork::clone(birth);
         self.stop_engine(&mut work, true, None)
     }
 
@@ -323,7 +323,7 @@ impl NativeSourceWatch {
         wait.check().map_err(|_| DemandError::Cancelled)?;
         let birth = self.shared.delivery.original.as_ref()
             .ok_or(DemandError::NativeWorkUnavailable)?;
-        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(birth);
+        let mut work = crate::NativeMaterializationWork::clone(birth);
         self.stop_engine(&mut work, true, Some(wait))
     }
 
@@ -544,7 +544,7 @@ impl NativeSourceWatch {
                     source_bytes_read: size_of::<[u64; BUFFER_WORDS]>() as u64,
                     ..WorkCounters::default()
                 })?;
-                work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
+                work.started_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
                 // SAFETY: completes only the original queue's pending read.
                 let _ = unsafe { CancelIoEx(HANDLE(self.shared.directory.as_raw_handle()),
                     Some(&raw const *reads.overlapped)) };
@@ -745,7 +745,7 @@ impl Shared {
         let original = error.raw_os_error().map(io::Error::from_raw_os_error)
             .unwrap_or_else(|| io::Error::from(error.kind()));
         if let Some(birth) = &self.delivery.original {
-            crate::demand::NativeSourceWork::from_native_materialization_work(birth).with_original_leaf(|work| {
+            crate::NativeMaterializationWork::clone(birth).with_original_leaf(|work| {
                 work.record_native_io_failure(DemandError::Io(original));
                 work.poison_native_original_work();
             });
@@ -778,7 +778,7 @@ impl Shared {
 
     fn note_native_failure(&self, error: DemandError) {
         if let Some(birth) = &self.delivery.original {
-            crate::demand::NativeSourceWork::from_native_materialization_work(birth).with_original_leaf(|work| {
+            crate::NativeMaterializationWork::clone(birth).with_original_leaf(|work| {
                 if matches!(&error, DemandError::NativeWorkUnavailable) {
                     work.record_native_io_failure(DemandError::NativeWorkUnavailable);
                 }
@@ -847,7 +847,7 @@ impl Shared {
             hEvent: HANDLE(self.completed.as_raw_handle()),
             ..OVERLAPPED::default()
         };
-        work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+        work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
         // SAFETY: the buffer and OVERLAPPED remain live until completion.
         unsafe {
             ReadDirectoryChangesExW(
@@ -885,7 +885,7 @@ impl Shared {
             })?;
         }
         let delta = WorkCounters { backend_read_operations: 1, ..WorkCounters::default() };
-        let recorded = if wait { work.record(delta) } else { work.charge(delta)?; Ok(()) };
+        let recorded = if wait { work.record(delta) } else { work.started_io(delta)?; Ok(()) };
         let mut transferred = 0;
         // SAFETY: the original owned buffers stay pinned through completion.
         let result = unsafe { GetOverlappedResult(HANDLE(self.directory.as_raw_handle()),
@@ -964,7 +964,7 @@ impl Shared {
         while reads.cursor < reads.filled {
             if self.stopping.load(Ordering::Acquire) { return Ok(false); }
             if deadline.is_some_and(|(started, timeout)| started.elapsed() >= timeout) { return Ok(false); }
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
             // SAFETY: only the completed page is exposed, under the read lock.
             let buffer = reads.buffer.as_ref().ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))?;
             let bytes = unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), reads.filled) };
@@ -1006,7 +1006,7 @@ fn open_for_changes_handle<W: SourceDemandReadWork>(
     };
     let mut handle = HANDLE::default();
     let mut status_block = IO_STATUS_BLOCK::default();
-    work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+    work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
     // SAFETY: every pointer names a live value for this synchronous call;
     // without a synchronous-I/O option the handle is asynchronous.
     let status = unsafe {
@@ -1222,7 +1222,7 @@ mod tests {
     #[test]
     fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::demand::{NativeDemandReadMeter, NativeSourceWork, SourceDemandReadWork};
+        use crate::demand::{NativeDemandReadMeter,  SourceDemandReadWork};
         use crate::native_host::NativeHostWork;
         use crate::{CancellationToken, WorkBudget, WorkCounters};
         use std::sync::{Arc, Mutex};
@@ -1238,7 +1238,7 @@ mod tests {
                 ..WorkBudget::default()
             };
             let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &root_cancellation))));
-            let mut startup = NativeSourceWork::new(&birth);
+            let mut startup = crate::NativeMaterializationWork::from_meter((&birth).clone());
             let delivery = Arc::new(Delivery::new_with_work(Arc::new(Quiet), &mut startup)?);
             let watch = super::NativeSourceWatch::start_directory_driver(
                 &held, delivery, true, &mut startup,
@@ -1260,7 +1260,7 @@ mod tests {
             drop(paused);
             assert_eq!(birth.with_original_leaf(|work| work.work), before);
             root_cancellation.cancel();
-            assert!(matches!(watch.stop_with_work(&mut NativeSourceWork::new(&birth)), Err(DemandError::Cancelled)));
+            assert!(matches!(watch.stop_with_work(&mut crate::NativeMaterializationWork::from_meter((&birth).clone())), Err(DemandError::Cancelled)));
             if late_wait {
                 *watch.shared.native_wait_cancellation.lock().map_err(|_| "poisoned wait control")? =
                     Some(wait.clone());
@@ -1300,7 +1300,7 @@ mod tests {
         }
         fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
         fn host_changed_wide_with_native_work(
-            &self, _: &[HostChangeWide<'_>], work: &mut crate::demand::NativeSourceWork<'_>,
+            &self, _: &[HostChangeWide<'_>], work: &mut crate::NativeMaterializationWork,
         ) -> Result<(), DemandError> { crate::native_host::NativeHostWork::check(work) }
     }
 
@@ -1318,7 +1318,7 @@ mod tests {
     #[test]
     fn native_birth_denies_the_known_final_drop_plan_before_the_first_native_owner()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::demand::{NativeDemandReadMeter, NativeSourceWork};
+        use crate::demand::{NativeDemandReadMeter};
         use std::sync::{Arc, Mutex};
         let root = tempfile::tempdir()?;
         let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
@@ -1327,7 +1327,7 @@ mod tests {
         let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(
             budget, &crate::CancellationToken::new(),
         ))));
-        let mut work = NativeSourceWork::new(&birth);
+        let mut work = crate::NativeMaterializationWork::from_meter((&birth).clone());
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(NativeQuiet), &mut work)?);
         let delivery_lifetime = Arc::downgrade(&delivery);
         assert!(matches!(super::NativeSourceWatch::start_directory_driver(
@@ -1346,7 +1346,7 @@ mod tests {
     #[test]
     fn accepted_cleanup_and_poisoned_last_drop_use_the_same_born_worker()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::demand::{NativeDemandReadMeter, NativeSourceWork};
+        use crate::demand::{NativeDemandReadMeter};
         use std::sync::{Arc, Mutex};
         for poisoned_drop in [false, true] {
             let root = tempfile::tempdir()?;
@@ -1354,7 +1354,7 @@ mod tests {
             let cancellation = crate::CancellationToken::new();
             let budget = native_control_budget();
             let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &cancellation))));
-            let mut work = NativeSourceWork::new(&birth);
+            let mut work = crate::NativeMaterializationWork::from_meter((&birth).clone());
             let delivery = Arc::new(Delivery::new_with_work(Arc::new(NativeQuiet), &mut work)?);
             let watch = super::NativeSourceWatch::start_directory_driver(&held, delivery, true, &mut work)?;
             let completion = Arc::clone(&watch.shared);
@@ -1397,7 +1397,7 @@ mod tests {
     #[test]
     fn actual_close_failure_parks_the_same_owner_and_preserves_the_original_cause()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::demand::{NativeDemandReadMeter, NativeSourceWork};
+        use crate::demand::{NativeDemandReadMeter};
         use std::sync::{Arc, Mutex};
         use std::os::windows::io::AsRawHandle as _;
         use windows::Win32::Foundation::{
@@ -1418,7 +1418,7 @@ mod tests {
         let cancellation = crate::CancellationToken::new();
         let budget = native_control_budget();
         let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &cancellation))));
-        let mut work = NativeSourceWork::new(&birth);
+        let mut work = crate::NativeMaterializationWork::from_meter((&birth).clone());
         let mut control = super::super::prepare_native_cleanup_credit(&mut work, crate::WorkCounters {
             backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
         })?.ok_or("missing original test-control credit")?;

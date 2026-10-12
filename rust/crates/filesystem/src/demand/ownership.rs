@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeMaterializationWork;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -14,16 +15,6 @@ pub(crate) enum SourcePayloadOwnership {
 impl SourcePayloadOwnership {
     pub(crate) fn from_native_allocation(allocation: crate::NativeAllocation) -> Self {
         Self::Allocation(Some(allocation))
-    }
-    pub(crate) fn from_kernel_allocation(
-        allocation: crate::kernel::allocation::KernelOwnedAllocation,
-    ) -> Self {
-        match allocation {
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone => Self::Borrowed,
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-                Self::Allocation(Some(allocation))
-            }
-        }
     }
     pub(crate) fn into_native_allocation(mut self) -> Option<crate::NativeAllocation> {
         if let Self::Allocation(allocation) = &mut self {
@@ -56,9 +47,7 @@ impl SourcePayloadOwnership {
                         current.checked_add(bytes)
                     })
                     .map_err(|_| crate::WorkError::Overflow)?;
-                if let Err(error) =
-                    work.with_original_leaf(|work| custody.retain_completed_admitted(bytes, work))
-                {
+                if let Err(error) = work.with_original_leaf(|work| custody.retain(bytes, work)) {
                     retained.fetch_sub(bytes, Ordering::AcqRel);
                     return Err(error.into());
                 }
@@ -123,7 +112,7 @@ impl Drop for SourcePayloadOwnership {
 #[derive(Debug)]
 pub struct NativeMountAllocationCustody {
     bytes: AtomicU64,
-    original: Option<crate::NativeMaterializationWork>,
+    original: Option<NativeMaterializationWork>,
 }
 impl NativeMountAllocationCustody {
     pub(super) fn retained_bytes(&self) -> u64 {
@@ -131,25 +120,23 @@ impl NativeMountAllocationCustody {
     }
     pub(crate) fn new<W: SourceDemandReadWork>(work: &mut W) -> Result<Arc<Self>, DemandError> {
         work.check()?;
-        let original = work
-            .native_source_work()
-            .map(|work| work.owned().allocation_work());
+        let original = work.native_source_work().map(|work| work.allocation_work());
         work.with_original_leaf(|work| {
             work.reconcile_cancellation_registry()?;
-            let index = work.roots.native_mount_admissions.insert(
+            let index = super::admissions::insert(
+                &mut work.roots.native_mount_admissions,
                 (std::sync::Weak::new(), 0),
                 &mut work.allocations,
                 &mut work.work,
                 work.budget,
             )?;
             let metadata = std::mem::size_of::<Self>() as u64;
-            work.claim_native_owned(metadata, 1, WorkCounters::UNCHARGED, &None)?;
+            work.claim_allocation(metadata, 1, WorkCounters::UNCHARGED)?;
             let custody = Arc::new(Self {
                 bytes: AtomicU64::new(metadata),
                 original,
             });
-            *work.roots.native_mount_admissions.get_mut(index) =
-                (Arc::downgrade(&custody), metadata);
+            work.roots.native_mount_admissions.0[index] = (Arc::downgrade(&custody), metadata);
             Ok(custody)
         })
     }
@@ -158,12 +145,13 @@ impl NativeMountAllocationCustody {
         work: &mut DemandWork,
     ) -> Result<Arc<Self>, DemandError> {
         let custody = Self::new(work)?;
-        custody.retain_admitted(bytes, work)?;
+        work.check()?;
+        custody.retain(bytes, work)?;
         Ok(custody)
     }
     pub(crate) fn is_admitted(&self, work: &mut DemandWork) -> Result<bool, DemandError> {
         work.reconcile_cancellation_registry()?;
-        for entry in work.roots.native_mount_admissions.iter() {
+        for entry in work.roots.native_mount_admissions.0.iter() {
             work.work.charge(
                 &WorkCounters {
                     items_examined: 1,
@@ -185,27 +173,14 @@ impl NativeMountAllocationCustody {
         if !self.is_admitted(work)? {
             return Err(DemandError::InvalidRequest);
         }
-        work.claim_native_owned(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED, &None)?;
-        self.retain_completed_admitted(bytes, work)
-            .map_err(DemandError::from)
+        work.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?;
+        self.retain(bytes, work).map_err(DemandError::from)
     }
-    pub(crate) fn retain_admitted(
-        &self,
-        bytes: u64,
-        work: &mut DemandWork,
-    ) -> Result<(), DemandError> {
-        work.check()?;
-        self.retain_completed_admitted(bytes, work)
-            .map_err(DemandError::from)
-    }
-    pub(crate) fn retain_completed_admitted(
-        &self,
-        bytes: u64,
-        work: &mut DemandWork,
-    ) -> Result<(), crate::WorkError> {
+    pub(crate) fn retain(&self, bytes: u64, work: &mut DemandWork) -> Result<(), crate::WorkError> {
         let entry = work
             .roots
             .native_mount_admissions
+            .0
             .iter_mut()
             .find(|entry| std::ptr::eq(entry.0.as_ptr(), self))
             .ok_or(crate::WorkError::Overflow)?;

@@ -37,17 +37,17 @@ macro_rules! demand_meter {
                 self.io(|state| state.complete(crate::demand::DemandWork::byte_credit(kind)?, maximum, actual))
             }
             fn allocate(&self, bytes: u64) -> std::io::Result<()> {
-                self.io(|state| state.claim_native_owned(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED, &None))
+                self.io(|state| state.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED))
             }
             fn adopt(&self, bytes: u64) -> std::io::Result<()> {
-                self.io(|state| state.claim_native_owned(bytes, 0, crate::WorkCounters::UNCHARGED, &None))
+                self.io(|state| state.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED))
             }
             fn allocate_refcount_header(&self) -> std::io::Result<()> {
                 self.io(|state| state.charge(crate::WorkCounters { allocation_operations: 1, ..crate::WorkCounters::UNCHARGED }))
             }
             fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> { self.io(|state| state.reserve_native_allocation(bytes)) }
-            fn cancel_reserved_allocation(&self, bytes: u64) { self.cancel(|state| state.cancel_reserved_native_allocation(bytes)); }
-            fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> { self.io(|state| state.record_reserved_native_allocation(bytes)) }
+            fn cancel_reserved_allocation(&self, bytes: u64) { self.cancel(|state| state.settle_native_allocation(bytes, false)); }
+            fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> { self.io(|state| state.settle_native_allocation(bytes, true)) }
             fn allocation_failed(&self, error: std::collections::TryReserveError) -> std::io::Error {
                 self.with_original_leaf(|state| state.record_native_io_failure(crate::DemandError::Allocation(error)))
             }
@@ -57,7 +57,7 @@ macro_rules! demand_meter {
                     (bytes, result.map_err(|error| state.record_native_io_failure(error)))
                 })
             }
-            fn release(&self, bytes: u64) { self.cancel(|state| state.release_native_owned(bytes, &None)); }
+            fn release(&self, bytes: u64) { self.cancel(|state| state.release(bytes)); }
             fn admit_write_bytes(&self, bytes: usize) -> std::io::Result<()> {
                 self.io(|state| state.admit(NativeResourceCredit::WriteBytes.delta(bytes as u64)))
             }

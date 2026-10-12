@@ -178,7 +178,7 @@ impl<'w> MountSyncWork<'w> {
             self.scratch_custody = Some(custody);
         }
         let custody = self.scratch_custody.as_ref().expect("mounted scratch custody").clone();
-        self.with_work(|work| custody.retain_admitted(bytes, work))
+        self.with_work(|work| work.check().and_then(|()| custody.retain(bytes, work).map_err(crate::DemandError::from)))
             .map_err(mount_demand_error)?;
         Ok(custody)
     }
@@ -200,8 +200,8 @@ impl<'w> MountSyncWork<'w> {
 
     fn check(&mut self) -> Result<(), DemandError> { self.with_work(|work| work.check()) }
     fn remaining(&mut self) -> Result<crate::WorkBudget, DemandError> { self.with_work(|work| work.remaining()) }
-    fn allocate(&mut self, bytes: u64) -> Result<(), DemandError> { self.with_work(|work| work.allocate(bytes)) }
-    fn adopt(&mut self, bytes: u64) -> Result<(), DemandError> { self.with_work(|work| work.adopt(bytes)) }
+    fn allocate(&mut self, bytes: u64) -> Result<(), DemandError> { self.with_work(|work| work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)) }
+    fn adopt(&mut self, bytes: u64) -> Result<(), DemandError> { self.with_work(|work| work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED)) }
     fn release(&mut self, bytes: u64) -> Result<(), DemandError> { self.with_work(|work| work.release(bytes)) }
     fn charge(&mut self, delta: crate::WorkCounters) -> Result<(), DemandError> { self.with_work(|work| work.charge(delta)) }
     fn record(&mut self, delta: crate::WorkCounters) -> Result<(), DemandError> { self.with_work(|work| work.record(delta)) }
@@ -493,11 +493,11 @@ pub(super) fn mount_accept<T, E>(
 ) -> Result<T, MountSourceError> {
     match result {
         Ok(receipt) => {
-            work.merge(receipt.work).map_err(mount_demand_error)?;
+            work.merge(receipt.work, work.live_allocation_bytes()).map_err(mount_demand_error)?;
             Ok(receipt.value)
         }
         Err(failure) => {
-            work.merge(*failure.work).map_err(mount_demand_error)?;
+            work.merge(*failure.work, work.live_allocation_bytes()).map_err(mount_demand_error)?;
             Err(map(failure.error))
         }
     }
@@ -516,7 +516,7 @@ pub(super) fn mount_vec<T>(
 ) -> Result<Vec<T>, MountSourceError> {
     let bytes = count.checked_mul(std::mem::size_of::<T>())
         .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-    work.allocate(bytes as u64).map_err(mount_demand_error)?;
+    work.claim_allocation(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
     let mut values = Vec::new();
     if values.try_reserve_exact(count).is_err() {
         work.release(bytes as u64).map_err(mount_demand_error)?;
@@ -705,7 +705,7 @@ pub(super) fn mount_clone_namespace(
                 bytes_copied: name.as_bytes().len() as u64, ..crate::WorkCounters::default()
             };
             work.work.admit(&copied, &work.budget).map_err(MountSourceError::Work)?;
-            work.allocate(name.as_bytes().len() as u64).map_err(mount_demand_error)?;
+            work.claim_allocation(name.as_bytes().len() as u64, u64::from((name.as_bytes().len() as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
             let name = name.clone();
             owned_bytes = owned_bytes.checked_add(name.as_bytes().len() as u64)
                 .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
@@ -983,7 +983,7 @@ where
                         Ok((lookup, _)) => {
                             let owned = lookup.logical_owned_bytes();
                             scratch.track(owned)?;
-                            scratch.carrier.with_work(|work| work.record_adoption(owned, &None)).map_err(mount_demand_error)?;
+                            scratch.carrier.with_work(|work| work.record_native_owned_completed(owned, &None).1).map_err(mount_demand_error)?;
                             let budget = scratch.carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
                             let mut accounting = crate:: kernel :: KernelAccounting :: Standalone {
                                 allocations: Default::default(), work: crate::WorkCounters::UNCHARGED, budget, cancellation: &cancellation,
@@ -1140,7 +1140,7 @@ impl<'a, 'w> DirectoryCarrierScratch<'a, 'w> {
         let allocation = if let Some(original) = self.carrier.original_native_work() {
             Some(original.claim(bytes, 2, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?)
         } else {
-            self.carrier.with_work(|work| work.claim_allocation(bytes, 2)).map_err(mount_demand_error)?;
+            self.carrier.with_work(|work| work.claim_allocation(bytes, 2, crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
             self.track(bytes)?;
             None
         };
@@ -1983,9 +1983,9 @@ where
     }
 
     fn source_changed_with_native_work(
-        &self, changes: &[SourceChange], source: crate::demand::NativeSourceWork<'_>,
+        &self, changes: &[SourceChange], source: crate::NativeMaterializationWork,
     ) -> Result<(), DemandError> {
-        let work = source.materialization_work()?;
+        let work = { crate::native_host::NativeHostWork::check(&source)?; source.clone() };
         self.record_changes(changes, &work, Some(source))
     }
 }
@@ -2011,7 +2011,7 @@ fn recorder_projection_error(error: MountSourceError) -> DemandError {
 }
 
 fn recorder_check(
-    work: &crate::NativeMaterializationWork, source: Option<crate::demand::NativeSourceWork<'_>>,
+    work: &crate::NativeMaterializationWork, source: Option<crate::NativeMaterializationWork>,
 ) -> Result<(), DemandError> {
     if let Some(source) = source { crate::native_host::NativeHostWork::check(&source)?; }
     work.admit(crate::WorkCounters::UNCHARGED).map_err(recorder_native_error)
@@ -2020,26 +2020,26 @@ fn recorder_check(
 fn recorder_namespace(
     names: &[crate::kernel::LogicalName], limits: crate::VolumeLimits,
     work: &crate::NativeMaterializationWork, custody: &mut crate::NativeAllocation,
-    source: Option<crate::demand::NativeSourceWork<'_>>,
+    source: Option<crate::NativeMaterializationWork>,
 ) -> Result<crate::kernel::NamespacePath, DemandError> {
     use crate::kernel::codec::ReadAllocationStep;
     use crate::kernel::NamespacePathStep;
     crate::kernel::NamespacePath::names_with_steps(names, limits, work.cancellation(), &mut |step| {
         match step {
             NamespacePathStep::Admit(delta) => {
-                recorder_check(work, source)?;
+                recorder_check(work, source.clone())?;
                 work.admit(*delta).map_err(recorder_native_error)
             }
             NamespacePathStep::Charge(delta) => {
-                recorder_check(work, source)?;
+                recorder_check(work, source.clone())?;
                 work.charge(*delta).map_err(recorder_native_error)
             }
             NamespacePathStep::Performed(delta) => {
                 work.record_admitted(*delta).map_err(recorder_native_error)?;
-                recorder_check(work, source)
+                recorder_check(work, source.clone())
             }
             NamespacePathStep::Allocation(ReadAllocationStep::Allocate { bytes, operations }) => {
-                recorder_check(work, source)?;
+                recorder_check(work, source.clone())?;
                 let mut allocation = work.claim(bytes, operations, crate::WorkCounters::UNCHARGED).map_err(recorder_native_error)?;
                 custody.absorb(&mut allocation).map_err(recorder_native_error)
             }
@@ -2048,12 +2048,12 @@ fn recorder_namespace(
                     .and_then(|bytes| bytes.checked_add(actual_bytes))
                     .ok_or(DemandError::Work(crate::WorkError::Overflow))?;
                 custody.reconcile_capacity(actual).map_err(recorder_native_error)?;
-                recorder_check(work, source)
+                recorder_check(work, source.clone())
             }
             NamespacePathStep::Allocation(ReadAllocationStep::ReserveFailed(error)) =>
                 Err(DemandError::Allocation(error)),
             NamespacePathStep::Allocation(ReadAllocationStep::BeforeCopy(bytes)) => {
-                recorder_check(work, source)?;
+                recorder_check(work, source.clone())?;
                 work.admit(crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED })
                     .map_err(recorder_native_error)
             }
@@ -2061,7 +2061,7 @@ fn recorder_namespace(
                 work.record_admitted(crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED })
                     .map_err(recorder_native_error),
             NamespacePathStep::Allocation(ReadAllocationStep::BeforeHash(bytes)) => {
-                recorder_check(work, source)?;
+                recorder_check(work, source.clone())?;
                 work.admit(crate::WorkCounters { bytes_hashed: bytes, ..crate::WorkCounters::UNCHARGED })
                     .map_err(recorder_native_error)
             }
@@ -2069,7 +2069,7 @@ fn recorder_namespace(
                 work.record_admitted(crate::WorkCounters { bytes_hashed: bytes, ..crate::WorkCounters::UNCHARGED })
                     .map_err(recorder_native_error),
             NamespacePathStep::Allocation(ReadAllocationStep::BeforeItem) => {
-                recorder_check(work, source)?;
+                recorder_check(work, source.clone())?;
                 work.admit(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
                     .map_err(recorder_native_error)
             }
@@ -2082,9 +2082,9 @@ fn recorder_namespace(
 
 fn recorder_vec<T>(
     count: usize, work: &crate::NativeMaterializationWork, custody: &mut crate::NativeAllocation,
-    source: Option<crate::demand::NativeSourceWork<'_>>,
+    source: Option<crate::NativeMaterializationWork>,
 ) -> Result<Vec<T>, DemandError> {
-    recorder_check(work, source)?;
+    recorder_check(work, source.clone())?;
     let bytes = count.checked_mul(std::mem::size_of::<T>())
         .ok_or(DemandError::Work(crate::WorkError::Overflow))? as u64;
     let mut allocation = work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
@@ -2104,7 +2104,7 @@ fn recorder_vec<T>(
         drop(values);
         return Err(error);
     }
-    if let Err(error) = recorder_check(work, source) {
+    if let Err(error) = recorder_check(work, source.clone()) {
         drop(values);
         return Err(error);
     }
@@ -2120,9 +2120,9 @@ where
 {
     fn record_changes(
         &self, changes: &[SourceChange], work: &crate::NativeMaterializationWork,
-        source: Option<crate::demand::NativeSourceWork<'_>>,
+        source: Option<crate::NativeMaterializationWork>,
     ) -> Result<(), DemandError> {
-        recorder_check(work, source)?;
+        recorder_check(work, source.clone())?;
         // A dropped view has no SDK state left to invalidate.
         let (Some(lazy), Some(authored)) = (self.lazy.upgrade(), self.authored.upgrade()) else {
             return Ok(());
@@ -2134,7 +2134,7 @@ where
         let result = (|| {
             let (mut nodes, mut subtrees, mut listings) = (0_usize, 0_usize, 0_usize);
             for change in changes {
-                recorder_check(work, source)?;
+                recorder_check(work, source.clone())?;
                 work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
                     .map_err(recorder_native_error)?;
                 let count = match change {
@@ -2153,7 +2153,7 @@ where
             effect.listings = recorder_vec(listings, work, &mut custody, source)?;
             let mut unconfirmed = false;
             for change in changes {
-                recorder_check(work, source)?;
+                recorder_check(work, source.clone())?;
                 work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
                     .map_err(recorder_native_error)?;
                 match change {
@@ -2177,35 +2177,35 @@ where
                     SourceChange::Everything => effect.everything = true,
                     SourceChange::Unconfirmed => unconfirmed = true,
                 }
-                recorder_check(work, source)?;
+                recorder_check(work, source.clone())?;
             }
-            recorder_check(work, source)?;
+            recorder_check(work, source.clone())?;
             authored.cancellation().check().map_err(|_| DemandError::Cancelled)?;
             if !effect.is_empty() {
                 authored.record_projection_change_with_native_work(
                     &ViewChange::Effect(&effect), work,
                     || {
-                        recorder_check(work, source).map_err(|error| MountSourceError::NativeWork(
+                        recorder_check(work, source.clone()).map_err(|error| MountSourceError::NativeWork(
                             crate::materializer::native_materialization_work_error(error),
                         ))?;
                         authored.cancellation().check().map_err(|_| MountSourceError::Cancelled)
                     },
                 ).map_err(recorder_projection_error)?;
-                recorder_check(work, source)?;
+                recorder_check(work, source.clone())?;
             }
             if unconfirmed {
-                recorder_check(work, source)?;
+                recorder_check(work, source.clone())?;
                 authored.cancellation().check().map_err(|_| DemandError::Cancelled)?;
                 authored.record_projection_change_with_native_work(
                     &ViewChange::Unconfirmed, work,
                     || {
-                        recorder_check(work, source).map_err(|error| MountSourceError::NativeWork(
+                        recorder_check(work, source.clone()).map_err(|error| MountSourceError::NativeWork(
                             crate::materializer::native_materialization_work_error(error),
                         ))?;
                         authored.cancellation().check().map_err(|_| MountSourceError::Cancelled)
                     },
                 ).map_err(recorder_projection_error)?;
-                recorder_check(work, source)?;
+                recorder_check(work, source.clone())?;
             }
             Ok(())
         })();
@@ -2322,13 +2322,13 @@ impl NativeMountSourceWatchOwner {
         match carrier {
             super::adapter::NativeDemandCarrier::Borrowed(work) => {
                 let loan = super::adapter::BorrowedNativeDemandMeter::new(work)?;
-                loan.run(|original| self.stop_on_native_work(crate::demand::NativeSourceWork::new(original)))
+                loan.run(|original| self.stop_on_native_work(crate::NativeMaterializationWork::from_meter((original).clone())))
             }
-            super::adapter::NativeDemandCarrier::Shared(original) => self.stop_on_native_work(crate::demand::NativeSourceWork::new(original)),
+            super::adapter::NativeDemandCarrier::Shared(original) => self.stop_on_native_work(crate::NativeMaterializationWork::from_meter((original).clone())),
             super::adapter::NativeDemandCarrier::Native(work) => {
                 let original = work.clone();
                 self.stop_on_native_work(
-                    crate::demand::NativeSourceWork::from_native_materialization_work(&original))
+                    crate::NativeMaterializationWork::clone(&original))
             }
         }
     }
@@ -2346,25 +2346,25 @@ impl NativeMountSourceWatchOwner {
 
         match result {
             Ok(receipt) => carrier.with_work(|work|
-                work.merge_with_prior_live(receipt.work, prior_live))
+                work.merge(receipt.work, prior_live))
                 .map_err(mount_demand_error).map(|()| true),
             Err(failure) => {
                 let _ = carrier.with_work(|work|
-                    work.merge_with_prior_live(*failure.work, prior_live));
+                    work.merge(*failure.work, prior_live));
                 Err(mount_demand_error(failure.error))
             }
         }
     }
 
     fn stop_on_native_work(
-        &self, mut work: crate::demand::NativeSourceWork<'_>,
+        &self, mut work: crate::NativeMaterializationWork,
     ) -> Result<bool, MountSourceError> {
         crate::native_host::NativeHostWork::check(&mut work).map_err(mount_demand_error)?;
         if self.is_stopped() { return Ok(false); }
         let result = if let Some(failure) = &self.startup_failure {
             failure.stop_with_work(&mut work)
         } else if let Some(watch) = &self.watch {
-            let original = work.materialization_work().map_err(mount_demand_error)?;
+            let original = { crate::native_host::NativeHostWork::check(&work).map_err(mount_demand_error)?; work.clone() };
             return crate::demand::stop_watch(watch.as_ref(), &original, original.cancellation()).map_err(mount_demand_error).map(|()| true);
         } else {
             return Ok(false);
@@ -2493,7 +2493,7 @@ where
                             super::NativeMountError::Demand(DemandError::Mount(MountSourceError::NativeWork(error))))?;
                     } else {
                         let bytes = std::mem::size_of_val(&value) as u64;
-                        carrier.with_work(|work| work.allocate(bytes)).map_err(super::NativeMountError::Demand)?;
+                        carrier.with_work(|work| work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)).map_err(super::NativeMountError::Demand)?;
                         retained += bytes;
                     }
                     Arc::new(value)
@@ -2523,7 +2523,7 @@ where
                 bytes: 0,
             };
             if let Some(custody) = &owner.custody {
-                carrier.with_work(|work| custody.retain_admitted(sink_bytes, work))?;
+                carrier.with_work(|work| work.check().and_then(|()| custody.retain(sink_bytes, work).map_err(crate::DemandError::from)))?;
                 owner.bytes = sink_bytes;
                 retained -= sink_bytes;
             }
@@ -2536,7 +2536,7 @@ where
                         owner.watch = watch;
 
                         let checked = crate::native_host::NativeHostWork::check(
-                            &mut crate::demand::NativeSourceWork::from_native_materialization_work(original));
+                            &mut crate::NativeMaterializationWork::clone(original));
                         if let Err(cause) = checked {
                             if owner.watch.is_some() {
                                 return Err(super::NativeMountError::SourceWatchStartupFailed { cause, owner });
@@ -2556,14 +2556,11 @@ where
                     Err(error) => return Err(super::NativeMountError::Source(lazy_error(error))),
                 }
             } else {
-                let prepared = carrier.with_work(|work| work.prepare_watch_custody())
-                    .map_err(super::NativeMountError::Demand)?;
                 let remaining = carrier.with_work(|work| work.remaining()
                     .map(|budget| (budget, work.live_allocation_bytes())));
                 let (budget, prior_live) = match remaining {
                     Ok(remaining) => remaining,
                     Err(error) => {
-                        carrier.with_work(|work| work.abandon_prepared_watch_custody(prepared));
                         return Err(super::NativeMountError::Demand(error));
                     }
                 };
@@ -2577,37 +2574,28 @@ where
                     Ok(receipt) => {
                         owner.watch = receipt.value;
 
-                        let merged = carrier.with_work(|work| work.merge_with_prior_live(receipt.work, prior_live));
+                        let merged = carrier.with_work(|work| work.merge(receipt.work, prior_live));
                         if let Some(watch) = owner.watch.as_ref() {
                             let bytes = watch.logical_owned_bytes();
-                            let adopted = carrier.with_work(|work| work.record_adoption(bytes, &None));
+                            let adopted = carrier.with_work(|work| work.record_native_owned_completed(bytes, &None).1);
                             let retained_watch = carrier.with_work(|work|
                                 owner.custody.as_ref().expect("ordinary receipt custody")
-                                    .retain_completed_admitted(bytes, work)).map_err(DemandError::from);
+                                    .retain(bytes, work)).map_err(DemandError::from);
                             if retained_watch.is_ok() {
                                 owner.bytes = owner.bytes.checked_add(bytes)
                                     .expect("admitted watch custody has a representable physical byte total");
                             }
-                            let backing = match watch.allocation_custody() {
-                                Some(token) => carrier.with_work(|work| work.retain_prepared_watch_custody(prepared, &token)),
-                                None => {
-                                    carrier.with_work(|work| work.abandon_prepared_watch_custody(prepared));
-                                    Ok(())
-                                }
-                            };
                             let completed = merged.and(adopted).and(retained_watch)
-                                .and(backing).and(carrier.with_work(|work| work.check()));
+                                .and(carrier.with_work(|work| work.check()));
                             if let Err(cause) = completed {
                                 return Err(super::NativeMountError::SourceWatchStartupFailed { cause, owner });
                             }
                         } else {
-                            carrier.with_work(|work| work.abandon_prepared_watch_custody(prepared));
                             merged.map_err(super::NativeMountError::Demand)?;
                         }
                     }
                     Err(failure) => {
-                        carrier.with_work(|work| work.abandon_prepared_watch_custody(prepared));
-                        let _ = carrier.with_work(|work| work.merge_with_prior_live(*failure.work, prior_live));
+                        let _ = carrier.with_work(|work| work.merge(*failure.work, prior_live));
                         return match failure.error {
                             LazyWorkspaceError::Demand(DemandError::SourceWatchStartup(failure)) => {
 
@@ -4315,7 +4303,7 @@ where
         let replacement = mount_vec(count, scratch.work)?;
         let new_bytes = (replacement.capacity() * std::mem::size_of::<(FileId, DetachedIdentity<A, O>)>()) as u64;
         scratch.track(new_bytes)?;
-        custody.retain_admitted(new_bytes, scratch.work).map_err(mount_demand_error)?;
+        scratch.work.check().and_then(|()| custody.retain(new_bytes, scratch.work).map_err(crate::DemandError::from)).map_err(mount_demand_error)?;
         let mut replacement = DetachedTable { entries: replacement, custody: Some(custody), bytes: new_bytes, native_allocation: None };
         scratch.keep(new_bytes)?;
         replacement.entries.append(&mut entries.entries);
@@ -4366,7 +4354,7 @@ where
             let logical_bytes = if new_record {
                 (std::mem::size_of::<FileId>() + std::mem::size_of::<CapturedRemovalData>()) as u64
             } else { 0 };
-            work.adopt(logical_bytes).map_err(mount_demand_error)?;
+            work.claim_allocation(logical_bytes, 0, crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
             let copied = if new_record { logical_bytes } else {
                 std::mem::size_of::<(FileRecord, FileMetadata)>() as u64
             };
@@ -4380,7 +4368,7 @@ where
         scratch.track(logical_bytes)?;
         let captured = if new_record {
             let custody = scratch.carrier.new_custody()?;
-            scratch.carrier.with_work(|work| custody.retain_admitted(logical_bytes, work))
+            scratch.carrier.with_work(|work| work.check().and_then(|()| custody.retain(logical_bytes, work).map_err(crate::DemandError::from)))
                 .map_err(mount_demand_error)?;
             scratch.keep(logical_bytes)?;
             Some(CapturedRemovalRecord {
@@ -4426,7 +4414,7 @@ where
                     .ok_or(MountSourceError::Work(crate::WorkError::Overflow))).transpose()?
             } else { None };
             let logical_bytes = if prior.is_none() { std::mem::size_of::<MountedRemoval>() as u64 } else { 0 };
-            work.adopt(logical_bytes).map_err(mount_demand_error)?;
+            work.claim_allocation(logical_bytes, 0, crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
             Ok::<_, MountSourceError>((prior, changed, old_paths, new_paths, logical_bytes, crate::WorkCounters {
                 items_examined: 1 + u64::from(old_paths.is_some()) + u64::from(new_paths.is_some()),
                 bytes_copied: std::mem::size_of::<MountedRemoval>() as u64,
@@ -4440,7 +4428,7 @@ where
         let bytes = key.legacy_owned_bytes().checked_add(logical_bytes)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         let custody = scratch.carrier.new_custody()?;
-        scratch.carrier.with_work(|work| custody.retain_admitted(bytes, work)).map_err(mount_demand_error)?;
+        scratch.carrier.with_work(|work| work.check().and_then(|()| custody.retain(bytes, work).map_err(crate::DemandError::from))).map_err(mount_demand_error)?;
         scratch.keep(logical_bytes)?;
         let key = MountedRemovalPath {
             text: key.value, custody: Some(custody), bytes, native_allocation: key.allocation,
@@ -4629,7 +4617,7 @@ where
         let lookup = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
         let owned = lookup.legacy_owned_bytes();
         scratch.track(owned)?;
-        scratch.carrier.with_work(|work| work.record_adoption(owned, &None)).map_err(mount_demand_error)?;
+        scratch.carrier.with_work(|work| work.record_native_owned_completed(owned, &None).1).map_err(mount_demand_error)?;
         let expected_source = self.mutation_file_id_with_carrier(
             &path, &lookup.value, scratch.carrier,
         ).await?;
@@ -5027,7 +5015,7 @@ where
     ) -> Result<(MountLookup, Option<MountContentPin>), MountSourceError> {
         let lookup = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
         let retained = lookup.legacy_owned_bytes();
-        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
+        if let Err(error) = carrier.with_work(|work| work.record_native_owned_completed(retained, &None).1) {
             drop(lookup);
             carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
             return Err(mount_demand_error(error));
@@ -5143,7 +5131,7 @@ where
                 page_bytes
             } ;
                 scratch.track( legacy_bytes )?;
-                scratch.carrier.with_work(|work| work.record_adoption( legacy_bytes , &None))
+                scratch.carrier.with_work(|work| work.record_native_owned_completed(legacy_bytes, &None).1)
                     .map_err(mount_demand_error)?;
                 (MountOwnedBuffer { value: page, legacy_bytes, allocation: native_allocation },
                     MountOwnedBuffer { value: state, legacy_bytes: 0 , allocation: None })
@@ -5393,7 +5381,7 @@ where
                 let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::default() };
                 carrier.with_work(|work| {
                     work.work.admit(&copied, &work.budget).map_err(MountSourceError::Work)?;
-                    work.allocate(bytes).map_err(mount_demand_error)?;
+                    work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
                     if let Err(error) = lease.attach_owned_payload(bytes) {
                         work.release(bytes).map_err(mount_demand_error)?;
                         return Err(error);
@@ -5939,7 +5927,7 @@ where
         let read = crate::demand::read_file(&*self.source_file, offset, length, budget, &caller);
         let output = carrier.with_work(|work| mount_accept(work, read, mount_demand_error))?;
         let retained = output.logical_owned_bytes;
-        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
+        if let Err(error) = carrier.with_work(|work| work.record_native_owned_completed(retained, &None).1) {
             drop(output);
             carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
             return Err(mount_demand_error(error));
@@ -7081,7 +7069,7 @@ where
                             input.absorb(mount).map_err(MountSourceError::NativeWork)?;
                         }
                         let bytes = std::mem::size_of::<LazyOpenFile<A, O, D, S>>() as u64;
-                        carrier.with_work(|work| work.allocate(bytes)).map_err(mount_demand_error)?;
+                        carrier.with_work(|work| work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
                         let file: Arc<dyn MountOpenFile> = Arc::new(LazyOpenFile {
                             lazy: Arc::clone(&self.lazy), authored: Arc::clone(&self.authored), runtime: Arc::clone(&self.runtime),
                             path, mount_path, expected_source, source_file, source_node: *node, source_generation: generation,
@@ -7125,7 +7113,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         let bytes = std::mem::size_of::<ViewBoundOpenFile<A, O>>() as u64;
-        work.state.lock().allocate(bytes).map_err(mount_demand_error)?;
+        work.state.lock().claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
         let bound: Arc<dyn MountOpenFile> = Arc::new(ViewBoundOpenFile {
             inner: file.0, runtime: Arc::clone(&self.runtime), source_view: Arc::clone(&self.source_view),
             source_lifetime: self.authored.cancellation().clone(), detached: Arc::clone(&self.detached),
@@ -7274,7 +7262,7 @@ where
         let opened = crate::facade::measured(opened, &accounting);
         let file = carrier.with_work(|work| mount_accept(work, opened, lazy_error))?;
         let retained = file.logical_owned_bytes();
-        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
+        if let Err(error) = carrier.with_work(|work| work.record_native_owned_completed(retained, &None).1) {
             drop(file);
             carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
             return Err(mount_demand_error(error));
@@ -7295,7 +7283,7 @@ where
                 if allocation.is_none() { lookup.logical_owned_bytes() } else { 0 },
             Resolution::Authored(_) | Resolution::Absent => 0,
         };
-        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
+        if let Err(error) = carrier.with_work(|work| work.record_native_owned_completed(retained, &None).1) {
             drop(resolution);
             carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
             return Err(mount_demand_error(error));
@@ -7328,7 +7316,7 @@ where
                 if allocation.is_none() { lookup.logical_owned_bytes() } else { 0 },
             Resolution::Authored(_) | Resolution::Absent => 0,
         };
-        if let Err(error) = carrier.with_work(|work| work.record_adoption(lookup_bytes, &None)) {
+        if let Err(error) = carrier.with_work(|work| work.record_native_owned_completed(lookup_bytes, &None).1) {
             drop(resolution);
             carrier.with_work(|work| work.release(lookup_bytes)).map_err(mount_demand_error)?;
             return Err(mount_demand_error(error));
@@ -7366,7 +7354,7 @@ where
                             let read = crate::demand::read_file(file.as_ref(), next, u64::from(wanted), budget, &caller);
                             let output = carrier.with_work(|work| mount_accept(work, read, mount_demand_error))?;
                             let retained = output.logical_owned_bytes;
-                            if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
+                            if let Err(error) = carrier.with_work(|work| work.record_native_owned_completed(retained, &None).1) {
                                 drop(output);
                                 carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
                                 return Err(mount_demand_error(error));
@@ -7393,7 +7381,7 @@ where
                                     let read = crate::facade:: measured(read, &accounting );
                                     let output = carrier.with_work(|work| mount_accept(work, read, lazy_error))?;
                                     let retained = output.logical_owned_bytes;
-                                    if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
+                                    if let Err(error) = carrier.with_work(|work| work.record_native_owned_completed(retained, &None).1) {
                                         drop(output);
                                         carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
                                         return Err(mount_demand_error(error));
@@ -7471,7 +7459,7 @@ fn mount_content_invalid(
     let bytes = message.len() as u64;
     let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::default() };
     work.work.admit(&copied, &work.budget).map_err(MountSourceError::Work)?;
-    work.allocate(bytes).map_err(mount_demand_error)?;
+    work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
     let message = message.to_owned();
     if let Err(error) = work.record(copied) {
         drop(message);
@@ -10626,7 +10614,7 @@ mod tests {
                 if length > reports.capacity() {
                     let growth = (length - reports.capacity()).checked_mul(std::mem::size_of::<SourceChange>())
                         .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
-                    work.allocate(growth).map_err(mount_demand_error)?;
+                    work.claim_allocation(growth, u64::from((growth) != 0), crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
                     let additional = changes.len();
                     if reports.try_reserve_exact(additional).is_err() {
                         work.release(growth).map_err(mount_demand_error)?;
@@ -10681,13 +10669,13 @@ mod tests {
         ) -> W::Output<Option<Box<dyn SourceWatch>>, DemandError> {
             let mut accounting = funding.accounting(cancellation);
             let result = (|| {
-                let budget = crate::demand::ordinary_source_budget(& mut accounting)?;
+                let budget = match accounting.native_work() { Some(original) => { original.admit(crate::WorkCounters::UNCHARGED).map_err(crate::native_name::original_name_error)?; return Err(crate::DemandError::NativeWorkUnavailable); }, None => accounting.remaining().map_err(crate::DemandError::from)? };
                 let answer = (|| {
                     let mut work = crate::demand::DemandWork::new(budget, cancellation);
                     let result = (|| {
                         work.check().map_err(mount_demand_error)?;
                         if !self.watched { return Ok(None); }
-                        work.allocate(std::mem::size_of::<CountedSink>() as u64).map_err(mount_demand_error)?;
+                        work.claim_allocation(std::mem::size_of::<CountedSink>() as u64, u64::from((std::mem::size_of::<CountedSink>() as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
                         let sink = Arc::new(CountedSink { inner: sink, reports: Arc::clone(&self.reports) });
                         let remaining = work.remaining().map_err(mount_demand_error)?;
                         mount_accept(&mut work, self.inner.watch(sink, remaining, cancellation), mount_demand_error)

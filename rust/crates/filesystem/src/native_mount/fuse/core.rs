@@ -120,7 +120,7 @@ impl ProjectionCore {
         let callback_guard = source.native_callback_guard();
         fuse_verify_callback_guard(callback_guard.as_ref(), source_original_work.as_ref())?;
         let allocation_custody = crate::demand::NativeMountAllocationCustody::new(
-            &mut crate::demand::NativeSourceWork::from_native_materialization_work(native),
+            &mut crate::NativeMaterializationWork::clone(native),
         )
         .map_err(crate::native_mount::NativeMountStartupAdmissionError::from)?;
         let entry = InodeEntry::new(FuseOwned::empty(MountPath::root()), root, stamp, 1, native)?;

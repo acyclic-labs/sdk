@@ -1,33 +1,16 @@
-fn node_kind(file_type: cap_std::fs::FileType) -> SourceNodeKind {
-    if file_type.is_dir() {
-        SourceNodeKind::Directory
-    } else if file_type.is_file() {
-        SourceNodeKind::RegularFile
-    } else if file_type.is_symlink() {
-        SourceNodeKind::SymbolicLink
-    } else {
-        special_node_kind(&file_type)
-    }
-}
-
-#[cfg(unix)]
-fn special_node_kind(file_type: &cap_std::fs::FileType) -> SourceNodeKind {
-    if file_type.is_fifo() {
-        SourceNodeKind::Fifo
-    } else if file_type.is_socket() {
-        SourceNodeKind::Socket
-    } else if file_type.is_char_device() {
-        SourceNodeKind::CharacterDevice
-    } else if file_type.is_block_device() {
-        SourceNodeKind::BlockDevice
-    } else {
-        SourceNodeKind::Unsupported
-    }
-}
-
-#[cfg(not(unix))]
-fn special_node_kind(_file_type: &cap_std::fs::FileType) -> SourceNodeKind {
-    SourceNodeKind::Unsupported
+fn node_kind(file_type: crate::native_host::HostFileType) -> SourceNodeKind {
+    [
+        (file_type.is_dir(), SourceNodeKind::Directory),
+        (file_type.is_file(), SourceNodeKind::RegularFile),
+        (file_type.is_symlink(), SourceNodeKind::SymbolicLink),
+        (file_type.is_fifo(), SourceNodeKind::Fifo),
+        (file_type.is_socket(), SourceNodeKind::Socket),
+        (file_type.is_char_device(), SourceNodeKind::CharacterDevice),
+        (file_type.is_block_device(), SourceNodeKind::BlockDevice),
+    ]
+    .into_iter()
+    .find_map(|(matches, kind)| matches.then_some(kind))
+    .unwrap_or(SourceNodeKind::Unsupported)
 }
 
 #[cfg(unix)]
@@ -99,17 +82,6 @@ fn windows_file_identity(volume: u64, index: u64) -> [u8; 32] {
     hash.update(&u32::try_from(volume).unwrap_or_default().to_le_bytes());
     hash.update(&index.to_le_bytes());
     *hash.finalize().as_bytes()
-}
-
-fn link_count(metadata: &HostStat) -> Option<u64> {
-    #[cfg(unix)]
-    {
-        Some(metadata.nlink())
-    }
-    #[cfg(not(unix))]
-    {
-        metadata.number_of_links().map(u64::from)
-    }
 }
 
 #[allow(

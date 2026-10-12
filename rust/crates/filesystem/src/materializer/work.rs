@@ -30,7 +30,7 @@ impl NativeMaterializationWork {
     ) -> Result<Self, (NativeTreeMaterializationError, crate::WorkCounters)> {
         let mut state = crate::demand::DemandWork::new(budget, cancellation);
         state
-            .allocate(Self::accounting_state_bytes())
+            .claim_allocation(Self::accounting_state_bytes(), 1, crate::WorkCounters::UNCHARGED)
             .map_err(|error| (native_materialization_work_error(error), state.work))?;
         Ok(Self {
             state: Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
@@ -255,7 +255,7 @@ impl NativeMaterializationWork {
         operations: u64,
         delta: crate::WorkCounters,
     ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.state(|state| state.claim_native_owned(bytes, operations, delta, &None))
+        self.state(|state| state.claim_allocation(bytes, operations, delta))
             .map_err(native_materialization_work_error)?;
         Ok(NativeAllocation {
             meter: self.allocation_work(),

@@ -554,7 +554,7 @@ fn admitted_names<T>(
     })
     .map_err(super::lazy::mount_demand_error)?;
     if scratch != 0 {
-        work.allocate(scratch)
+        work.claim_allocation(scratch, u64::from((scratch) != 0), crate::WorkCounters::UNCHARGED)
             .map_err(super::lazy::mount_demand_error)?;
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(read));

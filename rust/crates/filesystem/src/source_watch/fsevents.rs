@@ -63,12 +63,12 @@ impl NativeSourceWatch {
             let root_bytes = root.capacity() as u64;
             ordinary_owned_bytes = root_bytes;
             ownership.retain(root_bytes, work)?;
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 backend_read_operations: 1, items_examined: 1,
                 ..WorkCounters::default()
             })?;
             let held = identity(&std::fs::symlink_metadata(&root).map_err(DemandError::Io)?);
-            work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
+            work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
             let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
             // SAFETY: fstat initializes the complete stat structure on success.
             if unsafe { libc::fstat(directory.directory_fd(), metadata.as_mut_ptr()) } < 0 {
@@ -79,7 +79,7 @@ impl NativeSourceWatch {
             if held != (metadata.st_dev as u64, metadata.st_ino) {
                 return Err(DemandError::SourceUnavailable);
             }
-            work.allocate(super::arc_control_bytes::<Shared>())?;
+            work.claim_allocation(super::arc_control_bytes::<Shared>(), u64::from((super::arc_control_bytes::<Shared>()) != 0), crate::WorkCounters::UNCHARGED)?;
             ordinary_owned_bytes += super::arc_control_bytes::<Shared>();
             ownership.retain(super::arc_control_bytes::<Shared>(), work)?;
             let shared = Arc::new(Shared {
@@ -88,7 +88,7 @@ impl NativeSourceWatch {
             });
             let reader = Arc::clone(&shared);
             // The actual closure owns one Arc pointer plus its canonical header.
-            work.allocate(super::arc_control_bytes::<Arc<Shared>>())?;
+            work.claim_allocation(super::arc_control_bytes::<Arc<Shared>>(), u64::from((super::arc_control_bytes::<Arc<Shared>>()) != 0), crate::WorkCounters::UNCHARGED)?;
             ordinary_owned_bytes += super::arc_control_bytes::<Arc<Shared>>();
             shared.ownership.retain(super::arc_control_bytes::<Arc<Shared>>(), work)?;
             let handler = Arc::new(move |events: EventBatch<'_>| {
@@ -121,7 +121,7 @@ impl NativeSourceWatch {
         work.check()?;
         let shared = &self.shared;
         shared.delivery.take_failure(work)?;
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             backend_read_operations: 1, items_examined: 1,
             ..WorkCounters::default()
         })?;
@@ -171,14 +171,14 @@ impl NativeSourceWatch {
         wait.check().map_err(|_| DemandError::Cancelled)?;
         let birth = self.shared.delivery.original.as_ref()
             .ok_or(DemandError::NativeWorkUnavailable)?;
-        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(birth);
+        let mut work = crate::NativeMaterializationWork::clone(birth);
         self.stop_cleanup_wait_with_work(&mut work, Some(wait))
     }
 
     /// Completes only this original stream's accepted before-birth suffix.
     pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         let birth = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
-        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(birth);
+        let mut work = crate::NativeMaterializationWork::clone(birth);
         self.stop_cleanup_wait_with_work(&mut work, None)
     }
 
@@ -266,7 +266,7 @@ impl Shared {
             items_examined: cleanup, ..WorkCounters::default()
         })?;
         work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, cleanup))?;
-        if let Err(error) = work.allocate(slots) {
+        if let Err(error) = work.claim_allocation(slots, u64::from((slots) != 0), crate::WorkCounters::UNCHARGED) {
             work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup).expect("original reservation is balanced"));
             return Err(error);
         }
@@ -275,7 +275,7 @@ impl Shared {
         let mut payload = 0_u64;
         let result = (|| {
             for (path, flags) in events {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                 if flags & (USER_DROPPED | KERNEL_DROPPED | MOUNT | UNMOUNT) != 0 {
                     changes.push(HostChange::Everything);
                 } else if let Some(relative) = relative_path(path, &self.root, work)? {
@@ -283,7 +283,7 @@ impl Shared {
                     let copy = WorkCounters { bytes_copied: owned, ..WorkCounters::default() };
                     work.admit(copy)?;
                     let retained = payload.checked_add(owned).ok_or(crate::WorkError::Overflow)?;
-                    work.allocate(owned)?;
+                    work.claim_allocation(owned, u64::from((owned) != 0), crate::WorkCounters::UNCHARGED)?;
                     payload = retained;
                     let relative = relative.to_path_buf();
                     changes.push(change(relative, flags));
@@ -325,7 +325,7 @@ fn relative_path<'a, W: SourceDemandReadWork>(
     let mut path = path.components();
     let mut root = root.components();
     while !root.as_path().as_os_str().is_empty() {
-        work.charge(WorkCounters { source_path_components: 1, ..WorkCounters::default() })?;
+        work.started_io(WorkCounters { source_path_components: 1, ..WorkCounters::default() })?;
         let component = root.next().ok_or(DemandError::InvalidRequest)?;
         if path.next() != Some(component) {
             return Ok(None);
@@ -361,7 +361,7 @@ fn held_path<W: SourceDemandReadWork>(descriptor: i32, work: &mut W) -> Result<P
     use crate::native_host::NativeHostWork as _;
     // F_GETPATH's fixed native bound requires no request-owned heap buffer.
     let mut buffer = [0_u8; libc::PATH_MAX as usize];
-    work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
+    work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
     // SAFETY: F_GETPATH writes at most PATH_MAX bytes into this live array.
     if unsafe { libc::fcntl(descriptor, libc::F_GETPATH, buffer.as_mut_ptr()) } < 0 {
         return Err(DemandError::Io(io::Error::last_os_error()));
@@ -430,7 +430,7 @@ mod tests {
         fn host_changed(
             &self, changes: &[HostChange], work: &mut super::DemandWork,
         ) -> Result<(), crate::DemandError> {
-            work.charge(crate::WorkCounters {
+            work.started_io(crate::WorkCounters {
                 items_returned: changes.len() as u64, ..crate::WorkCounters::default()
             })?;
             assert!(matches!(&changes[0], HostChange::Rebound(path) if path == std::path::Path::new("a/b")));
@@ -573,13 +573,13 @@ mod tests {
     fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation()
         -> Result<(), Box<dyn std::error::Error>>
     {
-        use crate::demand::{DemandWork, NativeDemandReadMeter, NativeSourceWork, SourceDemandReadWork};
+        use crate::demand::{DemandWork, NativeDemandReadMeter,  SourceDemandReadWork};
         use crate::native_host::NativeHostWork;
         use crate::{CancellationToken, DemandError, WorkBudget, WorkCounters};
         use std::sync::{Arc, Mutex};
 
         struct LateFault<'a> {
-            inner: NativeSourceWork<'a>,
+            inner: crate::NativeMaterializationWork,
             cancellation: &'a CancellationToken,
             triggered: bool,
         }
@@ -628,7 +628,7 @@ mod tests {
                 result
             }
             fn is_native_original(&self) -> bool { true }
-            fn native_source_work(&self) -> Option<NativeSourceWork<'_>> { Some(self.inner) }
+            fn native_source_work(&self) -> Option<crate::NativeMaterializationWork> { Some(self.inner) }
         }
 
         crate::fsevents::EventStream::initialize_services()?;
@@ -642,7 +642,7 @@ mod tests {
             budget.allocation_operations = 128;
             budget.items_examined = 4096;
             let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(budget, &root_cancellation))));
-            let mut startup = NativeSourceWork::new(&birth);
+            let mut startup = crate::NativeMaterializationWork::from_meter((&birth).clone());
             let delivery = Arc::new(super::super::Delivery::new_with_work(Arc::new(Ignored), &mut startup)?);
             let watch = super::NativeSourceWatch::start_driver(&held, delivery, &mut startup)?;
             let owned = watch.platform_owned_bytes();
@@ -661,10 +661,10 @@ mod tests {
             drop(custody);
             assert_eq!(birth.with_original_leaf(|work| work.work), before);
             root_cancellation.cancel();
-            assert!(matches!(watch.stop_with_work(&mut NativeSourceWork::new(&birth)), Err(DemandError::Cancelled)));
+            assert!(matches!(watch.stop_with_work(&mut crate::NativeMaterializationWork::from_meter((&birth).clone())), Err(DemandError::Cancelled)));
             if late_wait {
                 let mut cleanup = LateFault {
-                    inner: NativeSourceWork::new(&birth), cancellation: &wait,
+                    inner: crate::NativeMaterializationWork::from_meter((&birth).clone()), cancellation: &wait,
                     triggered: false,
                 };
                 assert!(matches!(watch.stop_cleanup_wait_with_work(&mut cleanup, Some(&wait)), Err(DemandError::Cancelled)));
@@ -846,7 +846,7 @@ mod tests {
         let stopped = std::thread::scope(|scope| {
             let stop = scope.spawn(|| {
                 #[cfg(feature = "native-mount")]
-                let result = watch.stop_with_work(&mut crate::demand::NativeSourceWork::new(&original));
+                let result = watch.stop_with_work(&mut crate::NativeMaterializationWork::from_meter((&original).clone()));
                 #[cfg(not(feature = "native-mount"))]
                 let result = {
                     let mut work = super::DemandWork::new(crate::WorkBudget {
@@ -998,7 +998,7 @@ mod tests {
     fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix()
         -> Result<(), Box<dyn std::error::Error>>
     {
-        use crate::demand::{NativeDemandReadMeter, NativeSourceWork};
+        use crate::demand::{NativeDemandReadMeter};
         use crate::{CancellationToken, DemandError};
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{Arc, Mutex};
@@ -1014,7 +1014,7 @@ mod tests {
                 Err(DemandError::NativeWorkUnavailable)
             }
             fn host_changed_with_native_work(
-                &self, _: &[HostChange], work: &mut NativeSourceWork<'_>,
+                &self, _: &[HostChange], work: &mut crate::NativeMaterializationWork,
             ) -> Result<(), DemandError> {
                 if self.invoked.swap(true, Ordering::AcqRel) { return Ok(()); }
                 let original = self.original.upgrade().ok_or(DemandError::WorkerUnavailable)?;
@@ -1041,7 +1041,7 @@ mod tests {
             watch: Mutex::new(None), original: lifetime.clone(), cancellation,
             invoked: AtomicBool::new(false),
         });
-        let mut work = NativeSourceWork::new(&original);
+        let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
         let delivery = Arc::new(super::super::Delivery::new_with_work(sink.clone(), &mut work)?);
         let watch = super::NativeSourceWatch::start_driver(&held, delivery, &mut work)?;
         let completion = Arc::clone(&watch.shared);

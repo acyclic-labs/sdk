@@ -52,7 +52,7 @@ where
     })?;
     for (identity, existing) in known_files.iter() {
         receipt.run(|work| {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })
@@ -161,7 +161,7 @@ where
             #[cfg(any(target_os = "macos", windows))]
             for (key, source) in known_payloads.iter() {
                 receipt.run(|work| {
-                    work.charge(WorkCounters {
+                    work.started_io(WorkCounters {
                         items_examined: 1,
                         ..WorkCounters::UNCHARGED
                     })

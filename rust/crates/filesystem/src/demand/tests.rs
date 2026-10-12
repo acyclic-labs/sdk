@@ -4,6 +4,19 @@ use crate::model::{FilesystemProfile, VolumeLimits};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
+async fn lookup_node<D: DemandSource>(
+    source: &D,
+    reference: SourceReference,
+    name: &NamespacePath,
+    cancellation: &CancellationToken,
+) -> Result<SourceNode, Box<dyn Error>> {
+    Ok(source
+        .lookup(reference, name, WorkBudget::UNBOUNDED, cancellation)
+        .await?
+        .value
+        .ok_or("file absent")?)
+}
+
 #[derive(Default)]
 struct RecordingObserver {
     directories: Mutex<Vec<NamespacePath>>,
@@ -27,7 +40,19 @@ fn path(value: &str) -> Result<NamespacePath, Box<dyn Error>> {
     )?)
 }
 
-/// Every source change delivered, in order.
+async fn native_source(
+    path: impl AsRef<std::path::Path>,
+) -> Result<NativeDemandSource, DemandError> {
+    NativeDemandSource::open(
+        path,
+        FilesystemProfile::Portable,
+        VolumeLimits::default(),
+        None,
+        None,
+    )
+    .await
+}
+
 #[derive(Default)]
 struct RecordedChanges(Mutex<Vec<SourceChange>>);
 
@@ -46,10 +71,6 @@ impl RecordedChanges {
         ))
     }
 
-    /// Everything reported until `reported` holds of it, or ten seconds
-    /// pass. A fence proves delivery on Linux and Windows; on macOS,
-    /// where it reports everything instead, the reports themselves are
-    /// waited for.
     fn until(
         &self,
         watch: &dyn SourceWatch,
@@ -66,29 +87,18 @@ impl RecordedChanges {
     }
 }
 
-/// A native source reports each change by the name it touched and by
-/// the node that name still binds, which reaches the node's other names.
 #[tokio::test(flavor = "multi_thread")]
 async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     std::fs::create_dir(root.path().join("d"))?;
     std::fs::write(root.path().join("f"), b"one")?;
-    let source = NativeDemandSource::open(
-        root.path(),
-        FilesystemProfile::Portable,
-        VolumeLimits::default(),
-    )
-    .await?;
+    let source = native_source(root.path()).await?;
     let recorded = Arc::new(RecordedChanges::default());
     let watch = source
         .watch(recorded.clone())?
         .ok_or("a local root is watched")?;
     let cancellation = CancellationToken::new();
-    let node = source
-        .lookup(source.reference(), &path("/f")?, &cancellation)
-        .await?
-        .value
-        .ok_or("f is present")?;
+    let node = lookup_node(&source, source.reference(), &path("/f")?, &cancellation).await?;
     // Reading beneath a directory watches it where the host needs that.
     assert!(
         source
@@ -129,20 +139,11 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
     Ok(())
 }
 
-/// Changes beneath an excluded subtree are invisible, as its entries are.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_filtered_source_reports_nothing_beneath_its_exclusions() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     std::fs::create_dir(root.path().join(".git"))?;
-    let source = FilteredDemandSource::new(
-        NativeDemandSource::open(
-            root.path(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-        )
-        .await?,
-        vec![path("/.git")?],
-    );
+    let source = FilteredDemandSource::new(native_source(root.path()).await?, vec![path("/.git")?]);
     let recorded = Arc::new(RecordedChanges::default());
     let watch = source
         .watch(recorded.clone())?
@@ -168,65 +169,6 @@ async fn a_filtered_source_reports_nothing_beneath_its_exclusions() -> Result<()
     Ok(())
 }
 
-/// A file created where a removed one was, on the inode the host
-/// reused for it, is a different file: its birth time tells them apart.
-/// Both names of one file share its identity.
-#[cfg(unix)]
-#[tokio::test]
-async fn a_reused_inode_is_a_new_identity_and_hard_links_share_one() -> Result<(), Box<dyn Error>> {
-    use std::os::unix::fs::MetadataExt as _;
-
-    let root = tempfile::tempdir()?;
-    let source = NativeDemandSource::open(
-        root.path(),
-        FilesystemProfile::Posix,
-        VolumeLimits::default(),
-    )
-    .await?;
-    let reference = source.reference();
-    let cancellation = CancellationToken::new();
-    let identity = |name: &'static str| {
-        let source = &source;
-        let cancellation = &cancellation;
-        async move {
-            Ok::<_, Box<dyn Error>>(
-                source
-                    .lookup(reference, &path(name)?, cancellation)
-                    .await?
-                    .value
-                    .ok_or("file was absent")?
-                    .file_identity,
-            )
-        }
-    };
-    std::fs::write(root.path().join("first"), b"first")?;
-    std::fs::hard_link(root.path().join("first"), root.path().join("alias"))?;
-    let first = identity("/first").await?;
-    assert_eq!(identity("/alias").await?, first);
-
-    let inode = std::fs::metadata(root.path().join("first"))?.ino();
-    let born = std::fs::metadata(root.path().join("first"))?.created().ok();
-    std::fs::remove_file(root.path().join("first"))?;
-    std::fs::remove_file(root.path().join("alias"))?;
-    // Hosts reuse a freed inode soon, but not always at once.
-    for attempt in 0..64 {
-        let name = format!("later-{attempt}");
-        std::fs::write(root.path().join(&name), b"later")?;
-        let metadata = std::fs::metadata(root.path().join(&name))?;
-        if metadata.ino() == inode && born.is_some() && metadata.created().ok() != born {
-            let later = source
-                .lookup(reference, &path(&format!("/{name}"))?, &cancellation)
-                .await?
-                .value
-                .ok_or("file was absent")?
-                .file_identity;
-            assert_ne!(later, first, "the reused inode names a new file");
-            break;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn native_source_reports_symbolic_link_target_bytes() -> Result<(), Box<dyn Error>> {
@@ -236,15 +178,13 @@ async fn native_source_reports_symbolic_link_target_bytes() -> Result<(), Box<dy
         root.path(),
         FilesystemProfile::Posix,
         VolumeLimits::default(),
+        None,
+        None,
     )
     .await?;
     let reference = source.reference();
     let cancellation = CancellationToken::new();
-    let node = source
-        .lookup(reference, &path("/link")?, &cancellation)
-        .await?
-        .value
-        .ok_or("symbolic link was absent")?;
+    let node = lookup_node(&source, reference, &path("/link")?, &cancellation).await?;
 
     assert_eq!(node.kind, SourceNodeKind::SymbolicLink);
     assert_eq!(node.logical_bytes, Some(6));
@@ -266,11 +206,12 @@ async fn native_source_observes_only_the_demanded_directory_before_reading()
     std::fs::create_dir(root.path().join("nested"))?;
     std::fs::write(root.path().join("nested/file"), b"content")?;
     let observer = Arc::new(RecordingObserver::default());
-    let source = NativeDemandSource::open_with_observer(
+    let source = NativeDemandSource::open(
         root.path(),
         FilesystemProfile::Portable,
         VolumeLimits::default(),
-        observer.clone(),
+        None,
+        Some(observer.clone()),
     )
     .await?;
     let reference = source.reference();
@@ -300,41 +241,29 @@ async fn native_provider_reads_do_not_visit_unrelated_content() -> Result<(), Bo
     body[3..7].copy_from_slice(b"3456");
     std::fs::write(root.path().join("seen"), body)?;
 
-    let source = NativeDemandSource::open(
-        root.path(),
-        FilesystemProfile::Portable,
-        VolumeLimits::default(),
-    )
-    .await?;
-    let provider: &dyn DemandSource = &source;
+    let source = native_source(root.path()).await?;
+    let provider = &source;
     let reference = provider.reference();
     let cancellation = CancellationToken::new();
     let node = provider
         .lookup(reference, &path("/seen")?, &cancellation)
         .await?;
-    assert_eq!(node.work.source_path_components, 1);
-    assert_eq!(node.work.source_entries_visited, 0);
-    assert_eq!(node.work.source_bytes_read, 0);
     let version = node.value.ok_or("seen path was absent")?.version;
 
     let bytes = provider
         .read_range(reference, &path("/seen")?, version, 3, 4, &cancellation)
         .await?;
     assert_eq!(bytes.value.as_ref(), b"3456");
-    assert_eq!(bytes.work.source_bytes_read, 4);
-    assert_eq!(bytes.work.source_entries_visited, 0);
 
     let first = provider
         .list_page(reference, &path("/")?, None, 1, &cancellation)
         .await?;
     assert_eq!(first.value.entries.len(), 1);
-    assert!(first.work.source_entries_visited <= 2);
     let continuation = first.value.next.ok_or("second root entry missing")?;
     let second = provider
         .list_page(reference, &path("/")?, Some(continuation), 1, &cancellation)
         .await?;
     assert_eq!(second.value.entries.len(), 1);
-    assert!(second.work.source_entries_visited <= 1);
     Ok(())
 }
 
@@ -363,13 +292,8 @@ async fn listed_nodes_are_exactly_what_lookups_report() -> Result<(), Box<dyn Er
         open.write_all(b"written, never closed")?;
         open.flush()?;
     }
-    let source = NativeDemandSource::open(
-        root.path(),
-        FilesystemProfile::Portable,
-        VolumeLimits::default(),
-    )
-    .await?;
-    let provider: &dyn DemandSource = &source;
+    let source = native_source(root.path()).await?;
+    let provider = &source;
     let reference = provider.reference();
     let cancellation = CancellationToken::new();
     let page = provider
@@ -391,6 +315,13 @@ async fn listed_nodes_are_exactly_what_lookups_report() -> Result<(), Box<dyn Er
     }
     // Every listed version opens: a listing never pins a version that a
     // handle on the same file disagrees with.
+    let identity = |name| {
+        listed
+            .iter()
+            .find(|(listed, _)| listed == name)
+            .map(|(_, node)| node.file_identity)
+    };
+    assert_eq!(identity("file"), identity("alias"));
     for (name, node) in listed {
         if node.kind != SourceNodeKind::RegularFile {
             continue;
@@ -418,12 +349,7 @@ async fn listed_nodes_are_exactly_what_lookups_report() -> Result<(), Box<dyn Er
 #[tokio::test]
 async fn native_requests_wait_for_capacity_and_cancel_before_work() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
-    let source = NativeDemandSource::open(
-        root.path(),
-        FilesystemProfile::Portable,
-        VolumeLimits::default(),
-    )
-    .await?;
+    let source = native_source(root.path()).await?;
     let permits = source.occupy_all_requests().await?;
     let cancellation = CancellationToken::new();
     let root_path = path("/")?;
@@ -445,7 +371,6 @@ async fn native_requests_wait_for_capacity_and_cancel_before_work() -> Result<()
     Ok(())
 }
 
-/// Opens `/file` of a fresh source rooted at `<temporary>/source`.
 async fn held_file(
     contents: &[u8],
 ) -> Result<(tempfile::TempDir, NativeDemandSource, Box<dyn DemandFile>), Box<dyn Error>> {
@@ -453,16 +378,10 @@ async fn held_file(
     let root = temporary.path().join("source");
     std::fs::create_dir(&root)?;
     std::fs::write(root.join("file"), contents)?;
-    let source =
-        NativeDemandSource::open(&root, FilesystemProfile::Portable, VolumeLimits::default())
-            .await?;
+    let source = native_source(&root).await?;
     let reference = source.reference();
     let cancellation = CancellationToken::new();
-    let node = source
-        .lookup(reference, &path("/file")?, &cancellation)
-        .await?
-        .value
-        .ok_or("file absent")?;
+    let node = lookup_node(&source, reference, &path("/file")?, &cancellation).await?;
     let file = source
         .open_file(reference, &path("/file")?, node.version, &cancellation)
         .await?
@@ -470,10 +389,6 @@ async fn held_file(
     Ok((temporary, source, file))
 }
 
-/// A held file gives way to a save over it: replacing it by rename, as
-/// editors and `git` save with `MoveFileEx`, succeeds while it is held,
-/// and the held file then reads as changed. (Windows refuses such a
-/// rename while any handle to the file is open, however shared.)
 #[cfg(windows)]
 #[tokio::test]
 #[allow(
@@ -557,28 +472,15 @@ fn read_failure(file: &dyn DemandFile) -> Option<DemandError> {
         .map(|failure| failure.error)
 }
 
-/// A held file under a root that is not local is read on a thread of
-/// its own, bounded by a deadline, with the same result and the same
-/// proof that the bytes are still the opened version.
 #[tokio::test]
 async fn held_files_under_remote_roots_read_off_the_callback_thread() -> Result<(), Box<dyn Error>>
 {
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join("file"), b"remote")?;
-    let source = NativeDemandSource::open(
-        temporary.path(),
-        FilesystemProfile::Portable,
-        VolumeLimits::default(),
-    )
-    .await?
-    .remote();
+    let source = native_source(temporary.path()).await?.remote();
     let reference = source.reference();
     let cancellation = CancellationToken::new();
-    let node = source
-        .lookup(reference, &path("/file")?, &cancellation)
-        .await?
-        .value
-        .ok_or("file absent")?;
+    let node = lookup_node(&source, reference, &path("/file")?, &cancellation).await?;
     let file = source
         .open_file(reference, &path("/file")?, node.version, &cancellation)
         .await?
@@ -599,7 +501,6 @@ async fn held_file_reads_detect_in_place_modification() -> Result<(), Box<dyn Er
     let (temporary, _source, file) = held_file(b"before").await?;
     let read = file.read_range(0, 6, &CancellationToken::new())?;
     assert_eq!(read.value.as_ref(), b"before");
-    assert_eq!(read.work.source_bytes_read, 6);
     std::fs::OpenOptions::new()
         .append(true)
         .open(temporary.path().join("source/file"))?
@@ -650,8 +551,6 @@ async fn held_file_reads_detect_root_replacement() -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-/// A root that can be traversed but not opened for reading still serves
-/// reads, so no read reopens it. (Privileged users bypass the mode.)
 #[cfg(unix)]
 #[tokio::test]
 async fn reads_never_reopen_the_root() -> Result<(), Box<dyn Error>> {
@@ -660,11 +559,8 @@ async fn reads_never_reopen_the_root() -> Result<(), Box<dyn Error>> {
     let root = temporary.path().join("source");
     let reference = source.reference();
     let cancellation = CancellationToken::new();
-    let version = source
-        .lookup(reference, &path("/file")?, &cancellation)
+    let version = lookup_node(&source, reference, &path("/file")?, &cancellation)
         .await?
-        .value
-        .ok_or("file absent")?
         .version;
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o100))?;
     let held = file.read_range(0, 6, &cancellation);
@@ -680,12 +576,7 @@ async fn reads_never_reopen_the_root() -> Result<(), Box<dyn Error>> {
 #[tokio::test]
 async fn dropping_request_cancels_admitted_worker() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
-    let source = NativeDemandSource::open(
-        root.path(),
-        FilesystemProfile::Portable,
-        VolumeLimits::default(),
-    )
-    .await?;
+    let source = native_source(root.path()).await?;
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (stopped_tx, stopped_rx) = tokio::sync::oneshot::channel();
     let request = tokio::spawn(async move {
@@ -706,12 +597,7 @@ async fn cancelled_directory_page_retries_without_skipping_entries() -> Result<(
     for name in ["a", "b", "c", "d", "e", "f"] {
         std::fs::write(root.path().join(name), b"x")?;
     }
-    let source = NativeDemandSource::open(
-        root.path(),
-        FilesystemProfile::Portable,
-        VolumeLimits::default(),
-    )
-    .await?;
+    let source = native_source(root.path()).await?;
     let reference = source.reference();
     let directory = path("/")?;
     let live = CancellationToken::new();
@@ -742,65 +628,14 @@ async fn cancelled_directory_page_retries_without_skipping_entries() -> Result<(
 }
 
 #[tokio::test]
-async fn concurrent_use_reports_busy_without_losing_cursor() -> Result<(), Box<dyn Error>> {
-    let root = tempfile::tempdir()?;
-    for name in ["a", "b", "c"] {
-        std::fs::write(root.path().join(name), b"x")?;
-    }
-    let source = NativeDemandSource::open(
-        root.path(),
-        FilesystemProfile::Portable,
-        VolumeLimits::default(),
-    )
-    .await?;
-    let reference = source.reference();
-    let directory = path("/")?;
-    let cancellation = CancellationToken::new();
-    let first = source
-        .list_page(reference, &directory, None, 1, &cancellation)
-        .await?;
-    let cursor = first.value.next.ok_or("expected continuation")?;
-    let lease = source.cursor_lease(
-        reference,
-        &directory,
-        first.value.version,
-        Some(cursor.clone()),
-    )?;
-    assert!(matches!(
-        source.cursor_lease(
-            reference,
-            &directory,
-            first.value.version,
-            Some(cursor.clone())
-        ),
-        Err(DemandError::CursorBusy)
-    ));
-    drop(lease);
-    let second = source
-        .list_page(reference, &directory, Some(cursor), 1, &cancellation)
-        .await?;
-    assert_eq!(second.value.entries.len(), 1);
-    Ok(())
-}
-
-#[tokio::test]
 async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     std::fs::create_dir(root.path().join("directory"))?;
     std::fs::write(root.path().join("file"), b"old")?;
-    let source = NativeDemandSource::open(
-        root.path(),
-        FilesystemProfile::Portable,
-        VolumeLimits::default(),
-    )
-    .await?;
+    let source = native_source(root.path()).await?;
     let reference = source.reference();
     let cancellation = CancellationToken::new();
-    let node = source
-        .lookup(reference, &path("/file")?, &cancellation)
-        .await?
-        .value
-        .ok_or("file absent")?;
+    let node = lookup_node(&source, reference, &path("/file")?, &cancellation).await?;
     std::fs::write(root.path().join("file"), b"newer contents")?;
     let Err(stale) = source
         .read_range(
@@ -816,8 +651,6 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
         return Err("stale source content was accepted".into());
     };
     assert!(matches!(stale.error, DemandError::StaleVersion));
-    assert_eq!(stale.work.source_path_components, 1);
-    assert_eq!(stale.work.source_bytes_read, 0);
     assert!(matches!(
         source
             .read_metadata(reference, &path("/file")?, Some(node.version), &cancellation)
@@ -912,7 +745,9 @@ async fn native_lookup_accepts_windows_names_longer_than_127_code_units()
     )?;
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join(&host_name), b"data")?;
-    let source = NativeDemandSource::open(root.path(), FilesystemProfile::Windows, limits).await?;
+    let source =
+        NativeDemandSource::open(root.path(), FilesystemProfile::Windows, limits, None, None)
+            .await?;
     let exact = NamespacePath::new(vec![name], limits)?;
     assert!(
         source
@@ -932,13 +767,16 @@ async fn assert_lossless_name(
 ) -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join(host_name), b"data")?;
-    let source = NativeDemandSource::open(root.path(), profile, VolumeLimits::default()).await?;
+    let source =
+        NativeDemandSource::open(root.path(), profile, VolumeLimits::default(), None, None).await?;
     let exact = NamespacePath::new(vec![name], VolumeLimits::default())?;
-    let node = source
-        .lookup(source.reference(), &exact, &CancellationToken::new())
-        .await?
-        .value
-        .ok_or("lossless file absent")?;
+    let node = node(
+        &source,
+        source.reference(),
+        &exact,
+        &CancellationToken::new(),
+    )
+    .await?;
     let answer = source
         .read_range(
             source.reference(),

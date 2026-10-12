@@ -1,40 +1,6 @@
 use super::*;
+use crate::NativeMaterializationWork;
 use crate::native_host::NativeHostWork;
-use std::sync::Arc;
-
-/// Borrow of an existing native accounting context.
-#[derive(Clone, Copy)]
-pub struct NativeSourceWork<'a> {
-    original: &'a Arc<NativeDemandReadMeter>,
-    context: Option<&'a crate::NativeMaterializationWork>,
-}
-
-impl<'a> NativeSourceWork<'a> {
-    pub(crate) fn new(original: &'a Arc<NativeDemandReadMeter>) -> Self {
-        Self {
-            original,
-            context: None,
-        }
-    }
-    /// Borrows the invocation's existing accounting state.
-    pub fn from_native_materialization_work(work: &'a crate::NativeMaterializationWork) -> Self {
-        Self {
-            original: &work.state,
-            context: Some(work),
-        }
-    }
-    pub(crate) fn owned(&self) -> crate::NativeMaterializationWork {
-        self.context
-            .cloned()
-            .unwrap_or_else(|| crate::NativeMaterializationWork::from_meter(self.original.clone()))
-    }
-    pub(crate) fn materialization_work(
-        &self,
-    ) -> Result<crate::NativeMaterializationWork, DemandError> {
-        self.check()?;
-        Ok(self.owned())
-    }
-}
 
 pub(crate) trait SourceDemandReadWork:
     NativeHostWork<Error = DemandError, Allocation = u64, CleanupWrite = u64>
@@ -44,14 +10,11 @@ pub(crate) trait SourceDemandReadWork:
         operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
     ) -> T;
     fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T;
-    fn native_source_work(&self) -> Option<NativeSourceWork<'_>> {
+    fn native_source_work(&self) -> Option<NativeMaterializationWork> {
         None
     }
     fn with_ordinary_work<T>(&mut self, _: impl FnOnce(&mut DemandWork) -> T) -> Option<T> {
         None
-    }
-    fn original_meter(&self) -> Option<&Arc<NativeDemandReadMeter>> {
-        self.native_source_work().map(|work| work.original)
     }
     fn is_native_original(&self) -> bool {
         self.native_source_work().is_some()
@@ -67,7 +30,6 @@ pub(crate) trait SourceDemandReadWork:
         self.check()?;
         if let Some(native) = self.native_source_work() {
             return native
-                .owned()
                 .reserve_work(delta)
                 .map(Some)
                 .map_err(crate::native_name::original_name_error);
@@ -75,38 +37,20 @@ pub(crate) trait SourceDemandReadWork:
         self.admit(delta)?;
         Ok(None)
     }
-    fn charge(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+    fn claim_allocation(
+        &mut self,
+        bytes: u64,
+        operations: u64,
+        delta: WorkCounters,
+    ) -> Result<(), DemandError> {
         self.check()?;
-        self.with_original_leaf(|work| work.charge(delta))
-    }
-    fn claim_allocation(&mut self, bytes: u64, operations: u64) -> Result<(), DemandError> {
-        self.check()?;
-        self.with_original_leaf(|work| {
-            work.claim_native_owned(
-                bytes,
-                operations,
-                WorkCounters::UNCHARGED,
-                &work.capture_custody(),
-            )
-        })
-    }
-    fn allocate(&mut self, bytes: u64) -> Result<(), DemandError> {
-        self.claim_allocation(bytes, u64::from(bytes != 0))
-    }
-    fn allocate_for(&mut self, bytes: u64, delta: WorkCounters) -> Result<(), DemandError> {
-        self.check()?;
-        self.with_original_leaf(|work| {
-            work.claim_native_owned(bytes, u64::from(bytes != 0), delta, &None)
-        })
+        self.with_original_leaf(|work| work.claim_allocation(bytes, operations, delta))
     }
     fn remaining(&mut self) -> Result<WorkBudget, DemandError> {
         self.with_original_leaf(|work| work.remaining())
     }
-    fn adopt(&mut self, bytes: u64) -> Result<(), DemandError> {
-        self.claim_allocation(bytes, 0)
-    }
     fn merge(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        self.with_original_leaf(|work| work.merge(delta))
+        self.with_original_leaf(|work| work.merge(delta, work.live_allocation_bytes()))
     }
 }
 
@@ -132,25 +76,22 @@ impl SourceDemandReadWork for DemandWork {
     }
 }
 
-impl SourceDemandReadWork for NativeSourceWork<'_> {
-    fn native_source_work(&self) -> Option<NativeSourceWork<'_>> {
-        Some(*self)
-    }
-    fn original_meter(&self) -> Option<&Arc<NativeDemandReadMeter>> {
-        Some(self.original)
+impl SourceDemandReadWork for NativeMaterializationWork {
+    fn native_source_work(&self) -> Option<NativeMaterializationWork> {
+        Some(self.clone())
     }
     fn with_native_read_meter<T>(
         &mut self,
         operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
     ) -> T {
-        operation(self.owned().runtime_meter().as_ref())
+        operation(self.runtime_meter().as_ref())
     }
     fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
-        self.owned().with_original_leaf(operation)
+        NativeMaterializationWork::with_original_leaf(self, operation)
     }
 }
 
-impl NativeHostWork for NativeSourceWork<'_> {
+impl NativeHostWork for NativeMaterializationWork {
     type Error = DemandError;
     type Allocation = u64;
     type CleanupWrite = u64;
@@ -164,7 +105,7 @@ impl NativeHostWork for NativeSourceWork<'_> {
         DemandError::Allocation(error)
     }
     fn check(&self) -> Result<(), DemandError> {
-        self.owned().with_original_leaf(|work| work.check())
+        NativeMaterializationWork::with_original_leaf(self, |work| work.check())
     }
     fn admit(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         self.with_original_leaf(|work| work.admit(delta))
@@ -173,14 +114,14 @@ impl NativeHostWork for NativeSourceWork<'_> {
         self.with_original_leaf(|work| work.record(delta))
     }
     fn started_io(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        self.charge(delta)
+        self.with_original_leaf(|work| work.charge(delta))
     }
     fn claim(&mut self, bytes: u64) -> Result<u64, DemandError> {
-        self.allocate(bytes)?;
+        self.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?;
         Ok(bytes)
     }
     fn reserve_opaque_decode(&mut self, maximum: u64) -> Result<u64, DemandError> {
-        self.adopt(maximum)?;
+        self.claim_allocation(maximum, 0, WorkCounters::UNCHARGED)?;
         Ok(maximum)
     }
     fn reconcile_allocation(

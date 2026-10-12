@@ -104,7 +104,7 @@ impl NativeAllocation {
             .checked_sub(bytes)
             .ok_or(crate::WorkError::Overflow)?;
         self.meter
-            .state(|state| state.release_native_owned(bytes, &None))
+            .state(|state| state.release(bytes))
             .map_err(native_materialization_work_error)
     }
     pub(crate) fn release_deferred(&mut self, bytes: u64) {

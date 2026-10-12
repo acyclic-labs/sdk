@@ -1,6 +1,6 @@
 use super::{HostChange, HostChangeSink, NativeSourceWatch};
 use crate::native_host::HostRoot;
-use crate::demand::{DemandError, NativeSourceWork};
+use crate::demand::{DemandError};
 use crate::native_host::NativeHostWork;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -22,7 +22,7 @@ impl HostChangeSink for Recorded {
         Ok(())
     }
 
-    fn host_changed_with_native_work(&self, changes: &[HostChange], work: &mut NativeSourceWork<'_>)
+    fn host_changed_with_native_work(&self, changes: &[HostChange], work: &mut crate::NativeMaterializationWork)
         -> Result<(), DemandError>
     {
         work.check()?;
@@ -40,7 +40,7 @@ impl HostChangeSink for Recorded {
     }
 
     #[cfg(windows)]
-    fn host_changed_wide_with_native_work(&self, changes: &[super::HostChangeWide<'_>], work: &mut NativeSourceWork<'_>)
+    fn host_changed_wide_with_native_work(&self, changes: &[super::HostChangeWide<'_>], work: &mut crate::NativeMaterializationWork)
         -> Result<(), DemandError>
     {
         work.check()?;
@@ -389,7 +389,7 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     let meter = Arc::downgrade(&original.state);
     let recorded = Arc::new(Recorded::default());
     let before = scope.receipt();
-    let mut work = NativeSourceWork::from_native_materialization_work(&original);
+    let mut work = crate::NativeMaterializationWork::clone(&original);
     let watch = NativeSourceWatch::start_with_work(&host, recorded.clone(), &mut work)?;
     let started = scope.receipt();
     assert!(started.backend_read_operations > before.backend_read_operations);
@@ -477,7 +477,7 @@ fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cance
     let resource = Arc::downgrade(scope.resource.as_ref().ok_or("birth resource absent")?);
     let meter = Arc::downgrade(&original.state);
     let watch = NativeSourceWatch::start_with_work(
-        &host, Arc::new(Recorded::default()), &mut NativeSourceWork::from_native_materialization_work(&original),
+        &host, Arc::new(Recorded::default()), &mut crate::NativeMaterializationWork::clone(&original),
     )?;
     let observer = crate::CancellationToken::new();
     observer.cancel();
@@ -529,7 +529,7 @@ fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> 
     let before = root.receipt();
     assert!(matches!(NativeSourceWatch::start_with_work(
         &host, Arc::new(Recorded::default()),
-        &mut NativeSourceWork::from_native_materialization_work(&scope),
+        &mut crate::NativeMaterializationWork::clone(&scope),
     ), Err(DemandError::Cancelled)));
     assert_eq!(root.receipt(), before);
 
@@ -542,7 +542,7 @@ fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> 
     let before = root.receipt();
     assert!(NativeSourceWatch::start_with_work(
         &host, Arc::new(Recorded::default()),
-        &mut NativeSourceWork::from_native_materialization_work(&scope),
+        &mut crate::NativeMaterializationWork::clone(&scope),
     ).is_err());
     let denied = root.receipt();
     assert_eq!(denied.backend_read_operations, before.backend_read_operations);

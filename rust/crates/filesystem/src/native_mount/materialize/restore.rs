@@ -3,13 +3,13 @@ use super::*;
 pub(super) async fn restore_io<T: Send + 'static>(
     lock: Option<File>,
     work: Arc<NativeDemandReadMeter>,
-    operation: impl FnOnce(&mut NativeSourceWork<'_>) -> Result<T, MaterializeError> + Send + 'static,
+    operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, MaterializeError> + Send + 'static,
 ) -> Result<T, MaterializeError> {
     let observer: Arc<dyn acyclic_native_runtime::NativeReadMeter> = work.clone();
     let operation = move || {
         // A cancelled waiter must not release the fence while host I/O continues.
         let _restore_lock = lock;
-        operation(&mut NativeSourceWork::new(&work))
+        operation(&mut crate::NativeMaterializationWork::from_meter((&work).clone()))
     };
     let task = acyclic_native_runtime::run_blocking_io(operation, Some((observer, false)))
         .map_err(|error| {
@@ -182,7 +182,7 @@ pub(super) fn validate_host_relative_measured(
 ) -> Result<(), MaterializeError> {
     let mut any = false;
     for component in relative.components() {
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             source_path_components: 1,
             items_examined: 1,
             ..WorkCounters::UNCHARGED
@@ -297,7 +297,7 @@ pub(super) fn restore_artifact_name(
     {
         use std::os::windows::ffi::OsStrExt as _;
         for unit in relative.as_os_str().encode_wide() {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 bytes_hashed: 2,
                 bytes_encoded: 2,
                 ..WorkCounters::UNCHARGED
@@ -312,7 +312,7 @@ pub(super) fn restore_artifact_name(
         ..WorkCounters::UNCHARGED
     };
     work.admit(delta).map_err(restore_demand_error)?;
-    work.allocate(bytes as u64).map_err(restore_demand_error)?;
+    work.claim_allocation(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(restore_demand_error)?;
     let mut name = String::with_capacity(bytes);
     write!(name, "{prefix}{}", hasher.finalize().to_hex()).expect("String formatting cannot fail");
     if let Err(error) = work.record(delta) {
@@ -351,7 +351,7 @@ pub(super) fn acquire_restore_lock(
             )
             .map_err(restore_demand_error)?;
         loop {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 backend_write_operations: 1,
                 ..WorkCounters::UNCHARGED
             })
@@ -391,7 +391,7 @@ pub(super) fn create_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(restore_demand_error)?;
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             backend_write_operations: 1,
             ..WorkCounters::UNCHARGED
         })
@@ -416,7 +416,7 @@ pub(super) fn create_restore_witness(
             Err(error) => return Err(error.into()),
         }
     }
-    work.charge(WorkCounters {
+    work.started_io(WorkCounters {
         durability_operations: 1,
         ..WorkCounters::UNCHARGED
     })
@@ -456,7 +456,7 @@ pub(super) fn validate_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(restore_demand_error)?;
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             backend_read_operations: 1,
             ..WorkCounters::UNCHARGED
         })

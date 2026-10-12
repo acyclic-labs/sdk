@@ -51,9 +51,9 @@ impl GenerationReceipt {
 
     pub(super) fn run<T>(
         &self,
-        operation: impl FnOnce(&mut NativeSourceWork<'_>) -> Result<T, DemandError>,
+        operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, DemandError>,
     ) -> Result<T, MaterializeError> {
-        let result = operation(&mut NativeSourceWork::from_native_materialization_work(
+        let result = operation(&mut crate::NativeMaterializationWork::clone(
             self.custody.work(),
         ));
         result.map_err(materialize_demand_error)
@@ -279,7 +279,7 @@ pub(super) fn materialize_host_path(
         .ok_or(MaterializeError::Work(WorkError::Overflow))?;
     for name in names {
         receipt.run(|work| {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })
@@ -303,7 +303,7 @@ pub(super) fn materialize_host_path(
                 let mut count = 0_usize;
                 for _ in text.encode_utf16() {
                     receipt.run(|work| {
-                        work.charge(WorkCounters {
+                        work.started_io(WorkCounters {
                             items_examined: 1,
                             ..WorkCounters::UNCHARGED
                         })
@@ -328,7 +328,7 @@ pub(super) fn materialize_host_path(
     })?;
     #[cfg(windows)]
     receipt.run(|work| {
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             bytes_copied: prefix.len() as u64 * 2,
             bytes_encoded: (length - prefix.len()) as u64 * 2,
             ..WorkCounters::UNCHARGED

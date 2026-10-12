@@ -67,10 +67,6 @@ impl LazyDirectoryCursor {
                 let mut cursor = Clone::clone(cursor);
                 accounting.reconcile_owned(&mut claim, bytes, cursor.retained_bytes())?;
                 accounting.record_completed(copying)?;
-                #[cfg(not(target_arch = "wasm32"))]
-                if let KernelOwnedAllocation::NativeOriginal(guard) = &mut claim {
-                    cursor.attach_native_allocation(guard)?;
-                }
                 allocation.absorb(&mut claim)?;
                 LazyDirectoryPhase::Source(Some(cursor))
             }

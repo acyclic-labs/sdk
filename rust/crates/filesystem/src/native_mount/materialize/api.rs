@@ -194,7 +194,7 @@ where
         while insertion != 0 {
             let previous = selected_paths[insertion - 1];
             receipt.run(|work| {
-                work.charge(WorkCounters {
+                work.started_io(WorkCounters {
                     items_examined: 1,
                     ..WorkCounters::UNCHARGED
                 })
@@ -205,7 +205,7 @@ where
             insertion -= 1;
         }
         receipt.run(|work| {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 bytes_copied: ((selected_paths.len() - insertion + 1)
                     * std::mem::size_of::<&NamespacePath>()) as u64,
                 ..WorkCounters::UNCHARGED
@@ -215,7 +215,7 @@ where
     }
     for pair in selected_paths.windows(2) {
         receipt.run(|work| {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })
@@ -551,7 +551,7 @@ pub(super) fn generation_namespace_from_host(
     let mut count = 0_usize;
     for component in relative.components() {
         receipt.run(|work| {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })
@@ -571,7 +571,7 @@ pub(super) fn generation_namespace_from_host(
     receipt.reserve(&mut names, count)?;
     for component in relative.components() {
         receipt.run(|work| {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 items_examined: 1,
                 source_path_components: 1,
                 ..WorkCounters::UNCHARGED
@@ -632,7 +632,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             cleanup_allocation,
         );
         let (destination_root, relative) = {
-            let mut work = NativeSourceWork::new(&work);
+            let mut work = crate::NativeMaterializationWork::from_meter((&work).clone());
             validate_host_relative_measured(relative, &mut work)?;
             (
                 allocation_work

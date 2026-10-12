@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeMaterializationWork;
 /// Typed failures from a source dependency.
 #[derive(Debug, Error)]
 pub enum DemandError {
@@ -95,6 +96,29 @@ impl From<NamespacePathError> for DemandError {
     }
 }
 
+impl From<crate::FsError> for DemandError {
+    fn from(error: crate::FsError) -> Self {
+        match error {
+            crate::FsError::Work(error) => DemandError::Work(error),
+            crate::FsError::Cancelled(_) => DemandError::Cancelled,
+            crate::FsError::EncodedAllocationFailed(error) => DemandError::Allocation(error),
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::FsError::NativeKernel(error) => match error {
+                crate::NativeTreeMaterializationError::Work(error) => DemandError::Work(error),
+                crate::NativeTreeMaterializationError::Cancelled => DemandError::Cancelled,
+                crate::NativeTreeMaterializationError::OriginalWorkPoisoned => {
+                    DemandError::OriginalWorkPoisoned
+                }
+                crate::NativeTreeMaterializationError::AllocationFailed(error) => {
+                    DemandError::Allocation(error)
+                }
+                _ => DemandError::InvalidRequest,
+            },
+            _ => DemandError::InvalidRequest,
+        }
+    }
+}
+
 /// Demand result with source-work counters on both success and failure.
 pub type DemandResult<T> = Result<OperationReceipt<T>, OperationFailure<DemandError>>;
 
@@ -133,7 +157,7 @@ pub trait SourceChangeSink: Send + Sync {
     fn source_changed_with_native_work(
         &self,
         _changes: &[SourceChange],
-        work: NativeSourceWork<'_>,
+        work: NativeMaterializationWork,
     ) -> Result<(), DemandError> {
         crate::native_host::NativeHostWork::check(&work)?;
         Err(DemandError::NativeWorkUnavailable)
@@ -172,9 +196,6 @@ pub trait SourceWatch: Send + Sync {
 
     /// SDK logical payload retained by this returned owner. Existing borrowed
     fn logical_owned_bytes(&self) -> u64;
-
-    /// Only this call's newly created registration backing, not a preexisting
-    fn allocation_custody(&self) -> Option<std::sync::Arc<SourceWatchAllocationCustody>>;
 
     /// Whether every change still reaches the sink. False once the host
     fn is_exact(&self) -> bool;
@@ -259,9 +280,9 @@ pub trait DemandSource: Send + Sync {
         let result = (|| {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                crate::native_host::NativeHostWork::check(
-                    &NativeSourceWork::from_native_materialization_work(original),
-                )?;
+                crate::native_host::NativeHostWork::check(&NativeMaterializationWork::clone(
+                    original,
+                ))?;
                 return Err(DemandError::NativeWorkUnavailable);
             }
             cancellation.check().map_err(|_| DemandError::Cancelled)?;
@@ -318,26 +339,11 @@ pub trait DemandDirectoryObserver: Send + Sync {
     fn observe_directory_with_native_work(
         &self,
         _directory: &NamespacePath,
-        work: NativeSourceWork<'_>,
+        work: NativeMaterializationWork,
     ) -> Result<(), DemandError> {
         crate::native_host::NativeHostWork::check(&work)?;
         Err(DemandError::NativeWorkUnavailable)
     }
-}
-
-pub(crate) fn ordinary_source_budget(
-    accounting: &crate::kernel::KernelAccounting<'_>,
-) -> Result<WorkBudget, DemandError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = accounting.native_work() {
-        crate::native_host::NativeHostWork::check(
-            &NativeSourceWork::from_native_materialization_work(original),
-        )?;
-        return Err(DemandError::NativeWorkUnavailable);
-    }
-    accounting
-        .remaining()
-        .map_err(SourceCursor::cursor_accounting_error)
 }
 
 pub(crate) fn accept_source_result<T>(
@@ -369,9 +375,7 @@ async fn read_source_metadata<D: DemandSource + ?Sized>(
         let mut node = provider
             .lookup(source, path, original, cancellation)
             .await?;
-        crate::native_host::NativeHostWork::check(
-            &NativeSourceWork::from_native_materialization_work(original),
-        )?;
+        crate::native_host::NativeHostWork::check(&NativeMaterializationWork::clone(original))?;
         if let Some(expected) = expected
             && node.as_ref().map(|node| node.version) != Some(expected)
         {
@@ -384,9 +388,7 @@ async fn read_source_metadata<D: DemandSource + ?Sized>(
         }
         return Ok(node);
     }
-    let budget = accounting
-        .remaining()
-        .map_err(SourceCursor::cursor_accounting_error)?;
+    let budget = accounting.remaining().map_err(DemandError::from)?;
     let answer = provider.lookup(source, path, budget, cancellation).await;
     let node = accept_source_result(answer, accounting)?;
     cancellation.check().map_err(|_| DemandError::Cancelled)?;
@@ -396,7 +398,7 @@ async fn read_source_metadata<D: DemandSource + ?Sized>(
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })
-            .map_err(SourceCursor::cursor_accounting_error)?;
+            .map_err(DemandError::from)?;
         if node.as_ref().map(|node| node.version) != Some(expected) {
             return Err(DemandError::StaleVersion);
         }

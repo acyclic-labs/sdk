@@ -935,7 +935,7 @@ mod tests {
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let mut lease = measured_read(&gate, CallbackOwner(1), &mut work).expect("actual read");
         let bytes = std::mem::size_of::<ViewReadLease>() as u64;
-        work.allocate(bytes).expect("actual Box payload admission");
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).expect("actual Box payload admission");
         lease.attach_owned_payload(bytes).expect("same original cleanup custody");
         let lease = Box::new(lease);
         let live = work.live_allocation_bytes();
@@ -962,11 +962,11 @@ mod tests {
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let bytes = std::mem::size_of::<ViewReadLease>() as u64;
         let mut first = measured_read(&gate, CallbackOwner(1), &mut work).expect("first read");
-        work.allocate(bytes).expect("first original Box");
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).expect("first original Box");
         first.attach_owned_payload(bytes).expect("first payload custody");
         let first = Box::new(first);
         let mut second = measured_read(&gate, CallbackOwner(1), &mut work).expect("nested read");
-        work.allocate(bytes).expect("second original Box");
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).expect("second original Box");
         second.attach_owned_payload(bytes).expect("second payload custody");
         let second = Box::new(second);
         let live = work.live_allocation_bytes();

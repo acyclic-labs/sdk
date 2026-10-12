@@ -1,5 +1,5 @@
 use super::{MountPath, NativeMountError};
-use crate::demand::{NativeMountAllocationCustody, NativeSourceWork};
+use crate::demand::{NativeMountAllocationCustody};
 use crate::{NativeAllocation, NativeMaterializationWork, WorkCounters, WorkError};
 use std::sync::Arc;
 
@@ -62,9 +62,9 @@ impl<T> FuseOwned<T> {
         }
         let admitted = (|| {
             let custody = NativeMountAllocationCustody::new(
-                &mut NativeSourceWork::from_native_materialization_work(work),
+                &mut crate::NativeMaterializationWork::clone(work),
             )?;
-            work.with_original_leaf(|work| custody.retain_admitted(bytes, work))?;
+            work.with_original_leaf(|work| work.check().and_then(|()| custody.retain(bytes, work).map_err(crate::DemandError::from)))?;
             Ok::<_, crate::native_mount::NativeMountStartupAdmissionError>(custody)
         })();
         match admitted {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeMaterializationWork;
 /// A composable source view that hides exact subtrees before they enter lazy
 #[derive(Clone)]
 pub struct FilteredDemandSource<D> {
@@ -41,134 +42,213 @@ struct FilteredChangeSink {
     sink: std::sync::Arc<dyn SourceChangeSink>,
 }
 
-impl SourceChangeSink for FilteredChangeSink {
-    fn source_changed(&self, changes: &[SourceChange]) {
-        let visible = changes
-            .iter()
-            .filter(|change| match change {
-                SourceChange::Name(path) | SourceChange::Entry(path) => {
-                    !self.excluded.iter().any(|root| path.is_within(root))
-                }
-                SourceChange::Node(_) | SourceChange::Everything | SourceChange::Unconfirmed => {
-                    true
-                }
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if !visible.is_empty() {
-            self.sink.source_changed(&visible);
+impl FilteredChangeSink {
+    fn visible(&self, change: &SourceChange) -> bool {
+        match change {
+            SourceChange::Name(path) | SourceChange::Entry(path) => {
+                !self.excluded.iter().any(|root| path.is_within(root))
+            }
+            _ => true,
         }
+    }
+    fn batches<'a>(
+        &'a self,
+        changes: &'a [SourceChange],
+    ) -> impl Iterator<Item = &'a [SourceChange]> {
+        changes
+            .chunk_by(|a, b| self.visible(a) == self.visible(b))
+            .filter(|batch| self.visible(&batch[0]))
+    }
+}
+impl SourceChangeSink for FilteredChangeSink {
+    fn logical_owned_bytes(&self) -> u64 {
+        std::mem::size_of::<Self>() as u64 + self.sink.logical_owned_bytes()
+    }
+    fn source_changed(
+        &self,
+        changes: &[SourceChange],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> DemandResult<()> {
+        let mut work = WorkCounters::UNCHARGED;
+        let result = (|| {
+            for batch in self.batches(changes) {
+                cancellation.check().map_err(|_| DemandError::Cancelled)?;
+                match self
+                    .sink
+                    .source_changed(batch, work.remaining(budget)?, cancellation)
+                {
+                    Ok(receipt) => work.try_add_assign(&receipt.work)?,
+                    Err(failure) => {
+                        work.try_add_assign(&failure.work)?;
+                        return Err(failure.error);
+                    }
+                }
+            }
+            Ok(())
+        })();
+        result
+            .map(|value| OperationReceipt { value, work })
+            .map_err(|error| OperationFailure::new(error, work))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn source_changed_with_native_work(
+        &self,
+        changes: &[SourceChange],
+        work: NativeMaterializationWork,
+    ) -> Result<(), DemandError> {
+        crate::native_host::NativeHostWork::check(&work)?;
+        for batch in self.batches(changes) {
+            self.sink
+                .source_changed_with_native_work(batch, work.clone())?;
+        }
+        Ok(())
     }
 }
 
-#[async_trait::async_trait]
 impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
     fn reference(&self) -> SourceReference {
         self.inner.reference()
     }
-
-    fn watch(
+    fn watch<W: crate::facade::FsWork + Send>(
         &self,
         sink: std::sync::Arc<dyn SourceChangeSink>,
-    ) -> Result<Option<Box<dyn SourceWatch>>, DemandError> {
-        self.inner.watch(std::sync::Arc::new(FilteredChangeSink {
-            excluded: std::sync::Arc::clone(&self.excluded),
-            sink,
-        }))
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Option<Box<dyn SourceWatch>>, DemandError> {
+        self.inner.watch(
+            std::sync::Arc::new(FilteredChangeSink {
+                excluded: self.excluded.clone(),
+                sink,
+            }),
+            work,
+            cancellation,
+        )
     }
-
-    async fn lookup(
+    async fn lookup<W: crate::facade::FsWork + Send>(
         &self,
         source: SourceReference,
         path: &NamespacePath,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> DemandResult<Option<SourceNode>> {
+    ) -> W::Output<Option<SourceNode>, DemandError> {
         if self.excludes(path) {
-            return Ok(OperationReceipt {
-                value: None,
-                work: WorkCounters::default(),
-            });
+            return work.finish(Ok(None), &work.accounting(cancellation));
         }
-        self.inner.lookup(source, path, cancellation).await
+        self.inner.lookup(source, path, work, cancellation).await
     }
-
-    async fn list_page(
+    async fn list_page<W: crate::facade::FsWork + Send>(
         &self,
         source: SourceReference,
         directory: &NamespacePath,
         cursor: Option<SourceCursor>,
         maximum_entries: u32,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> DemandResult<SourceDirectoryPage> {
-        if self.excludes(directory) {
-            return Err(OperationFailure::new(
-                DemandError::Absent,
-                WorkCounters::default(),
-            ));
+    ) -> W::Output<SourceDirectoryPage, DemandError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            if self.excludes(directory) {
+                return Err(DemandError::Absent);
+            }
+            let mut page = {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = accounting.native_work() {
+                    self.inner
+                        .list_page(
+                            source,
+                            directory,
+                            cursor,
+                            maximum_entries,
+                            original,
+                            cancellation,
+                        )
+                        .await?
+                } else {
+                    let budget = accounting.remaining().map_err(DemandError::from)?;
+                    let answer = self
+                        .inner
+                        .list_page(
+                            source,
+                            directory,
+                            cursor,
+                            maximum_entries,
+                            budget,
+                            cancellation,
+                        )
+                        .await;
+                    accept_source_result(answer, &mut accounting)?
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let budget = accounting.remaining().map_err(DemandError::from)?;
+                    let answer = self
+                        .inner
+                        .list_page(
+                            source,
+                            directory,
+                            cursor,
+                            maximum_entries,
+                            budget,
+                            cancellation,
+                        )
+                        .await;
+                    accept_source_result(answer, &mut accounting)?
+                }
+            };
+            page.entries
+                .retain(|entry| !self.excludes_child(directory, &entry.name));
+            Ok(page)
         }
-        let mut page = self
-            .inner
-            .list_page(source, directory, cursor, maximum_entries, cancellation)
-            .await?;
-        page.value
-            .entries
-            .retain(|entry| !self.excludes_child(directory, &entry.name));
-        Ok(page)
+        .await;
+        work.finish(result, &accounting)
     }
-
-    async fn read_range(
+    async fn read_range<W: crate::facade::FsWork + Send>(
         &self,
         source: SourceReference,
         path: &NamespacePath,
         expected: SourceVersion,
         offset: u64,
         length: u64,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> DemandResult<Bytes> {
+    ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
         if self.excludes(path) {
-            return Err(OperationFailure::new(
-                DemandError::Absent,
-                WorkCounters::default(),
-            ));
+            return work.finish(Err(DemandError::Absent), &work.accounting(cancellation));
         }
         self.inner
-            .read_range(source, path, expected, offset, length, cancellation)
+            .read_range(source, path, expected, offset, length, work, cancellation)
             .await
     }
-
-    async fn open_file(
+    async fn open_file<W: crate::facade::FsWork + Send>(
         &self,
         source: SourceReference,
         path: &NamespacePath,
         expected: SourceVersion,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> DemandResult<Box<dyn DemandFile>> {
+    ) -> W::Output<Box<dyn DemandFile>, DemandError> {
         if self.excludes(path) {
-            return Err(OperationFailure::new(
-                DemandError::Absent,
-                WorkCounters::default(),
-            ));
+            return work.finish(Err(DemandError::Absent), &work.accounting(cancellation));
         }
         self.inner
-            .open_file(source, path, expected, cancellation)
+            .open_file(source, path, expected, work, cancellation)
             .await
     }
-
-    async fn read_link(
+    async fn read_link<W: crate::facade::FsWork + Send>(
         &self,
         source: SourceReference,
         path: &NamespacePath,
         expected: SourceVersion,
+        maximum_bytes: u64,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> DemandResult<Bytes> {
+    ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
         if self.excludes(path) {
-            return Err(OperationFailure::new(
-                DemandError::Absent,
-                WorkCounters::default(),
-            ));
+            return work.finish(Err(DemandError::Absent), &work.accounting(cancellation));
         }
         self.inner
-            .read_link(source, path, expected, cancellation)
+            .read_link(source, path, expected, maximum_bytes, work, cancellation)
             .await
     }
 }

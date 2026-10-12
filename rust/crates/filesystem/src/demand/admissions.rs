@@ -4,54 +4,30 @@ use crate::kernel::allocation::AllocationLedger;
 use std::sync::{Arc, Weak};
 
 type Observer = (Arc<crate::kernel::ProofDataCustody>, u64, Option<u128>);
-type Watch = (Weak<SourceWatchAllocationCustody>, u64, bool);
 
-pub(super) struct Registry<T> {
-    values: Vec<T>,
-    capacity: crate::kernel::allocation::LogicalVecCapacity,
-}
-impl<T> Default for Registry<T> {
-    fn default() -> Self {
-        Self {
-            values: Vec::new(),
-            capacity: Default::default(),
-        }
-    }
-}
-impl<T> Registry<T> {
-    pub(super) fn iter(&self) -> impl Iterator<Item = &T> {
-        self.values.iter()
-    }
-    pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        self.values.iter_mut()
-    }
-    pub(super) fn get_mut(&mut self, index: usize) -> &mut T {
-        &mut self.values[index]
-    }
-    pub(super) fn insert(
-        &mut self,
-        value: T,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-    ) -> Result<usize, DemandError> {
-        let copied = WorkCounters {
-            bytes_copied: if self.values.len() == self.values.capacity() {
-                (self.values.len() * std::mem::size_of::<T>()) as u64
-            } else {
-                0
-            },
-            ..WorkCounters::UNCHARGED
-        };
-        work.admit(&copied, &budget)?;
-        self.capacity
-            .ensure_for_push(&mut self.values, usize::MAX, ledger, work, budget)
-            .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-        work.charge(&copied, &budget)?;
-        let index = self.values.len();
-        self.values.push(value);
-        Ok(index)
-    }
+pub(super) fn insert<T>(
+    (values, capacity): &mut (Vec<T>, crate::kernel::allocation::LogicalVecCapacity),
+    value: T,
+    ledger: &mut AllocationLedger,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+) -> Result<usize, DemandError> {
+    let copied = WorkCounters {
+        bytes_copied: if values.len() == values.capacity() {
+            (values.len() * std::mem::size_of::<T>()) as u64
+        } else {
+            0
+        },
+        ..WorkCounters::UNCHARGED
+    };
+    work.admit(&copied, &budget)?;
+    capacity
+        .ensure_for_push(values, usize::MAX, ledger, work, budget)
+        .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+    work.charge(&copied, &budget)?;
+    let index = values.len();
+    values.push(value);
+    Ok(index)
 }
 
 #[derive(Default)]
@@ -59,10 +35,15 @@ pub(crate) struct Admissions {
     pub(super) pending: WorkCounters,
     pub(super) poisoned: bool,
     pub(super) io_failure: Option<DemandError>,
-    cancellations: Registry<(CancellationToken, CancellationWaitAdmission)>,
-    observers: Registry<Observer>,
-    watches: Registry<Watch>,
-    pub(super) native_mount_admissions: Registry<(Weak<NativeMountAllocationCustody>, u64)>,
+    cancellations: (
+        Vec<(CancellationToken, CancellationWaitAdmission)>,
+        crate::kernel::allocation::LogicalVecCapacity,
+    ),
+    observers: (Vec<Observer>, crate::kernel::allocation::LogicalVecCapacity),
+    pub(super) native_mount_admissions: (
+        Vec<(Weak<NativeMountAllocationCustody>, u64)>,
+        crate::kernel::allocation::LogicalVecCapacity,
+    ),
     #[cfg(feature = "native-mount")]
     pub(crate) view_gates: crate::native_mount::ViewGateReadAdmissions,
 }
@@ -87,11 +68,6 @@ fn native_retired(entry: &Observer) -> u64 {
         .expect("bounded live native bytes")
     })
 }
-fn watch_bytes(entry: &Watch) -> u64 {
-    entry.0.upgrade().map_or(0, |watch| {
-        watch.retained_bytes() + std::mem::size_of::<SourceWatchAllocationCustody>() as u64
-    })
-}
 fn mount_bytes(entry: &(Weak<NativeMountAllocationCustody>, u64)) -> u64 {
     entry
         .0
@@ -102,15 +78,12 @@ fn mount_bytes(entry: &(Weak<NativeMountAllocationCustody>, u64)) -> u64 {
 impl Admissions {
     fn backing(&self) -> impl Iterator<Item = (u64, u64)> {
         self.observers
+            .0
             .iter()
             .map(|entry| (entry.1, observer_bytes(entry)))
             .chain(
-                self.watches
-                    .iter()
-                    .map(|entry| (entry.1, watch_bytes(entry))),
-            )
-            .chain(
                 self.native_mount_admissions
+                    .0
                     .iter()
                     .map(|entry| (entry.1, mount_bytes(entry))),
             )
@@ -118,13 +91,14 @@ impl Admissions {
     pub(super) fn freed_bytes(&self) -> u64 {
         let freed = self
             .cancellations
+            .0
             .iter()
             .map(|(token, admission)| admission.freed_registry_bytes(token))
             .chain(
                 self.backing()
                     .map(|(paid, actual)| paid.saturating_sub(actual)),
             )
-            .chain(self.observers.iter().map(native_retired))
+            .chain(self.observers.0.iter().map(native_retired))
             .try_fold(0u64, u64::checked_add)
             .expect("balanced retirement");
         #[cfg(feature = "native-mount")]
@@ -146,21 +120,15 @@ impl DemandWork {
         select: fn(&mut Admissions) -> &mut T,
     ) -> Result<(&mut T, &mut AllocationLedger, &mut WorkCounters, WorkBudget), DemandError> {
         self.reconcile_cancellation_registry()?;
-        Ok(self.admissions_completed(select))
-    }
-    pub(crate) fn admissions_completed<T>(
-        &mut self,
-        select: fn(&mut Admissions) -> &mut T,
-    ) -> (&mut T, &mut AllocationLedger, &mut WorkCounters, WorkBudget) {
-        (
+        Ok((
             select(&mut self.roots),
             &mut self.allocations,
             &mut self.work,
             self.budget,
-        )
+        ))
     }
     pub(crate) fn reconcile_native_controls(&mut self) -> Result<(), crate::WorkError> {
-        for entry in self.roots.observers.iter_mut() {
+        for entry in self.roots.observers.0.iter_mut() {
             if entry.2.is_some() {
                 let (born, retired) = entry.0.native_control_events();
                 if retired > born {
@@ -176,7 +144,7 @@ impl DemandWork {
         Ok(())
     }
     pub(crate) fn reconcile_cancellation_registry(&mut self) -> Result<(), crate::WorkError> {
-        for (token, admission) in self.roots.cancellations.iter_mut() {
+        for (token, admission) in self.roots.cancellations.0.iter_mut() {
             admission.reconcile_registry(token, &mut self.allocations)?;
         }
         self.reconcile_native_controls()?;
@@ -184,19 +152,22 @@ impl DemandWork {
         let backing = self
             .roots
             .observers
+            .0
             .iter_mut()
             .map(|entry| {
                 let actual = observer_bytes(entry);
                 (&mut entry.1, actual)
             })
-            .chain(self.roots.watches.iter_mut().map(|entry| {
-                let actual = watch_bytes(entry);
-                (&mut entry.1, actual)
-            }))
-            .chain(self.roots.native_mount_admissions.iter_mut().map(|entry| {
-                let actual = mount_bytes(entry);
-                (&mut entry.1, actual)
-            }));
+            .chain(
+                self.roots
+                    .native_mount_admissions
+                    .0
+                    .iter_mut()
+                    .map(|entry| {
+                        let actual = mount_bytes(entry);
+                        (&mut entry.1, actual)
+                    }),
+            );
         for (paid, actual) in backing {
             if actual < *paid {
                 self.allocations
@@ -225,7 +196,7 @@ impl DemandWork {
         &mut self,
         token: Arc<crate::kernel::ProofDataCustody>,
     ) -> Result<bool, DemandError> {
-        for entry in self.roots.observers.iter() {
+        for entry in self.roots.observers.0.iter() {
             self.work.charge(
                 &WorkCounters {
                     items_examined: 1,
@@ -237,7 +208,8 @@ impl DemandWork {
                 return Ok(false);
             }
         }
-        self.roots.observers.insert(
+        insert(
+            &mut self.roots.observers,
             (token, 0, None),
             &mut self.allocations,
             &mut self.work,
@@ -279,6 +251,7 @@ impl DemandWork {
     ) -> bool {
         self.roots
             .observers
+            .0
             .iter()
             .any(|entry| entry.2.is_some() && Arc::ptr_eq(&entry.0, token))
     }
@@ -300,7 +273,7 @@ impl DemandWork {
             );
         }
         let mut found = None;
-        for (index, (current, _)) in self.roots.cancellations.iter().enumerate() {
+        for (index, (current, _)) in self.roots.cancellations.0.iter().enumerate() {
             self.work.charge(
                 &WorkCounters {
                     items_examined: 1,
@@ -315,25 +288,23 @@ impl DemandWork {
         }
         let index = match found {
             Some(index) => index,
-            None => self
-                .roots
-                .cancellations
-                .insert(
-                    (token.clone(), Default::default()),
-                    &mut self.allocations,
-                    &mut self.work,
-                    self.budget,
-                )
-                .map_err(|error| match error {
-                    DemandError::Work(error) => CancellationWaitError::Work(error),
-                    _ => CancellationWaitError::AllocationFailed,
-                })?,
+            None => insert(
+                &mut self.roots.cancellations,
+                (token.clone(), Default::default()),
+                &mut self.allocations,
+                &mut self.work,
+                self.budget,
+            )
+            .map_err(|error| match error {
+                DemandError::Work(error) => CancellationWaitError::Work(error),
+                _ => CancellationWaitError::AllocationFailed,
+            })?,
         };
         token.prepare_cancelled_measured(
             &mut self.allocations,
             &mut self.work,
             self.budget,
-            &mut self.roots.cancellations.get_mut(index).1,
+            &mut self.roots.cancellations.0[index].1,
         )
     }
     pub(crate) fn finish_cancelled(
@@ -346,6 +317,7 @@ impl DemandWork {
         let admission = self
             .roots
             .cancellations
+            .0
             .iter_mut()
             .find(|(token, _)| prepared.same_token(token));
         let mut empty = CancellationWaitAdmission::default();
@@ -363,39 +335,6 @@ impl DemandWork {
             admission,
         );
         reconciled.and(finished)
-    }
-    pub(crate) fn prepare_watch_custody(&mut self) -> Result<usize, DemandError> {
-        self.reconcile_cancellation_registry()?;
-        self.check()?;
-        for (index, entry) in self.roots.watches.iter_mut().enumerate() {
-            if !entry.2 && entry.1 == 0 && entry.0.strong_count() == 0 {
-                entry.2 = true;
-                return Ok(index);
-            }
-        }
-        self.roots.watches.insert(
-            (Weak::new(), 0, true),
-            &mut self.allocations,
-            &mut self.work,
-            self.budget,
-        )
-    }
-    pub(crate) fn retain_prepared_watch_custody(
-        &mut self,
-        index: usize,
-        token: &Arc<SourceWatchAllocationCustody>,
-    ) -> Result<(), DemandError> {
-        let entry = self.roots.watches.get_mut(index);
-        entry.0 = Arc::downgrade(token);
-        entry.1 = watch_bytes(entry);
-        entry.2 = false;
-        self.allocations
-            .record_owned_bytes(entry.1, &mut self.work)
-            .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-        Ok(self.work.verify(self.budget)?)
-    }
-    pub(crate) fn abandon_prepared_watch_custody(&mut self, index: usize) {
-        self.roots.watches.get_mut(index).2 = false;
     }
 }
 
@@ -424,7 +363,7 @@ impl NativeDemandReadMeter {
         let mut work = self.lock();
         work.scope(
             |work| &mut work.native_invocation,
-            native.invocation_view_state().map(Arc::downgrade),
+            native.invocation.as_ref().map(Arc::downgrade),
             |work| work.check(),
         )
         .map_err(crate::materializer::native_materialization_work_error)?;
@@ -439,6 +378,7 @@ impl NativeDemandReadMeter {
         header.transfer_checkout_metadata(self, token.logical_owned_bytes())?;
         work.roots
             .observers
+            .0
             .iter_mut()
             .find(|entry| Arc::ptr_eq(&entry.0, token))
             .expect("registered control")

@@ -105,11 +105,11 @@ impl NativeHostWork for DemandWork {
         self.charge(delta)
     }
     fn claim(&mut self, bytes: u64) -> Result<u64, Self::Error> {
-        self.allocate(bytes)?;
+        self.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
         Ok(bytes)
     }
     fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
-        self.adopt(logical_max)?;
+        self.claim_allocation(logical_max, 0, crate::WorkCounters::UNCHARGED)?;
         Ok(logical_max)
     }
     fn reconcile_allocation(

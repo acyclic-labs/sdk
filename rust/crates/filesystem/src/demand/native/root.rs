@@ -2,23 +2,20 @@ struct DirectoryState {
     directory: NamespacePath,
     version: SourceVersion,
     entries: HostStatReader,
+    ownership: SourcePayloadOwnership,
     pending: Option<HostListedEntry>,
     replay: VecDeque<SourceDirectoryEntry>,
 }
 
-struct CursorState {
-    directory: Option<DirectoryState>,
-}
-
-pub(super) struct CursorLease<'a> {
-    source: &'a NativeDemandSource,
+pub(super) struct CursorLease {
+    source: NativeDemandSource,
     reference: SourceReference,
     token: u64,
     state: Option<DirectoryState>,
     restore: bool,
 }
 
-impl CursorLease<'_> {
+impl CursorLease {
     fn state(&mut self) -> Result<&mut DirectoryState, DemandError> {
         self.state.as_mut().ok_or(DemandError::StaleCursor)
     }
@@ -37,10 +34,6 @@ impl CursorLease<'_> {
         }
     }
 
-    fn abandon(&mut self) {
-        self.discard();
-    }
-
     fn commit(&mut self) -> Result<(), DemandError> {
         let mut active = self
             .source
@@ -55,7 +48,7 @@ impl CursorLease<'_> {
             let Some(slot) = active.get_mut(&self.token) else {
                 return Err(DemandError::StaleCursor);
             };
-            slot.directory = Some(self.take()?);
+            *slot = Some(self.take()?);
             self.restore = false;
         } else {
             if active.len() >= 1024
@@ -63,18 +56,13 @@ impl CursorLease<'_> {
             {
                 active.remove(&oldest);
             }
-            active.insert(
-                self.token,
-                CursorState {
-                    directory: Some(self.take()?),
-                },
-            );
+            active.insert(self.token, Some(self.take()?));
         }
         Ok(())
     }
 }
 
-impl Drop for CursorLease<'_> {
+impl Drop for CursorLease {
     fn drop(&mut self) {
         if !self.restore {
             return;
@@ -84,7 +72,7 @@ impl Drop for CursorLease<'_> {
             && let Some(slot) = active.get_mut(&self.token)
         {
             if let Some(state) = self.state.take() {
-                slot.directory = Some(state);
+                *slot = Some(state);
             } else {
                 active.remove(&self.token);
             }
@@ -110,7 +98,7 @@ struct NativeDemandInner {
     epoch: AtomicU64,
     profile: FilesystemProfile,
     limits: VolumeLimits,
-    cursors: Mutex<BTreeMap<u64, CursorState>>,
+    cursors: Mutex<BTreeMap<u64, Option<DirectoryState>>>,
     next_cursor: AtomicU64,
     requests: Arc<Semaphore>,
     observer: Option<Arc<dyn DemandDirectoryObserver>>,
@@ -147,19 +135,22 @@ impl NativeDemandSource {
         started: tokio::sync::oneshot::Sender<()>,
         stopped: tokio::sync::oneshot::Sender<()>,
     ) {
+        let path = NamespacePath::new(Vec::new(), self.inner.limits).expect("root path");
         let cancellation = CancellationToken::new();
         let _ = self
-            .run_blocking(&cancellation, move |_, worker_cancellation| {
-                let _ = started.send(());
-                while !worker_cancellation.is_cancelled() {
-                    std::thread::yield_now();
-                }
-                let _ = stopped.send(());
-                Ok(OperationReceipt {
-                    value: (),
-                    work: WorkCounters::default(),
-                })
-            })
+            .request(
+                &path,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                move |_, _, context| {
+                    let _ = started.send(());
+                    while context.check().is_ok() {
+                        std::thread::yield_now();
+                    }
+                    let _ = stopped.send(());
+                    Ok(())
+                },
+            )
             .await;
     }
 
@@ -193,74 +184,19 @@ impl NativeDemandSource {
         })
     }
 
-    /// Opens and identifies only the root directory off the async executor.
+    /// Opens only the root, with its optional durable identity and observer.
     pub async fn open(
         path: impl AsRef<Path>,
         profile: FilesystemProfile,
         limits: VolumeLimits,
-    ) -> Result<Self, DemandError> {
-        Self::open_configured(
-            path,
-            profile,
-            limits,
-            SourceReference {
-                identity: *uuid::Uuid::new_v4().as_bytes(),
-                epoch: 0,
-            },
-            None,
-        )
-        .await
-    }
-
-    /// Opens a lazy native source whose demanded directories are admitted
-    pub async fn open_with_observer(
-        path: impl AsRef<Path>,
-        profile: FilesystemProfile,
-        limits: VolumeLimits,
-        observer: Arc<dyn DemandDirectoryObserver>,
-    ) -> Result<Self, DemandError> {
-        Self::open_with_reference_and_observer(
-            path,
-            profile,
-            limits,
-            SourceReference {
-                identity: *uuid::Uuid::new_v4().as_bytes(),
-                epoch: 0,
-            },
-            observer,
-        )
-        .await
-    }
-
-    /// Reopens only the root directory using a durable provider identity.
-    pub async fn open_with_reference(
-        path: impl AsRef<Path>,
-        profile: FilesystemProfile,
-        limits: VolumeLimits,
-        reference: SourceReference,
-    ) -> Result<Self, DemandError> {
-        Self::open_configured(path, profile, limits, reference, None).await
-    }
-
-    /// Reopens a durably identified lazy source with demand-driven
-    pub async fn open_with_reference_and_observer(
-        path: impl AsRef<Path>,
-        profile: FilesystemProfile,
-        limits: VolumeLimits,
-        reference: SourceReference,
-        observer: Arc<dyn DemandDirectoryObserver>,
-    ) -> Result<Self, DemandError> {
-        Self::open_configured(path, profile, limits, reference, Some(observer)).await
-    }
-
-    async fn open_configured(
-        path: impl AsRef<Path>,
-        profile: FilesystemProfile,
-        limits: VolumeLimits,
-        reference: SourceReference,
+        reference: Option<SourceReference>,
         observer: Option<Arc<dyn DemandDirectoryObserver>>,
     ) -> Result<Self, DemandError> {
         let path = path.as_ref().to_path_buf();
+        let reference = reference.unwrap_or_else(|| SourceReference {
+            identity: *uuid::Uuid::new_v4().as_bytes(),
+            epoch: 0,
+        });
         tokio::task::spawn_blocking(crate::obs::in_context(
             crate::obs::caller_context(),
             move || Self::open_blocking(path, profile, limits, reference, observer),
@@ -321,91 +257,83 @@ impl NativeDemandSource {
         self
     }
 
-    fn observe_directory(&self, directory: &NamespacePath) -> Result<(), DemandError> {
-        self.admit_to_watches(directory)?;
-        self.inner
-            .observer
-            .as_ref()
-            .map_or(Ok(()), |observer| observer.observe_directory(directory))
+    fn observe_directory(
+        &self,
+        directory: &NamespacePath,
+        context: &mut CallbackWork,
+    ) -> Result<(), DemandError> {
+        self.admit_to_watches(directory, context)?;
+        self.inner.observer.as_ref().map_or(Ok(()), |observer| {
+            if let Some(original) = context.native_source_work() {
+                return observer.observe_directory_with_native_work(directory, original);
+            }
+            let cancellation = context.with_original_leaf(|work| work.cancellation().clone());
+            let answer = observer.observe_directory(directory, context.remaining()?, &cancellation);
+            let (result, completed) = match answer {
+                Ok(receipt) => (Ok(()), receipt.work),
+                Err(failure) => (Err(failure.error), *failure.work),
+            };
+            context.merge(completed)?;
+            result
+        })
     }
 
     /// Watches `directory`, and every directory on the way to it, before
-    #[cfg(target_os = "linux")]
-    fn admit_to_watches(&self, directory: &NamespacePath) -> Result<bool, DemandError> {
-        let live = self
-            .inner
-            .watches
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .filter_map(std::sync::Weak::upgrade)
-            .collect::<Vec<_>>();
-        if live.is_empty() {
-            return Ok(false);
-        }
-        let relative = self.relative(directory)?;
-        // Every watch admits it, not just the first that does.
-        let mut added = false;
-        for watch in &live {
-            added |= watch.admit(&relative);
-        }
-        Ok(added)
-    }
-
-    /// One watch covers the whole root on every other host.
-    #[cfg(not(target_os = "linux"))]
-    #[allow(
-        clippy::unused_self,
-        clippy::unnecessary_wraps,
-        reason = "the Linux variant admits directories to inotify watches and can fail; this one keeps its signature"
-    )]
-    fn admit_to_watches(&self, _directory: &NamespacePath) -> Result<bool, DemandError> {
-        Ok(false)
-    }
-
-    fn observe_parent(&self, path: &NamespacePath) -> Result<(), DemandError> {
-        let parent = path.parent().unwrap_or_else(|| path.clone());
-        self.observe_directory(&parent)
-    }
-
-    async fn run_blocking<T: Send + 'static>(
+    fn admit_to_watches(
         &self,
-        cancellation: &CancellationToken,
-        job: impl FnOnce(Self, CancellationToken) -> DemandResult<T> + Send + 'static,
-    ) -> DemandResult<T> {
-        if cancellation.is_cancelled() {
-            return Err(OperationFailure::before_work(DemandError::Cancelled));
+        directory: &NamespacePath,
+        context: &mut CallbackWork,
+    ) -> Result<bool, DemandError> {
+        context.check()?;
+        #[cfg(target_os = "linux")]
+        {
+            let live = self
+                .inner
+                .watches
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .filter_map(std::sync::Weak::upgrade)
+                .collect::<Vec<_>>();
+            if live.is_empty() {
+                return Ok(false);
+            }
+            let (relative, allocation) = self.relative(directory, context)?;
+            let mut added = false;
+            for watch in &live {
+                added |= watch.admit_with_work(&relative, context)?;
+            }
+            drop(relative);
+            context.release(allocation)?;
+            Ok(added)
         }
-        if self.inner.inline && acyclic_native_runtime::inline_blocking_allowed() {
-            return job(self.clone(), cancellation.clone());
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = directory;
+            Ok(false)
         }
-        let permit = tokio::select! {
-            acquired = self.inner.requests.clone().acquire_owned() =>
-                acquired.map_err(|_| OperationFailure::before_work(DemandError::WorkerUnavailable))?,
-            () = cancellation.cancelled() =>
-                return Err(OperationFailure::before_work(DemandError::Cancelled)),
-        };
-        if cancellation.is_cancelled() {
-            return Err(OperationFailure::before_work(DemandError::Cancelled));
-        }
-        let source = self.clone();
-        let cancel_on_drop = CancelWorkerOnDrop(CancellationToken::new());
-        let worker_cancellation = cancel_on_drop.0.clone();
-        let mut worker = tokio::task::spawn_blocking(crate::obs::in_context(
-            crate::obs::caller_context(),
-            move || {
-                let _permit = permit;
-                job(source, worker_cancellation)
-            },
-        ));
-        let result = tokio::select! {
-            result = &mut worker => result,
-            () = cancellation.cancelled() => {
-                cancel_on_drop.0.cancel();
-                worker.await
-            },
-        };
-        result.map_err(|_| OperationFailure::before_work(DemandError::WorkerUnavailable))?
+    }
+
+    fn observe_parent(
+        &self,
+        path: &NamespacePath,
+        context: &mut CallbackWork,
+    ) -> Result<(), DemandError> {
+        let (parent, allocation) = account_source(context, |accounting, cancellation| {
+            path.prefix_with_accounting(
+                path.depth().saturating_sub(1),
+                self.inner.limits,
+                accounting,
+                cancellation,
+            )
+        })?;
+        let result = self.observe_directory(&parent, context);
+        let bytes = parent.retained_bytes();
+        drop(parent);
+        account_source(context, |accounting, _| {
+            crate::kernel::retire_allocation(allocation, bytes, accounting)
+        })?;
+        result
     }
 
     /// Invalidates prior source references and directory cursors without
@@ -423,17 +351,19 @@ impl NativeDemandSource {
     fn check(
         &self,
         source: SourceReference,
-        cancellation: &CancellationToken,
+        context: &mut CallbackWork,
     ) -> Result<(), DemandError> {
+        context.check()?;
         if source != self.reference() {
             return Err(DemandError::StaleSource);
-        }
-        if cancellation.is_cancelled() {
-            return Err(DemandError::Cancelled);
         }
         if self.root_named_while_watched() {
             return Ok(());
         }
+        context.started_io(WorkCounters {
+            backend_read_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
         if crate::NativeRootIdentity::of_root_path(&self.inner.path).ok()
             != Some(self.inner.root.identity())
         {
@@ -443,45 +373,61 @@ impl NativeDemandSource {
     }
 
     /// Whether a live watch proves the root's path still names the held
-    #[cfg(windows)]
     fn root_named_while_watched(&self) -> bool {
-        self.inner
-            .watches
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .any(|watch| watch.strong_count() != 0)
-    }
-
-    /// Watches elsewhere report a moved root rather than prevent it.
-    #[cfg(not(windows))]
-    #[allow(
-        clippy::unused_self,
-        reason = "the Windows variant reads the live watch set; this one keeps its signature"
-    )]
-    const fn root_named_while_watched(&self) -> bool {
-        false
-    }
-
-    fn relative(&self, path: &NamespacePath) -> Result<PathBuf, DemandError> {
-        let limits = self.inner.limits;
-        if path.depth() > usize::from(limits.maximum_path_depth)
-            || path.encoded_bytes() > limits.maximum_path_bytes
-            || path.components().iter().any(|component| {
-                component.as_bytes().len()
-                    > usize::try_from(limits.maximum_component_bytes).unwrap_or(usize::MAX)
-            })
+        #[cfg(windows)]
         {
-            return Err(DemandError::InvalidRequest);
+            self.inner
+                .watches
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|watch| watch.strong_count() != 0)
         }
-        crate::native_capture::namespace_to_host_path(path).map_err(|_| DemandError::InvalidRequest)
+        #[cfg(not(windows))]
+        {
+            false
+        }
     }
 
-    fn metadata(&self, path: &NamespacePath) -> Result<Option<HostStat>, DemandError> {
-        match self.inner.root.stat(&self.relative(path)?) {
-            Ok(metadata) => Ok(Some(metadata)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
+    fn relative(
+        &self,
+        path: &NamespacePath,
+        context: &mut CallbackWork,
+    ) -> Result<(DemandPath, u64), DemandError> {
+        NamespacePath::validate_component_lengths(
+            path.components().iter().map(|name| name.as_bytes().len()),
+            self.inner.limits,
+        )?;
+        #[cfg(unix)]
+        {
+            crate::native_capture::namespace_to_host_path_with_work(path, context)
+        }
+        #[cfg(windows)]
+        {
+            crate::native_capture::namespace_host_units_with_work(
+                path,
+                context,
+                u16::from(b'\\'),
+                crate::native_capture::namespace_component_wide,
+            )
+        }
+    }
+    fn metadata(
+        &self,
+        path: &NamespacePath,
+        context: &mut CallbackWork,
+    ) -> Result<Option<HostStat>, DemandError> {
+        let (relative, allocation) = self.relative(path, context)?;
+        #[cfg(unix)]
+        let result = self.inner.root.stat(&relative, context);
+        #[cfg(windows)]
+        let result = self.inner.root.stat_wide(&relative, context);
+        drop(relative);
+        context.release(allocation)?;
+        match result {
+            Ok(stat) => Ok(Some(stat)),
+            Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
         }
     }
 
@@ -490,7 +436,7 @@ impl NativeDemandSource {
         SourceNode {
             kind,
             file_identity: file_identity(metadata),
-            link_count: link_count(metadata),
+            link_count: Some(metadata.nlink()),
             device: device_identity(metadata, kind),
             logical_bytes: (kind == SourceNodeKind::RegularFile
                 || cfg!(unix) && kind == SourceNodeKind::SymbolicLink)
@@ -506,7 +452,8 @@ impl NativeDemandSource {
         directory: &NamespacePath,
         observed: SourceVersion,
         cursor: Option<SourceCursor>,
-    ) -> Result<CursorLease<'_>, DemandError> {
+        context: &mut CallbackWork,
+    ) -> Result<CursorLease, DemandError> {
         let restore = cursor.is_some();
         let (token, state) = if let Some(cursor) = cursor {
             if cursor.source != source
@@ -523,7 +470,7 @@ impl NativeDemandSource {
             let slot = active
                 .get_mut(&cursor.token)
                 .ok_or(DemandError::StaleCursor)?;
-            let state = slot.directory.take().ok_or(DemandError::CursorBusy)?;
+            let state = slot.take().ok_or(DemandError::CursorBusy)?;
             (cursor.token, state)
         } else {
             let token = self
@@ -534,10 +481,13 @@ impl NativeDemandSource {
                 })
                 .map_err(|_| DemandError::StaleCursor)?
                 + 1;
-            (token, self.open_directory_state(directory, observed)?)
+            (
+                token,
+                self.open_directory_state(directory, observed, context)?,
+            )
         };
         Ok(CursorLease {
-            source: self,
+            source: self.clone(),
             reference: source,
             token,
             state: Some(state),
@@ -549,29 +499,49 @@ impl NativeDemandSource {
         &self,
         directory: &NamespacePath,
         observed: SourceVersion,
+        context: &mut CallbackWork,
     ) -> Result<DirectoryState, DemandError> {
+        let (relative, allocation) = self.relative(directory, context)?;
+        #[cfg(unix)]
+        let result = self.inner.root.read_dir_stats(&relative, context);
+        #[cfg(windows)]
+        let result = self.inner.root.read_dir_stats_wide(&relative, context);
+        drop(relative);
+        context.release(allocation)?;
+        let (entries, allocation) = result?;
+        let ownership = SourcePayloadOwnership::new(context)?;
+        ownership.retain(allocation, context)?;
         Ok(DirectoryState {
             directory: directory.clone(),
             version: observed,
-            entries: self.inner.root.read_dir_stats(&self.relative(directory)?)?,
+            entries,
+            ownership,
             pending: None,
             replay: VecDeque::new(),
         })
     }
-
-    /// Converts one enumerated entry into the node a lookup reports,
     fn next_entry(
         &self,
-        directory: &Path,
+        directory: &DemandPath,
         entry: &HostListedEntry,
+        context: &mut CallbackWork,
     ) -> Result<Option<SourceDirectoryEntry>, DemandError> {
-        let file_name = &entry.name;
-        let (encoding, bytes) = crate::native_name::host_name_bytes(
-            file_name,
+        #[cfg(unix)]
+        let ((encoding, bytes), allocation) = crate::native_name::host_name_bytes_with_source_work(
+            &entry.name,
             self.inner.profile,
             self.inner.limits.maximum_component_bytes,
-        )
-        .map_err(|_| DemandError::InvalidRequest)?;
+            context,
+        )?;
+        #[cfg(windows)]
+        let ((encoding, bytes), allocation) =
+            crate::native_name::host_wide_name_bytes_with_source_work(
+                &entry.name,
+                self.inner.profile,
+                self.inner.limits.maximum_component_bytes,
+                context,
+            )?;
+        let _ = allocation;
         let name = crate::kernel::LogicalName::new(
             encoding,
             bytes,
@@ -580,46 +550,61 @@ impl NativeDemandSource {
         .map_err(|_| DemandError::InvalidRequest)?;
         let node = match &entry.stat {
             Some(stat) => Self::node(stat),
-            None => match self.inner.root.stat(&directory.join(file_name)) {
-                Ok(stat) => Self::node(&stat),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(error) => return Err(error.into()),
-            },
+            None => {
+                #[cfg(unix)]
+                let stat = self.inner.root.stat(&directory.join(&entry.name), context);
+                #[cfg(windows)]
+                let stat = self
+                    .inner
+                    .root
+                    .open_dir_held_wide(directory, context)
+                    .and_then(|(parent, _)| {
+                        crate::native_host::stat_held_name_wide(
+                            &parent,
+                            &entry.name,
+                            self.inner.root.identity().device as u32,
+                            context,
+                        )
+                    });
+                match stat {
+                    Ok(stat) => Self::node(&stat),
+                    Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
         };
         Ok(Some(SourceDirectoryEntry { name, node }))
     }
-
     fn page_entries(
         &self,
         state: &mut DirectoryState,
-        maximum_entries: u32,
-        cancellation: &CancellationToken,
-        work: &mut WorkCounters,
+        maximum: u32,
+        context: &mut CallbackWork,
         mut on_entry: impl FnMut(),
     ) -> Result<Vec<SourceDirectoryEntry>, DemandError> {
-        let mut entries = Vec::with_capacity(maximum_entries as usize);
+        let allocation =
+            context.claim(maximum as u64 * std::mem::size_of::<SourceDirectoryEntry>() as u64)?;
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(maximum as usize)
+            .map_err(DemandError::Allocation)?;
+        state.ownership.retain(allocation, context)?;
+        let (relative, allocation) = self.relative(&state.directory, context)?;
         let result = (|| {
-            let directory = self.relative(&state.directory)?;
-            while entries.len() < maximum_entries as usize {
-                if cancellation.is_cancelled() {
-                    return Err(DemandError::Cancelled);
-                }
+            while entries.len() < maximum as usize {
+                context.check()?;
                 if let Some(entry) = state.replay.pop_front() {
                     entries.push(entry);
                     continue;
                 }
-                let next = if let Some(pending) = state.pending.take() {
-                    Some(Ok(pending))
-                } else {
-                    let next = state.entries.next();
-                    if next.is_some() {
-                        work.source_entries_visited += 1;
-                    }
-                    next
+                let next = match state.pending.take() {
+                    Some(entry) => Some(entry),
+                    None => self.read_entry(&mut state.entries, context)?,
                 };
                 let Some(entry) = next else { break };
-                let entry = entry?;
-                match self.next_entry(&directory, &entry) {
+                match self.next_entry(&relative, &entry, context) {
                     Ok(converted) => entries.extend(converted),
                     Err(error) => {
                         state.pending = Some(entry);
@@ -628,18 +613,37 @@ impl NativeDemandSource {
                 }
                 on_entry();
             }
-            if state.pending.is_none()
-                && let Some(next) = state.entries.next()
-            {
-                state.pending = Some(next?);
-                work.source_entries_visited += 1;
+            if state.pending.is_none() {
+                state.pending = self.read_entry(&mut state.entries, context)?;
             }
             Ok(())
         })();
+        drop(relative);
+        context.release(allocation)?;
         if result.is_err() {
             entries.extend(state.replay.drain(..));
             state.replay = std::mem::take(&mut entries).into();
         }
         result.map(|()| entries)
+    }
+    fn read_entry(
+        &self,
+        reader: &mut HostStatReader,
+        context: &mut CallbackWork,
+    ) -> Result<Option<HostListedEntry>, DemandError> {
+        #[cfg(unix)]
+        let next = reader.next(context)?;
+        #[cfg(windows)]
+        let next = reader.next_wide(context)?;
+        match next {
+            None => Ok(None),
+            Some((entry, _allocation)) => {
+                context.record(WorkCounters {
+                    source_entries_visited: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                Ok(Some(entry))
+            }
+        }
     }
 }

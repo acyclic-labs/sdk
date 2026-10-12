@@ -756,8 +756,8 @@ impl CaptureWorkScope {
         })
     }
 
-    fn source(&self) -> crate::demand::NativeSourceWork<'_> {
-        crate::demand::NativeSourceWork::from_native_materialization_work(&self.native)
+    fn source(&self) -> crate::NativeMaterializationWork {
+        crate::NativeMaterializationWork::clone(&self.native)
     }
 
     fn release(&mut self) -> Result<(), CaptureError> {
@@ -1189,7 +1189,7 @@ fn capture_sort_by<T>(
 }
 
 fn capture_allocate(meter: &CaptureWorkScope, bytes: u64) -> Result<(), CaptureError> {
-    meter.native.with_original_leaf(|work| work.allocate(bytes)).map_err(capture_demand_error)
+    meter.native.with_original_leaf(|work| work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)).map_err(capture_demand_error)
 }
 
 fn capture_charge(meter: &CaptureWorkScope, work: WorkCounters) -> Result<(), CaptureError> {
@@ -1201,7 +1201,7 @@ fn clone_capture_name(name: &LogicalName, meter: &CaptureWorkScope) -> Result<Lo
         ..WorkCounters::UNCHARGED })?;
     let copied = WorkCounters { source_bytes_read: name.as_bytes().len() as u64,
         bytes_copied: name.as_bytes().len() as u64, ..WorkCounters::UNCHARGED };
-    meter.source().admit(copied).map_err(capture_demand_error)?;
+    crate::native_host::NativeHostWork::admit(&mut meter.source(), copied).map_err(capture_demand_error)?;
     let mut bytes = capture_vec(name.as_bytes().len(), meter)?;
     bytes.extend_from_slice(name.as_bytes());
     meter.source().record(copied).map_err(capture_demand_error)?;
@@ -1340,7 +1340,7 @@ fn clone_capture_path(path: &NamespacePath, meter: &CaptureWorkScope) -> Result<
                 NamespacePathStep::Admit(delta) => {
                     let mut delta = *delta;
                     delta.source_bytes_read = delta.bytes_copied;
-                    meter.source().admit(delta).map_err(capture_demand_error)
+                    crate::native_host::NativeHostWork::admit(&mut meter.source(), delta).map_err(capture_demand_error)
                 }
                 NamespacePathStep::Performed(delta) => {
                     let mut delta = *delta;
@@ -1349,7 +1349,7 @@ fn clone_capture_path(path: &NamespacePath, meter: &CaptureWorkScope) -> Result<
                 }
                 NamespacePathStep::Charge(delta) => capture_charge(meter, *delta),
                 NamespacePathStep::Allocation(ReadAllocationStep::Allocate { bytes, operations }) => {
-                    meter.native.with_original_leaf(|work| work.claim_allocation(bytes, operations)).map_err(capture_demand_error)
+                    meter.native.with_original_leaf(|work| work.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED)).map_err(capture_demand_error)
                 }
                 NamespacePathStep::Allocation(ReadAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
                     let mut allocation = admitted_bytes;
@@ -1359,21 +1359,21 @@ fn clone_capture_path(path: &NamespacePath, meter: &CaptureWorkScope) -> Result<
                 NamespacePathStep::Allocation(ReadAllocationStep::ReserveFailed(error)) =>
                     Err(CaptureError::from(error)),
                 NamespacePathStep::Allocation(ReadAllocationStep::BeforeCopy(bytes)) =>
-                    meter.source().admit(WorkCounters { bytes_copied: bytes, source_bytes_read: bytes,
+                    crate::native_host::NativeHostWork::admit(&mut meter.source(), WorkCounters { bytes_copied: bytes, source_bytes_read: bytes,
                         ..WorkCounters::UNCHARGED }).map_err(capture_demand_error),
                 NamespacePathStep::Allocation(ReadAllocationStep::Copied(bytes)) =>
                     meter.source().record(WorkCounters { bytes_copied: bytes, source_bytes_read: bytes,
                         ..WorkCounters::UNCHARGED }).map_err(capture_demand_error),
                 NamespacePathStep::Allocation(ReadAllocationStep::BeforeHash(bytes)) => {
                     meter.source().check().map_err(capture_demand_error)?;
-                    meter.source().admit(WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED }).map_err(capture_demand_error)
+                    crate::native_host::NativeHostWork::admit(&mut meter.source(), WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED }).map_err(capture_demand_error)
                 }
                 NamespacePathStep::Allocation(ReadAllocationStep::Hashed(bytes)) => {
                     meter.source().record(WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED }).map_err(capture_demand_error)?;
                     meter.source().check().map_err(capture_demand_error)
                 }
                 NamespacePathStep::Allocation(ReadAllocationStep::BeforeItem) =>
-                    meter.source().admit(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(capture_demand_error),
+                    crate::native_host::NativeHostWork::admit(&mut meter.source(), WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(capture_demand_error),
                 NamespacePathStep::Allocation(ReadAllocationStep::Item) =>
                     capture_charge(meter, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }),
         }
@@ -2321,7 +2321,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
             };
             let bytes = capture_watch_owned_bytes(changes, incoming, storage_bytes, meter)
             ?;
-            meter.native.with_original_leaf(|work| work.adopt(bytes))
+            meter.native.with_original_leaf(|work| work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED))
             .map_err(capture_demand_error)?;
         }
         meter.native.with_original_leaf(|work| work.cancellation().clone())
@@ -2720,7 +2720,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
             let bytes = count.checked_mul(std::mem::size_of::<AuthoredMutation>())
             .ok_or(CaptureError::from(WorkError::Overflow))? as u64;
             let copied = WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED };
-            meter.source().admit(copied).map_err(capture_demand_error)?;
+            crate::native_host::NativeHostWork::admit(&mut meter.source(), copied).map_err(capture_demand_error)?;
             let mut final_state = capture_vec(count, meter)?;
             final_state.extend(mutations.drain(namespace_boundary..));
             meter.source().record(copied).map_err(capture_demand_error)?;
@@ -4142,7 +4142,7 @@ fn keep_sparse_range(
             bytes_copied: copied as u64,
             ..WorkCounters::UNCHARGED
         };
-        meter.source().admit(delta).map_err(capture_demand_error)?;
+        crate::native_host::NativeHostWork::admit(&mut meter.source(), delta).map_err(capture_demand_error)?;
         let mut replacement = capture_vec(next, meter)?;
         replacement.extend_from_slice(ranges);
         meter.source().record(delta).map_err(capture_demand_error)?;
@@ -4692,7 +4692,7 @@ fn host_device_identity(_: &HostStat) -> Result<(u32, u32), CaptureError> {
 fn capture_link_target(target: Vec<u8>, meter: &CaptureWorkScope) -> Result<bytes::Bytes, CaptureError> {
     meter.source().check().map_err(capture_demand_error)?;
     if target.len() != target.capacity() {
-        meter.native.with_original_leaf(|work| work.claim_allocation(0, 1)).map_err(capture_demand_error)?;
+        meter.native.with_original_leaf(|work| work.claim_allocation(0, 1, crate::WorkCounters::UNCHARGED)).map_err(capture_demand_error)?;
     }
     Ok(bytes::Bytes::from(target))
 }

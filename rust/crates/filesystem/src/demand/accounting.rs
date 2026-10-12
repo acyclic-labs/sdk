@@ -72,9 +72,6 @@ impl DemandWork {
         }
         Ok(())
     }
-    pub(super) fn effective_budget(&self) -> Result<WorkBudget, DemandError> {
-        Ok(self.budget)
-    }
     pub(super) fn resource(&self) -> Option<Arc<NativeResourceAllowance>> {
         self.native_resource.as_ref().and_then(Weak::upgrade)
     }
@@ -122,7 +119,7 @@ impl DemandWork {
         WorkBudget,
         &CancellationToken,
     ) {
-        let budget = self.effective_budget().expect("balanced reservations");
+        let budget = self.budget;
         (
             &mut self.allocations,
             &mut self.work,
@@ -148,7 +145,7 @@ impl DemandWork {
         if let Some(resource) = self.resource() {
             resource.admit(delta, 0)?;
         }
-        Ok(self.work.admit(&delta, &self.effective_budget()?)?)
+        Ok(self.work.admit(&delta, &self.budget)?)
     }
     pub(crate) fn admit_retained(&mut self, bytes: u64) -> Result<(), DemandError> {
         self.reconcile_cancellation_registry()?;
@@ -167,22 +164,22 @@ impl DemandWork {
                 peak_allocation_bytes: peak,
                 ..WorkCounters::UNCHARGED
             },
-            &self.effective_budget()?,
+            &self.budget,
         )?)
     }
     pub(crate) fn charge(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        if let Some(resource) = self.resource() {
-            return resource.admission(delta, 0, &mut || {
-                self.scope(
-                    |work| &mut work.native_resource,
-                    None,
-                    |work| work.charge(delta),
-                )
-            });
-        }
         self.reconcile_cancellation_registry()?;
         self.check()?;
-        Ok(self.work.charge(&delta, &self.effective_budget()?)?)
+        let resource = self.resource();
+        let mut charge = || {
+            self.work
+                .charge(&delta, &self.budget)
+                .map_err(DemandError::from)
+        };
+        match resource {
+            Some(resource) => resource.admission(delta, 0, &mut charge),
+            None => charge(),
+        }
     }
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         let resource = self
@@ -195,11 +192,7 @@ impl DemandWork {
             .work
             .try_add_assign(&delta)
             .map_err(DemandError::from)
-            .and_then(|()| {
-                self.work
-                    .verify(self.effective_budget()?)
-                    .map_err(DemandError::from)
-            });
+            .and_then(|()| self.work.verify(self.budget).map_err(DemandError::from));
         reconciled.and(recorded).and(resource)
     }
     pub(crate) fn spent(&mut self, mut delta: WorkCounters) -> Result<(), DemandError> {
@@ -216,164 +209,103 @@ impl DemandWork {
         self.work.try_add_assign(&delta)?;
         reconciled.and(resource)
     }
-    pub(crate) fn claim_native_owned(
+    pub(crate) fn claim_allocation(
         &mut self,
         bytes: u64,
         operations: u64,
         delta: WorkCounters,
-        capture: &Option<Arc<CaptureTransientCustody>>,
     ) -> Result<(), DemandError> {
-        if let Some(resource) = self.resource() {
-            let admitted = delta.checked_add(WorkCounters {
-                allocation_operations: operations,
-                ..WorkCounters::UNCHARGED
-            })?;
-            return resource.admission(admitted, bytes, &mut || {
-                self.scope(
-                    |work| &mut work.native_resource,
-                    None,
-                    |work| work.claim_native_owned(bytes, operations, delta, capture),
-                )
-            });
-        }
         self.reconcile_cancellation_registry()?;
         self.check()?;
-        let mut work = self.work;
-        let mut allocations = self.allocations;
-        let budget = self.effective_budget()?;
-        work.charge(&delta, &budget)?;
-        allocations
-            .claim_bytes(bytes, operations, &mut work, budget)
-            .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-        self.work = work;
-        self.allocations = allocations;
-        if let Some(capture) = capture {
-            capture.claim(bytes);
+        let resource = self.resource();
+        let capture = self.capture_custody();
+        let mut claim = || {
+            let mut work = self.work;
+            let mut allocations = self.allocations;
+            work.charge(&delta, &self.budget)?;
+            allocations
+                .claim_bytes(bytes, operations, &mut work, self.budget)
+                .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+            self.work = work;
+            self.allocations = allocations;
+            if let Some(capture) = &capture {
+                capture.claim(bytes);
+            }
+            Ok(())
+        };
+        match resource {
+            Some(resource) => resource.admission(
+                delta.checked_add(WorkCounters {
+                    allocation_operations: operations,
+                    ..WorkCounters::UNCHARGED
+                })?,
+                bytes,
+                &mut claim,
+            ),
+            None => claim(),
         }
-        Ok(())
     }
     pub(crate) fn retain_native_owned(
         &mut self,
         bytes: u64,
         capture: &Option<Arc<CaptureTransientCustody>>,
     ) -> Result<(), DemandError> {
-        if let Some(resource) = self.resource() {
-            return resource.admission(WorkCounters::UNCHARGED, bytes, &mut || {
-                self.scope(
-                    |work| &mut work.native_resource,
-                    None,
-                    |work| work.retain_native_owned(bytes, capture),
-                )
-            });
-        }
         if self.roots.poisoned {
             return Err(DemandError::OriginalWorkPoisoned);
         }
-        let budget = self.effective_budget()?;
-        self.allocations
-            .claim_bytes(bytes, 0, &mut self.work, budget)
-            .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-        if let Some(capture) = capture {
-            capture.claim(bytes);
+        let resource = self.resource();
+        let mut retain = || {
+            self.allocations
+                .claim_bytes(bytes, 0, &mut self.work, self.budget)
+                .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+            if let Some(capture) = capture {
+                capture.claim(bytes);
+            }
+            Ok(())
+        };
+        match resource {
+            Some(resource) => resource.admission(WorkCounters::UNCHARGED, bytes, &mut retain),
+            None => retain(),
         }
-        Ok(())
     }
     pub(crate) fn record_native_owned_completed(
         &mut self,
         bytes: u64,
         capture: &Option<Arc<CaptureTransientCustody>>,
     ) -> (u64, Result<(), DemandError>) {
-        if let Some(resource) = self.resource() {
-            let (claimed, result) = self.scope(
-                |work| &mut work.native_resource,
-                None,
-                |work| work.record_native_owned_completed(bytes, capture),
-            );
-            return (
-                claimed,
-                result.and(resource.completed(WorkCounters::UNCHARGED, claimed)),
-            );
-        }
         if let Err(error) = self.allocations.record_owned_bytes(bytes, &mut self.work) {
             return (0, Err(error.into_work_or(DemandError::InvalidRequest)));
         }
         if let Some(capture) = capture {
             capture.claim(bytes);
         }
+        let resource = self.resource().map_or(Ok(()), |resource| {
+            resource.completed(WorkCounters::UNCHARGED, bytes)
+        });
         (
             bytes,
-            self.check().and_then(|()| {
-                self.work
-                    .verify(self.effective_budget()?)
-                    .map_err(DemandError::from)
-            }),
+            self.check()
+                .and_then(|()| self.work.verify(self.budget).map_err(DemandError::from))
+                .and(resource),
         )
     }
-    pub(crate) fn release_native_owned(
-        &mut self,
-        bytes: u64,
-        capture: &Option<Arc<CaptureTransientCustody>>,
-    ) -> Result<(), DemandError> {
+    pub(crate) fn release(&mut self, bytes: u64) -> Result<(), DemandError> {
         let released = self
             .allocations
             .release(bytes)
             .map_err(|error| error.into_work_or(DemandError::InvalidRequest));
-        let captured = capture.as_ref().map_or(Ok(()), |capture| {
-            capture
-                .transfer_retained_bytes(bytes)
-                .map_err(DemandError::from)
-        });
+        if let Some(capture) = self.capture_custody() {
+            capture.release(bytes);
+        }
         let resource = self
             .resource()
             .map_or(Ok(()), |resource| resource.retire(bytes));
-        if let Err(error) = released.and(captured).and(resource) {
+        if let Err(error) = released.and(resource) {
             self.record_native_io_failure(error);
             self.poison_native_original_work();
             return Err(DemandError::OriginalWorkPoisoned);
         }
         Ok(())
-    }
-    pub(crate) fn allocate(&mut self, bytes: u64) -> Result<(), DemandError> {
-        self.claim_allocation(bytes, u64::from(bytes != 0))
-    }
-    pub(crate) fn claim_allocation(
-        &mut self,
-        bytes: u64,
-        operations: u64,
-    ) -> Result<(), DemandError> {
-        self.claim_native_owned(
-            bytes,
-            operations,
-            WorkCounters::UNCHARGED,
-            &self.capture_custody(),
-        )
-    }
-    pub(crate) fn allocate_for(
-        &mut self,
-        bytes: u64,
-        delta: WorkCounters,
-    ) -> Result<(), DemandError> {
-        self.claim_native_owned(bytes, u64::from(bytes != 0), delta, &self.capture_custody())
-    }
-    pub(crate) fn adopt(&mut self, bytes: u64) -> Result<(), DemandError> {
-        self.claim_native_owned(bytes, 0, WorkCounters::UNCHARGED, &self.capture_custody())
-    }
-    pub(crate) fn record_adoption(
-        &mut self,
-        bytes: u64,
-        capture: &Option<Arc<CaptureTransientCustody>>,
-    ) -> Result<(), DemandError> {
-        self.record_native_owned_completed(bytes, capture).1
-    }
-    pub(crate) fn release(&mut self, bytes: u64) -> Result<(), DemandError> {
-        self.allocations
-            .release(bytes)
-            .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-        if let Some(capture) = self.capture_custody() {
-            capture.release(bytes);
-        }
-        self.resource()
-            .map_or(Ok(()), |resource| resource.retire(bytes))
     }
     pub(crate) fn reconcile_native_allocation(
         &mut self,
@@ -391,7 +323,7 @@ impl DemandWork {
     }
     pub(crate) fn remaining(&mut self) -> Result<WorkBudget, DemandError> {
         self.reconcile_native_controls()?;
-        let mut budget = self.work.remaining(self.effective_budget()?)?;
+        let mut budget = self.work.remaining(self.budget)?;
         budget.peak_allocation_bytes = budget
             .peak_allocation_bytes
             .checked_sub(self.live_allocation_bytes())
@@ -403,32 +335,10 @@ impl DemandWork {
                 .map(|local| budget.intersect_budget(local))
         })?)
     }
-    pub(crate) fn merge(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        self.reconcile_cancellation_registry()?;
-        self.work = self
-            .work
-            .with_backend(delta, self.allocations.live_bytes())?;
-        self.reconcile_cancellation_registry()?;
-        Ok(self.work.verify(self.effective_budget()?)?)
-    }
-    pub(crate) fn merge_with_prior_live(
-        &mut self,
-        delta: WorkCounters,
-        live: u64,
-    ) -> Result<(), DemandError> {
+    pub(crate) fn merge(&mut self, delta: WorkCounters, live: u64) -> Result<(), DemandError> {
         self.work = self.work.with_backend(delta, live)?;
         self.reconcile_cancellation_registry()?;
-        Ok(self.work.verify(self.effective_budget()?)?)
-    }
-    pub(crate) fn finish<T>(mut self, result: Result<T, DemandError>) -> DemandResult<T> {
-        self.reconcile_cancellation_registry()
-            .map_err(DemandError::from)
-            .and(result)
-            .map(|value| OperationReceipt {
-                value,
-                work: self.work,
-            })
-            .map_err(|error| OperationFailure::new(error, self.work))
+        Ok(self.work.verify(self.budget)?)
     }
     pub(crate) fn record_native_io_failure(&mut self, error: DemandError) -> std::io::Error {
         let error = self.roots.io_failure.get_or_insert(error);

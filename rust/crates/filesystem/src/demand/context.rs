@@ -40,7 +40,7 @@ impl CaptureTransientCustody {
         }))
     }
     pub(crate) fn owns_native_work(&self, work: &crate::NativeMaterializationWork) -> bool {
-        self.header.matches_work(work)
+        self.header.work().shares_allocation_context(work)
     }
     pub(crate) fn take_retained_bytes(&self) -> u64 {
         self.retained.swap(0, Ordering::AcqRel)
@@ -62,30 +62,6 @@ impl CaptureTransientCustody {
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 Some(current.saturating_sub(bytes))
             });
-    }
-}
-
-/// Retained backing of one native watch registration.
-pub struct SourceWatchAllocationCustody {
-    retained: AtomicU64,
-    pub(super) ownership: SourcePayloadOwnership,
-}
-impl SourceWatchAllocationCustody {
-    /// Returns the registration's live buffer bytes.
-    pub fn retained_bytes(&self) -> u64 {
-        self.retained.load(Ordering::Acquire)
-    }
-    pub(super) fn new(ownership: SourcePayloadOwnership) -> Self {
-        Self {
-            retained: AtomicU64::new(0),
-            ownership,
-        }
-    }
-    pub(super) fn publish(&self, bytes: u64) {
-        self.retained.store(bytes, Ordering::Release);
-    }
-    pub(super) fn retired(&self) {
-        self.retained.store(0, Ordering::Release);
     }
 }
 

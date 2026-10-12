@@ -448,7 +448,7 @@ fn restore_preparation_rejects_a_swapped_root_before_any_write()
     )));
     let native_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&original));
     let allocation_work = (&native_work).clone();
-    let mut work = NativeSourceWork::new(&original);
+    let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
     let failure = prepare_restore(
         allocation_work
             .path(&destination, None)
