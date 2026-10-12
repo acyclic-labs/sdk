@@ -73,7 +73,7 @@ impl ContextStage for CompactionStage {
                 self.summary
                     .as_ref()
                     .map(|summary| {
-                        Ok(ContextSummary {
+                        Ok::<_, crate::Error>(ContextSummary {
                             operation_id: summary.operation_id,
                             step: summary.step,
                             source_messages: summary.source_messages,
