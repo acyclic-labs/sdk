@@ -554,7 +554,7 @@ where
                 code: crate::wire::ErrorCode::Invalid, reason: "native runtime configuration has no original work",
             })?;
             volume.validate_with_native_work(work)?;
-        } else { volume.validate()?; }
+        } else { volume.validate(&mut None)?; }
         #[cfg(target_arch = "wasm32")]
         volume.validate()?;
         if maximum_payload_bytes == 0 {

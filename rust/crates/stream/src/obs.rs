@@ -8,18 +8,14 @@ pub(crate) struct OwnedSpan {
     span: Span,
     dispatch: tracing::Dispatch,
     // Context only: completion fields always record on `span`, never this caller.
-    caller: Option<Span>,
+    pub(crate) caller: Option<Span>,
 }
 impl OwnedSpan {
     pub(crate) fn new(span: Span) -> Self {
-        Self::new_with_filtered_context(span, true)
-    }
-    /// Disabled consumer-owned streams can opt out of retaining caller ancestry.
-    pub(crate) fn new_with_filtered_context(span: Span, retain_filtered_context: bool) -> Self {
         let dispatch = span
             .with_subscriber(|(_, dispatch)| dispatch.clone())
             .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
-        let caller = (retain_filtered_context && span.is_disabled()).then(Span::current);
+        let caller = span.is_disabled().then(Span::current);
         Self {
             span,
             dispatch,
@@ -32,13 +28,9 @@ impl OwnedSpan {
         })
     }
     pub(crate) fn scope<T>(&self, inner: T) -> Scoped<T> {
-        self.scope_mode(inner, true)
-    }
-    /// `false` leaves polling and destruction with the consumer's dispatcher.
-    pub(crate) fn scope_mode<T>(&self, inner: T, own_context: bool) -> Scoped<T> {
         Scoped {
             inner: Some(inner),
-            context: own_context.then(|| self.clone()),
+            context: Some(self.clone()),
         }
     }
 }
@@ -70,8 +62,8 @@ pin_project_lite::pin_project! {
     /// Polls and destroys the pinned inner value under the owned context.
     pub(crate) struct Scoped<T> {
         #[pin]
-        inner: Option<T>,
-        context: Option<OwnedSpan>,
+        pub(crate) inner: Option<T>,
+        pub(crate) context: Option<OwnedSpan>,
     }
     impl<T> PinnedDrop for Scoped<T> {
         fn drop(this: Pin<&mut Self>) {
@@ -125,26 +117,12 @@ impl<T: futures::Stream> futures::Stream for Scoped<T> {
 }
 
 
-/// A failure with a stable, path-free kind to record as `error.kind`.
-#[cfg(any(test, feature = "http", feature = "local"))]
-pub(crate) trait ErrorKind {
-    fn kind(&self) -> &'static str;
-}
-
-#[cfg(any(test, feature = "http", feature = "local"))]
-impl ErrorKind for crate::StreamError {
-    fn kind(&self) -> &'static str {
-        self.code()
-    }
-}
-
-
 /// Records `outcome` and, on failure, `error.kind` on the owned operation span.
 #[cfg(any(test, feature = "http", feature = "local"))]
-pub(crate) fn finish<T, E: ErrorKind>(span: &Span, result: Result<T, E>) -> Result<T, E> {
+pub(crate) fn finish<T>(span: &Span, result: Result<T, crate::StreamError>) -> Result<T, crate::StreamError> {
     match &result {
         Ok(_) => { span.record("outcome", "ok"); }
-        Err(error) => failed(span, error.kind()),
+        Err(error) => failed(span, error.code()),
     }
     result
 }
@@ -152,6 +130,16 @@ pub(crate) fn finish<T, E: ErrorKind>(span: &Span, result: Result<T, E>) -> Resu
 /// Records a failure of `kind` on the owned operation span.
 pub(crate) fn failed(span: &Span, kind: &'static str) {
     span.record("outcome", "err").record("error.kind", kind);
+}
+
+/// Records cancellation if the caller drops an unfinished operation.
+#[cfg(any(feature = "http", feature = "local"))]
+pub(crate) struct Cancellation(pub(crate) Option<OwnedSpan>);
+#[cfg(any(feature = "http", feature = "local"))]
+impl Drop for Cancellation {
+    fn drop(&mut self) {
+        if let Some(span) = &self.0 { failed(span, "cancelled"); }
+    }
 }
 
 #[cfg(test)]

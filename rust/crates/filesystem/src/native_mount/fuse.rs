@@ -2,7 +2,6 @@
 
 #![allow(unsafe_code, reason = "FUSE mount, descriptor transfer and recovery syscalls")]
 
-use super::view_ledger::ViewOriginScope;
 use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
     MountDirectoryEntry, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
@@ -130,10 +129,9 @@ impl<T> FuseOwned<T> {
     fn claim(&mut self, bytes: u64, work: &crate::NativeMaterializationWork)
         -> Result<(), crate::NativeTreeMaterializationError>
     {
-        let materialization = work.clone();
-        materialization.admit(crate::WorkCounters::UNCHARGED)?;
+        work.admit(crate::WorkCounters::UNCHARGED)?;
         if bytes == 0 { return Ok(()); }
-        let mut allocation = materialization.claim(bytes)?;
+        let mut allocation = work.claim(bytes)?;
         if let Some(owned) = &mut self.native_allocation {
             owned.absorb(&mut allocation)?;
         } else {
@@ -370,10 +368,9 @@ fn fuse_arc_clone<T: ?Sized>(value: &Arc<T>, work: &crate::NativeMaterialization
         bytes_copied: std::mem::size_of::<Arc<T>>() as u64,
         ..Default::default()
     };
-    let materialization = work.clone();
-    materialization.admit(counters)?;
+    work.admit(counters)?;
     let cloned = Arc::clone(value);
-    materialization.record_admitted(counters)?;
+    work.record_admitted(counters)?;
     Ok(cloned)
 }
 
@@ -1999,8 +1996,6 @@ struct ProjectionCore {
     stopping: AtomicBool,
     origin: ViewOrigin,
     notifier: OnceLock<Notifier>,
-    #[cfg(test)]
-    requests: Mutex<Vec<&'static str>>,
     native_allocation: Option<crate::NativeAllocation>,
     callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
     source_original_work: Option<crate::NativeMaterializationWork>,
@@ -2092,8 +2087,6 @@ impl ProjectionCore {
             stopping: AtomicBool::new(false),
             origin: ViewOrigin::new(),
             notifier: OnceLock::new(),
-            #[cfg(test)]
-            requests: Mutex::new(Vec::new()),
             native_allocation: None,
             callback_guard,
             source_original_work,
@@ -2152,10 +2145,6 @@ impl ProjectionCore {
         self.names.write().map_err(|_| libc::EIO)
     }
 
-    fn request(&self, _operation: &'static str) -> FuseRequestScope<'_> {
-        FuseRequestScope { core: self, #[cfg(test)] operation: _operation, _origin: self.origin.enter() }
-    }
-
     fn take_handler_error(&self) -> Option<NativeMountError> {
         self.handler_error.lock().unwrap_or_else(PoisonError::into_inner).first_fatal.take()
             .map(|failure| failure.cause)
@@ -2170,11 +2159,6 @@ impl ProjectionCore {
         self.handler_error.lock().unwrap_or_else(PoisonError::into_inner).completed_future_request_work
     }
 
-    fn record_completed_request_work(&self, work: &crate::WorkCounters) -> Result<(), crate::WorkError> {
-        self.handler_error.lock().unwrap_or_else(PoisonError::into_inner)
-            .completed_future_request_work.try_add_assign(work)
-    }
-
     fn retain_handler_failure(&self, failure: super::NativeMountCallbackFailure) {
         self.handler_failed.store(true, Ordering::Release);
         let mut reports = self.handler_error.lock().unwrap_or_else(PoisonError::into_inner);
@@ -2183,7 +2167,9 @@ impl ProjectionCore {
     }
 
     fn conserve_completed_request(&self, work: &crate::WorkCounters) {
-        if let Err(error) = self.record_completed_request_work(work) {
+        let recorded = self.handler_error.lock().unwrap_or_else(PoisonError::into_inner)
+            .completed_future_request_work.try_add_assign(work);
+        if let Err(error) = recorded {
             self.retain_handler_failure(super::NativeMountCallbackFailure {
                 cause: error.into(), work: *work,
             });
@@ -2424,24 +2410,16 @@ fn native_callback_errno(error: &NativeMountError) -> i32 {
     }
 }
 
-struct FuseRequestScope<'a> {
-    core: &'a ProjectionCore,
-    #[cfg(test)]
-    operation: &'static str,
-    _origin: ViewOriginScope,
-}
-
-impl FuseRequestScope<'_> {
-    fn run<T>(
+impl ProjectionCore {
+    fn request<T>(
         &self, callback: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, FuseRequestError>,
     ) -> Result<crate::OperationReceipt<T>, super::NativeMountCallbackFailure> {
-        let meter = self.core.callback_meter().map_err(|cause| super::NativeMountCallbackFailure {
+        let _origin = self.origin.enter();
+        let meter = self.callback_meter().map_err(|cause| super::NativeMountCallbackFailure {
             cause,
-            work: self.core.source_original_work.as_ref()
+            work: self.source_original_work.as_ref()
                 .map_or(crate::WorkCounters::UNCHARGED, |work| work.native_read_meter().lock().work),
         })?;
-        #[cfg(test)]
-        self.core.requests.lock().unwrap_or_else(PoisonError::into_inner).push(self.operation);
         let run = |work: &crate::NativeMaterializationWork| {
             work.admit(crate::WorkCounters::UNCHARGED)?;
             callback(work).map_err(NativeMountError::from)
@@ -2453,10 +2431,10 @@ impl FuseRequestScope<'_> {
                 .map_err(|cause| super::NativeMountCallbackFailure { cause, work })
         } else {
             let result = super::run_native_mount_handler(
-                self.core.handler_budget, &self.core.handler_cancellation, run,
+                self.handler_budget, &self.handler_cancellation, run,
             );
             let work = match &result { Ok(receipt) => &receipt.work, Err(failure) => &failure.work };
-            self.core.conserve_completed_request(work);
+            self.conserve_completed_request(work);
             result
         }
     }
@@ -2464,7 +2442,7 @@ impl FuseRequestScope<'_> {
     fn finish<T>(&self, result: Result<crate::OperationReceipt<T>, super::NativeMountCallbackFailure>) -> Result<T, i32> {
         result.map(|receipt| receipt.value).map_err(|failure| {
             let errno = native_callback_errno(&failure.cause);
-            if fatal_handler_error(&failure.cause) { self.core.retain_handler_failure(failure); }
+            if fatal_handler_error(&failure.cause) { self.retain_handler_failure(failure); }
             errno
         })
     }
@@ -2536,7 +2514,7 @@ fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
         drop(state);
         let mut completed_through = None;
         let mut sdk_failure = None;
-        let result = core.request("invalidate").run(|work| {
+        let result = core.request(|work| {
             let items = {
                 let mut state = core.state_to_finish();
                 let items = state.invalidation.take_deferred();
@@ -2849,7 +2827,7 @@ impl FuseRetirementHelper {
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
         let normal = work.allocation_work();
-        let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process_measured(
+        let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process(
             5, normal.runtime_meter_owner(),
         ).map_err(|error| normal.runtime_error(error))?;
         // Reserve the bounded observation and termination loops, including reap.
@@ -3126,8 +3104,7 @@ impl FusePhysicalSession {
     fn authenticate_root(
         &mut self, destination: &Path, native: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        let materialization = native.clone();
-        let mut host = &materialization;
+        let mut host = native;
         let (directory, identity) = crate::native_host::open_root_directory_identity_with_work(destination, &mut host)?;
         self.active_root = Some(directory);
         self.native_root_identity = Some(identity);
@@ -3136,8 +3113,7 @@ impl FusePhysicalSession {
 
     /// Parses and queues the real owned invalidation plan on the invoking meter.
     pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
-        let scope = self.core.request("invalidate_path");
-        let result = scope.run(|work| {
+        let result = self.core.request(|work| {
             let _active = if self.core.active_meter().is_none() {
                 Some(FuseStartupMeterScope::new(&self.core, work)?)
             } else { None };
@@ -3428,10 +3404,6 @@ impl FuseSession {
     }
     pub(super) fn handler_failed(&self) -> bool { self.core.handler_failed.load(Ordering::Acquire) }
     pub(super) fn completed_callback_work(&self) -> crate::WorkCounters { self.core.completed_callback_work() }
-    #[cfg(test)]
-    pub(super) fn take_requests(&self) -> Vec<&'static str> {
-        std::mem::take(&mut *self.core.requests.lock().unwrap_or_else(PoisonError::into_inner))
-    }
     pub(super) fn namespace_detach_confirmed(&self) -> bool {
         let state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.physical.as_ref().is_some_and(|physical| physical.session.is_none())
@@ -3518,7 +3490,7 @@ impl FuseRecoveryControl {
     pub(super) fn namespace_detach_confirmed(&self) -> bool { self.detached }
     pub(super) fn controls_pending(&self) -> bool { self.helper.is_some() }
 
-    fn retire_helper(&mut self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
+    pub(super) fn retire_controls(&mut self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         if let Some(helper) = &mut self.helper {
             helper.terminate_measured(work.runtime_meter()).map_err(|error| work.runtime_error(error))?;
         }
@@ -3529,23 +3501,15 @@ impl FuseRecoveryControl {
         Ok(())
     }
 
-    /// Retires only the accepted helper, never the destination namespace.
-    pub(super) fn retire_controls(
-        &mut self, original: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        self.retire_helper(original)
-    }
-
     /// Performs crash recovery on the supplied meter.
     pub(super) fn recover(
         &mut self, destination: &Path, native: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        let materialization = native.clone();
-        let work = &materialization;
+        let work = native;
         work.admit(crate::WorkCounters::UNCHARGED)?;
         let mounted = fuse_recovery_is_mounted(destination, work)?;
         self.detached = !mounted;
-        if self.helper.is_some() && (!mounted || self.failed_spawn) { self.retire_helper(work)?; }
+        if self.helper.is_some() && (!mounted || self.failed_spawn) { self.retire_controls(work)?; }
         if !mounted { return Ok(()); }
         if self.helper.is_none() {
             let direct = crate::native_host::unix_name_with_work(
@@ -3588,12 +3552,12 @@ impl FuseRecoveryControl {
             };
             if status.is_some() { break; }
             if self.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-                self.retire_helper(work)?;
+                self.retire_controls(work)?;
                 return Err(NativeMountError::Lifecycle("fusermount crash recovery exceeded 30 seconds"));
             }
             fuse_recovery_attempt(&mut &*work, false, || { std::thread::sleep(Duration::from_millis(10)); Ok(()) })?;
         }
-        self.retire_helper(work)?;
+        self.retire_controls(work)?;
         if fuse_recovery_is_mounted(destination, work)? {
             return Err(NativeMountError::Lifecycle("FUSE destination remained mounted after crash recovery"));
         }
@@ -5019,17 +4983,17 @@ fn errno_on(span: &tracing::Span, error: i32) -> Errno {
 }
 
 macro_rules! respond {
-    ($reply:ident, $request:ident, $work:ident, $result:expr, |$value:pat_param| $ok:expr) => {{
+    ($core:expr, $reply:ident, $span:ident, $work:ident, $result:expr, |$value:pat_param| $ok:expr) => {{
         let mut pending_reply = Some($reply);
-        let result = $request.0.run(|$work| {
+        let result = $core.request(|$work| {
             let $value = $result?;
             let $reply = pending_reply.take().expect("one successful FUSE reply");
             let _ = $ok;
             Ok(())
         });
-        if let Err(error) = $request.0.finish(result) {
+        if let Err(error) = $core.finish(result) {
             if let Some(reply) = pending_reply.take() {
-                reply.error($crate::native_mount::fuse::errno_on(&$request.1, error));
+                reply.error($crate::native_mount::fuse::errno_on(&$span, error));
             }
         }
     }};
@@ -5038,8 +5002,7 @@ macro_rules! respond {
 impl Filesystem for FuseProjection {
     fn init(&mut self, request: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
         let _ = request;
-        let scope = self.core.request("init");
-        let result = scope.run(|work| {
+        let result = self.core.request(|work| {
             // Only the original stamped source can keep skipped listings coherent.
             let skips_opendir = config.capabilities().contains(InitFlags::FUSE_NO_OPENDIR_SUPPORT)
                 && ProjectionState::directory_open_flags(self.core.source.as_ref(), work)?
@@ -5052,7 +5015,7 @@ impl Filesystem for FuseProjection {
                 .map_err(NativeMountError::FuseUnsupportedCapabilities)?;
             Ok((skips_opendir, skips_open))
         });
-        let (skips_opendir, skips_open) = scope.finish(result)
+        let (skips_opendir, skips_open) = self.core.finish(result)
             .map_err(std::io::Error::from_raw_os_error)?;
         self.skips_opendir = skips_opendir;
         self.skips_open = skips_open;
@@ -5061,13 +5024,10 @@ impl Filesystem for FuseProjection {
 
     fn lookup(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let _ = request;
-        let _request = (
-            self.core.request("lookup"),
-            callback_span!(TRACE, lookup, ino = parent.0),
-        );
-        respond!(
+        let _span = callback_span!(TRACE, lookup, ino = parent.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.lookup_entry(parent.0, name, work),
             |entry| entry.reply(reply)
         );
@@ -5081,13 +5041,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyAttr,
     ) {
         let _ = request;
-        let _request = (
-            self.core.request("getattr"),
-            callback_span!(TRACE, getattr, ino = inode.0),
-        );
-        respond!(
+        let _span = callback_span!(TRACE, getattr, ino = inode.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.node_attributes(
                 inode.0,
                 fh.map(|handle| handle.0).filter(|handle| *handle != 0),
@@ -5099,23 +5056,17 @@ impl Filesystem for FuseProjection {
 
     fn forget(&self, request: &Request, inode: INodeNo, nlookup: u64) {
         let _ = request;
-        let _request = (
-            self.core.request("forget"),
-            callback_span!(TRACE, forget, ino = inode.0),
-        );
-        let result = _request.0.run(|work| {
+        let _span = callback_span!(TRACE, forget, ino = inode.0);
+        let result = self.core.request(|work| {
             self.core.state_to_finish().release_lookup_reference(inode.0, nlookup, work)
         });
-        let _ = _request.0.finish(result);
+        let _ = self.core.finish(result);
     }
 
     fn readlink(&self, request: &Request, inode: INodeNo, reply: ReplyData) {
         let _ = request;
-        let _request = (
-            self.core.request("readlink"),
-            callback_span!(TRACE, readlink, ino = inode.0),
-        );
-        respond!(reply, _request, work, self.read_link(inode.0, work), |target| reply
+        let _span = callback_span!(TRACE, readlink, ino = inode.0);
+        respond!(self.core, reply, _span, work, self.read_link(inode.0, work), |target| reply
             .data(&target.bytes));
     }
 
@@ -5142,10 +5093,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyAttr,
     ) {
         let _ = request;
-        let _request = (
-            self.core.request("setattr"),
-            callback_span!(DEBUG, setattr, ino = inode.0),
-        );
+        let _span = callback_span!(DEBUG, setattr, ino = inode.0);
         let changes = AttributeChanges {
             mode,
             uid,
@@ -5157,9 +5105,9 @@ impl Filesystem for FuseProjection {
             crtime,
             flags: flags.map(|flags| flags.bits()),
         };
-        respond!(
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             {
                 if bkuptime.is_some() { return Err(libc::EOPNOTSUPP.into()); }
                 self.set_attributes(
@@ -5182,14 +5130,11 @@ impl Filesystem for FuseProjection {
         umask: u32,
         reply: ReplyEntry,
     ) {
-        let _request = (
-            self.core.request("mkdir"),
-            callback_span!(TRACE, mkdir, ino = parent.0),
-        );
+        let _span = callback_span!(TRACE, mkdir, ino = parent.0);
         let metadata = create_metadata(mode & !umask, S_IFDIR, request.uid(), request.gid());
-        respond!(
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.create_node(parent.0, name, |path, work| self
                 .core.source.as_ref()
                 .create_directory_with_meter(path, metadata, work).map_err(FuseRequestError::from), work),
@@ -5207,14 +5152,11 @@ impl Filesystem for FuseProjection {
         rdev: u32,
         reply: ReplyEntry,
     ) {
-        let _request = (
-            self.core.request("mknod"),
-            callback_span!(TRACE, mknod, ino = parent.0),
-        );
+        let _span = callback_span!(TRACE, mknod, ino = parent.0);
         let metadata = create_metadata(mode & !umask, mode & S_IFMT, request.uid(), request.gid());
-        respond!(
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             {
                 let (kind, device) = match mode & S_IFMT {
                     S_IFIFO => (MountNodeKind::Fifo, None),
@@ -5242,14 +5184,11 @@ impl Filesystem for FuseProjection {
         target: &Path,
         reply: ReplyEntry,
     ) {
-        let _request = (
-            self.core.request("symlink"),
-            callback_span!(TRACE, symlink, ino = parent.0),
-        );
+        let _span = callback_span!(TRACE, symlink, ino = parent.0);
         let metadata = create_metadata(0o777, S_IFLNK, request.uid(), request.gid());
-        respond!(
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.create_node(parent.0, link_name, |path, work| {
                 let target = fuse_source_chunk(target.as_os_str().as_bytes(), work)?;
                 self.core.source.as_ref().create_symbolic_link_with_meter(path, target, metadata, work)
@@ -5261,22 +5200,16 @@ impl Filesystem for FuseProjection {
 
     fn unlink(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let _ = request;
-        let _request = (
-            self.core.request("unlink"),
-            callback_span!(TRACE, unlink, ino = parent.0),
-        );
-        respond!(reply, _request, work, self.remove_name(parent.0, name, work), |()| {
+        let _span = callback_span!(TRACE, unlink, ino = parent.0);
+        respond!(self.core, reply, _span, work, self.remove_name(parent.0, name, work), |()| {
             reply.ok();
         });
     }
 
     fn rmdir(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let _ = request;
-        let _request = (
-            self.core.request("rmdir"),
-            callback_span!(TRACE, rmdir, ino = parent.0),
-        );
-        respond!(reply, _request, work, self.remove_name(parent.0, name, work), |()| {
+        let _span = callback_span!(TRACE, rmdir, ino = parent.0);
+        respond!(self.core, reply, _span, work, self.remove_name(parent.0, name, work), |()| {
             reply.ok();
         });
     }
@@ -5292,13 +5225,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = request;
-        let _request = (
-            self.core.request("rename"),
-            callback_span!(DEBUG, rename, ino = parent.0),
-        );
-        respond!(
+        let _span = callback_span!(DEBUG, rename, ino = parent.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.rename_name(parent.0, name, new_parent.0, new_name, flags.bits(), work),
             |()| reply.ok()
         );
@@ -5313,13 +5243,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEntry,
     ) {
         let _ = request;
-        let _request = (
-            self.core.request("link"),
-            callback_span!(TRACE, link, ino = inode.0),
-        );
-        respond!(
+        let _span = callback_span!(TRACE, link, ino = inode.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.link_name(inode.0, new_parent.0, new_name, work),
             |entry| entry.reply(reply)
         );
@@ -5327,13 +5254,10 @@ impl Filesystem for FuseProjection {
 
     fn open(&self, request: &Request, inode: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let _ = request;
-        let _request = (
-            self.core.request("open"),
-            callback_span!(TRACE, open, ino = inode.0),
-        );
-        respond!(
+        let _span = callback_span!(TRACE, open, ino = inode.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             {
                 // `ENOSYS` tells the kernel to open every file without asking.
                 if self.skips_open { return Err(libc::ENOSYS.into()); }
@@ -5358,20 +5282,17 @@ impl Filesystem for FuseProjection {
         reply: ReplyData,
     ) {
         let _ = (request, flags, lock_owner);
-        let _request = (
-            self.core.request("read"),
-            callback_span!(
-                TRACE,
-                read,
-                ino = inode.0,
-                fh = fh.0,
-                offset = offset,
-                len = size
-            ),
+        let _span = callback_span!(
+            TRACE,
+            read,
+            ino = inode.0,
+            fh = fh.0,
+            offset = offset,
+            len = size
         );
-        respond!(
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.read_through(inode.0, fh.0, offset, size, work),
             |bytes| {
                 reply.data(&bytes.bytes);
@@ -5396,20 +5317,17 @@ impl Filesystem for FuseProjection {
         reply: ReplyWrite,
     ) {
         let _ = (request, write_flags, flags, lock_owner);
-        let _request = (
-            self.core.request("write"),
-            callback_span!(
-                TRACE,
-                write,
-                ino = inode.0,
-                fh = fh.0,
-                offset = offset,
-                len = data.len()
-            ),
+        let _span = callback_span!(
+            TRACE,
+            write,
+            ino = inode.0,
+            fh = fh.0,
+            offset = offset,
+            len = data.len()
         );
-        respond!(
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.with_handle(inode.0, fh.0, Access::Write, |handle| {
                 self.write_handle(inode.0, handle, offset, data, work)
             }, work),
@@ -5428,11 +5346,8 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, datasync);
-        let _request = (
-            self.core.request("fsync"),
-            callback_span!(DEBUG, fsync, ino = inode.0, fh = fh.0),
-        );
-        respond!(reply, _request, work, self.with_handle(inode.0, fh.0, Access::Read, |handle| {
+        let _span = callback_span!(DEBUG, fsync, ino = inode.0, fh = fh.0);
+        respond!(self.core, reply, _span, work, self.with_handle(inode.0, fh.0, Access::Read, |handle| {
             self.flush_handle(inode.0, handle, true, false, work)
         }, work), |()| {
             reply.ok();
@@ -5448,13 +5363,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, lock_owner);
-        let _request = (
-            self.core.request("flush"),
-            callback_span!(DEBUG, flush, ino = inode.0, fh = fh.0),
-        );
-        respond!(
+        let _span = callback_span!(DEBUG, flush, ino = inode.0, fh = fh.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             {
                 // No open handle exists for this actual negotiated capability.
                 if self.skips_open && fh.0 == 0 { return Err(libc::ENOSYS.into()); }
@@ -5481,13 +5393,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, flags, lock_owner, flush);
-        let _request = (
-            self.core.request("release"),
-            callback_span!(DEBUG, release, ino = inode.0, fh = fh.0),
-        );
-        respond!(
+        let _span = callback_span!(DEBUG, release, ino = inode.0, fh = fh.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.flush_handle(inode.0, fh.0, false, true, work),
             |()| {
                 reply.ok();
@@ -5497,11 +5406,8 @@ impl Filesystem for FuseProjection {
 
     fn opendir(&self, request: &Request, inode: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let _ = (request, inode, flags);
-        let _request = (
-            self.core.request("opendir"),
-            callback_span!(TRACE, opendir, ino = inode.0),
-        );
-        respond!(reply, _request, work, {
+        let _span = callback_span!(TRACE, opendir, ino = inode.0);
+        respond!(self.core, reply, _span, work, {
             // `ENOSYS` asks the kernel to keep subsequent listings without opens.
             if self.skips_opendir { return Err(libc::ENOSYS.into()); }
             ProjectionState::directory_open_flags(self.core.source.as_ref(), work)
@@ -5517,17 +5423,14 @@ impl Filesystem for FuseProjection {
         reply: ReplyDirectory,
     ) {
         let _ = (request, fh);
-        let _request = (
-            self.core.request("readdir"),
-            callback_span!(TRACE, readdir, ino = inode.0, fh = fh.0, offset = offset),
-        );
+        let _span = callback_span!(TRACE, readdir, ino = inode.0, fh = fh.0, offset = offset);
         let mut reply = Some(DirectoryReply::Basic(reply));
-        let result = _request.0.run(|work| {
+        let result = self.core.request(|work| {
             self.list_directory(inode.0, offset, &mut reply, work)
         });
-        if let Err(error) = _request.0.finish(result) {
+        if let Err(error) = self.core.finish(result) {
             // The real late-error prefix may already have sent a partial listing.
-            if let Some(reply) = reply { reply.error(errno_on(&_request.1, error)); }
+            if let Some(reply) = reply { reply.error(errno_on(&_span, error)); }
         }
     }
 
@@ -5540,23 +5443,20 @@ impl Filesystem for FuseProjection {
         reply: ReplyDirectoryPlus,
     ) {
         let _ = (request, fh);
-        let _request = (
-            self.core.request("readdirplus"),
-            callback_span!(
-                TRACE,
-                readdirplus,
-                ino = inode.0,
-                fh = fh.0,
-                offset = offset
-            ),
+        let _span = callback_span!(
+            TRACE,
+            readdirplus,
+            ino = inode.0,
+            fh = fh.0,
+            offset = offset
         );
         let mut reply = Some(DirectoryReply::Plus(reply));
-        let result = _request.0.run(|work| {
+        let result = self.core.request(|work| {
             self.list_directory(inode.0, offset, &mut reply, work)
         });
-        if let Err(error) = _request.0.finish(result) {
+        if let Err(error) = self.core.finish(result) {
             // The real late-error prefix may already have sent a partial listing.
-            if let Some(reply) = reply { reply.error(errno_on(&_request.1, error)); }
+            if let Some(reply) = reply { reply.error(errno_on(&_span, error)); }
         }
     }
 
@@ -5569,11 +5469,8 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, inode, fh, flags);
-        let _request = (
-            self.core.request("releasedir"),
-            callback_span!(TRACE, releasedir, ino = inode.0, fh = fh.0),
-        );
-        respond!(reply, _request, work, { let _ = work; Ok::<_, FuseRequestError>(()) }, |()| reply.ok());
+        let _span = callback_span!(TRACE, releasedir, ino = inode.0, fh = fh.0);
+        respond!(self.core, reply, _span, work, { let _ = work; Ok::<_, FuseRequestError>(()) }, |()| reply.ok());
     }
 
     fn fsyncdir(
@@ -5585,13 +5482,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, inode, fh, datasync);
-        let _request = (
-            self.core.request("fsyncdir"),
-            callback_span!(TRACE, fsyncdir, ino = inode.0, fh = fh.0),
-        );
-        respond!(
+        let _span = callback_span!(TRACE, fsyncdir, ino = inode.0, fh = fh.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.source_write(work, || self.core.source.as_ref().flush_with_meter(work).map_err(FuseRequestError::from)),
             |()| reply.ok()
         );
@@ -5612,13 +5506,10 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = request;
-        let _request = (
-            self.core.request("setxattr"),
-            callback_span!(TRACE, setxattr, ino = inode.0),
-        );
-        respond!(
+        let _span = callback_span!(TRACE, setxattr, ino = inode.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.write_named_attribute(inode.0, name, value, flags, position, work),
             |()| reply.ok()
         );
@@ -5633,45 +5524,36 @@ impl Filesystem for FuseProjection {
         reply: ReplyXattr,
     ) {
         let _ = request;
-        let _request = (
-            self.core.request("getxattr"),
-            callback_span!(TRACE, getxattr, ino = inode.0),
-        );
-        respond!(
+        let _span = callback_span!(TRACE, getxattr, ino = inode.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.read_named_attribute(inode.0, name, work),
             |value| {
-                reply_xattr(reply, &value.bytes, size, &_request.1);
+                reply_xattr(reply, &value.bytes, size, &_span);
             }
         );
     }
 
     fn listxattr(&self, request: &Request, inode: INodeNo, size: u32, reply: ReplyXattr) {
         let _ = request;
-        let _request = (
-            self.core.request("listxattr"),
-            callback_span!(TRACE, listxattr, ino = inode.0),
-        );
-        respond!(
+        let _span = callback_span!(TRACE, listxattr, ino = inode.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.list_named_attributes(inode.0, work),
             |encoded| {
-                reply_xattr(reply, &encoded, size, &_request.1);
+                reply_xattr(reply, &encoded, size, &_span);
             }
         );
     }
 
     fn removexattr(&self, request: &Request, inode: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let _ = request;
-        let _request = (
-            self.core.request("removexattr"),
-            callback_span!(TRACE, removexattr, ino = inode.0),
-        );
-        respond!(
+        let _span = callback_span!(TRACE, removexattr, ino = inode.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.remove_named_attribute(inode.0, name, work),
             |()| {
                 reply.ok();
@@ -5694,20 +5576,17 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = request;
-        let _request = (
-            self.core.request("fallocate"),
-            callback_span!(
-                TRACE,
-                fallocate,
-                ino = inode.0,
-                fh = fh.0,
-                offset = offset,
-                len = length
-            ),
+        let _span = callback_span!(
+            TRACE,
+            fallocate,
+            ino = inode.0,
+            fh = fh.0,
+            offset = offset,
+            len = length
         );
-        respond!(
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.with_handle(inode.0, fh.0, Access::Write, |handle| {
                 self.allocate(inode.0, handle, offset, length, mode, work)
             }, work),
@@ -5725,11 +5604,8 @@ impl Filesystem for FuseProjection {
         reply: ReplyLseek,
     ) {
         let _ = request;
-        let _request = (
-            self.core.request("lseek"),
-            callback_span!(TRACE, lseek, ino = inode.0, fh = fh.0, offset = offset),
-        );
-        respond!(reply, _request, work, self.with_handle(inode.0, fh.0, Access::Read, |handle| {
+        let _span = callback_span!(TRACE, lseek, ino = inode.0, fh = fh.0, offset = offset);
+        respond!(self.core, reply, _span, work, self.with_handle(inode.0, fh.0, Access::Read, |handle| {
             self.seek(inode.0, handle, offset, whence, work)
         }, work), |found| {
             reply.offset(found);
@@ -5754,11 +5630,8 @@ impl Filesystem for FuseProjection {
         reply: ReplyWrite,
     ) {
         let _ = request;
-        let _request = (
-            self.core.request("copy_file_range"),
-            callback_span!(TRACE, copy_file_range, len = length),
-        );
-        respond!(reply, _request, work, self.with_handle(inode_in.0, fh_in.0, Access::Read, |handle_in| {
+        let _span = callback_span!(TRACE, copy_file_range, len = length);
+        respond!(self.core, reply, _span, work, self.with_handle(inode_in.0, fh_in.0, Access::Read, |handle_in| {
             self.with_handle(inode_out.0, fh_out.0, Access::Write, |handle_out| {
                 self.copy_range(
                     inode_in.0,
@@ -5789,13 +5662,10 @@ impl Filesystem for FuseProjection {
         flags: i32,
         reply: ReplyCreate,
     ) {
-        let _request = (
-            self.core.request("create"),
-            callback_span!(DEBUG, create, ino = parent.0),
-        );
-        respond!(
+        let _span = callback_span!(DEBUG, create, ino = parent.0);
+        respond!(self.core,
             reply,
-            _request, work,
+            _span, work,
             self.create_file(request, parent.0, name, mode & !umask, flags, work),
             |(entry, handle, open_flags)| reply.created(
                 &entry.ttl,
@@ -5807,6 +5677,7 @@ impl Filesystem for FuseProjection {
         );
     }
 }
+
 
 fn reply_xattr(reply: ReplyXattr, value: &[u8], size: u32, span: &tracing::Span) {
     if size == 0 {
@@ -5886,8 +5757,7 @@ mod tests {
         let replied = std::cell::Cell::new(false);
         let reply = Reply(&replied);
         crate::obs::assert_filtered_callback_isolation(|span| {
-            let request = (core.request("filtered_callback"), span);
-            respond!(reply, request, work,
+            respond!(core, reply, span, work,
                 super::fuse_copy_bytes(b"refused before copy", work).map(|_| ()), |()| drop(reply));
             libc::EIO
         });
@@ -6863,8 +6733,7 @@ mod tests {
         let core = super::ProjectionCore::new(
             source.clone(), empty_projection_state(), finite_handler_policy(), &cancellation,
         )?;
-        let scope = core.request("unlink");
-        let result = scope.run(|work| {
+        let result = core.request(|work| {
             source.remove_with_meter(&path, Some(created.node.file_id), work)?;
             cancellation.cancel();
             source.lookup_with_meter(&path, work).map_err(super::FuseRequestError::from)
@@ -6875,7 +6744,7 @@ mod tests {
         assert_ne!(failure.work, crate::WorkCounters::UNCHARGED);
         assert_eq!(super::native_callback_errno(&failure.cause), libc::ECANCELED);
         let prefix = failure.work;
-        assert_eq!(scope.finish::<Option<MountLookup>>(Err(failure)), Err(libc::ECANCELED));
+        assert_eq!(core.finish::<Option<MountLookup>>(Err(failure)), Err(libc::ECANCELED));
         assert!(core.handler_failed.load(std::sync::atomic::Ordering::Acquire));
         let retained = core.take_handler_failure().ok_or("actual fatal request failure missing")?;
         assert!(core.handler_failed.load(std::sync::atomic::Ordering::Acquire));
@@ -6895,8 +6764,7 @@ mod tests {
             source.clone(), empty_projection_state(), finite_handler_policy(), &cancellation,
         )?;
         let path = name("authentically-absent");
-        let scope = core.request("lookup");
-        let result = scope.run(|work| {
+        let result = core.request(|work| {
             let path = super::fuse_clone_path(&path, work)?;
             source.lookup_with_meter(&path, work)?
                 .ok_or(MountSourceError::NotFound).map_err(super::FuseRequestError::from)
@@ -6906,7 +6774,7 @@ mod tests {
         };
         let prefix = failure.work;
         assert_eq!(core.completed_callback_work(), prefix);
-        assert_eq!(scope.finish(result).err(), Some(libc::ENOENT));
+        assert_eq!(core.finish(result).err(), Some(libc::ENOENT));
         assert!(core.take_handler_failure().is_none());
         assert_eq!(core.completed_callback_work(), prefix, "SDK projection does not fold twice");
         assert!(!core.handler_failed.load(std::sync::atomic::Ordering::Acquire));
@@ -6928,13 +6796,12 @@ mod tests {
             let core = super::ProjectionCore::root(
                 Arc::clone(&source), root, stamp, true, 0, 0, work)?;
             let _active = super::FuseStartupMeterScope::new(&core, work)?;
-            let scope = core.request("lookup");
-            let result = scope.run(|callback_work| {
+            let result = core.request(|callback_work| {
                 assert!(Arc::ptr_eq(callback_work.native_read_meter(), work.native_read_meter()));
                 let path = super::fuse_clone_path(&path, callback_work)?;
                 source.lookup_with_meter(&path, callback_work).map_err(super::FuseRequestError::from)
             });
-            assert!(scope.finish(result).map_err(std::io::Error::from_raw_os_error)?.is_some());
+            assert!(core.finish(result).map_err(std::io::Error::from_raw_os_error)?.is_some());
             assert_eq!(core.completed_callback_work(), crate::WorkCounters::UNCHARGED);
             assert!(work.native_read_meter().lock().work.bytes_copied != 0);
             Ok(())

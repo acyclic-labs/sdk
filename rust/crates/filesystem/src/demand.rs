@@ -245,7 +245,7 @@ impl SourceCursor {
         accounting.record_completed(identity_work).map_err(Self::cursor_accounting_error)?;
         let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
         accounting.charge(item).map_err(Self::cursor_accounting_error)?;
-        let epoch = decoder.u64().map_err(|_| DemandError::InvalidRequest)?;
+        let epoch = decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(|_| DemandError::InvalidRequest)?;
         let source = SourceReference { identity, epoch };
         if source != expected_source {
             return Err(DemandError::StaleCursor);
@@ -282,7 +282,7 @@ impl SourceCursor {
                 .map_err(|_| DemandError::InvalidRequest)?);
             accounting.record_completed(version_work).map_err(Self::cursor_accounting_error)?;
             accounting.charge(item).map_err(Self::cursor_accounting_error)?;
-            let token = decoder.u64().map_err(|_| DemandError::InvalidRequest)?;
+            let token = decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(|_| DemandError::InvalidRequest)?;
             cancellation.check().map_err(|_| DemandError::Cancelled)?;
             accounting.record_completed(WorkCounters::UNCHARGED).map_err(Self::cursor_accounting_error)?;
             Ok(Self {
@@ -360,11 +360,11 @@ mod source_cursor_codec_tests {
             let mut accounting = KernelAccounting::borrowed_standalone(
                 &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
             );
-            let mut encoder = Encoder::with_exact_capacity(DOMAIN, 1, DOMAIN.len() + 2 + cursor.cursor_encoded_len()?)?;
+            let mut encoder = Encoder::with_exact_capacity(DOMAIN, 1, DOMAIN.len() + 2 + cursor.cursor_encoded_len()?, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
             cursor.encode_cursor_into(&mut encoder, &mut accounting, &cancellation)?;
             let bytes = encoder.finish();
             for epoch in [cursor.source.epoch, cursor.source.epoch + 1] {
-                let mut decoder = Decoder::new(&bytes, DOMAIN, 1, u64::MAX)?;
+                let mut decoder = Decoder::new(&bytes, DOMAIN, 1, u64::MAX, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                 let result = SourceCursor::decode_cursor(
                     &mut decoder, SourceReference { epoch, ..cursor.source }, &cursor.directory,
                     crate::FilesystemProfile::Windows, limits, &mut accounting, &cancellation,
@@ -1172,6 +1172,38 @@ pub(crate) struct DemandCancellationRoots {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn grow_registry<T>(
+    entries: &mut Vec<T>, capacity: usize,
+    allocations: &mut crate::kernel::allocation::AllocationLedger,
+    work: &mut WorkCounters, budget: WorkBudget,
+) -> Result<(), DemandError> {
+    let width = std::mem::size_of::<T>();
+    let bytes = capacity.checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
+    let copied = WorkCounters { bytes_copied: entries.len().checked_mul(width)
+        .ok_or(crate::WorkError::Overflow)? as u64, ..WorkCounters::UNCHARGED };
+    work.admit(&copied, &budget)?;
+    allocations.claim_bytes(bytes, 1, work, budget)
+        .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+    let mut replacement = Vec::new();
+    if let Err(error) = replacement.try_reserve_exact(capacity) {
+        allocations.release(bytes).map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+        return Err(DemandError::Allocation(error));
+    }
+    let actual = replacement.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
+    let recorded = allocations.record_owned_bytes(actual - bytes, work)
+        .map_err(|error| error.into_work_or(DemandError::InvalidRequest));
+    replacement.append(entries);
+    std::mem::swap(entries, &mut replacement);
+    let old_bytes = replacement.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
+    drop(replacement);
+    allocations.release(old_bytes).map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+    work.try_add_assign(&copied)?;
+    recorded?;
+    work.verify(budget)?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl DemandCancellationRoots {
     fn owns_native_control(&self, token: &std::sync::Arc<crate::kernel::ProofDataCustody>) -> bool {
         let overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
@@ -1274,27 +1306,7 @@ impl DemandCancellationRoots {
         let mut overflow = self.observer_overflow.as_ref().expect("original overflow owner").lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if overflow.len() == overflow.capacity() {
             let capacity = overflow.capacity().max(1).checked_mul(2).ok_or(crate::WorkError::Overflow)?;
-            let width = std::mem::size_of::<DemandObserverCustody>();
-            let bytes = capacity.checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-            let copied = WorkCounters { bytes_copied: (overflow.len() * width) as u64, ..WorkCounters::UNCHARGED };
-            work.admit(&copied, &budget)?;
-            allocations.claim_bytes(bytes, 1, work, budget).map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-            let mut replacement = Vec::new();
-            if let Err(error) = replacement.try_reserve_exact(capacity) {
-                allocations.release(bytes).map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-                return Err(DemandError::Allocation(error));
-            }
-            let actual = replacement.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-            let recorded = allocations.record_owned_bytes(actual - bytes, work)
-                .map_err(|error| error.into_work_or(DemandError::InvalidRequest));
-            replacement.append(&mut overflow);
-            std::mem::swap(&mut *overflow, &mut replacement);
-            let old_bytes = replacement.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-            drop(replacement);
-            allocations.release(old_bytes).map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-            work.try_add_assign(&copied)?;
-            recorded?;
-            work.verify(budget)?;
+            grow_registry(&mut overflow, capacity, allocations, work, budget)?;
         }
         overflow.push(custody);
         Ok(true)
@@ -1399,29 +1411,20 @@ impl DemandCancellationRoots {
             self.inline[index] = Some(root);
             return Ok(&mut self.inline[index].as_mut().expect("inserted cancellation root").1);
         }
-        let old_bytes = (self.overflow.capacity() as u64)
-            .checked_mul(std::mem::size_of::<(CancellationToken, crate::cancellation::CancellationWaitAdmission)>() as u64)
-            .ok_or(crate::cancellation::CancellationWaitError::Work(crate::WorkError::Overflow))?;
         if self.overflow.len() == self.overflow.capacity() {
             let next = self.overflow.len().checked_add(1)
                 .ok_or(crate::cancellation::CancellationWaitError::Work(crate::WorkError::Overflow))?;
-            let bytes = (next as u64).checked_mul(std::mem::size_of::<(CancellationToken, crate::cancellation::CancellationWaitAdmission)>() as u64)
-                .ok_or(crate::cancellation::CancellationWaitError::Work(crate::WorkError::Overflow))?;
-            let copy = WorkCounters { bytes_copied: (self.overflow.len() * std::mem::size_of::<(CancellationToken, crate::cancellation::CancellationWaitAdmission)>()) as u64, ..WorkCounters::default() };
-            work.admit(&copy, &budget).map_err(crate::cancellation::CancellationWaitError::Work)?;
             let prior_peak = work.peak_allocation_bytes;
-            allocations.claim_bytes(bytes, 1, work, budget)
-                .map_err(|error| crate::cancellation::CancellationWaitError::Work(error.into_work_or(crate::WorkError::Overflow)))?;
-            let mut replacement = Vec::new();
-            if replacement.try_reserve_exact(next).is_err() {
-                allocations.release(bytes).map_err(|error| crate::cancellation::CancellationWaitError::Work(error.into_work_or(crate::WorkError::Overflow)))?;
-                work.peak_allocation_bytes = prior_peak;
-                return Err(crate::cancellation::CancellationWaitError::AllocationFailed);
+            if let Err(error) = grow_registry(&mut self.overflow, next, allocations, work, budget) {
+                return Err(match error {
+                    DemandError::Allocation(_) => {
+                        work.peak_allocation_bytes = prior_peak;
+                        crate::cancellation::CancellationWaitError::AllocationFailed
+                    }
+                    DemandError::Work(error) => crate::cancellation::CancellationWaitError::Work(error),
+                    _ => crate::cancellation::CancellationWaitError::Work(crate::WorkError::Overflow),
+                });
             }
-            replacement.append(&mut self.overflow);
-            work.charge(&copy, &budget).map_err(crate::cancellation::CancellationWaitError::Work)?;
-            self.overflow = replacement;
-            allocations.release(old_bytes).map_err(|error| crate::cancellation::CancellationWaitError::Work(error.into_work_or(crate::WorkError::Overflow)))?;
         }
         self.overflow.push(root);
         Ok(&mut self.overflow.last_mut().expect("inserted overflow cancellation root").1)
@@ -2866,9 +2869,7 @@ impl Drop for DemandWork {
 pub(crate) fn lowercase_unicode_with_work(text: &str, work: &mut DemandWork) -> Result<Vec<u8>, DemandError> {
     work.reconcile_cancellation_registry()?;
     work.check()?;
-    let bytes = crate::kernel::types::lowercase_unicode_with_ledger(
-        text, &mut work.allocations, &mut work.work, work.budget, &work.cancellation,
-    )?;
+    let bytes = crate::kernel::types::lowercase_unicode(text, &mut work.allocations, &mut work.work, work.budget, Some(&work.cancellation))?;
     if let Err(error) = work.check() {
         let retained = bytes.capacity() as u64;
         drop(bytes);
@@ -4542,7 +4543,7 @@ pub mod native {
         ) {
             let cancellation = CancellationToken::new();
             let _ = self
-                .run_blocking(DemandWork::new(WorkBudget::UNBOUNDED, &cancellation), move |_, work| {
+                .run_request(&NamespacePath::new(Vec::new(), self.inner.limits).expect("empty root path"), WorkBudget::UNBOUNDED, &cancellation, move |_, _, work| {
                     let _ = started.send(());
                     while work.check().is_ok() {
                         std::thread::yield_now();
@@ -4620,13 +4621,13 @@ pub mod native {
             };
             let worker = shared.clone();
             let task_meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = shared.clone();
-            let task = acyclic_native_runtime::run_blocking_io_measured(
+            let task = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(crate::obs::caller_context(), move || {
                     let mut work = NativeSourceWork::ordinary(&worker);
                     let input = SourceRootInput::from_admitted(path, &mut work)?;
                     Self::open_blocking(input, profile, limits, reference, observer, &mut work)
                 }),
-                task_meter,
+                Some((task_meter, false)),
             );
             let (result, _) = await_source_job(task, &mut prepared, || {}).await;
             prepared.retire_waker();
@@ -4663,11 +4664,11 @@ pub mod native {
                 .map_err(cancellation_error)?;
             let worker = original.clone();
             let task_meter = work.materialization_work()?.runtime_meter_owner();
-            let spawned = acyclic_native_runtime::run_blocking_io_measured(
+            let spawned = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(crate::obs::caller_context(), move || {
                     let mut work = NativeSourceWork::from_original_work(&worker);
                     Self::open_blocking(input, profile, limits, reference, observer, &mut work)
-                }), task_meter,
+                }), Some((task_meter, false)),
             );
             let (result, selected_cancellation) = await_source_job(spawned, &mut cancelled, || {}).await;
             cancelled.retire_waker();
@@ -4713,7 +4714,7 @@ pub mod native {
             work.check()?;
             let input = input.normalize(work)?;
             #[cfg(unix)]
-            let root = HostRoot::open_with_work(&input.path, work)?;
+            let root = HostRoot::open(&input.path, work)?;
             #[cfg(windows)]
             let root = HostRoot::open_root_wide_measured(&input.path, work)?;
             let inline = root.is_local_with_work(work)?;
@@ -4895,13 +4896,13 @@ pub mod native {
             let task_meter = work.materialization_work()?.runtime_meter_owner();
             let source = self.clone();
             let context = crate::obs::caller_context();
-            let spawned = acyclic_native_runtime::run_blocking_io_measured(
+            let spawned = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(context, move || {
                     let _permit = permit;
                     let mut worker = NativeSourceWork::from_original_work(&worker_work);
                     worker.operation_stop = Some(&stop.stopped);
                     job(source, &path.0, &mut worker)
-                }), task_meter,
+                }), Some((task_meter, false)),
             );
             let (result, selected_cancellation) = await_source_job(spawned, &mut cancelled, || {
                 stop_on_drop.0.stopped.store(true, Ordering::Release);
@@ -4920,7 +4921,7 @@ pub mod native {
             path: &NamespacePath,
             budget: WorkBudget,
             cancellation: &CancellationToken,
-            job: impl FnOnce(Self, NamespacePath, &mut NativeSourceWork<'_>) -> Result<T, DemandError> + Send + 'static,
+            job: impl FnOnce(Self, &NamespacePath, &mut NativeSourceWork<'_>) -> Result<T, DemandError> + Send + 'static,
         ) -> DemandResult<T> {
             let mut work = DemandWork::new(budget, cancellation);
             let path = match work.charge(WorkCounters { source_path_components: path.depth() as u64, ..WorkCounters::default() })
@@ -4928,13 +4929,6 @@ pub mod native {
                 Ok(path) => path,
                 Err(error) => return work.finish(Err(error)),
             };
-            self.run_blocking(work, move |provider, work| job(provider, path, work)).await
-        }
-        async fn run_blocking<T: Send + 'static>(
-            &self,
-            mut work: DemandWork,
-            job: impl FnOnce(Self, &mut NativeSourceWork<'_>) -> Result<T, DemandError> + Send + 'static,
-        ) -> DemandResult<T> {
             if let Err(error) = work.check() { return work.finish(Err(error)); }
             let caller_cancellation = work.cancellation.clone();
             let mut prepared = match work.prepare_cancelled(&caller_cancellation) {
@@ -4978,12 +4972,12 @@ pub mod native {
             let task_meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = shared.clone();
             let source = self.clone();
             let context = crate::obs::caller_context();
-            let spawned = acyclic_native_runtime::run_blocking_io_measured(
+            let spawned = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(context, move || {
                     let _permit = permit;
                     let mut held = NativeSourceWork::ordinary(&worker_work);
-                    job(source, &mut held)
-                }), task_meter,
+                    job(source, &path, &mut held)
+                }), Some((task_meter, false)),
             );
             let (result, _) = await_source_job(spawned, &mut prepared, || cancel_on_drop.0.cancel()).await;
             prepared.retire_waker();
@@ -5172,7 +5166,7 @@ pub mod native {
 
         fn stat_relative<W: SourceDemandReadWork>(&self, relative: &DemandPath, work: &mut W) -> Result<HostStat, DemandError> {
             #[cfg(unix)]
-            { self.inner.root.stat_with_work(relative, work) }
+            { self.inner.root.stat(relative, work) }
             #[cfg(windows)]
             { self.inner.root.stat_wide_with_work(relative, work) }
         }
@@ -5337,7 +5331,7 @@ pub mod native {
             let ownership = SourcePayloadOwnership::new(work)?;
             let relative = self.relative(&state.directory, work)?;
             #[cfg(unix)]
-            let result = self.inner.root.read_dir_stats_with_work(&relative, work);
+            let result = self.inner.root.read_dir_stats(&relative, work);
             #[cfg(windows)]
             let result = self.inner.root.read_dir_stats_wide_with_work(&relative, work);
             match result {
@@ -5391,7 +5385,7 @@ pub mod native {
                 Some(stat) => Self::node(stat, work)?,
                 None => {
                     #[cfg(unix)]
-                    let result = self.inner.root.open_dir_held_with_work(directory, work)
+                    let result = self.inner.root.open_dir_held(directory, work)
                         .and_then(|parent| crate::native_host::stat_leaf_with_work(&parent, file_name, work));
                     #[cfg(windows)]
                     let result = self.inner.root.open_dir_held_wide_with_work(directory, work)
@@ -5613,7 +5607,7 @@ pub mod native {
                 #[cfg(windows)]
                 let target_ownership = SourcePayloadOwnership::new(work)?;
                 #[cfg(unix)]
-                let (target, target_bytes) = self.inner.root.read_link_with_work(&relative, maximum, work)?;
+                let (target, target_bytes) = self.inner.root.read_link(&relative, maximum, work)?;
                 #[cfg(windows)]
                 let (target, target_bytes) = self.inner.root.read_link_wide_with_work(&relative, maximum, work)?;
                 #[cfg(unix)]
@@ -5779,7 +5773,7 @@ pub mod native {
             let file = provider
                 .inner
                 .root
-                .open_file_with_work(&relative, work)
+                .open_file(&relative, work)
                 .map(cap_std::fs::File::into_std);
             let file = match file {
                 Ok(file) => file,
@@ -5945,7 +5939,7 @@ pub mod native {
                         )
                     }).map_err(native_demand_error);
                     #[cfg(windows)]
-                    let read = file.read_at_with_work(offset + filled as u64, unfilled, work);
+                    let read = file.read_at(offset + filled as u64, unfilled, work);
                     match read {
                         Ok(0) => break,
                         Ok(count) => filled += count,
@@ -6123,7 +6117,7 @@ pub mod native {
             };
             let worker_work = Arc::clone(&shared);
             let task_meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = shared.clone();
-            let task = acyclic_native_runtime::run_blocking_io_measured(
+            let task = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(crate::obs::caller_context(), move || {
                     let mut work = NativeSourceWork::ordinary(&worker_work);
                     let path_bytes = path_owned_bytes(&file.relative);
@@ -6132,11 +6126,11 @@ pub mod native {
                     let released = work.release(path_bytes);
                     released.and(result)
                 }),
-                task_meter,
+                Some((task_meter, false)),
             );
             let mut expired = false;
             let result = match task {
-                Ok(task) => task.wait_measured(std::time::Instant::now().checked_add(deadline), &mut prepared, || {
+                Ok(task) => task.wait(std::time::Instant::now().checked_add(deadline), &mut prepared, || {
                     expired = true;
                     stop.store(true, Ordering::Release);
                 }).map_err(native_demand_error).and_then(std::convert::identity),
@@ -6242,7 +6236,7 @@ pub mod native {
             cancellation: &CancellationToken,
         ) -> DemandResult<Option<SourceNode>> {
             self.run_request(path, budget, cancellation, move |provider, path, work| {
-                provider.lookup_with_work(source, &path, work)
+                provider.lookup_with_work(source, path, work)
             }).await
         }
 
@@ -6259,7 +6253,7 @@ pub mod native {
                 return Err(OperationFailure::before_work(DemandError::InvalidRequest));
             }
             self.run_request(directory, budget, cancellation, move |provider, directory, work| {
-                provider.list_page_with_work(source, &directory, cursor, maximum_entries, work)
+                provider.list_page_with_work(source, directory, cursor, maximum_entries, work)
             }).await
         }
 
@@ -6275,7 +6269,7 @@ pub mod native {
         ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
             check_read_range(offset, length).map_err(OperationFailure::before_work)?;
             self.run_request(path, budget, cancellation, move |provider, path, work| {
-                NativeDemandFile::open(provider, source, &path, expected, work)?.read(offset, length, work)
+                NativeDemandFile::open(provider, source, path, expected, work)?.read(offset, length, work)
             }).await
         }
 
@@ -6288,7 +6282,7 @@ pub mod native {
             cancellation: &CancellationToken,
         ) -> DemandResult<Box<dyn DemandFile>> {
             self.run_request(path, budget, cancellation, move |provider, path, work| {
-                NativeDemandFile::open_boxed(provider, source, &path, expected, work)
+                NativeDemandFile::open_boxed(provider, source, path, expected, work)
             }).await
         }
 
@@ -6301,7 +6295,7 @@ pub mod native {
             cancellation: &CancellationToken,
         ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
             self.run_request(path, budget, cancellation, move |provider, path, work| {
-                provider.read_link_with_work(source, &path, expected, u64::MAX, work)
+                provider.read_link_with_work(source, path, expected, u64::MAX, work)
             }).await
         }
 
@@ -6736,7 +6730,7 @@ pub mod native {
                         }
                         NativeChangedItem::Path { relative, altered } => {
                             let (name, exact, guard) = inner.name_with_work(relative, work)?;
-                            let metadata = inner.root.stat_with_work(relative, work);
+                            let metadata = inner.root.stat(relative, work);
                             Self::append_path_change(&mut reported, name, exact, guard, &mut native_names, &ownership, altered, metadata, work)?;
                         }
                         #[cfg(windows)]
@@ -8462,34 +8456,7 @@ impl NativeMountAllocationAdmissions {
         Ok(())
     }
 
-    fn reserve_slot(
-        &mut self, allocations: &mut crate::kernel::allocation::AllocationLedger,
-        counters: &mut crate::WorkCounters, budget: crate::WorkBudget,
-    ) -> Result<(), DemandError> {
-        if self.first.is_none() || self.more.len() < self.more.capacity() { return Ok(()); }
-        let width = std::mem::size_of::<NativeMountAllocationAdmission>();
-        let capacity = self.more.capacity().max(1).checked_mul(2)
-            .ok_or(crate::WorkError::Overflow)?;
-        let bytes = capacity.checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-        let old_bytes = self.more.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-        let copied = crate::WorkCounters {
-            bytes_copied: self.more.len().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64,
-            ..crate::WorkCounters::UNCHARGED
-        };
-        counters.admit(&copied, &budget)?;
-        allocations.claim_bytes(bytes, 1, counters, budget)
-            .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-        let mut vector = Vec::new();
-        if let Err(error) = vector.try_reserve_exact(capacity) {
-            allocations.release(bytes).map_err(|failure| failure.into_work_or(crate::WorkError::Overflow))?;
-            return Err(DemandError::Allocation(error));
-        }
-        vector.append(&mut self.more);
-        self.more = vector;
-        allocations.release(old_bytes).map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-        counters.charge(&copied, &budget)?;
-        Ok(())
-    }
+
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -8500,7 +8467,11 @@ impl NativeMountAllocationCustody {
         let keeper = original.as_ref().map(OriginalDemandWork::allocation_work);
         work.with_original_leaf(|work| {
             work.reconcile_cancellation_registry()?;
-            work.cancellation_wait.native_mount_admissions.reserve_slot(&mut work.allocations, &mut work.work, work.budget)?;
+            let admissions = &mut work.cancellation_wait.native_mount_admissions;
+            if admissions.first.is_some() && admissions.more.len() == admissions.more.capacity() {
+                let capacity = admissions.more.capacity().max(1).checked_mul(2).ok_or(crate::WorkError::Overflow)?;
+                grow_registry(&mut admissions.more, capacity, &mut work.allocations, &mut work.work, work.budget)?;
+            }
             let copied = WorkCounters {
                 bytes_copied: if work.cancellation_wait.native_mount_admissions.first.is_some() {
                     std::mem::size_of::<NativeMountAllocationAdmission>() as u64

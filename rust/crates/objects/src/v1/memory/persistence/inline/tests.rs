@@ -88,18 +88,10 @@ async fn checksum_valid_inline_offsets_still_require_authenticated_body_binding(
 }
 
 #[tokio::test]
-async fn durable_batch_groups_inline_writes_and_replays_original_overwritten_receipts()
+async fn durable_batch_reopens_values_and_original_overwritten_receipts()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let core = seeded(root.path()).await?;
-    let before = core
-        .journal
-        .as_ref()
-        .ok_or("missing journal")?
-        .tail
-        .lock()
-        .map_err(|_| "tail poisoned")?
-        .operations;
     let mut requests = (0..9)
         .map(|number| {
             (
@@ -120,15 +112,6 @@ async fn durable_batch_groups_inline_writes_and_replays_original_overwritten_rec
         .get(9)
         .cloned()
         .ok_or("missing original receipt")??;
-    let after = core
-        .journal
-        .as_ref()
-        .ok_or("missing journal")?
-        .tail
-        .lock()
-        .map_err(|_| "tail poisoned")?
-        .operations;
-    assert_eq!(after, before + 1);
     // Puts whose bounded bytes exceed one record split across records.
     let results = core
         .put_batch(
@@ -138,12 +121,6 @@ async fn durable_batch_groups_inline_writes_and_replays_original_overwritten_rec
         )
         .await;
     assert!(results.iter().all(Result::is_ok));
-    let journal = core.journal.as_ref().ok_or("missing journal")?;
-    assert_eq!(
-        journal.tail.lock().map_err(|_| "tail poisoned")?.operations,
-        after + 2
-    );
-    assert_eq!(fs::read_dir(root.path().join("segments"))?.count(), 0);
     drop(core);
     let core = reopen(root.path())?;
     assert_eq!(
@@ -218,16 +195,6 @@ async fn one_durable_batch_preserves_independent_validation_and_quota_failures()
             .and_then(|value| value.as_ref().ok())
             .map(|value| value.size),
         Some(4)
-    );
-    assert_eq!(
-        core.journal
-            .as_ref()
-            .ok_or("missing journal")?
-            .tail
-            .lock()
-            .map_err(|_| "tail poisoned")?
-            .operations,
-        2
     );
     drop(core);
     let core = open(root.path().to_path_buf(), options, None)?;

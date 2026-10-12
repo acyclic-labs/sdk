@@ -178,25 +178,8 @@ fn validate_none<T>(_: &T) -> Result<(), crate::ContractError> {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[derive(Clone)]
-struct BrowserBearerAuth(tonic::metadata::MetadataValue<tonic::metadata::Ascii>);
-
-#[cfg(target_arch = "wasm32")]
-impl tonic::service::Interceptor for BrowserBearerAuth {
-    fn call(
-        &mut self,
-        mut request: tonic::Request<()>,
-    ) -> Result<tonic::Request<()>, tonic::Status> {
-        request
-            .metadata_mut()
-            .insert("authorization", self.0.clone());
-        Ok(request)
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
 type BrowserClient = GeneratedClient<
-    tonic::codegen::InterceptedService<tonic_web_wasm_client::Client, BrowserBearerAuth>,
+    tonic::codegen::InterceptedService<tonic_web_wasm_client::Client, acyclic_workers::BearerAuth>,
 >;
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -266,16 +249,8 @@ impl Client {
                 "Actors endpoint must use HTTPS; HTTP is limited to loopback tests and userinfo, query, and fragment are forbidden".into(),
             ));
         }
-        if !crate::valid_token(token) {
-            return Err(Error::Configuration(
-                "invalid Actors bearer credential".into(),
-            ));
-        }
-        let mut authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
-            format!("Bearer {token}")
-                .parse()
-                .map_err(|_| Error::Configuration("invalid Actors bearer credential".into()))?;
-        authorization.set_sensitive(true);
+        let authorization = acyclic_workers::BearerAuth::new(token)
+            .map_err(|()| Error::Configuration("invalid Actors bearer credential".into()))?;
         let transport = tonic_web_wasm_client::Client::new_with_options(
             browser_transport_base_url(endpoint.as_str()),
             tonic_web_wasm_client::options::FetchOptions::new()
@@ -289,7 +264,7 @@ impl Client {
         );
         let inner = wire::actors_service_client::ActorsServiceClient::with_interceptor(
             transport,
-            BrowserBearerAuth(authorization),
+            authorization,
         )
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);

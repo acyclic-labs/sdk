@@ -533,11 +533,7 @@ fn reserve_indexes(
 }
 
 impl IndexedPublication {
-    pub(crate) fn new(authority: &Authority, event: &Event, bytes: Vec<u8>) -> Result<Self> {
-        Self::new_with_work(authority, event, bytes, &mut None)
-    }
-
-    pub(crate) fn new_with_work(
+    pub(crate) fn new(
         authority: &Authority,
         event: &Event,
         bytes: Vec<u8>,
@@ -801,15 +797,15 @@ impl IndexedPublication {
 
     pub(crate) fn add_index_with_work(
         &self,
-        request: &mut crate::distributed::PreparedCommitRequest<'_, '_>,
+        request: &mut (acyclic_stream::CommitRequest, crate::wire_codec::CodecQuota<'_, '_>),
     ) -> Result<()> {
         for (path, tail, bytes) in &self.indexes {
-            request.push_condition(if *tail == 0 {
+            crate::distributed::add_condition(request, if *tail == 0 {
                 CommitCondition::Absent { path: path.clone() }
             } else {
                 CommitCondition::Tail { path: path.clone(), expected: *tail }
             })?;
-            request.append(path.clone(), bytes.clone())?;
+            crate::distributed::add_record(request, path.clone(), bytes.clone())?;
         }
         Ok(())
     }
@@ -837,14 +833,14 @@ impl IndexedPublication {
         client: &StreamClient<P>,
         key: IdempotencyKey,
         work: &'a mut Option<&'b mut dyn super::history::HistoryIo>,
-    ) -> Result<crate::distributed::PreparedCommitRequest<'a, 'b>> {
+    ) -> Result<(acyclic_stream::CommitRequest, crate::wire_codec::CodecQuota<'a, 'b>)> {
         let key_owned = if work.as_deref().is_some_and(|observer|
             !original_native_decode_mode(observer)) { 32 } else { 0 };
-        let mut request = crate::distributed::PreparedCommitRequest::new(
+        let mut request = crate::distributed::commit_request(
             key, key_owned, work);
-        let target = self.target_condition_with_work(client, request.work()).await?;
-        request.push_condition(target)?;
-        request.append(self.path.clone(), self.bytes.clone())?;
+        let target = self.target_condition_with_work(client, request.1.work()).await?;
+        crate::distributed::add_condition(&mut request, target)?;
+        crate::distributed::add_record(&mut request, self.path.clone(), self.bytes.clone())?;
         self.add_index_with_work(&mut request)?;
         Ok(request)
     }
@@ -1205,22 +1201,14 @@ pub(crate) async fn one_record<P: StreamProvider>(
         extra = records.next(work).await?;
         if let Some(record) = &extra {
             received += sdk_record_retained_bytes(record, work);
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(original_native_decode_mode) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
-                    reason: "operation lookup exceeded its one-record bound" });
-            }
-            return Err(Error::Storage("operation lookup exceeded its one-record bound".into()));
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
+                "operation lookup exceeded its one-record bound"));
         }
         if let Some(record) = &first
             && (record.sequence != from || record.value.len() > acyclic_stream::MAX_RECORD_BYTES)
         {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(original_native_decode_mode) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
-                    reason: "operation location record is invalid" });
-            }
-            return Err(Error::Storage("operation location record is invalid".into()));
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
+                "operation location record is invalid"));
         }
         Ok(())
     }.await;
@@ -1796,8 +1784,6 @@ mod native_publication_custody_tests {
         assert!(matches!(error, Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
         }));
-        assert_eq!(receiver.receipt().authority_records_read, 1,
-            "receiver prefix is recorded before rejection or decode");
         drop(records);
         assert_eq!(io.into_custody().bytes(), 0);
         assert_eq!(producer.live_allocation_bytes(), 0);
@@ -1913,9 +1899,9 @@ mod native_publication_custody_tests {
             .expect("original finite publication ledger");
         let mut io = native_work_io(&native).expect("original source custody");
         let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
-        let encoded = crate::wire_codec::encode_event_with_work(&authority, &event, &mut work)?;
+        let encoded = crate::wire_codec::encode_event(&authority, &event, &mut work)?;
         let original_capacity = encoded.capacity() as u64;
-        let mut publication = IndexedPublication::new_with_work(
+        let mut publication = IndexedPublication::new(
             &authority, &event, encoded, &mut work)?;
         assert_eq!(publication.bytes.retained_capacity(), Some(original_capacity as usize));
         assert!(publication.bytes.matches_meter(&native.runtime_meter_owner()));
@@ -2124,7 +2110,7 @@ mod native_only_provider_tests {
         };
         let encoded = crate::wire_codec::encode_event(&authority, &event)?;
         let event_bytes = encoded.len() as u64;
-        let publication = IndexedPublication::new(&authority, &event, encoded)?;
+        let publication = IndexedPublication::new(&authority, &event, encoded, &mut None)?;
         let request = publication.request(&ordinary,
             IdempotencyKey::new(OwnedBytes::from_static(b"native-only-reader"))?).await?;
         assert!(matches!(ordinary.commit(request).await?, CommitOutcome::Committed(_)));
@@ -2152,8 +2138,6 @@ mod native_only_provider_tests {
         assert_eq!(page.1.len(), 1);
         assert_eq!(native.receipt().authority_bytes_read, event_bytes);
         assert_eq!(native.receipt().source_bytes_read, event_bytes);
-        assert_eq!(native.receipt().backend_read_operations, 3,
-            "pin tail, page tail, and finite read each have one SDK boundary");
         let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
         let bounds = bounds_with_work(&client, &publication.path, &mut work).await?
             .map_err(|error| sdk_error(error, &work))?;

@@ -103,7 +103,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         write: crate::distributed::JournalWrite, return_event: bool,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<(ApplyResult, u64)> {
-        if let Some(owner) = owner { owner.verify(write.settlement(), work).await?; }
+        if let Some(owner) = owner { owner.verify(matches!(write, crate::distributed::JournalWrite::Settlement), work).await?; }
         if let Some(result) = self.replay(&command, return_event, default_projection_read_limits().maximum_bytes, work).await? {
             let returned_owned = result.1;
             let mut returned_custody = crate::wire_codec::CodecQuota::from_retained(work, returned_owned);

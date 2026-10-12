@@ -1446,7 +1446,7 @@ fn tool_invocation(
     io: Option<&super::PreparationIo>,
 ) -> Result<ToolInvocation> {
     let grant_hold;
-    let grant = super::fork_preparer_io::format_text(format_args!("tool:call:{}", definition.name), io)?;
+    let grant = crate::contract::preparation_format(format_args!("tool:call:{}", definition.name), io)?;
     grant_hold = io.map(|io| io.guard_owned(grant.capacity() as u64)).transpose()?;
     if !context.scope().grants().contains(&grant) {
         return Err(super::task_runtime::observed::boundary(io,
@@ -1458,7 +1458,7 @@ fn tool_invocation(
     if let Some(io) = io { io.retain_owned(std::mem::size_of::<ToolInvocation>() as u64)?; }
     let invocation = ToolInvocation {
         operation_id: operation,
-        call_id: super::fork_preparer_io::format_text(format_args!("{operation}"), io)?,
+        call_id: crate::contract::preparation_format(format_args!("{operation}"), io)?,
         name: super::fork_preparer_io::clone_text(&definition.name, io)?,
         arguments,
     };

@@ -284,7 +284,8 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
     }
 }
 
-pub(super) async fn read<P: StreamProvider>(
+/// Reads authenticated effect events at a bounded committed cut.
+pub async fn effect_events<P: StreamProvider>(
     client: &StreamClient<P>,
     verifier: &AuthorityVerifier,
     cursor: &HistoryCursor,
@@ -519,7 +520,7 @@ pub(super) async fn retirement_proof_for_event_with_work<P: StreamProvider>(
         .ok_or_else(|| Error::Storage("terminal canonical event is missing".into()))?;
     let result = async {
         if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
-        let expected = crate::wire_codec::encode_event_with_work(authority, event, work)?;
+        let expected = crate::wire_codec::encode_event(authority, event, work)?;
         let matches = if record.value.as_ref() != expected.as_slice() {
             Err(Error::Storage("terminal canonical event differs".into()))
         } else {
