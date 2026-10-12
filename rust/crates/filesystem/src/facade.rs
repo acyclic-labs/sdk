@@ -637,7 +637,7 @@ struct FsInner<A, O> {
     objects: O,
     capabilities: EmbeddedCapabilities,
     workspace_namespace: [u8; 16],
-    path_index: Arc<dyn crate::path_index::GenerationPathIndex>,
+    path_index: crate::path_index::MemoryGenerationPathIndex,
     // This field must remain last: Rust drops fields in declaration order, so every durable
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     _local_root_lifecycle: Option<OwnershipAnchor>,
@@ -752,8 +752,8 @@ impl<A, O> Fs<A, O> {
         self.same_deployment(&workspace.volume.fs)
     }
 
-    pub(crate) fn path_index(&self) -> &dyn crate::path_index::GenerationPathIndex {
-        &*self.inner.path_index
+    pub(crate) fn path_index(&self) -> &crate::path_index::MemoryGenerationPathIndex {
+        &self.inner.path_index
     }
 
     pub(crate) fn authority(&self) -> &A {
@@ -2672,36 +2672,15 @@ impl<A, O> Fs<A, O> {
         capabilities: EmbeddedCapabilities,
         workspace_namespace: [u8; 16],
     ) -> Self {
-        Self::new_with_path_index(
-            authority,
-            objects,
-            capabilities,
-            workspace_namespace,
-            Arc::new(crate::path_index::MemoryGenerationPathIndex::default()),
-            #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-            None,
-        )
-    }
-
-    fn new_with_path_index(
-        authority: A,
-        objects: O,
-        capabilities: EmbeddedCapabilities,
-        workspace_namespace: [u8; 16],
-        path_index: Arc<dyn crate::path_index::GenerationPathIndex>,
-        #[cfg(all(feature = "local", not(target_arch = "wasm32")))] local_root_lifecycle: Option<
-            OwnershipAnchor,
-        >,
-    ) -> Self {
         Self {
             inner: Arc::new(FsInner {
                 authority,
                 objects,
                 capabilities,
                 workspace_namespace,
-                path_index,
+                path_index: crate::path_index::MemoryGenerationPathIndex::default(),
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-                _local_root_lifecycle: local_root_lifecycle,
+                _local_root_lifecycle: None,
             }),
         }
     }
@@ -2926,18 +2905,16 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         };
         let (stream, objects) = futures::future::join(open_stream, open_objects).await;
         let (stream, objects) = (stream?, objects?);
-        Ok(Self::new_with_path_index(
-            crate::distributed::StreamAuthorityStore::new(stream),
-            objects,
-            EmbeddedCapabilities {
-                durable: cfg!(any(unix, windows)),
-            },
-            [0; 16],
-            Arc::new(crate::path_index::NativeGenerationPathIndex::new(
-                root.join("generation-path-index-v1"),
-            )),
-            lifecycle,
-        ))
+        Ok(Self {
+            inner: Arc::new(FsInner {
+                authority: crate::distributed::StreamAuthorityStore::new(stream),
+                objects,
+                capabilities: EmbeddedCapabilities { durable: cfg!(any(unix, windows)) },
+                workspace_namespace: [0; 16],
+                path_index: crate::path_index::MemoryGenerationPathIndex::default(),
+                _local_root_lifecycle: lifecycle,
+            }),
+        })
     }
 
     /// Reclaims every stored object nothing live reaches, while the root

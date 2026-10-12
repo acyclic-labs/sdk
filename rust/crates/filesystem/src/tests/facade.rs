@@ -6732,7 +6732,7 @@ fn local_root_lifecycle_outlives_provider_destruction() -> Result<(), Box<dyn st
         objects: (),
         capabilities: EmbeddedCapabilities::MEMORY,
         workspace_namespace: [0; 16],
-        path_index: Arc::new(crate::path_index::MemoryGenerationPathIndex::default()),
+        path_index: crate::path_index::MemoryGenerationPathIndex::default(),
         _local_root_lifecycle: Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),
     };
     let dropping = std::thread::spawn(move || drop(inner));
