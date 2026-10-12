@@ -63,9 +63,9 @@ pub async fn lookup_attributes<S: AsyncObjectStore>(
     .map_err(map_batch_failure)
 }
 
-fn to_batch(receipt: persistent_batch::Receipt<AttributeEntry>) -> AttributeBatchLookup {
+fn to_batch(receipt: crate::OperationReceipt<Vec<Option<AttributeEntry>>>) -> AttributeBatchLookup {
     AttributeBatchLookup {
-        entries: receipt.values,
+        entries: receipt.value,
         work: receipt.work,
     }
 }

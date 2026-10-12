@@ -338,7 +338,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     ) -> Result<TransactionCommit<A, O>, S3Error> {
         let mut transaction = self.workspace.begin_transaction(idempotency_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         create_parent_directories(&mut transaction, key).await?;
-        transaction.write(&absolute_key(key), bytes).await?;
+        transaction.write(&absolute_key(key), bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(Into::into)
     }
 
@@ -377,7 +377,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     ) -> Result<(), S3Error> {
         validate_key(key)?;
         let mut transaction = self.workspace.begin_transaction(idempotency_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mutated = match transaction.remove(&absolute_key(key)).await {
+        let mutated = match transaction.remove(&absolute_key(key), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
             Ok(()) => true,
             Err(WorkspaceError::NotFound) => false,
             Err(error) => return Err(error.into()),
@@ -407,7 +407,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         let mut mutated = false;
         for key in keys {
             validate_key(key)?;
-            match transaction.remove(&absolute_key(key)).await {
+            match transaction.remove(&absolute_key(key), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
                 Ok(()) => mutated = true,
                 Err(WorkspaceError::NotFound) => {}
                 Err(error) => return Err(error.into()),
@@ -840,7 +840,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3MultipartUpload<A, O> {
             .unwrap_or(u64::MAX)
             .saturating_add(1);
         let mut source = Cursor::new(bytes);
-        let staged = self.transaction.stage_content(&mut source, maximum).await?;
+        let staged = self.transaction.stage_content(&mut source, maximum, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         self.parts.insert(part_number, staged);
         Ok(())
     }
@@ -963,7 +963,7 @@ pub(crate) async fn create_parent_directories<A: AsyncAuthorityStore, O: AsyncOb
     if let Some((parent, _)) = key.rsplit_once('/')
         && !parent.is_empty()
     {
-        transaction.create_dir_all(&format!("/{parent}")).await?;
+        transaction.create_dir_all(&format!("/{parent}"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     }
     Ok(())
 }

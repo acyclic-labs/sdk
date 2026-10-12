@@ -278,7 +278,7 @@ impl DirectoryHandle {
 #[derive(Default)]
 struct DarwinCallbackState {
     completed_future_request_work: crate::WorkCounters,
-    first_fatal: Option<super::NativeMountCallbackFailure>,
+    first_fatal: Option<(NativeMountError, crate::WorkCounters)>,
 }
 
 fn darwin_verify_callback_guard(
@@ -315,7 +315,7 @@ fn darwin_native_source_original(
 
 struct DarwinMountContext {
     source: Arc<dyn MountFilesystem>,
-    startup_failure: Mutex<Option<super::NativeMountCallbackFailure>>,
+    startup_failure: Mutex<Option<(NativeMountError, crate::WorkCounters)>>,
     handler_failure: Mutex<DarwinCallbackState>,
     handler_failed: AtomicBool,
     handler_budget: crate::WorkBudget,
@@ -1241,7 +1241,7 @@ pub(super) struct DarwinMountSession {
     loop_panic: Option<Mutex<Box<dyn std::any::Any + Send>>>,
     teardown_complete: bool,
     completed_callback_work: crate::WorkCounters,
-    retired_callback_failure: Mutex<Option<super::NativeMountCallbackFailure>>,
+    retired_callback_failure: Mutex<Option<(NativeMountError, crate::WorkCounters)>>,
     native_root_identity: Option<crate::NativeRootIdentity>,
     unmount: Arc<DarwinStopController>,
 }
@@ -1272,6 +1272,8 @@ pub enum DarwinTeardownFailure {
     MountStillVisible,
     /// The current mount table exceeds its genuinely prepaid birth buffer.
     MountTableCapacityExceeded,
+    /// Required teardown state has not been observed.
+    MissingTeardownState,
 }
 
 impl std::fmt::Display for DarwinTeardownFailure {
@@ -1286,6 +1288,7 @@ impl std::fmt::Display for DarwinTeardownFailure {
             Self::DiskutilTimedOut => formatter.write_str("diskutil unmount exceeded its 4-second bound"),
             Self::MountStillVisible => formatter.write_str("Darwin mount remained visible after diskutil unmount"),
             Self::MountTableCapacityExceeded => formatter.write_str("Darwin mount-table probe exceeds its prepaid birth capacity"),
+            Self::MissingTeardownState => formatter.write_str("Darwin mount teardown evidence is absent"),
         }
     }
 }
@@ -1334,7 +1337,7 @@ impl DriverSessionResources {
         if self.driver_session.load(Ordering::Acquire) == 0 { return Ok(()); }
         let mut credit = self.cleanup_credit.lock().unwrap_or_else(PoisonError::into_inner);
         if self.interrupted.load(Ordering::Acquire) { return Ok(()); }
-        credit.cleanup_loan(wait).started_io(crate::WorkCounters {
+        credit.loan(Some(wait)).started_io(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(NativeMountError::from)?;
         self.interrupted.store(true, Ordering::Release);
@@ -1378,7 +1381,7 @@ impl DriverSessionResources {
         &self, wait: &crate::CancellationToken,
     ) -> Result<(), NativeMountError> {
         self.cleanup_credit.lock().unwrap_or_else(PoisonError::into_inner)
-            .cleanup_loan(wait).started_io(crate::WorkCounters {
+            .loan(Some(wait)).started_io(crate::WorkCounters {
                 backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
             }).map_err(NativeMountError::from)
     }
@@ -1389,7 +1392,7 @@ impl DriverSessionResources {
         let pointer = self.driver_session.load(Ordering::Acquire);
         if pointer == 0 { return Ok(()); }
         let credit = self.cleanup_credit.get_mut().unwrap_or_else(PoisonError::into_inner);
-        let loan = credit.cleanup_loan(wait);
+        let loan = credit.loan(Some(wait));
         loan.started_io(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(NativeMountError::from)?;
@@ -1452,10 +1455,8 @@ fn run_darwin_loop(mut owned: (
     let aborted = state.start_aborted;
     state.start_gate_credit = Some(gate);
     drop(state);
-    let admission = if aborted { Err(super::NativeMountCallbackFailure {
-        cause: NativeMountError::ControlPending, work: original.native_read_meter().lock().work,
-    }) } else { darwin_native_attempt(original, true).map_err(|cause|
-        super::NativeMountCallbackFailure { cause, work: original.native_read_meter().lock().work }) };
+    let admission = if aborted { Err((NativeMountError::ControlPending, original.native_read_meter().lock().work)) }
+    else { darwin_native_attempt(original, true).map_err(|cause| (cause, original.native_read_meter().lock().work)) };
     let status = match admission {
         Err(failure) => {
             controller.state.lock().unwrap_or_else(PoisonError::into_inner).start_aborted = true;
@@ -1536,7 +1537,7 @@ impl DarwinMountSession {
                 metadata
             };
             let context = {
-                let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(source_work)
+                let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(source_work)).map_err(super::NativeMountStartupAdmissionError::from)
                     .map_err(NativeMountError::from)?;
                 let materialization = source_work.clone();
                 let bytes = std::mem::size_of::<(FileId, u64)>() as u64;
@@ -1692,7 +1693,7 @@ impl DarwinMountSession {
         };
         if let Some(error) = self.resources()?.context.startup_failure.lock()
             .unwrap_or_else(PoisonError::into_inner).take() {
-            return Err(error.cause);
+            return Err(error.0);
         }
         if !reported.mounted {
             {
@@ -1793,7 +1794,7 @@ impl DarwinMountSession {
     }
 
     /// Takes the retained callback failure.
-    pub(super) fn take_callback_failure(&self) -> Option<super::NativeMountCallbackFailure> {
+    pub(super) fn take_callback_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
         if let Some(resources) = self.resources.as_deref() {
             let context = &resources.context;
             context.startup_failure.lock().unwrap_or_else(PoisonError::into_inner).take()
@@ -1840,7 +1841,7 @@ impl DarwinMountSession {
             (meter, observer)
         };
         let result = (|| {
-            let cleanup = observer.cleanup_loan(wait);
+            let cleanup = observer.loan(Some(wait));
             let meter = &meter;
             detach_check(meter, Some(&cleanup))?;
             if self.loop_finished_before_teardown.is_none() {
@@ -1860,7 +1861,7 @@ impl DarwinMountSession {
                 } else {
                     let mut plan = state.cleanup_plan.take().ok_or(NativeMountError::ControlPending)?;
                     let result = {
-                        let loan = plan.credit.cleanup_loan(wait);
+                        let loan = plan.credit.loan(Some(wait));
                         bounded_unmount(
                             &self.destination, &mut state, meter, self.resources.as_ref(),
                             Some(&mut plan.scratch), Some(&loan),
@@ -1894,8 +1895,12 @@ impl DarwinMountSession {
             if state.direct.is_some() || state.diskutil.is_some() {
                 return Err(NativeMountError::ControlPending);
             }
-            let loop_finished_before_teardown = self.loop_finished_before_teardown.expect("teardown observed the provider before detach");
-            let join = self.loop_result.as_ref().expect("teardown observed the provider join");
+            let loop_finished_before_teardown = self.loop_finished_before_teardown.ok_or(
+                NativeMountError::DarwinTeardown(DarwinTeardownFailure::MissingTeardownState),
+            )?;
+            let join = self.loop_result.as_ref().ok_or(
+                NativeMountError::DarwinTeardown(DarwinTeardownFailure::MissingTeardownState),
+            )?;
             if let Some(panic) = self.loop_panic.take() {
                 return Err(NativeMountError::DriverPanicked {
                     operation: "Darwin mount loop shutdown", panic,
@@ -2408,7 +2413,7 @@ impl DarwinStopController {
             let destination = Path::new(std::ffi::OsStr::from_bytes(destination.as_bytes()));
             let mut plan = state.cleanup_plan.take().ok_or(NativeMountError::ControlPending)?;
             let result = {
-                let loan = plan.credit.accepted_cleanup_loan();
+                let loan = plan.credit.loan(None);
                 bounded_unmount(destination, state, &meter, Some(resources),
                     Some(&mut plan.scratch), Some(&loan))
             };
@@ -2520,12 +2525,12 @@ fn with_detach_meter<T>(
 fn new_detach_meter(
     native: &crate::NativeMaterializationWork,
 ) -> Result<Arc<DetachReadMeter>, NativeMountError> {
-    let custody = super::NativeMountAllocationCustody::new_with_meter(native)?;
-    custody.claim_with_meter(std::mem::size_of::<DetachReadMeter>() as u64, native)?;
+    let custody = super::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(native)).map_err(super::NativeMountStartupAdmissionError::from)?;
+    native.original_demand_work().with_original_leaf(|original| custody.claim(std::mem::size_of::<DetachReadMeter>() as u64, original)).map_err(super::NativeMountStartupAdmissionError::from)?.map_err(super::NativeMountStartupAdmissionError::from)?;
     let meter = Arc::new(DetachReadMeter {
         work: Mutex::new(Some(native.clone())), custody: custody.clone(),
     });
-    custody.attach_known_control_with_meter(Arc::downgrade(&meter) as _, native)?;
+    native.original_demand_work().with_original_leaf(|original| custody.attach_known_control(Arc::downgrade(&meter) as _, original)).map_err(super::NativeMountStartupAdmissionError::from)?.map_err(super::NativeMountStartupAdmissionError::from)?;
     Ok(meter)
 }
 
@@ -3369,30 +3374,30 @@ impl DarwinMountContext {
     ) -> Result<T, NativeMountError> {
         let had_original = matches!(active, Ok(Some(_)));
         let result = if let Err(cause) = active {
-            Err(super::NativeMountCallbackFailure {
+            Err((
                 cause,
-                work: self.source_original_work.as_ref()
+                self.source_original_work.as_ref()
                     .map_or(crate::WorkCounters::UNCHARGED, |work| work.native_read_meter().lock().work),
-            })
+            ))
         } else if let Some(meter) = &active.expect("original source view was validated") {
             super::run_native_mount_handler_on_meter(meter, operation).map_err(|cause|
-                super::NativeMountCallbackFailure { cause, work: meter.native_read_meter().lock().work })
+                (cause, meter.native_read_meter().lock().work))
         } else {
             let result = super::run_native_mount_handler(self.handler_budget, &self.handler_cancellation, operation);
-            let completed = match &result { Ok(receipt) => receipt.work, Err(failure) => failure.work };
+            let completed = match &result { Ok(receipt) => receipt.work, Err(failure) => failure.1 };
             let overflow = self.handler_failure.lock().unwrap_or_else(PoisonError::into_inner)
                 .completed_future_request_work.try_add_assign(&completed).err();
             match result {
                 Ok(receipt) => match overflow {
                     None => Ok(receipt.value),
-                    Some(error) => Err(super::NativeMountCallbackFailure { cause: error.into(), work: completed }),
+                    Some(error) => Err((error.into(), completed)),
                 },
                 Err(failure) => {
-                    if let Some(error) = overflow.filter(|_| !darwin_handler_is_fatal(&failure.cause)) {
+                    if let Some(error) = overflow.filter(|_| !darwin_handler_is_fatal(&failure.0)) {
                         self.handler_failed.store(true, Ordering::Release);
                         let mut state = self.handler_failure.lock().unwrap_or_else(PoisonError::into_inner);
                         if state.first_fatal.is_none() {
-                            state.first_fatal = Some(super::NativeMountCallbackFailure { cause: error.into(), work: completed });
+                            state.first_fatal = Some((error.into(), completed));
                         }
                     }
                     Err(failure)
@@ -3400,9 +3405,9 @@ impl DarwinMountContext {
             }
         };
         let failure = match result { Ok(value) => return Ok(value), Err(failure) => failure };
-        if !darwin_handler_is_fatal(&failure.cause) { return Err(failure.cause); }
+        if !darwin_handler_is_fatal(&failure.0) { return Err(failure.0); }
         self.handler_failed.store(true, Ordering::Release);
-        let returned = match &failure.cause {
+        let returned = match &failure.0 {
             NativeMountError::Work(error) => Some(NativeMountError::Work(error.clone())),
             NativeMountError::Demand(crate::DemandError::Cancelled) =>
                 Some(NativeMountError::Demand(crate::DemandError::Cancelled)),
@@ -3467,23 +3472,37 @@ impl DarwinCallbackWork<'_> {
 
 impl DarwinMountContext {
     fn run_request<T>(&self, authored_write: bool, operation: impl FnOnce(&DarwinCallbackWork<'_>) -> Result<T, i32>) -> Result<T, i32> {
-        let active = self.callback_meter();
-        if let Ok(meter) = &active {
-            if meter.is_some() {
-                let failure = self.startup_failure.lock().unwrap_or_else(PoisonError::into_inner);
-                if let Some(error) = failure.as_ref().filter(|failure| darwin_handler_is_fatal(&failure.cause)) {
-                    return Err(darwin_handler_errno(&error.cause));
+        // The mutex protects only the weak scope snapshot, never a source/SDK wait.
+        let active = match self.callback_meter() {
+            Ok(active) => active,
+            Err(cause) => {
+                let status = darwin_handler_errno(&cause);
+                if darwin_handler_is_fatal(&cause) {
+                    self.handler_failed.store(true, Ordering::Release);
+                    let work = self.source_original_work.as_ref()
+                        .map_or(crate::WorkCounters::UNCHARGED, |work| work.native_read_meter().lock().work);
+                    let mut retained = self.handler_failure.lock().unwrap_or_else(PoisonError::into_inner);
+                    if retained.first_fatal.is_none() {
+                        retained.first_fatal = Some((cause, work));
+                    }
                 }
-            } else {
-                let failure = self.handler_failure.lock().unwrap_or_else(PoisonError::into_inner);
-                if let Some(failure) = failure.first_fatal.as_ref().filter(|failure| darwin_handler_is_fatal(&failure.cause)) {
-                    return Err(darwin_handler_errno(&failure.cause));
-                }
+                return Err(status);
+            }
+        };
+        if active.is_some() {
+            let failure = self.startup_failure.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(error) = failure.as_ref().filter(|failure| darwin_handler_is_fatal(&failure.0)) {
+                return Err(darwin_handler_errno(&error.0));
+            }
+        } else {
+            let failure = self.handler_failure.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(failure) = failure.first_fatal.as_ref().filter(|failure| darwin_handler_is_fatal(&failure.0)) {
+                return Err(darwin_handler_errno(&failure.0));
             }
             if self.handler_failed.load(Ordering::Acquire) { return Err(libc::EIO); }
         }
-        let status = std::cell::Cell::new(active.as_ref().err().map(darwin_handler_errno));
-        self.run(active, |native| {
+        let status = std::cell::Cell::new(None);
+        self.run(Ok(active), |native| {
             let work = DarwinCallbackWork::new(native);
             let result = (|| {
                 work.check()?;
@@ -4883,8 +4902,8 @@ mod tests {
         assert_eq!(context.ledger.latest(), 0);
         let failure = context.startup_failure.lock().map_err(|_| "poisoned original failure")?
             .take().ok_or("missing original typed guard denial")?;
-        assert!(matches!(failure.cause, NativeMountError::CallbackDenied { .. }));
-        assert_eq!(failure.work, after, "failure remains on the installed original work");
+        assert!(matches!(failure.0, NativeMountError::CallbackDenied { .. }));
+        assert_eq!(failure.1, after, "failure remains on the installed original work");
         Ok(())
     }
 
@@ -4904,8 +4923,8 @@ mod tests {
         assert!(context.ledger.latest() > 0, "actual mutation remains covered by the original publication ledger");
         let failure = context.startup_failure.lock().map_err(|_| "poisoned original failure")?
             .take().ok_or("missing post-effect typed cause")?;
-        assert!(matches!(failure.cause, NativeMountError::CallbackDenied { .. }));
-        assert_eq!(failure.work, original.receipt());
+        assert!(matches!(failure.0, NativeMountError::CallbackDenied { .. }));
+        assert_eq!(failure.1, original.receipt());
         assert_eq!(context.handler_failure.lock().map_err(|_| "poisoned completed work")?
             .completed_future_request_work, crate::WorkCounters::UNCHARGED);
         Ok(())
@@ -4922,9 +4941,9 @@ mod tests {
         assert_eq!(unsafe { acyclic_fs_darwin_mount_create(Arc::as_ptr(&context) as usize,
             path.as_ptr(), 0o644, context.mount_uid, context.mount_gid, libc::O_RDWR, &mut handle) }, -libc::EIO);
         let failure = context.handler_failure.lock().map_err(|_| "poisoned callback failure")?.first_fatal.take().ok_or("missing allocation denial")?;
-        assert!(matches!(failure.cause, NativeMountError::Work(_)));
-        assert_eq!(failure.work.allocation_operations, 0);
-        assert_eq!(failure.work.backend_write_operations, 0);
+        assert!(matches!(failure.0, NativeMountError::Work(_)));
+        assert_eq!(failure.1.allocation_operations, 0);
+        assert_eq!(failure.1.backend_write_operations, 0);
         assert_eq!(handle, 0);
         assert!(source.lookup(&MountPath::root().child(b"not-created".to_vec()))?.is_none());
         Ok(())
@@ -4950,10 +4969,10 @@ mod tests {
         cancellation.cancel();
         assert_eq!(unsafe { acyclic_fs_darwin_mount_getattr(address, path.as_ptr(), 0, output.as_mut_ptr()) }, -libc::ECANCELED);
         let failure = context.handler_failure.lock().map_err(|_| "poisoned callback failure")?.first_fatal.take().ok_or("missing original cancellation")?;
-        assert!(matches!(failure.cause, NativeMountError::Demand(crate::DemandError::Cancelled)
+        assert!(matches!(failure.0, NativeMountError::Demand(crate::DemandError::Cancelled)
             | NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled)
             | NativeMountError::Source(MountSourceError::Cancelled)));
-        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.1.backend_read_operations, 0);
         assert!(context.handler_failure.lock().map_err(|_| "poisoned callback failure")?
             .completed_future_request_work.items_examined > miss.items_examined);
         Ok(())
@@ -5005,7 +5024,7 @@ mod tests {
         assert!(session.resources.is_none());
         assert_eq!(session.completed_callback_work(), completed);
         let failure = session.take_callback_failure().ok_or("missing retired actual panic")?;
-        match failure.cause {
+        match failure.0 {
             NativeMountError::DriverPanicked { panic, .. } => {
                 let payload = panic.into_inner().unwrap_or_else(PoisonError::into_inner);
                 assert_eq!(payload.downcast_ref::<&str>(), Some(&"actual native callback panic"));
@@ -5166,9 +5185,9 @@ mod tests {
             native_path.as_ptr(), 0, incoming.as_ptr().cast(), incoming.len(), 0) };
         assert_eq!(status, -libc::EIO);
         let failure = context.handler_failure.lock().map_err(|_| "poisoned callback failure")?.first_fatal.take().ok_or("missing actual copy denial")?;
-        assert!(matches!(failure.cause, NativeMountError::Work(crate::WorkError::BudgetExceeded { counter: "bytes_copied", .. })));
-        assert_eq!(failure.work.bytes_copied, 0);
-        assert_eq!(failure.work.backend_write_operations, 0);
+        assert!(matches!(failure.0, NativeMountError::Work(crate::WorkError::BudgetExceeded { counter: "bytes_copied", .. })));
+        assert_eq!(failure.1.bytes_copied, 0);
+        assert_eq!(failure.1.backend_write_operations, 0);
         assert_eq!(source.open_file(&path)?.read_up_to(0, 16)?.as_ref(), b"before");
         Ok(())
     }

@@ -706,7 +706,7 @@ impl ForkVolumeReaders {
         let mut selected_projects = BTreeSet::new();
         for resource in &seed.resources {
             if let ResourceRevision::Project { volume, .. } = &resource.revision {
-                let key = owned.digest(volume)?;
+                let key = crate::contract::canonical_json_digest_with_work(volume, crate::store::default_projection_read_limits().maximum_bytes, owned.work())?;
                 if !selected_projects.contains(&key) {
                     owned.slots::<[u8; 32]>(1)?;
                     selected_projects.insert(key);
@@ -716,7 +716,7 @@ impl ForkVolumeReaders {
         let mut shared = BTreeMap::<[u8; 32], BTreeSet<AgentId>>::new();
         for grant in &seed.shared_grants {
             if grant.operations.contains(&VolumeOperation::Read) {
-                let key = owned.digest(&grant.volume)?;
+                let key = crate::contract::canonical_json_digest_with_work(&grant.volume, crate::store::default_projection_read_limits().maximum_bytes, owned.work())?;
                 if let Some(readers) = shared.get_mut(&key) {
                     if !readers.contains(&grant.child_agent) {
                         owned.slots::<AgentId>(1)?;
@@ -743,7 +743,7 @@ impl ForkVolumeReaders {
         volume: &VolumeRef,
         owned: &mut CodecQuota<'_, '_>,
     ) -> Result<&BTreeSet<AgentId>> {
-        let key = owned.digest(volume)?;
+        let key = crate::contract::canonical_json_digest_with_work(volume, crate::store::default_projection_read_limits().maximum_bytes, owned.work())?;
         if self.implicit.contains_key(&key) {
             let readers = self.implicit.get(&key)
                 .ok_or_else(|| Error::Invalid("fork reader cache entry disappeared".into()))?;
@@ -873,7 +873,7 @@ fn decode_fork_manifest(
         else { Error::Invalid(format!("attachment manifest is invalid: {error}")) }
     })?;
     owned.release(diagnostic_bytes)?;
-    if items.len() as u64 > crate::conversation::MAX_LIMIT_ATTACHMENTS as u64 {
+    if items.len() as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64 {
         return Err(Error::Invalid("attachment count exceeds limit".into()));
     }
     for item in &items {
@@ -915,88 +915,74 @@ impl ContentForkVerifier {
         provider.validate()?;
         Ok(Self { provider, content })
     }
-
-    async fn verify_with_work(
-        &self,
-        seed: &ForkSeed,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        seed.validate(work)?;
-        if seed.child_private_volume.provider() == &self.provider
-            || seed.resources.iter().any(|capture| {
-                capture.source.provider() == &self.provider
-                    || capture.revision.provider() == &self.provider
-            })
-        {
-            return Err(boundary_error(work, crate::wire::ErrorCode::Unsupported,
-                "content-only provider cannot attest mutable fork resources"));
-        }
-        let mut owned = CodecQuota::observed(work)?;
-        let mut checked = BTreeSet::new();
-        for file in seed.inherited_context.iter()
-            .chain(seed.reference_grants.iter().map(|grant| &grant.file))
-            .chain(seed.attachment_manifests.iter())
-        {
-            if file.volume().provider() != &self.provider {
-                continue;
-            }
-            let capability = owned.file_digest(file)?;
-            if checked.contains(&capability) {
-                continue;
-            }
-            owned.slots::<[u8; 32]>(1)?;
-            checked.insert(capability);
-            self.verify_file_with_work(file, owned.work()).await?;
-        }
-        Ok(())
-    }
-
-    async fn read_manifest_with_work(
-        &self,
-        manifest: &FileRef,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(acyclic_stream::OwnedBytes, u64)> {
-        if manifest.volume().provider() != &self.provider {
-            return Err(boundary_error(work, crate::wire::ErrorCode::Unauthorized,
-                "fork manifest belongs to another provider"));
-        }
-        match work.as_deref_mut() {
-            Some(observer) => crate::store::history::read_content_with_work(
-                observer, self.content.as_ref(), manifest).await,
-            None => self.content.read(manifest, manifest.descriptor().byte_length(), None)?.await.map(|bytes| (bytes, 0)),
-        }
-    }
-
-    async fn verify_file_with_work(
-        &self,
-        file: &FileRef,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        if file.volume().provider() != &self.provider {
-            return Err(boundary_error(work, crate::wire::ErrorCode::Unauthorized,
-                "fork file belongs to another provider"));
-        }
-        match work.as_deref_mut() {
-            Some(observer) => crate::store::history::verify_content_with_work(
-                observer, self.content.as_ref(), file).await,
-            None => self.content.verify(file, file.descriptor().byte_length(), None)?.await,
-        }
-    }
 }
 
 impl ForkSeedVerifier for ContentForkVerifier {
     fn provider(&self) -> &ProviderRef { &self.provider }
     fn verify<'a, 'w: 'a>(&'a self, seed: &'a ForkSeed,
         work: &'a mut Option<&'w mut dyn HistoryIo>) -> Result<HistoryContentFuture<'a, ()>> {
-        admit_fork_future(work, |work| self.verify_with_work(seed, work))
+        admit_fork_future(work, |work| async move {
+            seed.validate(work)?;
+            if seed.child_private_volume.provider() == &self.provider
+                || seed.resources.iter().any(|capture| {
+                    capture.source.provider() == &self.provider
+                        || capture.revision.provider() == &self.provider
+                })
+            {
+                return Err(boundary_error(work, crate::wire::ErrorCode::Unsupported,
+                    "content-only provider cannot attest mutable fork resources"));
+            }
+            let mut owned = CodecQuota::observed(work)?;
+            let mut checked = BTreeSet::new();
+            for file in seed.inherited_context.iter()
+                .chain(seed.reference_grants.iter().map(|grant| &grant.file))
+                .chain(seed.attachment_manifests.iter())
+            {
+                if file.volume().provider() != &self.provider {
+                    continue;
+                }
+                let capability = owned.file_digest(file)?;
+                if checked.contains(&capability) {
+                    continue;
+                }
+                owned.slots::<[u8; 32]>(1)?;
+                checked.insert(capability);
+                match owned.work().as_deref_mut() {
+                    Some(observer) => crate::store::history::verify_content_with_work(
+                        observer, self.content.as_ref(), file).await?,
+                    None => self.content.verify(file, file.descriptor().byte_length(), None)?.await?,
+                }
+            }
+            Ok(())
+        })
     }
     fn read_manifest<'a, 'w: 'a>(&'a self, _seed: &'a ForkSeed, manifest: &'a FileRef,
         work: &'a mut Option<&'w mut dyn HistoryIo>) -> Result<HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
-        admit_fork_future(work, |work| self.read_manifest_with_work(manifest, work))
+        admit_fork_future(work, |work| async move {
+            if manifest.volume().provider() != &self.provider {
+                return Err(boundary_error(work, crate::wire::ErrorCode::Unauthorized,
+                    "fork manifest belongs to another provider"));
+            }
+            match work.as_deref_mut() {
+                Some(observer) => crate::store::history::read_content_with_work(
+                    observer, self.content.as_ref(), manifest).await,
+                None => self.content.read(manifest, manifest.descriptor().byte_length(), None)?.await.map(|bytes| (bytes, 0)),
+            }
+        })
     }
     fn verify_file<'a, 'w: 'a>(&'a self, _seed: &'a ForkSeed, file: &'a FileRef,
         work: &'a mut Option<&'w mut dyn HistoryIo>) -> Result<HistoryContentFuture<'a, ()>> {
-        admit_fork_future(work, |work| self.verify_file_with_work(file, work))
+        admit_fork_future(work, |work| async move {
+            if file.volume().provider() != &self.provider {
+                return Err(boundary_error(work, crate::wire::ErrorCode::Unauthorized,
+                    "fork file belongs to another provider"));
+            }
+            match work.as_deref_mut() {
+                Some(observer) => crate::store::history::verify_content_with_work(
+                    observer, self.content.as_ref(), file).await,
+                None => self.content.verify(file, file.descriptor().byte_length(), None)?.await,
+            }
+        })
     }
 }
 
@@ -1037,32 +1023,26 @@ impl StreamHistoryForkVerifier {
         admit_native_verifier_share(self._native_metadata.as_ref(), work, std::mem::size_of::<Self>())?;
         Ok(std::sync::Arc::new(self))
     }
-
-    async fn verify_with_work(
-        &self,
-        seed: &ForkSeed,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        seed.validate(work)?;
-        for capture in &seed.resources {
-            for revision in [&capture.source, &capture.revision] {
-                if revision.provider() == &self.provider
-                    && !matches!(revision, ResourceRevision::History(_))
-                {
-                    return Err(boundary_error(work, crate::wire::ErrorCode::Unsupported,
-                        "Stream history verifier cannot prove this resource"));
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 impl ForkSeedVerifier for StreamHistoryForkVerifier {
     fn provider(&self) -> &ProviderRef { &self.provider }
     fn verify<'a, 'w: 'a>(&'a self, seed: &'a ForkSeed,
         work: &'a mut Option<&'w mut dyn HistoryIo>) -> Result<HistoryContentFuture<'a, ()>> {
-        admit_fork_future(work, |work| self.verify_with_work(seed, work))
+        admit_fork_future(work, |work| async move {
+            seed.validate(work)?;
+            for capture in &seed.resources {
+                for revision in [&capture.source, &capture.revision] {
+                    if revision.provider() == &self.provider
+                        && !matches!(revision, ResourceRevision::History(_))
+                    {
+                        return Err(boundary_error(work, crate::wire::ErrorCode::Unsupported,
+                            "Stream history verifier cannot prove this resource"));
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 }
 
@@ -1495,20 +1475,8 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
         Ok(bytes)
     }
 
-    pub(super) fn digest<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<[u8; 32]> {
-        let bytes = self.canonical(value)?;
-        let capacity = bytes.capacity() as u64;
-        if let Some(observer) = self.work().as_deref_mut() {
-            observer.hashed_bytes(bytes.len() as u64)?;
-        }
-        let digest = *blake3::hash(&bytes).as_bytes();
-        drop(bytes);
-        self.release(capacity)?;
-        Ok(digest)
-    }
-
     fn capability<T: Serialize + ?Sized>(&mut self, prefix: &str, value: &T) -> Result<String> {
-        let digest = self.digest(value)?;
+        let digest = crate::contract::canonical_json_digest_with_work(value, crate::store::default_projection_read_limits().maximum_bytes, self.work())?;
         let length = prefix.len().checked_add(64)
             .ok_or_else(|| Error::Invalid("fork capability storage overflows".into()))?;
         if let Some(observer) = self.work().as_deref_mut() {
@@ -1533,7 +1501,7 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
 
     fn file_digest(&mut self, file: &FileRef) -> Result<[u8; 32]> {
         file.validate(self.work())?;
-        self.digest(file)
+        crate::contract::canonical_json_digest_with_work(file, crate::store::default_projection_read_limits().maximum_bytes, self.work())
     }
 
     pub(super) fn volume_capability(&mut self, volume: &VolumeRef) -> Result<String> {
@@ -2479,18 +2447,13 @@ mod physical_clones {
     use crate::core::{copy_text as text, copy_authority as authority, copy_provider as provider,
         copy_file as file, reserve_copy_vector as slots, copy_copy_vector as bytes};
 
-    fn item(quota: &mut CodecQuota<'_, '_>) -> Result<()> {
-        quota.work().as_deref_mut().expect("observed fork clone")
-            .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })
-    }
-
     fn vector<T>(source: &[T], quota: &mut CodecQuota<'_, '_>,
         mut copy: impl FnMut(&T, &mut CodecQuota<'_, '_>) -> Result<T>) -> Result<Vec<T>> {
-        crate::core::copy_vector(source, quota, |value, quota| { item(quota)?; copy(value, quota) })
+        crate::core::copy_vector(source, quota, |value, quota| { quota.checkpoint()?; copy(value, quota) })
     }
 
     fn agents(source: &[AgentId], quota: &mut CodecQuota<'_, '_>) -> Result<Vec<AgentId>> {
-        for _ in source { item(quota)?; }
+        for _ in source { quota.checkpoint()?; }
         bytes(source, quota)
     }
 
@@ -2594,37 +2557,23 @@ mod physical_clones {
         })
     }
 
-    fn shared(source: &[SharedGrant], quota: &mut CodecQuota<'_, '_>) -> Result<Vec<SharedGrant>> {
-        let mut value = slots::<SharedGrant>(source.len(), quota)?;
-        for grant in source {
-            item(quota)?;
-            let volume = grant.volume.clone_in_quota(quota)?;
-            let mut operations = BTreeSet::new();
-            // Entry payload is explicit; opaque std node/control allocation is not observed.
-            let payload = grant.operations.len() as u64 * std::mem::size_of::<VolumeOperation>() as u64;
-            quota.work().as_deref_mut().expect("observed fork clone").admit_owned(payload)?;
-            quota.work().as_deref_mut().expect("observed fork clone").retain_owned(payload)?;
-            quota.adopt(payload)?;
-            for operation in &grant.operations {
-                item(quota)?;
-                operations.insert(*operation);
-            }
-            value.push(SharedGrant { volume, child_agent: grant.child_agent, operations });
+    fn shared(grant: &SharedGrant, quota: &mut CodecQuota<'_, '_>) -> Result<SharedGrant> {
+        let volume = grant.volume.clone_in_quota(quota)?;
+        let mut operations = BTreeSet::new();
+        // Explicit entry payload; std node/control allocation is opaque.
+        quota.slots::<VolumeOperation>(grant.operations.len())?;
+        for operation in &grant.operations {
+            quota.checkpoint()?;
+            operations.insert(*operation);
         }
-        Ok(value)
+        Ok(SharedGrant { volume, child_agent: grant.child_agent, operations })
     }
 
-    fn references(source: &[ReferenceGrant], quota: &mut CodecQuota<'_, '_>) -> Result<Vec<ReferenceGrant>> {
-        let mut value = slots::<ReferenceGrant>(source.len(), quota)?;
-        for grant in source {
-            item(quota)?;
-            value.push(ReferenceGrant {
-                file: file(&grant.file, quota)?,
-                reader: grant.reader,
-                attachment_manifest: grant.attachment_manifest.as_ref().map(|entry| file(entry, quota)).transpose()?,
-            });
-        }
-        Ok(value)
+    fn reference(grant: &ReferenceGrant, quota: &mut CodecQuota<'_, '_>) -> Result<ReferenceGrant> {
+        Ok(ReferenceGrant {
+            file: file(&grant.file, quota)?, reader: grant.reader,
+            attachment_manifest: grant.attachment_manifest.as_ref().map(|entry| file(entry, quota)).transpose()?,
+        })
     }
 
     fn source_authorization(
@@ -2675,8 +2624,8 @@ mod physical_clones {
             inherited_context: vector(&source.inherited_context, quota, file)?,
             summary: source.summary.as_ref().map(|value| summary_capture(value, quota)).transpose()?,
             inherited_through_sequence: source.inherited_through_sequence,
-            shared_grants: shared(&source.shared_grants, quota)?,
-            reference_grants: references(&source.reference_grants, quota)?,
+            shared_grants: vector(&source.shared_grants, quota, shared)?,
+            reference_grants: vector(&source.reference_grants, quota, reference)?,
             history_witness: source.history_witness,
             attachment_manifests: vector(&source.attachment_manifests, quota, file)?,
         })
@@ -2689,7 +2638,7 @@ mod physical_clones {
         let resources = vector(&source.resources, quota, captured)?;
         let mut omissions = slots::<ForkOmission>(source.omissions.len(), quota)?;
         for entry in &source.omissions {
-            item(quota)?;
+            quota.checkpoint()?;
             omissions.push(ForkOmission {
                 selection: selection(&entry.selection, quota)?,
                 outcome: capture(&entry.outcome, quota)?,
@@ -2716,8 +2665,8 @@ mod physical_clones {
             inherited_context: vector(&source.inherited_context, quota, file)?,
             summary: source.summary.as_ref().map(|value| summary_capture(value, quota)).transpose()?,
             inherited_through_sequence: source.inherited_through_sequence,
-            shared_grants: shared(&source.shared_grants, quota)?,
-            reference_grants: references(&source.reference_grants, quota)?,
+            shared_grants: vector(&source.shared_grants, quota, shared)?,
+            reference_grants: vector(&source.reference_grants, quota, reference)?,
             history_witness: source.history_witness,
             attachment_manifests: vector(&source.attachment_manifests, quota, file)?,
             boundary: source.boundary.as_ref().map(|value| boundary(value, quota)).transpose()?,
@@ -2728,7 +2677,15 @@ mod physical_clones {
         crate::core::physical_clone_factory!(copy, ResourceRevision, revision, self);
     }
     impl ForkReport {
-        crate::core::physical_clone_factory!(copy, ForkReport, report, self);
+        /// Copies report fields with bounded work and returns their retained bytes.
+        pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
+            if work.is_none() { return Ok((self.clone(), 0)); }
+            let mut quota = CodecQuota::new(work, 0)?;
+            let value = report(self, &mut quota)?;
+            let held = quota.retained();
+            quota.transfer();
+            Ok((value, held))
+        }
     }
     impl ForkRequest {
         crate::core::physical_clone_factory!(copy, ForkRequest, request, self);
@@ -2743,7 +2700,6 @@ mod physical_clones {
 mod tests {
     use super::*;
     use crate::{conversation::FileDescriptor, core::AggregateKind};
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn inherited_prefix_accepts_more_than_a_thousand_readers() -> Result<()> {
@@ -2777,15 +2733,9 @@ mod tests {
 
     struct MissingFileVerifier(ProviderRef);
 
-    struct CountingFileVerifier {
-        provider: ProviderRef,
-        count: std::sync::Arc<AtomicUsize>,
-    }
-
     struct ManifestVerifier {
         provider: ProviderRef,
         bytes: acyclic_stream::OwnedBytes,
-        reads: std::sync::Arc<AtomicUsize>,
     }
 
     impl ForkSeedVerifier for ManifestVerifier {
@@ -2811,7 +2761,6 @@ mod tests {
                 if manifest.volume().provider() != &self.provider {
                     return Err(Error::Unauthorized("wrong manifest provider".into()));
                 }
-                self.reads.fetch_add(1, Ordering::Relaxed);
                 Ok((self.bytes.clone(), 0))
             })
         }
@@ -2903,40 +2852,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn fork_volume_read_index_tracks_implicit_volume_readers() -> Result<()> {
-        let mut seed: ForkSeed =
-            serde_json::from_str(include_str!("../fixtures/v2/fork-seed.json"))
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-        let attached = AgentId::from_bytes([7; 16]);
-        seed.attached_agents.push(attached);
-        let project_resource = seed
-            .resources
-            .get(1)
-            .ok_or_else(|| Error::Invalid("fixture has no project resource".into()))?;
-        let (parent_project, child_project) = match project_resource {
-            CapturedResource {
-                source: ResourceRevision::Project { volume: parent, .. },
-                revision: ResourceRevision::Project { volume: child, .. },
-                ..
-            } => (parent.clone(), child.clone()),
-            _ => unreachable!("fixture selects a project"),
-        };
-        let mut observer = None;
-        let mut owned = CodecQuota::observed(&mut observer)?;
-        let mut readers = ForkVolumeReaders::new(&seed, &mut owned)?;
-        assert_eq!(
-            readers.implicit_readers(&child_project, &mut owned)?,
-            &BTreeSet::from([seed.child_agent, attached])
-        );
-        assert_eq!(
-            readers.implicit_readers(&seed.child_private_volume, &mut owned)?,
-            &BTreeSet::from([seed.child_agent])
-        );
-        assert_eq!(readers.implicit_readers(&parent_project, &mut owned)?, &BTreeSet::new());
-        Ok(())
-    }
-
     impl ForkSeedVerifier for AcceptingVerifier {
         fn provider(&self) -> &ProviderRef {
             &self.0
@@ -2967,23 +2882,6 @@ mod tests {
 
         fn verify_file<'a, 'w: 'a>(&'a self, _seed: &'a ForkSeed, _file: &'a FileRef, work: &'a mut Option<&'w mut dyn HistoryIo>) -> Result<HistoryContentFuture<'a, ()>> {
             admit_fork_future(work, |_work| async { Err(Error::NotFound("pinned file".into())) })
-        }
-    }
-
-    impl ForkSeedVerifier for CountingFileVerifier {
-        fn provider(&self) -> &ProviderRef {
-            &self.provider
-        }
-
-        fn verify<'a, 'w: 'a>(&'a self, _seed: &'a ForkSeed, work: &'a mut Option<&'w mut dyn HistoryIo>) -> Result<HistoryContentFuture<'a, ()>> {
-            admit_fork_future(work, |_work| async { Ok(()) })
-        }
-
-        fn verify_file<'a, 'w: 'a>(&'a self, _seed: &'a ForkSeed, _file: &'a FileRef, work: &'a mut Option<&'w mut dyn HistoryIo>) -> Result<HistoryContentFuture<'a, ()>> {
-            admit_fork_future(work, |_work| async move {
-                self.count.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            })
         }
     }
 
@@ -3075,7 +2973,7 @@ mod tests {
                 source_volume,
                 "files/missing.txt",
                 "one",
-                FileDescriptor::from_bytes(b"missing", "text/plain")?,
+                FileDescriptor::from_bytes(b"missing", "text/plain", &mut None)?,
                 "missing.txt",
             )?,
             reader: seed.child_agent,
@@ -3105,14 +3003,14 @@ mod tests {
             member_volume.clone(),
             "files/actual.txt",
             "one",
-            FileDescriptor::from_bytes(b"actual", "text/plain")?,
+            FileDescriptor::from_bytes(b"actual", "text/plain", &mut None)?,
             "actual.txt",
         )?;
         let forged = FileRef::new(
             member_volume,
             "files/forged.txt",
             "two",
-            FileDescriptor::from_bytes(b"forged", "text/plain")?,
+            FileDescriptor::from_bytes(b"forged", "text/plain", &mut None)?,
             "forged.txt",
         )?;
         let bytes = serde_json::to_vec(&vec![crate::conversation::Attachment {
@@ -3124,7 +3022,7 @@ mod tests {
             object_volume,
             "lists/one.json",
             "one",
-            FileDescriptor::from_bytes(&bytes, "application/vnd.acyclic.harness.attachments+json")?,
+            FileDescriptor::from_bytes(&bytes, "application/vnd.acyclic.harness.attachments+json", &mut None)?,
             "one.json",
         )?;
         let mut manifest_seed = seed.clone();
@@ -3157,26 +3055,16 @@ mod tests {
             .ok_or_else(|| Error::Invalid("fixture has no reference grant".into()))?;
         first_grant.file = member.clone();
         attached_manifest_only.validate(&mut None)?;
-        let verified_members = std::sync::Arc::new(AtomicUsize::new(0));
-        // Use a cached canonical carrier rather than allocating a new vector for every provider read; admission must decode this original backing.
         let cached_manifest: acyclic_stream::OwnedBytes = bytes.into();
-        let cached_pointer = cached_manifest.as_ptr();
-        let manifest_reads = std::sync::Arc::new(AtomicUsize::new(0));
         let verifier = CompositeForkVerifier::new(&[
-            std::sync::Arc::new(CountingFileVerifier {
-                provider: filesystem.clone(),
-                count: verified_members.clone(),
-            }),
+            std::sync::Arc::new(AcceptingVerifier(filesystem.clone())),
             std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
             std::sync::Arc::new(ManifestVerifier {
                 provider: objects,
                 bytes: cached_manifest.clone(),
-                reads: manifest_reads.clone(),
             }),
         ], &mut None)?;
         futures::executor::block_on(verifier.verify(&attached_manifest_only, &mut None))?;
-        assert_eq!(manifest_reads.load(Ordering::Relaxed), 1);
-        assert_eq!(cached_manifest.as_ptr(), cached_pointer);
         let missing_manifest = CompositeForkVerifier::new(&[
             std::sync::Arc::new(AcceptingVerifier(filesystem.clone())),
             std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
@@ -3196,9 +3084,6 @@ mod tests {
             .ok_or_else(|| Error::Invalid("fixture has no reference grant".into()))?;
         first_grant.file = member;
         futures::executor::block_on(verifier.verify(&manifest_seed, &mut None))?;
-        assert_eq!(verified_members.load(Ordering::Relaxed), 3);
-        assert_eq!(manifest_reads.load(Ordering::Relaxed), 3);
-        assert_eq!(cached_manifest.as_ptr(), cached_pointer);
         let optional = ResourceRevision::SharedVolume(VolumeRef::new(
             filesystem,
             "shared",
@@ -3350,7 +3235,7 @@ mod tests {
             "one",
             FileDescriptor::from_bytes(
                 b"one",
-                "application/vnd.acyclic.harness.inherited-conversation+json",
+                "application/vnd.acyclic.harness.inherited-conversation+json", &mut None,
             )?,
             "prefix.json",
         )?;

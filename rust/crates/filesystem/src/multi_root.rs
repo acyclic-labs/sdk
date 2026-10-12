@@ -912,10 +912,10 @@ where
         let original = target.generation(root.target_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let projected = target.generation(projected_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let changed = original
-            .diff_to(&projected, u32::MAX)
-            .await?
-            .changed_paths(u32::MAX)
-            .await?;
+            .diff_to(&projected, u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map_err(|failure| failure.error)?
+            .changed_paths(u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let paths = changed
             .iter()
             .map(|change| {
@@ -1476,7 +1476,7 @@ async fn generation_descends_from<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         if !visited.insert(candidate) || visited.len() > 65_536 {
             continue;
         }
-        for parent in workspace.generation(candidate, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.parents().await? {
+        for parent in workspace.generation(candidate, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.parents(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             if parent == ancestor {
                 return Ok(true);
             }
@@ -3408,18 +3408,18 @@ mod tests {
             crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        child_tx.create_dir_all("/sub").await?;
+        child_tx.create_dir_all("/sub", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx.write_text("/.gitignore", "*.tmp\n").await?;
         child_tx.write_text("/scratch.tmp", "child").await?;
         child_tx.write_text("/sub/.gitignore", "*.tmp\n").await?;
         child_tx.write_text("/sub/cache.tmp", "child").await?;
-        child_tx.create_dir_all("/sub/nested").await?;
+        child_tx.create_dir_all("/sub/nested", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx
             .write_text("/sub/nested/deep.tmp", "nested child")
             .await?;
         child_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut parent_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        parent_tx.create_dir_all("/sub").await?;
+        parent_tx.create_dir_all("/sub", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         parent_tx.write_text("/scratch.tmp", "parent").await?;
         parent_tx.write_text("/sub/cache.tmp", "parent").await?;
         parent_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;

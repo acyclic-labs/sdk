@@ -405,7 +405,6 @@ pub(super) fn copy_event(
     })
 }
 physical_clone_factory!(native_event_clone_with_custody, Event, copy_event, source);
-physical_clone_factory!(native_effect_attestation_clone_with_custody, EffectAttestation, copy_observation, source);
 
 /// Logical inline map/set payload, never an estimate of opaque allocator nodes.
 pub(super) fn retain_entry<T>(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
@@ -1202,7 +1201,9 @@ pub(super) fn admission_from_owned_value(
         quota.adopt(selected_bytes)?;
         let (configurations, configuration_bytes) = vector(field(&mut fields, "configurations")?, quota.work(), configuration)?;
         quota.adopt(configuration_bytes)?;
-        ExtensionAdmission::from_parts_with_work(source, selected, configurations, quota.work())
+        let admission = ExtensionAdmission { source, selected, configurations };
+        admission.validate(quota.work())?;
+        Ok(admission)
     })()?;
     let added = quota.retained();
     quota.transfer();

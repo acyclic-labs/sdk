@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
-use crate::filesystem::native_execution::{NativeProcessNamespaceScopes, NativeViewPublicationError};
+use crate::filesystem::native_execution::NativeViewPublicationError;
 use std::process::{Command, Stdio};
 
 #[inline(never)]
@@ -18,8 +18,8 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
             grants(owner, &request.view, original)?;
             {
                 view.operation_cancellation().check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-                authority.results.supports_native_stage(original)?;
-                if !authority.result_content.supports_native_read(authority.results.volume(), original)? {
+                authority.results.supports_stage(Some(&crate::filesystem::PreparationIo::from_native_work(original)?))?;
+                if !authority.result_content.supports_read(authority.results.volume(), Some(&crate::filesystem::PreparationIo::from_native_work(original)?))? {
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
                         reason: "native result reader has no original finite SDK engine" });
                 }
@@ -29,7 +29,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
                     bytes_copied: u64::from(request.maximum_output_bytes),
                     items_examined: u64::from(request.maximum_output_bytes).saturating_add(16),
                     ..WorkCounters::default() })?;
-                view.validate_working_directory(&request.cwd, original)?.await?;
+                view.validate_working_directory(&request.cwd, original)?;
                 view.validate_for_dispatch(original)?.await?;
 
     }
@@ -48,7 +48,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
                 let bytes = io.encode(&captured, u64::from(request.maximum_result_bytes), true)?;
                 let decoded = io.decode_preparation::<serde_json::Value>(
                     &bytes, crate::wire::ErrorCode::Invalid)?;
-                crate::contract::validate_json_schema_value(schema, &decoded.value, "native process result", Some(&io))?;
+                crate::contract::validate_json_schema_value(schema, &decoded.0, "native process result", Some(&io))?;
                 drop(decoded);
                 bytes
 
@@ -56,20 +56,24 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
             drop(captured);
             drop(capture_custody);
             let result = {
-                let (result, guard) = authority.results.stage_once_with_native_work(
+                let io = crate::filesystem::PreparationIo::from_native_work(original)?;
+                let (result, guard) = authority.results.stage_once(
                     OperationId::from_bytes(dispatch.attempt_id.into_bytes()), "native-process/result.json",
-                    &bytes, "application/json", "Native process result", original)?.await?;
-                let mut guard = guard;
+                    &bytes, "application/json", "Native process result", Some(&io))?.await?;
+                let guard = guard.ok_or(receipt_error("native result publisher omitted admitted custody"))?;
+                let retained = guard.bytes();
+                guard.into_retained();
+                let mut guard = io.take_native_custody(retained)?;
                 custody.as_mut().expect("original custody").absorb(&mut guard)?;
                 original.charge(WorkCounters { items_examined: 1,
                     ..WorkCounters::default() })?;
-                result.descriptor().verify_with_native_work(&bytes, original)?;
+                result.descriptor().verify(&bytes, &mut Some(&mut io.history_io()))?;
                 if result.descriptor().media_type() != "application/json" {
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                         reason: "native effect result must be JSON content" });
                 }
-                authority.result_content.verify_with_native_work(
-                    &result, u64::from(request.maximum_result_bytes), original,
+                authority.result_content.verify(
+                    &result, u64::from(request.maximum_result_bytes), Some(&io),
                 )?.await?;
                 result
 
@@ -157,7 +161,7 @@ async fn capture<P: StreamProvider + 'static>(
     owner: &Arc<TaskJournalOwner<P>>, request: &Arc<NativeProcessRequest>,
     supervisor: &Arc<NativeSupervisorControl>, cancellation: &acyclic_fs::CancellationToken,
     original: &NativeMaterializationWork,
-    scopes: NativeProcessNamespaceScopes,
+    scopes: (Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation),
 ) -> Result<(NativeProcessResult, NativeAllocation)> {
     owner.verify_with_native_work(false, original).await?;
     let mut custody = original.retain_owned(0)?;
@@ -216,7 +220,7 @@ async fn capture<P: StreamProvider + 'static>(
         let output = (|| -> std::io::Result<_> {
             check()?;
             let exchange = invocation.mcp_stdio.as_ref().map(|request|
-                request.exchange_with_native_work(&original))
+                request.exchange(Some(&original)))
                 .transpose().map_err(|error| root_failure(error))?;
             let _command_custody = {
                 let mut bytes = invocation.executable.as_os_str().len().checked_add(invocation.cwd.as_os_str().len()).ok_or(std::io::ErrorKind::OutOfMemory)?;
@@ -267,7 +271,7 @@ async fn capture<P: StreamProvider + 'static>(
                 let mut response_custody = None;
                 let observe = |chunk: &[u8]| {
                     response_custody.take();
-                    let bytes = {exchange.push_with_native_work(chunk, &original).map(|(bytes, guard)| { response_custody = Some(guard); bytes })
+                    let bytes = {exchange.push(chunk, Some(&original)).map(|(bytes, guard)| { response_custody = guard; bytes })
 }.map_err(|error| root_failure(error))?;
                     Ok(acyclic_native_runtime::ProcessInput { bytes, complete: exchange.is_complete() })
                 };
@@ -378,7 +382,7 @@ mod supervisor_tests {
 
     #[test]
     fn missing_owned_tree_cannot_report_quiescence() {
-        let supervisor = NativeSupervisorControl::new();
+        let supervisor = NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new(), process: Mutex::new(None) };
         let attempt = crate::EffectAttemptId::from_bytes([41; 16]);
         supervisor.begin(attempt).unwrap();
         supervisor.record_quiescence(false).unwrap();
