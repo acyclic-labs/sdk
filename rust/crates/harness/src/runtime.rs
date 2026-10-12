@@ -11,7 +11,7 @@ use crate::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, MAX_PRIVATE_DIRECTORY_PAGE,
         PrivateDirectoryPage, VolumeOperation, VolumeRef, verified_content_bytes,
     },
-    core::{ExtensionAdmission, OriginalExtensionBinding, Reducer, SchemaRegistry, Scope},
+    core::{ExtensionAdmission, Reducer, SchemaRegistry, Scope},
     durable_tool::ResumableToolRegistry,
     executor::ModelEventAdmission,
     extension::ExtensionRuntime,
@@ -1935,7 +1935,7 @@ impl TaskAdmissionRecord {
             }
         }
         if let Some(extensions) = &self.extensions {
-            extensions.validate_with_work(quota.work())?;
+            extensions.validate(quota.work())?;
         }
         if let Some(execution) = &self.execution {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2191,8 +2191,8 @@ impl TaskAdmissionRecord {
         let native = work.as_deref().and_then(|io| io.original_native_work())
             .expect("native fixed metadata observer").clone();
         let mut diagnostic_custody = None;
-        let decoded = crate::contract::json_from_value_owned_bounded_native_trusted(
-            value, crate::contract::JsonBounds {
+        let decoded = crate::contract::json_from_value_bounded(
+            std::borrow::Cow::Owned(value), crate::contract::JsonBounds {
                 maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                 maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64, maximum_depth: 256,
             }, 0, crate::wire::ErrorCode::Invalid, crate::contract::JsonValueSchema::None,
@@ -3815,14 +3815,14 @@ impl RuntimeScope {
 
     pub(crate) fn with_original_extensions(
         mut self,
-        original: OriginalExtensionBinding,
+        original: (Option<ExtensionAdmission>, SchemaRegistry),
     ) -> Result<Self> {
         if self.extensions_sealed {
             return Err(Error::Unauthorized(
                 "descendant scope cannot change extension selection".into(),
             ));
         }
-        let (selection, schemas) = original.into_parts();
+        let (selection, schemas) = original;
         if self.extensions.is_some() && self.extensions != selection {
             return Err(Error::Conflict(
                 "runtime scope extension selection is already pinned".into(),
@@ -3861,7 +3861,7 @@ impl RuntimeScope {
         runtime.validate_admission(self.extensions.as_ref(), &mut None)?;
         if let Some(schemas) = &self.extension_schemas {
             for identity in runtime.selected() {
-                if schemas.implementation_digest(&identity.name, identity.version)?
+                if schemas.implementation_digest(&identity.name, identity.version, &mut None)?
                     != identity.digest
                 {
                     return Err(Error::Conflict(
@@ -3898,7 +3898,7 @@ impl RuntimeScope {
         extensions: Option<ExtensionAdmission>,
     ) -> Result<Self> {
         if let Some(extensions) = &extensions {
-            extensions.validate()?;
+            extensions.validate(&mut None)?;
         }
         if self.extensions_sealed && self.extensions != extensions {
             return Err(Error::Conflict(
@@ -3971,7 +3971,7 @@ impl RuntimeScope {
             return Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Conflict,
                 "replay cannot retarget original extension admission"));
         }
-        if let Some(extensions) = &admission.extensions { extensions.validate_with_work(work)?; }
+        if let Some(extensions) = &admission.extensions { extensions.validate(work)?; }
         let mut quota = crate::wire_codec::CodecQuota::new(
             work, std::mem::size_of::<Self>() as u64,
         )?;
@@ -4011,7 +4011,7 @@ impl RuntimeScope {
             runtime.validate_admission(scope.extensions.as_ref(), quota.work())?;
             if let Some(schemas) = &scope.extension_schemas {
                 for identity in runtime.selected() {
-                    if schemas.implementation_digest_with_work(
+                    if schemas.implementation_digest(
                         &identity.name, identity.version, quota.work(),
                     )? != identity.digest {
                         return Err(scope_metadata_boundary(quota.work(), crate::wire::ErrorCode::Conflict,
@@ -5884,7 +5884,7 @@ impl AgentHarness {
                 "fork preparer needs a bound parent conversation revision".into(),
             ));
         }
-        parent.stream_path()?;
+        parent.stream_path(&mut None)?;
         let mut bound = self.as_ref().clone();
         bound.fork_preparer = Some(ForkBinding {
             parent: parent.clone(),
@@ -5900,7 +5900,7 @@ impl AgentHarness {
                 "runtime scope lacks fork:publish".into(),
             ));
         }
-        request.validate()?;
+        request.validate(&mut None)?;
         let binding = self
             .fork_preparer
             .as_ref()
@@ -5923,7 +5923,7 @@ impl AgentHarness {
     ) -> Result<crate::fork::ForkReport> {
         let binding = self.fork_binding(&request)?;
         let report = binding.preparer.prepare(request.clone()).await?;
-        report.validate()?;
+        report.validate(&mut None)?;
         if report.request != request {
             return Err(Error::Conflict("fork preparer changed the request".into()));
         }
@@ -5938,7 +5938,7 @@ impl AgentHarness {
         let binding = self.fork_binding(&request)?;
         let report = binding.preparer.reconcile(request.clone()).await?;
         if let Some(report) = &report {
-            report.validate()?;
+            report.validate(&mut None)?;
             if report.request != request {
                 return Err(Error::Conflict(
                     "reconciled fork changed the request".into(),
@@ -7250,7 +7250,7 @@ impl TaskContext {
                 &binding.configuration,
                 expected,
                 &bytes,
-                limits,
+                limits, None,
             )?;
         }
         for file in files {
@@ -8938,7 +8938,7 @@ impl DurableBatchRequest {
             policy,
             execution,
         };
-        request.validate()?;
+        request.validate(&mut None)?;
         Ok(request)
     }
 
@@ -9028,7 +9028,7 @@ impl DurableBatchRequest {
         if request.canonical_value() != canonical {
             return Err(Error::Invalid("batch request is not canonical v2".into()));
         }
-        request.validate()?;
+        request.validate(&mut None)?;
         Ok(request)
     }
 
@@ -10061,7 +10061,7 @@ mod tests {
         .map_err(|error| Error::Invalid(error.to_string()))?]);
         let extensions: ExtensionAdmission = serde_json::from_value(extension_value)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        extensions.validate()?;
+        extensions.validate(&mut None)?;
         let policy = ComponentIdentity {
             name: "fixture.policy".into(),
             version: "1".into(),

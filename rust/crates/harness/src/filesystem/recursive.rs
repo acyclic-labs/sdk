@@ -61,9 +61,9 @@ impl ForkToolArguments {
         limits: Limits,
         request: &mut ForkRequest,
     ) -> Result<()> {
-        request.validate()?;
+        request.validate(&mut None)?;
         let revision = ResourceRevision::Project { volume: project, generation };
-        revision.validate()?;
+        revision.validate(&mut None)?;
         if let ResourceRevision::Project { volume, .. } = &revision
             && (volume == &request.preparation.child_project_volume
                 || volume.provider() != request.preparation.child_project_volume.provider())
@@ -166,7 +166,7 @@ where
     if caller != source.task || !context.scope().grants().contains("fork:publish") {
         return Err(Error::Unauthorized("fork caller/source authority differs".into()));
     }
-    verifier.verify(&signed)?;
+    verifier.verify(&signed, &mut None)?;
     let agent = parent.reducer().conversation().and_then(|conversation| conversation.agent)
         .ok_or_else(|| Error::Invalid("fork caller conversation has no agent".into()))?;
     if signed.agent() != Some(agent) || source.private_volume.owner() != &crate::conversation::VolumeOwner::Agent(agent) {
@@ -196,7 +196,7 @@ where
         selections: vec![
             crate::fork::ForkSelection { required: true, revision: ResourceRevision::History(
                 crate::resources::StreamRef::new(stream_provider.clone(),
-                    parent.reducer().authority().stream_path()?.into_bytes(),
+                    parent.reducer().authority().stream_path(&mut None)?.into_bytes(),
                     Some(parent.reducer().revision().to_string()))?) },
             crate::fork::ForkSelection { required: true, revision: ResourceRevision::Project {
                 volume: source.project.clone(), generation: source.project_generation } },
@@ -209,7 +209,7 @@ where
         crate::fork::ForkHistoryPolicy::default()
     } else {
         crate::fork::ForkHistoryPolicy::Fresh
-    })?;
+    }, &mut None)?;
     if selected != caller {
         let source_read = source_read.as_ref().ok_or_else(|| Error::Unauthorized(
             "foreign workspace selection requires an operation-sealed RootService approval".into()))?;
@@ -284,7 +284,7 @@ pub(crate) fn recursive_fork_request_with_native_work(
     }
     let parent_authority = observer.as_deref_mut().expect("native fork observer").clone_authority(parent.authority())?;
     let child = observer.as_deref_mut().expect("native fork observer").clone_authority(allocation.child)?;
-    let path = parent.authority().stream_path_with_work(&mut observer)?.into_bytes();
+    let path = parent.authority().stream_path(&mut observer)?.into_bytes();
     let mut version = String::new();
     observer.as_deref_mut().expect("native fork observer").reserve_text(&mut version, 20)?;
     observer.as_deref_mut().expect("native fork observer").admit_copy(20)?;
@@ -364,7 +364,7 @@ pub(crate) fn recursive_fork_request_with_native_work(
             maximum_inherited_bytes: allocation.inherited_bytes,
             maximum_inherited_references: allocation.inherited_references,
         }, selections, boundary: None, authorized_source,
-    }.with_history_policy_with_work(parent, if selected == source.caller {
+    }.with_history_policy(parent, if selected == source.caller {
         crate::fork::ForkHistoryPolicy::default()
     } else { crate::fork::ForkHistoryPolicy::Fresh }, &mut observer)?;
     drop(observer);
@@ -449,12 +449,12 @@ where
     O: AsyncObjectStore + 'static,
 {
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    request.validate()?;
+    request.validate(&mut None)?;
     if request.parent != *parent.authority() || request.parent_revision != parent.revision() {
         return Err(Error::Conflict("restored fork source is not the original admitted parent cut".into()));
     }
-    verifier.verify(&signed)?;
-    verifier.verify_audience(parent.authority())?;
+    verifier.verify(&signed, &mut None)?;
+    verifier.verify_audience(parent.authority(), &mut None)?;
     if request.authorized_source.as_ref() != source_read.as_ref().map(|handle| handle.authorization()) {
         return Err(Error::Unauthorized("restored source differs from the exact admitted workspace approval".into()));
     }
@@ -498,7 +498,7 @@ where
     {
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        request.0.validate_with_work(&mut observer)?;
+        request.0.validate(&mut observer)?;
         if &request.0.parent != parent.authority() || request.0.parent_revision != parent.revision() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                 reason: "restored source differs from original admitted parent cut" });
@@ -523,7 +523,7 @@ where
     let (owned_verifier, owned_scope, project) = {
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        (verifier.clone_with_work(&mut observer)?, signed.clone_with_work(&mut observer)?,
+        (verifier.copy(&mut observer)?, signed.copy(&mut observer)?,
             caller_project.copy(&mut observer)?)
     };
     let provider = stream_provider.clone_with_io(&io)?;
@@ -570,7 +570,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<ResourcePreparationRequest> {
     use super::default_tools::{encode, recursive_observe, recursive_reject};
     recursive_observe(io, |work| {
-        fork.validate_with_work(work)?;
+        fork.validate(work)?;
         command.validate(work)
     })?;
     if command.kind != FORK_PREPARE_TASK_COMMAND_KIND
@@ -821,7 +821,7 @@ impl ForkPreparationMachine {
                 }
                 let status = match result.value {
                     Outcome::Succeeded(report) => {
-                        recursive_observe(io, |work| report.validate_with_work(work))?;
+                        recursive_observe(io, |work| report.validate(work))?;
                         if report.request.operation_id != operation_id
                             || preparation_payload_digest(&report.request, io)? != request_digest
                         {

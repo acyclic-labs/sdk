@@ -80,7 +80,7 @@ impl<P, A, O> FilesystemInteractionHost<P, A, O> {
         &self, id: InteractionId, scope: &Scope, io: Option<&PreparationIo>,
     ) -> Result<()> {
         let mut borrowed = io.map(PreparationIo::history_io);
-        self.verifier.verify_with_work(scope, &mut borrowed.as_mut().map(
+        self.verifier.verify(scope, &mut borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo))?;
         let grant_hold;
         let grant = interaction_text("interaction:respond:", Some(id.into_bytes()), "", "", "", io)?;
@@ -113,7 +113,7 @@ where
         id: InteractionId,
     ) -> BoxFuture<'a, Result<Option<(InteractionTicket, Option<InteractionResolution>)>>> {
         Box::pin(async move {
-            self.verifier.verify(&scope)?;
+            self.verifier.verify(&scope, &mut None)?;
             let result = self.read(id, None).await?;
             if let Some((ticket, _)) = &result
                 && !scope.capabilities().contains(&ticket.viewer_grant())
@@ -182,7 +182,7 @@ where
     ) -> Result<Self> {
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        verifier.verify_audience_with_work(authority, &mut work)?;
+        verifier.verify_audience(authority, &mut work)?;
         if authority.kind != crate::core::AggregateKind::Conversation
             || private_volume.class() != VolumeClass::AgentPrivate
             || private_volume.provider() != &host.provider || maximum_bytes == 0
@@ -200,8 +200,8 @@ where
             Some(work) => work.clone_authority(authority)?,
             None => authority.clone(),
         };
-        let verifier = verifier.clone_with_work(&mut work)?;
-        let owner_scope = owner_scope.clone_with_work(&mut work)?;
+        let verifier = verifier.copy(&mut work)?;
+        let owner_scope = owner_scope.copy(&mut work)?;
         let private_volume = private_volume.copy(&mut work)?;
         let schemas = schemas.clone_with_work(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -309,7 +309,7 @@ where
                     io, crate::wire::ErrorCode::Invalid, "committed interaction revision is zero"))?,
                 None => aggregate.reducer().revision(),
             };
-            let scope = scope.clone_with_work(&mut work)?;
+            let scope = scope.copy(&mut work)?;
             let command_ticket = ticket.clone_with_work(&mut work)?;
             let idempotency_key = IdempotencyKey::new(interaction_text(
                 "interaction:", Some(operation_id.into_bytes()), "", "", "", io)?)?;
@@ -359,7 +359,7 @@ where
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        let scope = scope.clone_with_work(&mut work)?;
+        let scope = scope.copy(&mut work)?;
         let (committed, _) = crate::store::operations::find_operation_bounded_with_work(
             &self.stream, &self.authority, &self.verifier, operation_id,
             2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut work,
@@ -457,7 +457,7 @@ where
         id: InteractionId,
         expected_version: u64,
     ) -> Result<InteractionTicket> {
-        self.verifier.verify(scope)?;
+        self.verifier.verify(scope, &mut None)?;
         if !scope
             .capabilities()
             .contains(capability::INTERACTION_RESOLVE)
@@ -692,7 +692,7 @@ where
             Some(work) => work.clone_authority(&self.authority)?,
             None => self.authority.clone(),
         };
-        let aggregate_verifier = self.verifier.clone_with_work(&mut work)?;
+        let aggregate_verifier = self.verifier.copy(&mut work)?;
         if let Some(io) = io {
             io.claim(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
             io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;

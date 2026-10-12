@@ -300,9 +300,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 "effect host requires a conversation aggregate".into(),
             ));
         }
-        let verifier = issuer.verifier();
-        verifier.verify_audience(&authority)?;
-        verifier.verify(&scope)?;
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
+        verifier.verify_audience(&authority, &mut None)?;
+        verifier.verify(&scope, &mut None)?;
         if !scope.capabilities().contains(capability::EFFECT_RUN) {
             return Err(Error::Unauthorized(
                 "effect host scope lacks effect:run".into(),
@@ -401,9 +401,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 reason: "effect host requires a conversation aggregate",
             });
         }
-        let verifier = self.issuer.verifier_with_work(&mut Some(&mut io))?;
-        verifier.verify_audience_with_native_work(&self.authority, work)?;
-        verifier.verify_with_native_work(&self.scope, work)?;
+        let verifier = self.issuer.verifier(&mut Some(&mut io))?;
+        verifier.verify_audience(&self.authority, &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
+        verifier.verify(&self.scope, &mut Some(&mut io))?;
         if !self.scope.capabilities().contains(capability::EFFECT_RUN) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -420,19 +420,16 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let authority = io.clone_authority(&self.authority)?;
-        let mut issuer = self.issuer.clone_with_native_work(work)?;
-        let scope = self.scope.clone_with_work(&mut Some(&mut io))?;
+        let issuer = self.issuer.copy(&mut Some(&mut io))?;
+        let scope = self.scope.copy(&mut Some(&mut io))?;
         let schemas = self.schemas.clone_with_work(&mut Some(&mut io))?;
         let providers = self.providers.clone_with_native_work(work)?;
         let mut host = Self::new_with_native_work(
-            self.stream.clone(), authority, issuer.0, scope, schemas,
+            self.stream.clone(), authority, issuer, scope, schemas,
             Arc::clone(&self.content), providers, io.into_custody(), work,
         )?;
         host.effect_history_limits = self.effect_history_limits;
         host.terminal_effect_limit = self.terminal_effect_limit;
-        host.native_metadata.as_mut().expect("native host constructor")
-            .absorb(&mut issuer.1)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(host)
     }
 
@@ -465,7 +462,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
             use crate::store::history::HistoryIo as _;
             let authority = io.clone_authority(&self.authority)?;
-            let verifier = self.issuer.verifier_with_work(&mut Some(&mut io))?;
+            let verifier = self.issuer.verifier(&mut Some(&mut io))?;
             let aggregate = StreamAggregate::open_inner(
                 stream, authority, verifier, self.schemas.clone(), None,
                 default_projection_read_limits(), self.terminal_effect_limit, None,
@@ -480,7 +477,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let authority = match work.as_deref_mut() {
             Some(io) => io.clone_authority(&self.authority)?, None => self.authority.clone(),
         };
-        let verifier = self.issuer.verifier_with_work(work)?;
+        let verifier = self.issuer.verifier(work)?;
         let aggregate = StreamAggregate::open_inner(
             stream, authority, verifier, self.schemas.clone(), None,
             default_projection_read_limits(), self.terminal_effect_limit, None, work,
@@ -647,7 +644,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             let expected_revision = aggregate.aggregate.reducer().operation_revision(operation_id)
                 .map_or(aggregate.aggregate.reducer().revision(), |revision| revision - 1);
             let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let scope = self.scope.clone_with_work(custody.work())?;
+            let scope = self.scope.copy(custody.work())?;
             custody.adopt(scope.logical_owned_bytes()?)?;
             let copied_action = prepare_action_with_work(effect_id, &action, custody.work())?;
             custody.adopt(action_owned_bytes(&copied_action)?)?;
@@ -708,7 +705,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             }
             drop(current);
             let mut command_custody = crate::wire_codec::CodecQuota::new(retained.work(), 0)?;
-            let scope = self.scope.clone_with_work(command_custody.work())?;
+            let scope = self.scope.copy(command_custody.work())?;
             command_custody.adopt(scope.logical_owned_bytes()?)?;
             let observation = attestation.clone_with_work(command_custody.work())?;
             command_custody.adopt(attestation_owned_bytes(&observation)?)?;
@@ -814,7 +811,7 @@ mod native_metadata_controls {
             crate::resources::ProviderRef::new("effect-metadata-control", "filesystem", "2")?,
         )?);
         let content = Arc::new(crate::filesystem::FilesystemContentVerifier::new(
-            files, issuer.verifier(), scope.clone(),
+            files, issuer.verifier(&mut None).expect("verifier copy"), scope.clone(),
         ));
         ConversationEffectHost::new(
             Arc::new(MemoryStream::default()),

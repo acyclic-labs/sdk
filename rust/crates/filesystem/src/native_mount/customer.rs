@@ -701,7 +701,7 @@ where
         };
         session.stop().map_err(MountLifecycleError::Native)?;
         owner.take();
-        { let cleanup = crate::CancellationToken::new(); let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cleanup); self.source.cancel(&mut super::adapter::NativeDemandCarrier::Borrowed(&mut work)).expect("ordinary SDK source cancellation uses the same unbounded cleanup engine"); }
+        self.source.cancel();
         Ok(())
     }
 }

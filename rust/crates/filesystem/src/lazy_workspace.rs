@@ -5467,7 +5467,7 @@ where
             return Ok(Some(LazyLookup::Authored { path, stat }));
         }
         let mut readonly = LazyReadonlyAccounting::Native { original, cancellation };
-        let Some((record, metadata)) = self.shadow_record_with_accounting(
+        let Some((record, metadata)) = self.shadow_record(
             state.shadows, file_id, &mut readonly,
         ).await? else { return Ok(None); };
         let actual_metadata = context.reader.read_record_metadata(

@@ -50,7 +50,9 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         host.provider.validate_with_native_work(work)?;
         let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)
             .map_err(Error::from)?;
-        let (issuer, mut issuer_custody) = issuer.clone_with_native_work(work)?;
+        let mut observer = crate::store::history::native_work_io(work)?;
+        let issuer = issuer.copy(&mut Some(&mut observer))?;
+        let mut issuer_custody = observer.into_custody();
         custody.absorb(&mut issuer_custody)
             .map_err(|cause| Error::NativeWork { cause, custody: Some(issuer_custody) })?;
         Ok(Self {
@@ -79,7 +81,9 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
     ) -> Result<()> {
         work.remaining()?;
         let verifier_custody;
-        let (verifier, custody) = self.issuer.verifier_with_native_work(work)?;
+        let mut observer = crate::store::history::native_work_io(work)?;
+        let verifier = self.issuer.verifier(&mut Some(&mut observer))?;
+        let custody = observer.into_custody();
         verifier_custody = custody;
         let configured = proof.creator == verifier;
         drop(verifier);
@@ -201,7 +205,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         }
         crate::NativeFutureBundle::new(work, || async move {
             let creator_custody;
-            let (creator, custody) = self.issuer.verifier_with_native_work(work)?;
+            let mut observer = crate::store::history::native_work_io(work)?;
+            let creator = self.issuer.verifier(&mut Some(&mut observer))?;
+            let custody = observer.into_custody();
             creator_custody = custody;
             owner.authenticate_root_bootstrap_creator_with_native_work(&creator, work).await?;
             drop(creator);
@@ -328,7 +334,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             io.claim(std::mem::size_of::<FilesystemRootBootstrapAllocation<A, O>>() as u64)?;
             let creator = {
                 let mut observer = io.history_io();
-                self.issuer.verifier_with_work(&mut Some(&mut observer))?
+                self.issuer.verifier(&mut Some(&mut observer))?
             };
             let work = io.original_native_work().ok_or(native_error(crate::wire::ErrorCode::Invalid, "Root bootstrap requires its original native ledger"))?;
             let volume = volume.copy(&mut Some(&mut io.history_io()))?;
@@ -543,7 +549,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
             return Err(io.invalid("Root source path escapes its signed read boundary"));
         }
         let mut metadata = io.history_io();
-        self.reader.verifier.verify_with_work(&self.reader.scope, &mut Some(&mut metadata))?;
+        self.reader.verifier.verify(&self.reader.scope, &mut Some(&mut metadata))?;
         let directory = io.contains_capability(self.reader.scope.capabilities(), &(volume, prefix), "directory:read:")?;
         let entire = io.contains_capability(self.reader.scope.capabilities(), volume, "volume:read:")?;
         if self.reader.scope.agent().is_none() || (!directory && !entire) {
@@ -864,7 +870,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let fork = io.decode_preparation::<ForkRequest>(&payload, crate::wire::ErrorCode::Storage)?.into_retained();
     drop(payload);
     drop(payload_hold);
-    fork.validate()?;
+    fork.validate(&mut None)?;
     let encoded_hold;
     let encoded = io.encode(&fork, record_limit, false)?;
     encoded_hold = io.guard_bytes(&encoded)?;
@@ -905,7 +911,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let report = read_report(host, &journal, &fork, record_limit, Some(io)).await?
         .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?;
     let mut observer = io.history_io();
-    let seed = report.into_seed_with_work(&mut Some(&mut observer))?;
+    let seed = report.into_seed(&mut Some(&mut observer))?;
     let encoded_hold;
     let encoded = io.encode(&fork, record_limit, false)?;
     encoded_hold = io.guard_bytes(&encoded)?;
@@ -921,7 +927,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     drop((encoded, canonical));
     drop((encoded_hold, canonical_hold));
     let mut observer = io.history_io();
-    seed.validate_with_work(&mut Some(&mut observer))?;
+    seed.validate(&mut Some(&mut observer))?;
     let seed_hold;
     let encoded_seed = io.encode(&seed, record_limit, false)?;
     seed_hold = io.guard_bytes(&encoded_seed)?;
@@ -1175,7 +1181,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             io.release(capabilities_capacity)?;
             let verifier = {
                 let mut observer = io.history_io();
-                self.issuer.verifier_with_work(&mut Some(&mut observer))?
+                self.issuer.verifier(&mut Some(&mut observer))?
             };
             io.claim(std::mem::size_of::<RootCreatedFilesystemAccess<A, O>>() as u64)?;
             let custody;
@@ -1257,8 +1263,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         };
         let verifier = if let Some(io) = io {
             let mut observer = io.history_io();
-            self.issuer.verifier_with_work(&mut Some(&mut observer))?
-        } else { self.issuer.verifier() };
+            self.issuer.verifier(&mut Some(&mut observer))?
+        } else { self.issuer.verifier(&mut None).expect("verifier copy") };
         let writer = FilesystemContentPublisher::new(self.host.clone(), &allocation.volume,
             &verifier, &scope, request.maximum_bytes, io)?;
         let temporary = verifier.logical_owned_bytes()?.checked_add(scope.logical_owned_bytes()?)
@@ -1311,8 +1317,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             };
             let verifier = if let Some(io) = io {
                 let mut observer = io.history_io();
-                self.issuer.verifier_with_work(&mut Some(&mut observer))?
-            } else { self.issuer.verifier() };
+                self.issuer.verifier(&mut Some(&mut observer))?
+            } else { self.issuer.verifier(&mut None).expect("verifier copy") };
             let temporary = verifier.logical_owned_bytes()?.checked_add(scope.logical_owned_bytes()?)
                 .ok_or_else(|| bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "created reader metadata overflows"))?;
             let reader = FilesystemContentVerifier::new(self.host.clone(), &verifier, &scope, request.maximum_bytes, io)?;
@@ -1791,7 +1797,7 @@ mod tests {
                 let foreign_agent = AgentId::from_bytes([186; 16]);
                 let scope = issuer.root_for_agent(foreign_agent, "foreign-prior-root-bind", Capabilities::new(["conversation:bind"]));
                 let mut aggregate = crate::store::StreamAggregate::open(
-                    &fixture.stream, audience, issuer.verifier(), SchemaRegistry::new(),
+                    &fixture.stream, audience, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(),
                 ).await?;
                 aggregate.execute(Command { operation_id: OperationId::from_bytes([186; 16]),
                     idempotency_key: IdempotencyKey::new("genuine-foreign-prior-root-bind")?,

@@ -5592,7 +5592,7 @@ where
                 ).map_err(directory_lazy_error)?.checked_add(page.next.as_ref()
                     .map(LazyDirectoryCursor::retained_bytes).transpose().map_err(directory_lazy_error)?.unwrap_or(0))
                     .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-                let state_bytes = state.logical_owned_bytes();
+                let state_bytes = std::mem::size_of_val(&state) as u64;
                 let bytes = page_bytes.checked_add(state_bytes)
                     .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
                 scratch.track(bytes)?;

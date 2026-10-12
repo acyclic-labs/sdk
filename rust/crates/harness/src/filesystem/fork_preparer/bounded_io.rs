@@ -821,14 +821,14 @@ impl PreparationIo {
         };
         #[cfg(not(target_arch = "wasm32"))]
         if self.original_native_work().is_some() {
-            let result = crate::contract::json_from_slice_seed_bounded_native_trusted(
-                seed, bytes, bounds, 0, code, value_schema, &mut charge,
+            let result = crate::contract::json_from_slice_bounded(
+                seed, bytes, bounds, 0, Some(code), Some(value_schema), &mut charge,
             );
             return finish_decode(self, result, reservation, diagnostic_bytes);
         }
         let _ = code;
-        let result = crate::contract::json_from_slice_seed_bounded_trusted(
-            seed, bytes, bounds, 0, value_schema, &mut charge,
+        let result = crate::contract::json_from_slice_bounded(
+            seed, bytes, bounds, 0, None, Some(value_schema), &mut charge,
         );
         finish_decode(self, result, reservation, diagnostic_bytes)
     }
@@ -925,8 +925,8 @@ impl PreparationIo {
         };
         let mut reservation = None;
         let mut diagnostic_bytes = 0;
-        let result = crate::contract::json_from_value_bounded_native_trusted(
-            source, bounds, 0, code, schema, &mut |next| match next {
+        let result = crate::contract::json_from_value_bounded(
+            std::borrow::Cow::Borrowed(source), bounds, 0, Some(code), Some(schema), &mut |next| match next {
                 crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
                     let allowance = match profile {
                         Some(profile) => profile(value_shape, 0, value_shape.input_bytes(), Some(code))?,
@@ -1778,8 +1778,8 @@ mod tests {
         let scope = issuer.root("exact-project-read", crate::Capabilities::new([
             source.capability(VolumeOperation::Read)?, caller.capability(VolumeOperation::Read)?,
         ]));
-        let selected_read = ContentGrant::verify(&issuer.verifier(), &scope, &source, VolumeOperation::Read)?;
-        let caller_read = ContentGrant::verify(&issuer.verifier(), &scope, &caller, VolumeOperation::Read)?;
+        let selected_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &source, VolumeOperation::Read)?;
+        let caller_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &caller, VolumeOperation::Read)?;
         assert!(matches!(fork(&host, &source, &caller_read, &selected_generation, &denied_child,
             None, &IdempotencyKey::new("denied-source-read")?, None, None,
             #[cfg(not(target_arch = "wasm32"))]

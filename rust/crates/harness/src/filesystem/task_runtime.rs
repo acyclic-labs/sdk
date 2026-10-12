@@ -593,7 +593,7 @@ where
         scope: Scope,
         private_volume: VolumeRef,
     ) -> Result<Self> {
-        verifier.verify(&scope)?;
+        verifier.verify(&scope, &mut None)?;
         if !scope
             .capabilities()
             .contains(crate::contract::capability::INTERACTION_OPEN)
