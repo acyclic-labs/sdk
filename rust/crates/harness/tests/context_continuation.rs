@@ -1044,7 +1044,7 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             Err(Error::Conflict(_))
         ));
         assert_eq!(prepared_summary.through_sequence(), 20);
-        assert_eq!(prepared_summary.context(), imported);
+        assert_eq!(prepared_summary.as_ref(), imported);
         let later = history.pin(0, None).await?;
         assert_eq!(
             load_canonical_checkpoint_through(journal, reference, limits, exact, history, &later, 21, HistoryReadLimits {
@@ -1203,7 +1203,7 @@ async fn assert_checkpoint_tail_source(
     assert_eq!(prepared_summary.through_sequence(), 20);
     assert_eq!(prepared_summary.selection().checkpoint, *reference);
     assert_eq!(prepared_summary.checkpoint(), &checkpoint);
-    assert_eq!(prepared_summary.context(), &imported);
+    assert_eq!(prepared_summary.as_ref(), &imported);
     let id = uuid::Uuid::new_v4();
     aggregate
         .execute(acyclic_harness::core::Command {

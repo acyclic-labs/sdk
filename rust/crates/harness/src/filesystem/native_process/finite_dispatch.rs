@@ -43,8 +43,12 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         &self, dispatch: &EffectDispatch, work: &NativeMaterializationWork,
     ) -> Result<()> {
         work.remaining()?;
-        self.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
-        let mut io = crate::store::history::native_work_io(work)?;
+        self.owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                ))).await?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let cursor = self.history.pin(0,
             Some(&mut io)).await?;
         let state = self.history.effect(&cursor, self.effect_id,
@@ -80,12 +84,18 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                 self.authority.approvals.verify_with_native_work(
                     self.approval, self.command, *approval_digest, work)?.await?;
                 for mapping in &request.view.volumes {
-                    self.owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+                    self.owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    )))?;
                     if mapping.writable {
-                        self.owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+                        self.owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut crate::store::HistoryWork::new(
+                            crate::filesystem::PreparationIo::from_native_work(work)?,
+                        )))?;
                     }
                 }
-                self.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+                self.owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ))).await?;
             }
         work.remaining()?;
         Ok(())
@@ -203,5 +213,7 @@ async fn append_receipt<P: StreamProvider, L: Serialize, O: Serialize>(
     ).map_err(|failure| super::super::native_execution::native_owned_bytes_failure(failure, work))?;
     let key = acyclic_stream::IdempotencyKey::new(key_bytes)?;
     owner.append(path.clone(), tail, &key, bytes, write,
-        &mut Some(&mut crate::store::history::native_work_io(work)?)).await
+        &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            ))).await
 }
