@@ -187,7 +187,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 page.has_more = true;
             }
         }
-        let reference = fork_preparer_io::generation_ref(self, &generation, Some(&output))?;
+        let reference =
+            fork_preparer_io::generation_ref(&self.provider, generation.id(), Some(&output))?;
         let retained = output.owned_bytes()?;
         let custody = output.into_native_custody(retained)?;
         Ok(((reference, page), custody))
@@ -307,17 +308,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         fork_preparer_io::retain(&pinned, Some(io)).await?;
         let path = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
         let path_hold = io.guard_owned(path.capacity() as u64)?;
-        let stat = fork_preparer_io::filesystem_call!(
-            io,
-            work,
-            async {
-                pinned
-                    .stat(&path, work, io.cancellation())
-                    .await
-                    .map_err(|error| (error, None))
-            },
-            pinned.stat(&path, io.remaining()?, io.cancellation())
-        )?;
+        io.remaining()?;
+        let stat = io.sdk(pinned.stat(&path, io, io.cancellation()).await)?;
         if stat.kind != FileKind::Regular {
             return Err(io.invalid("prefix requires a regular file"));
         }
@@ -328,22 +320,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "file length is missing",
             )
         })?;
-        let chunk = fork_preparer_io::filesystem_call!(
-            io,
-            work,
-            async {
-                pinned
-                    .read_range(&path, 0, maximum_bytes.min(length), work, io.cancellation())
-                    .await
-                    .map_err(|error| (error, None))
-            },
-            pinned.read_range(
-                &path,
-                0,
-                maximum_bytes.min(length),
-                io.remaining()?,
-                io.cancellation()
-            )
+        io.remaining()?;
+        let chunk = io.sdk(
+            pinned
+                .read_range(&path, 0, maximum_bytes.min(length), io, io.cancellation())
+                .await,
         )?;
         drop(path);
         drop(path_hold);
@@ -379,14 +360,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant.require_directory_path(volume, path, io)
     }
 
-    pub(in crate::filesystem) async fn read_pinned(
-        &self,
-        reference: &FileRef,
-        maximum_bytes: u64,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        self.read_pinned_io(reference, maximum_bytes, None).await
-    }
-
     pub(crate) fn file_generation(
         &self,
         reference: &FileRef,
@@ -400,37 +373,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         GenerationRef::new(self.provider.clone(), raw.into(), None)
     }
 }
-pub(in crate::filesystem) async fn read_generation_with_io<
+pub(in crate::filesystem) async fn read_generation<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 >(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,
     maximum: u64,
-    io: &PreparationIo,
+    io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = io.original_native_work() {
-        return generation
-            .read(path, maximum, original, io.cancellation())
-            .await
-            .map_err(|source| Error::NativeWorkspace {
-                source,
-                custody: None,
-            });
-    }
-    let bytes = io.receive(
+    let unmeasured;
+    let io = match io {
+        Some(io) => io,
+        None => {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
+        }
+    };
+    io.remaining()?;
+    let bytes = io.sdk(
         generation
-            .read(path, maximum, io.remaining()?, io.cancellation())
+            .read(path, maximum, io, io.cancellation())
             .await,
     )?;
-    let capacity = bytes.retained_capacity().ok_or_else(|| {
-        fork_preparer_io::failure(
-            Some(io),
-            crate::wire::ErrorCode::Unsupported,
-            "content producer does not expose its owned capacity",
-        )
-    })?;
-    io.retain_owned(capacity as u64)?;
+    if io.original_native_work().is_none() {
+        let capacity = bytes.retained_capacity().ok_or_else(|| {
+            fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Unsupported,
+                "content producer does not expose its owned capacity")
+        })?;
+        io.retain_owned(capacity as u64)?;
+    }
     Ok(bytes)
 }

@@ -573,7 +573,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             fork_preparer_io::operation_generation(self.host, &workspace, idempotency_key, io)
                 .await?
         {
-            let original = fork_preparer_io::generation_ref(self.host, &prior, io)?;
+            let original = fork_preparer_io::generation_ref(&self.host.provider, prior.id(), io)?;
             let head = fork_preparer_io::resolve(self.host, &workspace, io)
                 .await?
                 .generation;
@@ -583,7 +583,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     if let Some(generation) =
                         fork_preparer_io::operation_generation(self.host, &workspace, key, io)
                             .await?
-                        && fork_preparer_io::generation_ref(self.host, &generation, io)? == head
+                        && fork_preparer_io::generation_ref(
+                            &self.host.provider,
+                            generation.id(),
+                            io,
+                        )? == head
                     {
                         continued = true;
                         break;
@@ -632,7 +636,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             )
             .await?
         };
-        let generation = fork_preparer_io::generation_ref(self.host, &committed, io)?;
+        let generation = fork_preparer_io::generation_ref(&self.host.provider, committed.id(), io)?;
         if let Some(io) = io {
             fork_preparer_io::retain(&committed, Some(io)).await?;
         } else {

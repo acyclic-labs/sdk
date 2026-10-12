@@ -149,17 +149,8 @@ impl NativeFs {
     /// Creates or idempotently reopens one durable named workspace.
     #[napi]
     pub async fn create_workspace(&self, name: String) -> Result<NativeWorkspace> {
-        self.inner
-            .create_workspace(
-                name,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
+        sdk_value!(unbounded_future!(self.inner, create_workspace(name)))
             .map(|inner| NativeWorkspace { inner })
-            .map_err(napi_error)
     }
 
     /// Creates or opens one workspace and attaches an exact native directory source.
@@ -208,17 +199,8 @@ impl NativeFs {
     /// Opens one existing durable named workspace.
     #[napi]
     pub async fn open_workspace(&self, name: String) -> Result<NativeWorkspace> {
-        self.inner
-            .open_workspace(
-                name,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
+        sdk_value!(unbounded_future!(self.inner, open_workspace(name)))
             .map(|inner| NativeWorkspace { inner })
-            .map_err(napi_error)
     }
 
     /// Creates one independently configured volume.

@@ -158,16 +158,8 @@ impl NativeWorkspace {
     /// Current immutable generation identity.
     #[napi]
     pub async fn head(&self) -> Result<Buffer> {
-        self.inner
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map(|generation| Buffer::from(generation.id().digest().into_bytes().to_vec()))
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(self.inner, head()))
+            .map(|value| Buffer::from(value.id().digest().into_bytes().to_vec()))
     }
 
     /// Reopens an authenticated exact retained generation without moving the head.
@@ -177,32 +169,15 @@ impl NativeWorkspace {
             id.as_ref(),
             "generation identity",
         )?));
-        self.inner
-            .generation(
-                id,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
+        sdk_value!(unbounded_future!(self.inner, generation(id)))
             .map(|inner| NativeGeneration { inner })
-            .map_err(napi_error)
     }
 
     /// Synchronizes prior workspace operations and returns the exact immutable head.
     #[napi]
     pub async fn sync(&self) -> Result<NativeGeneration> {
-        self.inner
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| NativeGeneration {
-                inner: receipt.value,
-            })
-            .map_err(|failure| napi_error(failure.error))
+        sdk_value!(unbounded_future!(self.inner, head()))
+            .map(|value| NativeGeneration { inner: value })
     }
 
     /// Retains the current generation under one human-readable label.
@@ -297,65 +272,39 @@ impl NativeWorkspace {
     /// Reads one complete regular file under a caller bound.
     #[napi]
     pub async fn read(&self, path: String, maximum_bytes: BigInt) -> Result<Buffer> {
-        Box::pin(self.inner.read(
-            &path,
-            bigint_u64(&maximum_bytes, "maximumBytes")?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| Buffer::from(receipt.value.to_vec()))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            read(&path, bigint_u64(&maximum_bytes, "maximumBytes")?)
+        )))
+        .map(|value| Buffer::from(value.to_vec()))
     }
 
     #[napi(js_name = readRange)]
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
-        Box::pin(self.inner.read_range(
-            &path,
-            bigint_u64(&offset, "offset")?,
-            bigint_u64(&length, "length")?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| Buffer::from(receipt.value.bytes.to_vec()))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            read_range(
+                &path,
+                bigint_u64(&offset, "offset")?,
+                bigint_u64(&length, "length")?
+            )
+        )))
+        .map(|value| Buffer::from(value.bytes.to_vec()))
     }
 
     #[napi]
     pub async fn stat(&self, path: String) -> Result<NativeWorkspaceStat> {
-        Box::pin(async {
-            self.inner
-                .stat(
-                    &path,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-        })
-        .await
-        .map(native_workspace_stat)
-        .map_err(napi_error)
+        sdk_value!(Box::pin(unbounded_future!(self.inner, stat(&path))))
+            .map(|value| native_workspace_stat(value))
     }
 
     #[napi(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
-        Box::pin(async {
-            self.inner
-                .read_symbolic_link(
-                    &path,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.bytes)
-                .map_err(|failure| failure.error)
-        })
-        .await
-        .map(|bytes| Buffer::from(bytes.to_vec()))
-        .map_err(napi_error)
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            read_symbolic_link(&path)
+        )))
+        .map(|value| Buffer::from(value.bytes.to_vec()))
     }
 
     #[napi(js_name = planExtents)]
@@ -406,16 +355,7 @@ impl NativeWorkspace {
         destination: String,
         idempotency_key: Option<Buffer>,
     ) -> Result<NativeWorkspace> {
-        let generation = self
-            .inner
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)?;
+        let generation = sdk_value!(unbounded_future!(self.inner, head()))?;
         let idempotency_key = native_idempotency_key(idempotency_key)?;
         self.inner
             .fork(
@@ -424,18 +364,12 @@ impl NativeWorkspace {
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                |_| {
-                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
-                    }))
-                },
+                publication_ready,
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Creates an independent workspace at one caller-selected exact generation.
@@ -459,18 +393,12 @@ impl NativeWorkspace {
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                |_| {
-                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
-                    }))
-                },
+                publication_ready,
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Begins one sparse atomic transaction at the current workspace head.
@@ -480,12 +408,7 @@ impl NativeWorkspace {
         idempotency_key: Option<Buffer>,
     ) -> Result<NativeWorkspaceTransaction> {
         let idempotency_key = native_idempotency_key(idempotency_key)?;
-        self.inner
-            .begin_transaction(
-                idempotency_key,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
+        unbounded_future!(self.inner, begin_transaction(idempotency_key))
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
@@ -567,42 +490,18 @@ impl NativeWorkspace {
                         )
                         .await
                         .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(napi_error)?,
-                    None => self
-                        .inner
-                        .head(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(napi_error)?,
+                        .map_err(|failure| napi_error(failure.error))?,
+                    None => sdk_value!(unbounded_future!(self.inner, head()))?,
                 },
                 match options.target_generation {
-                    Some(id) => target
-                        .inner
-                        .generation(
-                            acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                                &id,
-                                "target generation",
-                            )?)),
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| napi_error(failure.error))?,
-                    None => target
-                        .inner
-                        .head(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| napi_error(failure.error))?,
+                    Some(id) => sdk_value!(unbounded_future!(
+                        target.inner,
+                        generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                            &id,
+                            "target generation",
+                        )?)))
+                    ))?,
+                    None => sdk_value!(unbounded_future!(target.inner, head()))?,
                 },
             )
             .await
@@ -755,6 +654,13 @@ pub(in crate::bindings) fn native_workspace_name(
     LogicalName::new(encoding, value.bytes.to_vec(), u32::MAX).map_err(napi_error)
 }
 
+pub(in crate::bindings) fn native_workspace_name_value(name: LogicalName) -> NativeWorkspaceName {
+    NativeWorkspaceName {
+        encoding: name.encoding().as_str().to_owned(),
+        bytes: Buffer::from(name.as_bytes().to_vec()),
+    }
+}
+
 pub(in crate::bindings) fn native_workspace_directory_page(
     value: DirectoryPage,
 ) -> NativeWorkspaceDirectoryPage {
@@ -763,10 +669,7 @@ pub(in crate::bindings) fn native_workspace_directory_page(
             .entries
             .into_iter()
             .map(|entry| NativeWorkspaceDirectoryEntry {
-                name: NativeWorkspaceName {
-                    encoding: entry.name.encoding().as_str().to_owned(),
-                    bytes: Buffer::from(entry.name.as_bytes().to_vec()),
-                },
+                name: native_workspace_name_value(entry.name),
                 file_id: Buffer::from(entry.file_id.into_bytes().to_vec()),
                 kind: entry.kind,
             })

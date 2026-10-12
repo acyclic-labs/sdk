@@ -14,25 +14,16 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
         let bytes = bytes::Bytes::from(bytes);
-        let receipt = self
-            .engine
-            .create(
-                acyclic_fs::AuthoredMutation::CreateFile {
-                    path: path,
-                    bytes: (bytes).into(),
-                    metadata: acyclic_fs::kernel::FileMetadata::default(),
-                },
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
-        ts(BrowserMutationResult {
-            file_id: Some(receipt.value.into_bytes().to_vec().into()),
-            work: browser_work(receipt.work),
-        })
+        let receipt = browser_call!(
+            self,
+            create(acyclic_fs::AuthoredMutation::CreateFile {
+                path: path,
+                bytes: (bytes).into(),
+                metadata: acyclic_fs::kernel::FileMetadata::default(),
+            },)
+        )?;
+        mutation_created(&receipt)
     }
 
     /// Creates one empty directory in the private COW overlay.
@@ -46,23 +37,14 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .create(
-                acyclic_fs::AuthoredMutation::CreateDirectory {
-                    path: path,
-                    metadata: acyclic_fs::kernel::FileMetadata::default(),
-                },
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
-        ts(BrowserMutationResult {
-            file_id: Some(receipt.value.into_bytes().to_vec().into()),
-            work: browser_work(receipt.work),
-        })
+        let receipt = browser_call!(
+            self,
+            create(acyclic_fs::AuthoredMutation::CreateDirectory {
+                path: path,
+                metadata: acyclic_fs::kernel::FileMetadata::default(),
+            },)
+        )?;
+        mutation_created(&receipt)
     }
 
     /// Creates one symbolic link with exact opaque target bytes.
@@ -77,25 +59,16 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
         let target = bytes::Bytes::from(target);
-        let receipt = self
-            .engine
-            .create(
-                acyclic_fs::AuthoredMutation::CreateSymbolicLink {
-                    path: path,
-                    target: (target).into(),
-                    metadata: acyclic_fs::kernel::FileMetadata::default(),
-                },
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
-        ts(BrowserMutationResult {
-            file_id: Some(receipt.value.into_bytes().to_vec().into()),
-            work: browser_work(receipt.work),
-        })
+        let receipt = browser_call!(
+            self,
+            create(acyclic_fs::AuthoredMutation::CreateSymbolicLink {
+                path: path,
+                target: (target).into(),
+                metadata: acyclic_fs::kernel::FileMetadata::default(),
+            },)
+        )?;
+        mutation_created(&receipt)
     }
 
     /// Creates an exact empty special namespace entry.
@@ -111,20 +84,14 @@ impl BrowserCheckout {
             self.engine.volume_config().limits,
         )?;
         let kind = empty_special_kind(&kind)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .create(
-                acyclic_fs::AuthoredMutation::CreateEmptySpecial {
-                    path: path,
-                    kind: kind,
-                    metadata: acyclic_fs::kernel::FileMetadata::default(),
-                },
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(
+            self,
+            create(acyclic_fs::AuthoredMutation::CreateEmptySpecial {
+                path: path,
+                kind: kind,
+                metadata: acyclic_fs::kernel::FileMetadata::default(),
+            },)
+        )?;
         mutation_created(&receipt)
     }
 
@@ -146,22 +113,16 @@ impl BrowserCheckout {
             self.engine.volume_config().limits,
         )?;
         let kind = device_kind(&kind)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .create(
-                acyclic_fs::AuthoredMutation::CreateDevice {
-                    path: path,
-                    kind: kind,
-                    major: major,
-                    minor: minor,
-                    metadata: acyclic_fs::kernel::FileMetadata::default(),
-                },
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(
+            self,
+            create(acyclic_fs::AuthoredMutation::CreateDevice {
+                path: path,
+                kind: kind,
+                major: major,
+                minor: minor,
+                metadata: acyclic_fs::kernel::FileMetadata::default(),
+            },)
+        )?;
         mutation_created(&receipt)
     }
 
@@ -177,20 +138,14 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .create(
-                acyclic_fs::AuthoredMutation::CreateReparsePoint {
-                    path: path,
-                    payload: (bytes::Bytes::from(payload)).into(),
-                    metadata: acyclic_fs::kernel::FileMetadata::default(),
-                },
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(
+            self,
+            create(acyclic_fs::AuthoredMutation::CreateReparsePoint {
+                path: path,
+                payload: (bytes::Bytes::from(payload)).into(),
+                metadata: acyclic_fs::kernel::FileMetadata::default(),
+            },)
+        )?;
         mutation_created(&receipt)
     }
 
@@ -210,22 +165,16 @@ impl BrowserCheckout {
             .map(fixed_16)
             .transpose()?
             .map(FileId::from_bytes);
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .mutate(
-                vec![acyclic_fs::kernel::Mutation::Remove {
-                    path: path,
-                    expected_file_id: (expected).map_or(
-                        acyclic_fs::kernel::MetadataField::Unavailable,
-                        acyclic_fs::kernel::MetadataField::Value,
-                    ),
-                }],
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(
+            self,
+            mutate(vec![acyclic_fs::kernel::Mutation::Remove {
+                path: path,
+                expected_file_id: (expected).map_or(
+                    acyclic_fs::kernel::MetadataField::Unavailable,
+                    acyclic_fs::kernel::MetadataField::Value,
+                ),
+            }],)
+        )?;
         mutation_value(receipt.work)
     }
 
@@ -246,20 +195,14 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .mutate(
-                vec![acyclic_fs::kernel::Mutation::Rename {
-                    source: source,
-                    destination: destination,
-                    replace: replace,
-                }],
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(
+            self,
+            mutate(vec![acyclic_fs::kernel::Mutation::Rename {
+                source: source,
+                destination: destination,
+                replace: replace,
+            }],)
+        )?;
         mutation_value(receipt.work)
     }
 
@@ -280,19 +223,13 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .mutate(
-                vec![acyclic_fs::kernel::Mutation::Link {
-                    source: source,
-                    destination: destination,
-                }],
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(
+            self,
+            mutate(vec![acyclic_fs::kernel::Mutation::Link {
+                source: source,
+                destination: destination,
+            }],)
+        )?;
         mutation_value(receipt.work)
     }
 }

@@ -16,25 +16,35 @@ pub(crate) fn validate_records(records: &[OwnedBytes], meter: WireMeter<'_>) -> 
         admit_item(meter)?;
         let oversized = record.len() > MAX_RECORD_BYTES;
         record_item(meter)?;
-        if oversized { return Err(StreamError::LimitExceeded.into()); }
+        if oversized {
+            return Err(StreamError::LimitExceeded.into());
+        }
     }
     Ok(())
 }
 
 pub(crate) fn validate_append_size(request: &AppendRequest) -> Result<(), StreamError> {
-    (crate::wire_codec::CanonicalWire::Append(request).encoded_len(None, None)
-        .expect("ordinary sizing has no fallible meter") <= MAX_COMMAND_BYTES)
-        .then_some(()).ok_or(StreamError::LimitExceeded)
-}
-
-pub(crate) fn validate_fork_size(request: &ForkRequest) -> Result<(), StreamError> {
-    (crate::wire_codec::CanonicalWire::Fork(request).encoded_len(None, None)
-        .expect("ordinary sizing has no fallible meter") <= MAX_COMMAND_BYTES)
+    (crate::wire_codec::CanonicalWire::Append(request)
+        .encoded_len(None, None)
+        .expect("ordinary sizing has no fallible meter")
+        <= MAX_COMMAND_BYTES)
         .then_some(())
         .ok_or(StreamError::LimitExceeded)
 }
 
-pub(crate) fn normalize_commit(request: &mut CommitRequest, meter: WireMeter<'_>) -> MemoryResult<()> {
+pub(crate) fn validate_fork_size(request: &ForkRequest) -> Result<(), StreamError> {
+    (crate::wire_codec::CanonicalWire::Fork(request)
+        .encoded_len(None, None)
+        .expect("ordinary sizing has no fallible meter")
+        <= MAX_COMMAND_BYTES)
+        .then_some(())
+        .ok_or(StreamError::LimitExceeded)
+}
+
+pub(crate) fn normalize_commit(
+    request: &mut CommitRequest,
+    meter: WireMeter<'_>,
+) -> MemoryResult<()> {
     if request.conditions.is_empty()
         || request.conditions.len() > MAX_ITEMS
         || request.mutations.is_empty()
@@ -53,7 +63,9 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest, meter: WireMeter<'_>
         }
         record_item(meter)?;
     }
-    if crate::wire_codec::CanonicalWire::Commit(request).encoded_len(None, meter)? > MAX_COMMAND_BYTES {
+    if crate::wire_codec::CanonicalWire::Commit(request).encoded_len(None, meter)?
+        > MAX_COMMAND_BYTES
+    {
         return Err(StreamError::LimitExceeded.into());
     }
     request.conditions.sort_unstable_by(|left, right| {
@@ -69,23 +81,33 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest, meter: WireMeter<'_>
         .sort_unstable_by(|left, right| mutation_path(left).cmp(mutation_path(right)));
     for pair in request.conditions.windows(2) {
         admit_item(meter)?;
-        let duplicate = matches!(pair, [left, right] if condition_path(left) == condition_path(right));
+        let duplicate =
+            matches!(pair, [left, right] if condition_path(left) == condition_path(right));
         record_item(meter)?;
-        if duplicate { return Err(StreamError::InvalidArgument.into()); }
+        if duplicate {
+            return Err(StreamError::InvalidArgument.into());
+        }
     }
     for pair in request.mutations.windows(2) {
         admit_item(meter)?;
-        let duplicate = matches!(pair, [left, right] if mutation_path(left) == mutation_path(right));
+        let duplicate =
+            matches!(pair, [left, right] if mutation_path(left) == mutation_path(right));
         record_item(meter)?;
-        if duplicate { return Err(StreamError::InvalidArgument.into()); }
+        if duplicate {
+            return Err(StreamError::InvalidArgument.into());
+        }
     }
     Ok(())
 }
 
-pub(crate) fn validate_commit_shape(request: &CommitRequest, meter: WireMeter<'_>) -> MemoryResult<()> {
+pub(crate) fn validate_commit_shape(
+    request: &CommitRequest,
+    meter: WireMeter<'_>,
+) -> MemoryResult<()> {
     // Every caller normalizes first, so a binary search avoids a temporary tree.
     let condition = |path: &StreamPath| {
-        request.conditions
+        request
+            .conditions
             .binary_search_by(|condition| condition_path(condition).cmp(path))
             .ok()
             .and_then(|index| request.conditions.get(index))
@@ -98,10 +120,7 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest, meter: WireMeter<'_
                 _ => return Err(StreamError::InvalidArgument.into()),
             },
             CommitMutation::Fork { destination, .. } => {
-                if !matches!(
-                    condition(destination),
-                    Some(CommitCondition::Absent { .. })
-                ) {
+                if !matches!(condition(destination), Some(CommitCondition::Absent { .. })) {
                     return Err(StreamError::InvalidArgument.into());
                 }
             }

@@ -70,7 +70,7 @@ where
         crate::NativeFutureBundle<
             'a,
             (
-                Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>,
+                Vec<acyclic_fs::native_mount::NativeMountWorkScope>,
                 acyclic_fs::NativeAllocation,
             ),
         >,
@@ -91,7 +91,7 @@ where
                 .count();
             let mut custody = work.claim(
                 std::mem::size_of::<(
-                    Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>,
+                    Vec<acyclic_fs::native_mount::NativeMountWorkScope>,
                     acyclic_fs::NativeAllocation,
                 )>() as u64,
                 0,
@@ -189,7 +189,11 @@ where
             wait.check()
                 .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
             if !work.remaining()?.has_finite_allowances()
-                || !self.preparation._custody.matches_work(original)
+                || !self
+                    .preparation
+                    ._custody
+                    .work()
+                    .shares_allocation_context(original)
                 || !owner.native_shared_work_matches(original)
                 || self.preparation.manifest.volumes.len() != self.volumes.len()
                 || process.is_some() == partial.is_some()

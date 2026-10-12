@@ -1,4 +1,5 @@
-import type { FsWorkspace, WasmRawWorkspace } from "./contracts.js";
+import type { FsWorkspace } from "./contracts.js";
+import type { WasmRawWorkspace } from "./binding-types.js";
 import { parseWorkspaceRebaseResult } from "./workspace-results.js";
 import type { OperationWindowCoordinator, OperationWindowLease, OperationWindowPhase, OperationWindowClose } from "./compat.js";
 import type { BrowserOperationWindowCoordinator, BrowserOperationWindowLease, BrowserOperationWindowPhase, BrowserOperationWindowClose } from "../generated/wasm/acyclic_fs_wasm.js";

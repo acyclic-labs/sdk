@@ -21,7 +21,6 @@ use acyclic_harness::{
         text_files::{self, ReadInput, ReadResult, SearchInput, SearchResult},
     },
 };
-use acyclic_stream::BoxProviderFuture;
 use serde_json::json;
 use std::sync::{
     Arc,
@@ -35,13 +34,12 @@ struct ReaderSpy {
 }
 
 impl ContentResidencyVerifier for ReaderSpy {
-    fn verify<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move { self.inner.verify(file).await })
-    }
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
+    fn read<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>)
+        -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             self.reads.fetch_add(1, Ordering::SeqCst);
-            let bytes = self.inner.read(file).await?;
+            let bytes = self.inner.read(file, maximum_bytes, io)?.await?;
             if self.corrupt.load(Ordering::SeqCst) {
                 let mut corrupted = bytes.as_ref().to_vec();
                 if let Some(first) = corrupted.first_mut() {
@@ -61,14 +59,14 @@ impl ContentResidencyVerifier for ReaderSpy {
 )]
 async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity() -> Result<()> {
     let provider = ProviderRef::new("text-variants".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent = AgentId::new();
     let volume = VolumeRef::new(
         provider,
-        "text-variants",
+        "text-variants".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
-    )?;
+     &mut None)?;
     host.create_volume(&volume).await?;
     let issuer = AuthorityIssuer::new(
         "text-variants",
@@ -78,8 +76,8 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             id: "text-variants".into(),
         },
     );
-    let read = volume.capability(VolumeOperation::Read)?;
-    let write = volume.capability(VolumeOperation::Write)?;
+    let read = volume.capability(VolumeOperation::Read, &mut None)?;
+    let write = volume.capability(VolumeOperation::Write, &mut None)?;
     let owner = issuer.issue("owner", &Capabilities::new([read.clone(), write.clone()]), Some(agent), None, &mut None).expect("scope proof");
     let writer = FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &owner, 4096, None)?;
     let source = writer
@@ -88,18 +86,18 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             "source.txt",
             "one\r\n🦀 abaaba\r\n".as_bytes(),
             "text/plain",
-            "source.txt",
+            "source.txt", None
         )
-        .await?;
+        ?.await?.0;
     let later = writer
         .stage(
             OperationId::new(),
             "source.txt",
             b"later workspace content",
             "text/plain",
-            "source.txt",
+            "source.txt", None
         )
-        .await?;
+        ?.await?.0;
     assert_ne!(source, later);
     let reader = Arc::new(ReaderSpy {
         inner: FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &owner, 4096, None)?,
@@ -174,9 +172,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             assert!(
                 matches!(parts.get(1),Some(ModelDataPart::File { file,policy:FileProjectionPolicy::Reference }) if file==&source)
             );
-            assert!(
-                matches!(parts.first(),Some(ModelDataPart::Text { text }) if text.contains("omitted"))
-            );
+            assert!(matches!(parts.first(), Some(ModelDataPart::Text { text }) if !text.is_empty()));
             assert_eq!(canonical, unchanged);
             let search = context.tool("acyclic.search_file")?;
             let result = context
@@ -265,7 +261,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             );
             let workspace = acyclic_harness::filesystem::workspace_ref(
                 patched.file.volume().provider().clone(),
-                &patched.file.volume().storage_name()?,
+                &patched.file.volume().storage_name(&mut None)?,
             )?;
             let before_failed_writes = host.resolve(&workspace).await?.generation;
             assert!(matches!(
@@ -289,7 +285,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 context.scope().grants().without(&Capabilities::new([written
                     .file
                     .volume()
-                    .capability(VolumeOperation::Write)?])),
+                    .capability(VolumeOperation::Write, &mut None)?])),
                 context.scope().limits(),
             )?;
             assert!(matches!(

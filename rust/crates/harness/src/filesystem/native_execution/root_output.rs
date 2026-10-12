@@ -93,7 +93,7 @@ impl NativeRootOutputSource {
                 crate::wire::ErrorCode::Unsupported,
                 "ROOT content requires its original native work",
             ))?;
-        if !self.custody.matches_work(work) || volume != self.writer.volume() {
+        if !self.custody.work().shares_allocation_context(work) || volume != self.writer.volume() {
             return Err(boundary(
                 crate::wire::ErrorCode::Unauthorized,
                 "ROOT content differs from its original volume or native work",
@@ -118,7 +118,7 @@ impl NativeRootOutputSource {
         context: &crate::runtime::TaskContext,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
-        if !self.custody.matches_work(work) {
+        if !self.custody.work().shares_allocation_context(work) {
             return Err(boundary(
                 crate::wire::ErrorCode::Unauthorized,
                 "ROOT output differs from its original native work",

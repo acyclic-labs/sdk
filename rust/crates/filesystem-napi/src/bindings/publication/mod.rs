@@ -324,16 +324,6 @@ pub(in crate::bindings) fn encode_created_mutation(
     })
 }
 
-pub(in crate::bindings) fn native_mutation(
-    file_id: Option<FileId>,
-    work: acyclic_fs::WorkCounters,
-) -> Result<NativeMutationResult> {
-    Ok(NativeMutationResult {
-        file_id: file_id.map(|value| Buffer::from(value.into_bytes().to_vec())),
-        work_json: work_json(&work)?,
-    })
-}
-
 pub(in crate::bindings) fn mutation_result(
     work: acyclic_fs::WorkCounters,
 ) -> Result<NativeMutationResult> {
@@ -480,4 +470,14 @@ pub(in crate::bindings) fn live_mutation_result(
         committed_fingerprint: fingerprint,
         work_json: work_json(&work)?,
     })
+}
+
+/// No-work callback for publication.
+pub(in crate::bindings) fn publication_ready<E>(
+    _: acyclic_fs::WorkBudget,
+) -> std::future::Ready<acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, E>> {
+    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+        value: (),
+        work: acyclic_fs::WorkCounters::UNCHARGED,
+    }))
 }

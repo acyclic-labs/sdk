@@ -123,7 +123,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             });
         }
         self.host
-            .verify_fork_allocation_io(seed, &seed.child_private_volume, Some(io))
+            .read_fork_allocation(
+                seed,
+                &seed.child_private_volume,
+                crate::filesystem::fork_preparer::seed_digest(seed, 16 * 1024 * 1024, Some(io))?,
+                16 * 1024 * 1024,
+                Some(io),
+            )
             .await?;
         if binding.verifier.audience() == &seed.parent
             && file.volume() == &seed.child_private_volume
@@ -209,7 +215,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         drop(validation);
         if seed.child_private_volume.provider() == &self.host.provider {
             self.host
-                .verify_fork_allocation_io(seed, &seed.child_private_volume, Some(&io))
+                .read_fork_allocation(
+                    seed,
+                    &seed.child_private_volume,
+                    crate::filesystem::fork_preparer::seed_digest(
+                        seed,
+                        16 * 1024 * 1024,
+                        Some(&io),
+                    )?,
+                    16 * 1024 * 1024,
+                    Some(&io),
+                )
                 .await?;
         }
         for resource in &seed.resources {
@@ -227,7 +243,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 && source.provider() == &self.host.provider
             {
                 self.host
-                    .verify_fork_allocation_io(seed, child, Some(&io))
+                    .read_fork_allocation(
+                        seed,
+                        child,
+                        crate::filesystem::fork_preparer::seed_digest(
+                            seed,
+                            16 * 1024 * 1024,
+                            Some(&io),
+                        )?,
+                        16 * 1024 * 1024,
+                        Some(&io),
+                    )
                     .await?;
                 let source_ref =
                     fork_preparer_io::content_workspace(&self.host.provider, source, Some(&io))?;

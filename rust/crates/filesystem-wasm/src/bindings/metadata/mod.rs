@@ -52,16 +52,7 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .read_metadata(
-                &path,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, read_metadata(&path,))?;
         ts(BrowserMetadataResult {
             canonical_bytes: encode_file_metadata(
                 receipt.value,
@@ -80,16 +71,7 @@ impl BrowserCheckout {
         file_id: Vec<u8>,
     ) -> Result<Ts<BrowserMetadataResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .read_metadata_by_id(
-                file_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, read_metadata_by_id(file_id,))?;
         ts(BrowserMetadataResult {
             canonical_bytes: encode_file_metadata(
                 receipt.value,
@@ -119,20 +101,14 @@ impl BrowserCheckout {
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(js_error)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .apply_authored_transaction(
-                vec![acyclic_fs::AuthoredMutation::SetMetadata { path, metadata }],
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
-        ts(BrowserMutationResult {
-            file_id: None,
-            work: browser_work(receipt.work),
-        })
+        let receipt = browser_call!(
+            self,
+            apply_authored_transaction(vec![acyclic_fs::AuthoredMutation::SetMetadata {
+                path,
+                metadata
+            }],)
+        )?;
+        mutation_value(receipt.work)
     }
 
     /// Replaces complete canonical metadata by stable file identity.
@@ -149,18 +125,7 @@ impl BrowserCheckout {
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(js_error)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .set_attributes_by_id(
-                file_id,
-                metadata,
-                None,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, set_attributes_by_id(file_id, metadata, None,))?;
         mutation_value(receipt.work)
     }
 
@@ -183,18 +148,7 @@ impl BrowserCheckout {
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(js_error)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .set_attributes(
-                path,
-                metadata,
-                logical_bytes,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, set_attributes(path, metadata, logical_bytes,))?;
         mutation_value(receipt.work)
     }
 
@@ -213,18 +167,10 @@ impl BrowserCheckout {
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(js_error)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .set_attributes_by_id(
-                file_id,
-                metadata,
-                logical_bytes,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(
+            self,
+            set_attributes_by_id(file_id, metadata, logical_bytes,)
+        )?;
         mutation_value(receipt.work)
     }
 
@@ -243,17 +189,7 @@ impl BrowserCheckout {
         )?;
         let name =
             browser_attribute_name(&attribute_class, name, self.engine.volume_config().limits)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .read_named_attribute(
-                &path,
-                &name,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, read_named_attribute(&path, &name,))?;
         ts(BrowserNamedAttributeResult {
             exists: receipt.value.is_some(),
             bytes: receipt.value.map(|value| value.bytes.to_vec().into()),
@@ -286,18 +222,10 @@ impl BrowserCheckout {
             )?),
             _ => return Err(js_error("named-attribute cursor is incomplete")),
         };
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .list_named_attributes(
-                &path,
-                after.as_ref(),
-                maximum_entries,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(
+            self,
+            list_named_attributes(&path, after.as_ref(), maximum_entries,)
+        )?;
         ts(BrowserNamedAttributePageResult {
             entries: receipt
                 .value
@@ -331,22 +259,11 @@ impl BrowserCheckout {
         let name =
             browser_attribute_name(&attribute_class, name, self.engine.volume_config().limits)?;
         let mode = browser_attribute_write_mode(&mode)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .change_named_attribute(
-                path,
-                &name,
-                Some((bytes.as_slice(), mode)),
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
-        ts(BrowserMutationResult {
-            file_id: None,
-            work: browser_work(receipt.work),
-        })
+        let receipt = browser_call!(
+            self,
+            change_named_attribute(path, &name, Some((bytes.as_slice(), mode)),)
+        )?;
+        mutation_value(receipt.work)
     }
 
     /// Removes one exact named attribute.
@@ -364,22 +281,8 @@ impl BrowserCheckout {
         )?;
         let name =
             browser_attribute_name(&attribute_class, name, self.engine.volume_config().limits)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .change_named_attribute(
-                path,
-                &name,
-                None,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
-        ts(BrowserMutationResult {
-            file_id: None,
-            work: browser_work(receipt.work),
-        })
+        let receipt = browser_call!(self, change_named_attribute(path, &name, None,))?;
+        mutation_value(receipt.work)
     }
 }
 
@@ -392,7 +295,9 @@ pub(in crate::bindings) fn browser_attribute_class(value: &str) -> Result<Attrib
     }
 }
 
-pub(in crate::bindings) const fn browser_attribute_class_name(value: AttributeClass) -> &'static str {
+pub(in crate::bindings) const fn browser_attribute_class_name(
+    value: AttributeClass,
+) -> &'static str {
     match value {
         AttributeClass::PosixXattr => "posix-xattr",
         AttributeClass::WindowsStream => "windows-stream",

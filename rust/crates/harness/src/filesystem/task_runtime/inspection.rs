@@ -351,7 +351,7 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskSourceInspection<P, A, O>> {
         work.remaining()?;
-        if !handle.1.matches_work(work) {
+        if !handle.1.work().shares_allocation_context(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "selected source handle custody belongs to another original work",

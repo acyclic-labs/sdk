@@ -63,4 +63,4 @@ pub use keys::workspace_ref;
 pub(in crate::filesystem) use keys::{
     content_identity_path_io, content_metadata_path_io, filesystem_key, project_join_key,
 };
-pub(in crate::filesystem) use reads::read_generation_with_io;
+pub(in crate::filesystem) use reads::read_generation;

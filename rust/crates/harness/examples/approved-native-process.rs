@@ -243,7 +243,7 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let files = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
+    let files = FilesystemHost::new(filesystem, &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
     let volume = |name| {
         VolumeRef::new(
@@ -337,7 +337,7 @@ where
         &stream.clone(),
         issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     conversation
         .execute(Command {
@@ -450,7 +450,7 @@ where
             Interaction::approval(
                 "Run this exact example process".into(),
                 command,
-                request.approval_digest(task_id, command)?,
+                request.approval_digest(task_id, command, None)?,
             )?,
         )
         .await?;
@@ -576,10 +576,10 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let issuer = issuer();
-    let files = Arc::new(FilesystemHost::new(
+    let files = FilesystemHost::new(
         filesystem,
-        seed.destination.provider().clone(),
-    )?);
+        seed.destination.provider(), None,
+    )?;
     let runtime = runtime(
         stream.clone(),
         files.clone(),

@@ -254,9 +254,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let commit = creation_commit_with_accounting(operation_id, encoded, accounting)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            let drained = self.inner.objects.flush_before_publish_with_native_work(
-                crate::PublicationScope::Closure { objects: closure, proven_at }, original, cancellation,
-            ).await.map_err(FsError::from)?;
+            let drained = ({ let __object_args = (crate::PublicationScope::Closure { objects: closure, proven_at }, original, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work).await; __object_result }).map_err(FsError::from)?;
             accounting.check()?;
             let (created, _) = publication(volume_authority_id(volume_id), commit, accounting.remaining()?).await;
             let created = created?;
@@ -264,9 +262,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             drop(drained);
             return Ok(Volume { fs: self.clone(), id: volume_id, config });
         }
-        let drained = self.inner.objects.flush_before_publish(
-            crate::PublicationScope::Closure { objects: closure, proven_at }, accounting.remaining()?, cancellation,
-        ).await;
+        let drained = ({ let __object_args = (crate::PublicationScope::Closure { objects: closure, proven_at }, accounting.remaining()?, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) });
         let spent = match &drained { Ok(receipt) => receipt.work, Err(failure) => *failure.work, };
         merge_creation_backend_work(accounting, spent)?;
         let drained = drained.map_err(|failure| FsError::from(failure.error))?;

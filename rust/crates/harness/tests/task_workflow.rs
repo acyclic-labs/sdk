@@ -468,7 +468,7 @@ where
         stream,
         issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     let events = aggregate.reducer().events_after(0, 64)?;
     assert_eq!(events.len(), 2, "request retry must reuse its ticket");
@@ -925,12 +925,12 @@ async fn worker_restart_with_options(
     })?;
     for reopened in [false, true] {
         let (filesystem, stream, payloads, reader, runtime) = boxed_restart_phase(|| async {
-            let filesystem = Arc::new(FilesystemHost::new(
+            let filesystem = FilesystemHost::new(
                 Fs::local(fs_options.clone())
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?,
-                provider.clone(),
-            )?);
+                &provider, None,
+            )?;
             if !reopened {
                 filesystem.create_volume(&volume).await?;
             }
@@ -953,7 +953,7 @@ async fn worker_restart_with_options(
                         &stream,
                         conversation_issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
                         conversation_issuer.verifier(&mut None).expect("verifier copy"),
-                        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                     .await?;
                     aggregate
                         .execute(Command {
@@ -1976,7 +1976,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     let source_head;
     let target_head;
     {
-        let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
+        let host = FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, &provider, None)?;
         host.create_volume(&project).await?;
         host.create_volume(&private).await?;
         let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, VolumeOperation::Write)?;
@@ -2022,7 +2022,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     let calls = driver.0.load(Ordering::SeqCst);
     assert!(calls > 0);
     for retry in 0..2 {
-        let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
+        let host = FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, &provider, None)?;
         let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
             .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", &private, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
         let retained = journal.admission().await?.ok_or_else(|| Error::NotFound("merge admission".into()))?;
@@ -2166,12 +2166,12 @@ async fn stock_restart_with_publication_fault(
         model_steps: if cancel_after_failure { 2 } else { 1 },
     };
     for reopened in [false, true] {
-        let filesystem = Arc::new(FilesystemHost::new(
+        let filesystem = FilesystemHost::new(
             Fs::local(fs_options.clone())
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?,
-            provider.clone(),
-        )?);
+            &provider, None,
+        )?;
         if !reopened {
             filesystem.create_volume(&volume).await?;
         }
@@ -2688,8 +2688,8 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
     let mut admitted_model = None;
     let mut selected = None;
     for phase in 0..4 {
-        let filesystem = Arc::new(FilesystemHost::new(Fs::local(fs_options.clone()).await
-            .map_err(|error| Error::Storage(error.to_string()))?, provider.clone())?);
+        let filesystem = FilesystemHost::new(Fs::local(fs_options.clone()).await
+            .map_err(|error| Error::Storage(error.to_string()))?, &provider, None)?;
         if phase == 0 { filesystem.create_volume(&volume).await?; }
         let stream = Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await?);
         let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(),

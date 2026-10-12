@@ -292,7 +292,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         };
         if !custody
             .as_ref()
-            .is_some_and(|custody| custody.matches_work(work))
+            .is_some_and(|custody| custody.work().shares_allocation_context(work))
         {
             return Err(boundary(
                 crate::wire::ErrorCode::Invalid,
@@ -348,7 +348,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .failure_slot
             .take()
             .expect("successful reservation retains its prepaid failure slot");
-        let result = if !slot.1.matches_work(work) {
+        let result = if !slot.1.work().shares_allocation_context(work) {
             Err(NativePublicationReservationFailure {
                 error: boundary(
                     crate::wire::ErrorCode::Invalid,
@@ -511,7 +511,7 @@ where
             mapping_storage = Some(copies_custody);
             mappings = copies;
             for mapping in &self.preparation.manifest.volumes {
-                let (mapping, allocation) = copy_mapping(mapping, work)?;
+                let (mapping, allocation) = copy_native_mapping_with_work(mapping, work)?;
                 mappings.push(Some((mapping, None, allocation)));
             }
             for (index, (volume, mapping)) in self

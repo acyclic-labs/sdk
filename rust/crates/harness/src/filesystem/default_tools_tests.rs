@@ -649,7 +649,7 @@ impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObje
         _: &'a ResumableTool,
         _: &'a ToolInvocation,
         _: &'a CancellationToken,
-        io: Option<&'a super::PreparationIo>,
+        io: Option<&'a crate::filesystem::PreparationIo>,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
@@ -666,7 +666,7 @@ impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObje
         _: &'a ToolContext,
         _: &'a ForkToolArguments,
         _: &'a CancellationToken,
-        io: Option<&'a super::PreparationIo>,
+        io: Option<&'a crate::filesystem::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveForkSourceIntent>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         crate::conversation::BoundedContentFuture::new(io, || async {
@@ -680,7 +680,7 @@ impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObje
         _: &'a RecursiveForkSourceIntent,
         _: Option<&'a RecursiveForkToolPlan>,
         _: &'a CancellationToken,
-        io: Option<&'a super::PreparationIo>,
+        io: Option<&'a crate::filesystem::PreparationIo>,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
@@ -698,7 +698,7 @@ impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObje
         _: &'a MergeToolArguments,
         _: Option<&'a RecursiveMergeToolPlan>,
         _: &'a CancellationToken,
-        io: Option<&'a super::PreparationIo>,
+        io: Option<&'a crate::filesystem::PreparationIo>,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,

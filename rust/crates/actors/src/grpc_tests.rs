@@ -50,9 +50,8 @@ impl Service<http::Request<Body>> for Transport {
 async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
     for case in 0..5 {
         let log = Capture::default();
-        let _guard = tracing::subscriber::set_default(
-            tracing_subscriber::registry().with(log.clone()),
-        );
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
         let body = if case == 0 {
             Body::empty()
         } else {
@@ -93,12 +92,7 @@ async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
         }
         let seen = log.0.lock().unwrap();
         for name in ["acyclic.actors.grpc.call", "acyclic.actors.grpc.transport"] {
-            assert_eq!(
-                seen.closes.iter()
-                    .filter(|n| *n == name)
-                    .count(),
-                1
-            );
+            assert_eq!(seen.closes.iter().filter(|n| *n == name).count(), 1);
         }
         for (name, field, value) in [
             (
@@ -129,14 +123,22 @@ async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
             ),
         ] {
             assert!(
-                seen.spans.iter().any(|span| span.name == name
-                    && span.fields.get(field).is_some_and(|v| v == value)),
-                "{name} {field} {value}: {:?}", seen.spans
+                seen.spans
+                    .iter()
+                    .any(|span| span.name == name
+                        && span.fields.get(field).is_some_and(|v| v == value)),
+                "{name} {field} {value}: {:?}",
+                seen.spans
             );
         }
-        assert!(!seen.records.iter().any(|(n, k, v)| n == "acyclic.actors.grpc.call"
-            && k == "outcome"
-            && v.trim_matches('"') == if case < 2 { "ok" } else { "err" }));
+        assert!(
+            !seen
+                .records
+                .iter()
+                .any(|(n, k, v)| n == "acyclic.actors.grpc.call"
+                    && k == "outcome"
+                    && v.trim_matches('"') == if case < 2 { "ok" } else { "err" })
+        );
     }
 }
 
@@ -174,8 +176,7 @@ impl Service<http::Request<Body>> for TlsService {
 async fn authenticated_tls_generated_call_closes_typed_and_wire_spans()
 -> Result<(), Box<dyn std::error::Error>> {
     let log = Capture::default();
-    let _guard =
-        tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
     let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])?;
     let pem = certificate.cert.pem();
     let identity =
@@ -213,19 +214,18 @@ async fn authenticated_tls_generated_call_closes_typed_and_wire_spans()
             seen.spans.iter().any(|span| span.name == name
                 && span.fields.get("rpc").is_some_and(|v| v == "InspectActor"))
         );
-        assert_eq!(
-            seen.closes.iter()
-                .filter(|n| *n == name)
-                .count(),
-            1
+        assert_eq!(seen.closes.iter().filter(|n| *n == name).count(), 1);
+        assert!(
+            seen.spans
+                .iter()
+                .any(|span| span.name == name
+                    && span.fields.get("outcome").is_some_and(|v| v == "ok"))
         );
         assert!(
-            seen.spans.iter().any(|span| span.name == name
-                && span.fields.get("outcome").is_some_and(|v| v == "ok"))
-        );
-        assert!(
-            seen.spans.iter().any(|span| span.name == name
-                && span.fields.get("rpc.code").is_some_and(|v| v == "0"))
+            seen.spans
+                .iter()
+                .any(|span| span.name == name
+                    && span.fields.get("rpc.code").is_some_and(|v| v == "0"))
         );
     }
     assert!(!format!("{:?}{:?}", seen.spans, seen.records).contains("private-token"));

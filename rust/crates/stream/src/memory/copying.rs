@@ -4,11 +4,15 @@ pub(super) fn clone_records(
     records: &[Record],
     meter: WireMeter<'_>,
     output_read: bool,
-) -> MemoryResult<MemoryOutput<Vec<Record>>> {
+) -> MemoryResult<NativeStreamOutput<Vec<Record>>> {
     let mut output = vec(meter, records.len())?;
     for record in records {
         admit_item(meter)?;
-        let mut read = if output_read { crate::memory::bytes(meter, false, record.value.len())? } else { None };
+        let mut read = if output_read {
+            crate::memory::bytes(meter, false, record.value.len())?
+        } else {
+            None
+        };
         output.value.push(record.clone());
         let examined = record_item(meter);
         let read = record_bytes(&mut read, record.value.len());
@@ -22,7 +26,7 @@ pub(super) fn clone_envelope(
     envelope: &CommittedEnvelope,
     meter: WireMeter<'_>,
     output_read: bool,
-) -> MemoryResult<MemoryOutput<CommittedEnvelope>> {
+) -> MemoryResult<NativeStreamOutput<CommittedEnvelope>> {
     let mut output = vec(meter, envelope.mutations.len())?;
     for mutation in &envelope.mutations {
         admit_item(meter)?;
@@ -53,14 +57,17 @@ pub(super) fn clone_envelope(
         output.value.push(cloned);
         record_item(meter)?;
     }
-    Ok(output.map(|mutations| CommittedEnvelope { commit_id: envelope.commit_id, mutations }))
+    Ok(output.map(|mutations| CommittedEnvelope {
+        commit_id: envelope.commit_id,
+        mutations,
+    }))
 }
 
 pub(super) fn clone_commit_outcome(
     outcome: &CommitOutcome,
     meter: WireMeter<'_>,
     output_read: bool,
-) -> MemoryResult<MemoryOutput<CommitOutcome>> {
+) -> MemoryResult<NativeStreamOutput<CommitOutcome>> {
     match outcome {
         CommitOutcome::Committed(envelope) => {
             let output = clone_envelope(envelope, meter, output_read)?;
@@ -81,17 +88,17 @@ pub(super) fn clone_commit_outcome(
 pub(super) fn clone_idempotency_outcome(
     outcome: &IdempotencyOutcome,
     meter: WireMeter<'_>,
-) -> MemoryResult<MemoryOutput<IdempotencyOutcome>> {
+) -> MemoryResult<NativeStreamOutput<IdempotencyOutcome>> {
     match outcome {
         IdempotencyOutcome::Commit(outcome) => {
             let output = clone_commit_outcome(outcome, meter, true)?;
             Ok(output.map(IdempotencyOutcome::Commit))
         }
-        IdempotencyOutcome::Append(outcome) => Ok(MemoryOutput {
+        IdempotencyOutcome::Append(outcome) => Ok(NativeStreamOutput {
             value: IdempotencyOutcome::Append(outcome.clone()),
             allocation: allocate(meter, 0)?,
         }),
-        IdempotencyOutcome::Fork(outcome) => Ok(MemoryOutput {
+        IdempotencyOutcome::Fork(outcome) => Ok(NativeStreamOutput {
             value: IdempotencyOutcome::Fork(outcome.clone()),
             allocation: allocate(meter, 0)?,
         }),
@@ -99,12 +106,16 @@ pub(super) fn clone_idempotency_outcome(
 }
 
 pub(super) fn record_iterator(
-    (records, mut terminal): (MemoryOutput<Vec<Record>>, Option<std::io::Error>),
+    (records, mut terminal): (NativeStreamOutput<Vec<Record>>, Option<std::io::Error>),
 ) -> impl Iterator<Item = std::io::Result<Record>> {
     let mut records = records.map(Vec::into_iter);
     std::iter::from_fn(move || {
         // Capture the whole carrier so vector storage drops before its claim.
         let _retained = &records;
-        records.value.next().map(Ok).or_else(|| terminal.take().map(Err))
+        records
+            .value
+            .next()
+            .map(Ok)
+            .or_else(|| terminal.take().map(Err))
     })
 }

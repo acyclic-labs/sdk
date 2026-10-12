@@ -223,14 +223,17 @@ where
                     )
                     .await?;
                 verify_binding(owner, binding, volume_work)?;
-                let workspace = binding
-                    .host
-                    .open_volume_with_native_work(binding.volume, volume_work)
-                    .await?;
-                let generation = binding
-                    .host
-                    .generation_with_native_work(&workspace, binding.generation, volume_work)
-                    .await?;
+                let workspace = {
+                    let io = super::super::PreparationIo::from_native_work(volume_work)?;
+                    let reference = super::super::fork_preparer_io::content_workspace(
+                        &binding.host.provider, binding.volume, Some(&io))?;
+                    super::super::fork_preparer_io::open(binding.host, &reference, &io).await?
+                };
+                let generation = {
+                    let io = super::super::PreparationIo::from_native_work(volume_work)?;
+                    super::super::fork_preparer_io::generation(
+                        binding.host, &workspace, binding.generation, &io).await?
+                };
                 if binding.writable {
                     let head =
                         workspace

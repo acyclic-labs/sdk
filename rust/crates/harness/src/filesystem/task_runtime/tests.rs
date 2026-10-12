@@ -1190,7 +1190,7 @@ async fn native_stock_builtin_precancel_preserves_original_recovery_before_dispa
                 ));
             }
         }
-        assert!(custody.matches_work(&work));
+        assert!(custody.work().shares_allocation_context(&work));
         assert!(custody.bytes() >= bytes);
         assert_eq!(work.receipt(), before);
         assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);

@@ -204,47 +204,30 @@ impl NativeGeneration {
     /// Reads one complete file from this exact immutable state.
     #[napi]
     pub async fn read(&self, path: String, maximum_bytes: BigInt) -> Result<Buffer> {
-        Box::pin(self.inner.read(
-            &path,
-            bigint_u64(&maximum_bytes, "maximumBytes")?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| Buffer::from(receipt.value.to_vec()))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            read(&path, bigint_u64(&maximum_bytes, "maximumBytes")?)
+        )))
+        .map(|value| Buffer::from(value.to_vec()))
     }
 
     #[napi(js_name = readRange)]
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
-        Box::pin(self.inner.read_range(
-            &path,
-            bigint_u64(&offset, "offset")?,
-            bigint_u64(&length, "length")?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| Buffer::from(receipt.value.bytes.to_vec()))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            read_range(
+                &path,
+                bigint_u64(&offset, "offset")?,
+                bigint_u64(&length, "length")?
+            )
+        )))
+        .map(|value| Buffer::from(value.bytes.to_vec()))
     }
 
     #[napi]
     pub async fn stat(&self, path: String) -> Result<NativeWorkspaceStat> {
-        Box::pin(async {
-            self.inner
-                .stat(
-                    &path,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-        })
-        .await
-        .map(native_workspace_stat)
-        .map_err(napi_error)
+        sdk_value!(Box::pin(unbounded_future!(self.inner, stat(&path))))
+            .map(|value| native_workspace_stat(value))
     }
 
     #[napi(js_name = listDirectory)]
@@ -257,40 +240,20 @@ impl NativeGeneration {
         let maximum_entries = maximum_entries.into_inner();
 
         let after = after.map(native_workspace_name).transpose()?;
-        Box::pin(async {
-            self.inner
-                .list_directory(
-                    &path,
-                    after.as_ref(),
-                    maximum_entries,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.0)
-                .map_err(|failure| failure.error)
-        })
-        .await
-        .map(native_workspace_directory_page)
-        .map_err(napi_error)
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            list_directory(&path, after.as_ref(), maximum_entries)
+        )))
+        .map(|value| native_workspace_directory_page(value.0))
     }
 
     #[napi(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
-        Box::pin(async {
-            self.inner
-                .read_symbolic_link(
-                    &path,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.bytes)
-                .map_err(|failure| failure.error)
-        })
-        .await
-        .map(|bytes| Buffer::from(bytes.to_vec()))
-        .map_err(napi_error)
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            read_symbolic_link(&path)
+        )))
+        .map(|value| Buffer::from(value.bytes.to_vec()))
     }
 
     #[napi(js_name = planExtents)]
@@ -317,17 +280,8 @@ impl NativeGeneration {
     /// Retains this exact generation under one opaque identity.
     #[napi]
     pub async fn pin(&self, identity: String) -> Result<NativeGeneration> {
-        self.inner
-            .pin(
-                identity,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| NativeGeneration {
-                inner: receipt.value.1,
-            })
-            .map_err(|failure| napi_error(failure.error))
+        sdk_value!(unbounded_future!(self.inner, pin(identity)))
+            .map(|value| NativeGeneration { inner: value.1 })
     }
 }
 

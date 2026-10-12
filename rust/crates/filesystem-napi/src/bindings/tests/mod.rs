@@ -91,8 +91,8 @@ fn test_config() -> VolumeConfig {
 fn string_paths_and_directory_cursors_use_native_profile() -> Result<()> {
     let mut config = test_config();
     config.profile = FilesystemProfile::Windows;
-    let path = native_path("/ÃƒÂ©.txt", config)?;
-    let cursor = native_name("ÃƒÂ©.txt", config)?;
+    let path = native_path("/ÃƒÆ’Ã‚Â©.txt", config)?;
+    let cursor = native_name("ÃƒÆ’Ã‚Â©.txt", config)?;
     assert_eq!(path.components(), &[cursor]);
     assert_eq!(
         path.components().first().map(LogicalName::encoding),
@@ -727,8 +727,21 @@ async fn napi_operation_windows_share_the_native_authority_fence()
     transaction.write_text("/accepted", "yes").await?;
     assert!(matches!(
         transaction
-            .commit_with_permit(lease.publication_permit())
-            .await?,
+            .commit::<acyclic_fs::WorkspaceError, _, _>(
+                None,
+                lease.publication_permit(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::default(),
+                |_| async {
+                    Ok(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: Default::default(),
+                    })
+                },
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?,
         TransactionCommit::Committed(_)
     ));
 
@@ -771,8 +784,21 @@ async fn napi_operation_windows_share_the_native_authority_fence()
     rejected.write_text("/rejected", "no").await?;
     assert!(matches!(
         rejected
-            .commit_with_permit(expired.publication_permit())
-            .await?,
+            .commit::<acyclic_fs::WorkspaceError, _, _>(
+                None,
+                expired.publication_permit(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::default(),
+                |_| async {
+                    Ok(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: Default::default(),
+                    })
+                },
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?,
         TransactionCommit::Fenced
     ));
     Ok(())
@@ -810,7 +836,9 @@ async fn shared_publication_fence_blocks_napi_mutation_and_reconcile_recovers()
         acquisition_work: acyclic_fs::WorkCounters::default(),
     };
     let unresolved = OperationId::new();
-    Box::pin(shared.lock()).await.retain_operation_id(unresolved)?;
+    Box::pin(shared.lock())
+        .await
+        .retain_operation_id(unresolved)?;
     assert!(
         native
             .create_file("/blocked.txt".to_owned(), Buffer::from(b"blocked".to_vec()))
@@ -841,7 +869,9 @@ async fn shared_publication_fence_blocks_napi_mutation_and_reconcile_recovers()
             .await
             .is_err()
     );
-    Box::pin(shared.lock()).await.clear_retained_operation(unresolved);
+    Box::pin(shared.lock())
+        .await
+        .clear_retained_operation(unresolved);
     Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64))).await?;
     Ok(())
 }

@@ -332,7 +332,7 @@ where
         if !self
             ._native_metadata
             .as_ref()
-            .is_some_and(|guard| guard.matches_work(work))
+            .is_some_and(|guard| guard.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,

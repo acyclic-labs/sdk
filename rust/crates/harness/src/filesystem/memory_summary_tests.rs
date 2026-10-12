@@ -339,7 +339,6 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     assert!(proof.summary.is_some());
     let source = prepared.context().clone();
     let selection = prepared.selection().clone();
-    drop(prepared);
     let provider = storage.volume.provider().clone();
     let project = VolumeRef::new(
         provider.clone(),
@@ -376,7 +375,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         storage.content_verifier.clone(),
         Some(archived), None, #[cfg(not(target_arch = "wasm32"))] None,
     )?
-    .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor, None)?;
+    .with_summary_context(prepared, storage.journal(), None)?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
         provider.clone(),
@@ -499,7 +498,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .ok_or_else(|| Error::Invalid("missing Summary capture".into()))?;
     assert!(!capture.payloads.is_empty());
     assert_eq!(report.inherited_through_sequence, 6);
-    let bytes = storage.host.read_pinned(&capture.context, 262_144).await?;
+    let bytes = storage.host.read_pinned_io(&capture.context, 262_144, None).await?;
     let captured: Context = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(captured.messages.len(), source.messages.len());
@@ -528,7 +527,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         assert_eq!(copy.volume(), &child_private);
         assert_eq!(copy.descriptor(), original.descriptor());
         assert_eq!(
-            storage.host.read_pinned(copy, 262_144).await?.as_ref(),
+            storage.host.read_pinned_io(copy, 262_144, None).await?.as_ref(),
             storage.journal.load(original).await?.as_ref()
         );
     }

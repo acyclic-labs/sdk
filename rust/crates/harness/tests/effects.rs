@@ -70,12 +70,13 @@ impl EffectProvider for ResultProvider {
 #[tokio::test]
 async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     let provider = ProviderRef::new("effect-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let volume = VolumeRef::new(
         provider,
-        "effect-private",
+        "effect-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([61; 16])),
+        &mut None,
     )?;
     host.create_volume(&volume).await?;
     let authority = Authority {
@@ -89,10 +90,10 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             "effect:plan",
             "effect:provider:test.effects",
             "effect:provider:test.uncertain",
-            &volume.capability(VolumeOperation::Read)?,
-            &volume.capability(VolumeOperation::Write)?,
+            &volume.capability(VolumeOperation::Read, &mut None)?,
+            &volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(AgentId::from_bytes([61; 16])), None, &mut None).expect("scope proof");
-    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
     let mut files = Vec::new();
     for (path, bytes, mime, name, key) in [
         ("effects/request.json", br#"{"secret":"request-body"}"#.as_slice(), "application/json", "request.json", "request-upload"),
@@ -110,7 +111,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         &stream,
         authority.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(verifier.clone());
     let effect_id = EffectId::from_bytes([63; 16]);

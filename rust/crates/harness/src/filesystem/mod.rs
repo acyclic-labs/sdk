@@ -125,7 +125,8 @@ pub use native_execution::{
     NativePreparationRoot, NativeProcessView, NativePublicationCleanup, NativePublicationFailure,
     NativePublicationReservationFailure, NativeRecordedPreparation, NativeRootOutputSource,
     NativeTaskViewDrainReceipt, NativeTaskWorkingView, NativeViewPublicationError,
-    NativeViewPublicationReceipt, NativeVolumeView, observe_preparation,
+    NativeViewPublicationReceipt, NativeVolumeView, copy_native_mapping_with_work,
+    observe_preparation,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use recursive::restore_recursive_fork_source_with_native_work;
@@ -379,7 +380,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
         };
         if let Some(prior) = prior {
-            let generation = fork_preparer_io::generation_ref(self, &prior, io)?;
+            let generation = fork_preparer_io::generation_ref(&self.provider, prior.id(), io)?;
             match io {
                 Some(io) => fork_preparer_io::retain(&prior, Some(io)).await?,
                 None => self.retain_generation(&workspace, &generation).await?,
@@ -406,7 +407,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         format_args!("/{metadata_path}"),
                         Some(io),
                     )?;
-                    read_generation_with_io(&prior, &indexed_path, metadata_bytes.len() as u64, io)
+                    read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, Some(io))
                         .await?
                 }
                 None => {
@@ -510,8 +511,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             )
                             .await?
                         } else {
-                            let mut before_publication =
-                                || io.verify_publication_lease(lease.as_ref());
+                            let mut before_publication = |budget| async move {
+                                let callback =
+                                    PreparationIo::from_budget(budget, io.cancellation())
+                                        .map_err(acyclic_fs::OperationFailure::before_work)?;
+                                let result =
+                                    callback.verify_publication_lease(lease.as_ref()).await;
+                                callback.finish(result)
+                            };
                             fork_preparer_io::publish_generation(
                                 self,
                                 &workspace,
@@ -549,13 +556,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(lease) = publication_lease {
                         let mut before_publication = || lease.verify();
-                        fork_preparer_io::publish_generation(
-                            self,
+                        self.apply_generation_guarded(
                             &workspace,
                             expected_generation,
                             &mutations,
                             idempotency_key,
-                            None,
                             &mut before_publication,
                         )
                         .await?
@@ -613,7 +618,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         #[cfg(target_arch = "wasm32")]
         let root_retained = false;
-        let generation_reference = fork_preparer_io::generation_ref(self, &generation, io)?;
+        let generation_reference =
+            fork_preparer_io::generation_ref(&self.provider, generation.id(), io)?;
         let version = fork_preparer_io::hex_key(generation_reference.as_resource().key(), io)?;
         if !root_retained {
             match io {

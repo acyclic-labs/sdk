@@ -69,7 +69,7 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
     let mut input = tempfile::tempfile()?;
     input.write_all(&bytes)?;
     input.seek(SeekFrom::Start(0))?;
-    let mut child = acyclic_native_runtime::spawn_process_tree(
+    let mut child = acyclic_native_runtime::ProcessTree::spawn(
         Command::new(env!("CARGO_BIN_EXE_harness-conformance"))
             .stdin(Stdio::from(input))
             .stdout(Stdio::piped()),

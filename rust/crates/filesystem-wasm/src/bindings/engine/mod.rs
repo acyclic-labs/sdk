@@ -130,38 +130,20 @@ impl BrowserFs {
     /// Creates or idempotently reopens one named workspace.
     #[wasm_bindgen(js_name = createWorkspace)]
     pub async fn create_workspace(&self, name: String) -> Result<BrowserWorkspace, JsValue> {
-        let engine = self
-            .engine
-            .as_ref()
-            .ok_or_else(closed_error)?
-            .create_workspace(
-                name,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)?;
+        let engine = sdk_value!(unbounded_future!(
+            self.engine,
+            as_ref().ok_or_else(closed_error)?.create_workspace(name)
+        ))?;
         Ok(BrowserWorkspace { engine })
     }
 
     /// Opens one existing named workspace.
     #[wasm_bindgen(js_name = openWorkspace)]
     pub async fn open_workspace(&self, name: String) -> Result<BrowserWorkspace, JsValue> {
-        let engine = self
-            .engine
-            .as_ref()
-            .ok_or_else(closed_error)?
-            .open_workspace(
-                name,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)?;
+        let engine = sdk_value!(unbounded_future!(
+            self.engine,
+            as_ref().ok_or_else(closed_error)?.open_workspace(name)
+        ))?;
         Ok(BrowserWorkspace { engine })
     }
 

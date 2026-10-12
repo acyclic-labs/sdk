@@ -9,7 +9,9 @@ pub struct ActorId(String);
 /// An exact, non-zero SHA-256 digest as used by the existing Actor validators.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, TS)]
 #[ts(export_to = "actors/CodeSha256.ts")]
-#[ts(type = "import(\"../../readonly.js\").ReadonlyBytes & { readonly __brand: unique symbol; readonly __length: 32 }")]
+#[ts(
+    type = "import(\"../../readonly.js\").ReadonlyBytes & { readonly __brand: unique symbol; readonly __length: 32 }"
+)]
 pub struct CodeSha256([u8; 32]);
 
 /// A strictly positive unsigned 64-bit value.
@@ -69,7 +71,9 @@ impl DomainError {
 }
 
 impl From<std::convert::Infallible> for DomainError {
-    fn from(value: std::convert::Infallible) -> Self { match value {} }
+    fn from(value: std::convert::Infallible) -> Self {
+        match value {}
+    }
 }
 
 impl ActorId {
@@ -123,7 +127,6 @@ impl CodeSha256 {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
-
 }
 
 impl PositiveU64 {
@@ -135,17 +138,23 @@ impl PositiveU64 {
     }
 
     /// Returns the exact unsigned wire value.
-    pub fn get(self) -> u64 { self.0.get() }
+    pub fn get(self) -> u64 {
+        self.0.get()
+    }
 }
 
 impl TryFrom<u64> for PositiveU64 {
     type Error = DomainError;
 
-    fn try_from(value: u64) -> Result<Self, Self::Error> { Self::new(value) }
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
 }
 
 impl From<PositiveU64> for u64 {
-    fn from(value: PositiveU64) -> Self { value.get() }
+    fn from(value: PositiveU64) -> Self {
+        value.get()
+    }
 }
 
 /// The shared digest predicate used by the existing Actor validators.

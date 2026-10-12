@@ -483,8 +483,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let box_slots = std::mem::size_of::<ForkSeed>() as u64;
         if let Some(observer) = custody.work().as_deref_mut() {
             observer.admit_allocation(box_slots)?;
+            observer.retain_owned(box_slots)?;
         }
-        custody.retain(box_slots)?;
+        custody.adopt(box_slots)?;
         let seed = Box::new(seed);
         let command = Command {
             operation_id: seed.operation_id,
@@ -2656,10 +2657,10 @@ mod tests {
             use crate::executor::ExecutionJournal as _;
             let filesystem_provider =
                 crate::resources::ProviderRef::new("cold-selected-context".into(), "filesystem".into(), "2".into(), &mut None)?;
-            let host = Arc::new(crate::filesystem::FilesystemHost::new(
+            let host = crate::filesystem::FilesystemHost::new(
                 acyclic_fs::Fs::memory(),
-                filesystem_provider.clone(),
-            )?);
+                &filesystem_provider, None,
+            )?;
             let private = crate::conversation::VolumeRef::new(
                 filesystem_provider,
                 "journal".into(),
@@ -3522,7 +3523,7 @@ mod tests {
         let provider = ProviderRef::new("admission-bytes".into(), "filesystem".into(), "2".into(), &mut None)?;
         let volume = VolumeRef::new(provider.clone(), "admission-bytes".into(),
             VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
-        let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider)?);
+        let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
         host.create_volume(&volume).await?;
         let issuer = issuer();
         let scope = issuer.issue("content-owner", &Capabilities::new([

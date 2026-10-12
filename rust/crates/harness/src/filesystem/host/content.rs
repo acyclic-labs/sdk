@@ -138,19 +138,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             * (crate::conversation::MAX_PATH_BYTES as u64
                 + 32 * crate::conversation::MAX_LABEL_BYTES as u64
                 + 1024);
-        let receipt = match io {
-            Some(io) => read_generation_with_io(&original, &receipt_path, RECORD_BYTES, io).await?,
-            None => original
-                .read(
-                    &receipt_path,
-                    RECORD_BYTES,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| map_error(failure.error))?,
-        };
+        let receipt = read_generation(&original, &receipt_path, RECORD_BYTES, io).await?;
         let (recorded, expected): (FileRef, Option<GenerationRef>) = match io {
             Some(io) => io.decode_json(&receipt)?,
             None => crate::contract::json_from_slice(&receipt)
@@ -196,21 +184,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         let metadata_path = content_metadata_path_io(recorded.path(), true, io)?;
-        let metadata = match io {
-            Some(io) => {
-                read_generation_with_io(&original, &metadata_path, RECORD_BYTES, io).await?
-            }
-            None => original
-                .read(
-                    &metadata_path,
-                    RECORD_BYTES,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| map_error(failure.error))?,
-        };
+        let metadata = read_generation(&original, &metadata_path, RECORD_BYTES, io).await?;
         let encoded = match io {
             Some(io) => io.encode(&recorded, RECORD_BYTES, false)?,
             None => serde_json::to_vec(&recorded)
@@ -224,7 +198,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "original upload metadata differs from its canonical receipt",
             ));
         }
-        let generation = fork_preparer_io::generation_ref(self, &original, io)?;
+        let generation = fork_preparer_io::generation_ref(&self.provider, original.id(), io)?;
         match io {
             Some(io) => fork_preparer_io::retain(&original, Some(io)).await?,
             None => {

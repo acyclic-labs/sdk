@@ -346,10 +346,7 @@ impl RecursiveToolMachine {
     fn new(kind: Kind, maximum: u64) -> Self {
         let mut hash = blake3::Hasher::new();
         hash.update(b"harness/v2/recursive-tool-machine\0");
-        for line in include_str!("default_tools.rs").split_inclusive('\n') {
-            hash.update(line.trim_end_matches(['\r', '\n']).as_bytes());
-            hash.update(b"\n");
-        }
+        hash.update(REVISION.as_bytes());
         hash.update(kind.name().as_bytes());
         hash.update(&maximum.to_le_bytes());
         let digest = *hash.finalize().as_bytes();

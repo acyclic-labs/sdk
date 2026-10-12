@@ -89,16 +89,21 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         self.cancellation
             .check()
             .map_err(|_| MarkError::Storage(ObjectStoreError::Cancelled))?;
-        let read = self
-            .store
-            .read(
+        let read = {
+            let __object_args = (
                 object,
                 self.limits.maximum_object_bytes,
                 WorkBudget::UNBOUNDED,
                 self.cancellation,
-            )
-            .await
-            .map_err(|failure| MarkError::Storage(failure.error))?;
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = self
+                .store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }
+        .map_err(|failure| MarkError::Storage(failure.error))?;
         Ok(Some(read.value.bytes))
     }
 
@@ -124,16 +129,21 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             digest: generation.digest(),
         };
         self.marked.insert(object);
-        let read = self
-            .store
-            .read(
+        let read = {
+            let __object_args = (
                 object,
                 self.limits.maximum_object_bytes,
                 WorkBudget::UNBOUNDED,
                 self.cancellation,
-            )
-            .await
-            .map_err(|failure| MarkError::Storage(failure.error))?;
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = self
+                .store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }
+        .map_err(|failure| MarkError::Storage(failure.error))?;
         decode(decode_generation_root(&read.value.bytes, self.limits, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))
     }
 
@@ -143,7 +153,9 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            match decode(decode_file_table_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))? {
+            match decode(decode_file_table_page(&bytes, self.limits, &mut |_| {
+                Ok::<_, crate::kernel::CanonicalDecodeError>(())
+            }))? {
                 FileTablePage::Leaf(records) => {
                     for record in records {
                         self.record(&record).await?;
@@ -176,7 +188,9 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         let Some(bytes) = self.visit(metadata).await? else {
             return Ok(());
         };
-        let metadata = decode(decode_file_metadata(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))?;
+        let metadata = decode(decode_file_metadata(&bytes, self.limits, &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        }))?;
         if let MetadataField::Value(attributes) = metadata.named_attributes {
             self.attributes(attributes).await?;
         }
@@ -194,7 +208,9 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            if let TreePage::Internal(children) = decode(decode_tree_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))? {
+            if let TreePage::Internal(children) = decode(decode_tree_page(&bytes, self.limits, &mut |_| {
+                    Ok::<_, crate::kernel::CanonicalDecodeError>(())
+                }))? {
                 pending.extend(children.into_iter().map(|child| child.page));
             }
         }
@@ -207,7 +223,9 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            match decode(decode_extent_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))? {
+            match decode(decode_extent_page(&bytes, self.limits, &mut |_| {
+                Ok::<_, crate::kernel::CanonicalDecodeError>(())
+            }))? {
                 ExtentPage::Leaf(extents) => {
                     for extent in extents {
                         if let ExtentKind::Content { object, .. } = extent.kind {
@@ -229,7 +247,9 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            match decode(decode_blob_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))?.node {
+            match decode(decode_blob_page(&bytes, self.limits, &mut |_| {
+                Ok::<_, crate::kernel::CanonicalDecodeError>(())
+            }))?.node {
                 BlobNode::Internal(children) => {
                     pending.extend(children.into_iter().map(|child| child.page));
                 }
@@ -248,7 +268,9 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            match decode(decode_attribute_page(&bytes, self.limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))? {
+            match decode(decode_attribute_page(&bytes, self.limits, &mut |_| {
+                Ok::<_, crate::kernel::CanonicalDecodeError>(())
+            }))? {
                 AttributePage::Leaf(entries) => {
                     for entry in entries {
                         self.blob(entry.value).await?;

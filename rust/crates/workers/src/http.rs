@@ -50,34 +50,52 @@ impl<E> Error<E> {
 
 /// Configures bounded authenticated HTTP without redirects.
 #[doc(hidden)]
-pub fn configure<E>(endpoint: &str, token: &str, maximum: usize)
-    -> Result<(Transport, Url, HeaderValue), Error<E>> {
+pub fn configure<E>(
+    endpoint: &str,
+    token: &str,
+    maximum: usize,
+) -> Result<(Transport, Url, HeaderValue), Error<E>> {
     let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
     let loopback = endpoint.host_str().is_some_and(|host| {
-        host == "localhost" || host.trim_start_matches('[').trim_end_matches(']')
-            .parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+        host == "localhost"
+            || host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
     });
     if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
-        || !endpoint.username().is_empty() || endpoint.password().is_some()
-        || endpoint.query().is_some() || endpoint.fragment().is_some()
-        || !crate::valid_token(token) || maximum == 0 {
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+        || !crate::valid_token(token)
+        || maximum == 0
+    {
         return Err(Error::InvalidArgument);
     }
-    let mut authorization = HeaderValue::from_str(&format!("Bearer {token}"))
-        .map_err(|_| Error::InvalidArgument)?;
+    let mut authorization =
+        HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| Error::InvalidArgument)?;
     authorization.set_sensitive(true);
     if !endpoint.path().ends_with('/') {
         endpoint.set_path(&format!("{}/", endpoint.path()));
     }
-    let transport = Transport::builder().redirect(reqwest::redirect::Policy::none()).build()?;
+    let transport = Transport::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
     Ok((transport, endpoint, authorization))
 }
 
 /// Encodes a request through its canonical JSON descriptor.
 #[doc(hidden)]
-pub fn encode<E>(descriptors: &DescriptorPool, name: &str, request: &impl Message)
-    -> Result<Vec<u8>, Error<E>> {
-    let descriptor = descriptors.get_message_by_name(name).ok_or(Error::MalformedResponse)?;
+pub fn encode<E>(
+    descriptors: &DescriptorPool,
+    name: &str,
+    request: &impl Message,
+) -> Result<Vec<u8>, Error<E>> {
+    let descriptor = descriptors
+        .get_message_by_name(name)
+        .ok_or(Error::MalformedResponse)?;
     let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
         .map_err(|_| Error::InvalidArgument)?;
     serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)
@@ -85,11 +103,17 @@ pub fn encode<E>(descriptors: &DescriptorPool, name: &str, request: &impl Messag
 
 /// Decodes a complete response through its canonical JSON descriptor.
 #[doc(hidden)]
-pub fn decode<O: Message + Default, E>(descriptors: &DescriptorPool, name: &str, bytes: &[u8])
-    -> Result<O, Error<E>> {
-    let descriptor = descriptors.get_message_by_name(name).ok_or(Error::MalformedResponse)?;
+pub fn decode<O: Message + Default, E>(
+    descriptors: &DescriptorPool,
+    name: &str,
+    bytes: &[u8],
+) -> Result<O, Error<E>> {
+    let descriptor = descriptors
+        .get_message_by_name(name)
+        .ok_or(Error::MalformedResponse)?;
     let mut json = serde_json::Deserializer::from_slice(bytes);
-    let message = DynamicMessage::deserialize(descriptor, &mut json).map_err(|_| Error::MalformedResponse)?;
+    let message =
+        DynamicMessage::deserialize(descriptor, &mut json).map_err(|_| Error::MalformedResponse)?;
     json.end().map_err(|_| Error::MalformedResponse)?;
     message.transcode_to().map_err(|_| Error::MalformedResponse)
 }
@@ -106,7 +130,10 @@ pub struct Client {
 
 /// Collects a response within `maximum`, returning `None` when it exceeds the bound.
 #[doc(hidden)]
-pub async fn response_body(response: &mut reqwest::Response, maximum: usize) -> Result<Option<Vec<u8>>, reqwest::Error> {
+pub async fn response_body(
+    response: &mut reqwest::Response,
+    maximum: usize,
+) -> Result<Option<Vec<u8>>, reqwest::Error> {
     if response
         .content_length()
         .is_some_and(|length| length > maximum as u64)
@@ -126,7 +153,8 @@ pub async fn response_body(response: &mut reqwest::Response, maximum: usize) -> 
 impl Client {
     /// Create a client. HTTPS or loopback HTTP is required.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
-        let (transport, endpoint, authorization) = configure::<wire::Error>(endpoint, token, maximum_response_bytes)?;
+        let (transport, endpoint, authorization) =
+            configure::<wire::Error>(endpoint, token, maximum_response_bytes)?;
         Ok(Self {
             transport,
             endpoint,
@@ -173,11 +201,17 @@ impl Client {
                 .await?;
             let status = response.status();
             tracing::Span::current().record("http.status", status.as_u16());
-            let bytes = response_body(&mut response, self.maximum).await?.ok_or(Error::ResponseTooLarge)?;
+            let bytes = response_body(&mut response, self.maximum)
+                .await?
+                .ok_or(Error::ResponseTooLarge)?;
             if !status.is_success() {
-                let detail = decode::<wire::Error, wire::Error>(&self.descriptors, "acyclic.workers.v1.Error", &bytes)
-                    .ok()
-                    .filter(|detail| detail.code != wire::ErrorCode::Unspecified as i32);
+                let detail = decode::<wire::Error, wire::Error>(
+                    &self.descriptors,
+                    "acyclic.workers.v1.Error",
+                    &bytes,
+                )
+                .ok()
+                .filter(|detail| detail.code != wire::ErrorCode::Unspecified as i32);
                 return Err(Error::Service {
                     status: status.as_u16(),
                     detail,
@@ -185,11 +219,14 @@ impl Client {
                 });
             }
             decode(&self.descriptors, output, &bytes)
-        }.await;
+        }
+        .await;
         let span = tracing::Span::current();
         match &result {
             Ok(_) => span.record("outcome", "ok"),
-            Err(error) => span.record("outcome", "err").record("error.kind", error.kind()),
+            Err(error) => span
+                .record("outcome", "err")
+                .record("error.kind", error.kind()),
         };
         result
     }
@@ -201,7 +238,8 @@ impl Client {
     ) -> Result<wire::PublishVersionResponse, Error> {
         let route = HTTP_ROUTES.first().ok_or(Error::InvalidArgument)?.1;
         self.call(
-            route, route,
+            route,
+            route,
             "acyclic.workers.v1.PublishVersionRequest",
             "acyclic.workers.v1.PublishVersionResponse",
             request,
@@ -216,7 +254,8 @@ impl Client {
     ) -> Result<wire::SelectDeploymentResponse, Error> {
         let route = HTTP_ROUTES.get(1).ok_or(Error::InvalidArgument)?.1;
         self.call(
-            route, route,
+            route,
+            route,
             "acyclic.workers.v1.SelectDeploymentRequest",
             "acyclic.workers.v1.SelectDeploymentResponse",
             request,
@@ -231,7 +270,8 @@ impl Client {
     ) -> Result<wire::SubmitJobResponse, Error> {
         let route = HTTP_ROUTES.get(2).ok_or(Error::InvalidArgument)?.1;
         self.call(
-            route, route,
+            route,
+            route,
             "acyclic.workers.v1.SubmitJobRequest",
             "acyclic.workers.v1.SubmitJobResponse",
             request,
@@ -246,7 +286,8 @@ impl Client {
     ) -> Result<wire::InspectJobResponse, Error> {
         let route = HTTP_ROUTES.get(3).ok_or(Error::InvalidArgument)?.1;
         self.call(
-            route, route,
+            route,
+            route,
             "acyclic.workers.v1.InspectJobRequest",
             "acyclic.workers.v1.InspectJobResponse",
             request,
@@ -261,7 +302,8 @@ impl Client {
     ) -> Result<wire::CancelJobResponse, Error> {
         let route = HTTP_ROUTES.get(4).ok_or(Error::InvalidArgument)?.1;
         self.call(
-            route, route,
+            route,
+            route,
             "acyclic.workers.v1.CancelJobRequest",
             "acyclic.workers.v1.CancelJobResponse",
             request,

@@ -1,4 +1,3 @@
-
 use super::*;
 use futures::StreamExt as _;
 
@@ -52,8 +51,7 @@ impl StreamProvider for Gapped {
 }
 
 async fn filled<P: StreamProvider>(provider: P, records: u64) -> Stream<P> {
-    let stream = crate::Stream::new(Arc::new(provider), "replay")
-        .unwrap();
+    let stream = crate::Stream::new(Arc::new(provider), "replay").unwrap();
     let mut next = 0;
     while next < records {
         let batch = (next..records.min(next + 500))
@@ -75,8 +73,11 @@ async fn drain<P: StreamProvider>(replay: &mut Replay<P>) -> Result<Vec<u64>, St
 
 #[tokio::test]
 async fn missing_stream_replays_as_empty() {
-    let stream = crate::Stream::new(Arc::new(MemoryStream::new(MemoryLimits::default())), "absent")
-        .unwrap();
+    let stream = crate::Stream::new(
+        Arc::new(MemoryStream::new(MemoryLimits::default())),
+        "absent",
+    )
+    .unwrap();
     let mut replay = stream.replay(0);
     assert!(drain(&mut replay).await.unwrap().is_empty());
     assert_eq!(replay.cursor(), 0);

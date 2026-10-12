@@ -39,7 +39,6 @@ impl Client {
         })?;
         Ok(())
     }
-
 }
 
 /// One bounded worker belongs to the logical reader, including reconnects.
@@ -58,7 +57,6 @@ impl DeliveryAcknowledgements {
         });
         Self { queue, worker }
     }
-
 }
 
 impl Drop for DeliveryAcknowledgements {

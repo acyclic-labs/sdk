@@ -62,7 +62,19 @@ async fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    AsyncObjectStore::put(store, object_id, acyclic_stream::OwnedBytes::from(bytes), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            object_id,
+            acyclic_stream::OwnedBytes::from(bytes),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object_id)
 }
 
@@ -126,13 +138,18 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
     let destination = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     for (object_id, body) in manifest.objects.iter().copied().zip(bodies.iter().cloned()) {
-        (AsyncObjectStore::put(
+        (async {
+            let __object_args = (object_id, body, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = AsyncObjectStore::put(
             &source,
-            object_id,
-            body,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?;
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }).await?;
     }
 
     let first = (export_generation_batch_async(
@@ -193,11 +210,23 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
         &cancellation,
     )).await?;
     for (object_id, body) in manifest.objects.iter().copied().zip(bodies) {
-        let read = AsyncObjectStore::read(
+        let read = {
+            let __object_args = (
+                object_id,
+                manifest.config.limits.maximum_object_bytes,
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = AsyncObjectStore::read(
             &destination,
-            object_id,
-            manifest.config.limits.maximum_object_bytes,
-            WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }?;
         assert_eq!(read.value.bytes.as_ref(), body.as_ref());
     }
     Ok(())

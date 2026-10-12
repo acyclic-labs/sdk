@@ -210,7 +210,7 @@ impl<P: StreamProvider> EffectProvider for NativeProcessProvider<P> {
         -> Result<crate::NativeFutureBundle<'a, (EffectObservation, NativeAllocation)>> {
         finite_dispatch::require_finite(work)?;
         finite_binding::require_family(self._custody.work(), work)?;
-        self.invocation()?.view.operation_cancellation().check()
+        self.invocation()?.view.original_native_work().cancellation().check()
             .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
         let bytes = receipt_observation::add(receipt_observation::add(dispatch.provider.capacity() as u64,
             dispatch.effect_kind.capacity() as u64)?, dispatch.request.logical_owned_bytes()?)?;
