@@ -4299,8 +4299,8 @@ impl ProjFsSession {
         drop(self.root_custody.take());
         if let Some(retirement) = self.retirement.as_mut() {
             let retired = match cleanup_wait {
-                Some(wait) => retirement.retire_with_cleanup_wait(wait),
-                None => retirement.retire_accepted_cleanup(),
+                Some(wait) => retirement.retire(Some(wait)),
+                None => retirement.retire(None),
             };
             lock_recover(&ingress.state).loan_custody = Some((
                 retirement.destination_guard.is_some(),
@@ -6985,14 +6985,14 @@ mod tests {
             destination: destination.clone(), writable: false,
         };
         let checkout = source.native_namespace_lineage().expect("stock borrowed lineage")
-            .owner.retain().downcast::<SharedCheckout<
+            .owner.downcast::<SharedCheckout<
                 crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend,
             >>().map_err(|_| "original stock checkout alias differs")?;
-        let mut old = crate::native_mount::prepare_native_mount_start_with_meter(&meter)?
+        let mut old = crate::native_mount::prepare_native_mount_start(&meter)?
             .start_with_meter(request.clone(), source.clone(), &meter)?;
         old.stop(&CancellationToken::new())?;
         assert!(old.cleanup_state().cleanup_complete);
-        let refused = crate::native_mount::prepare_native_mount_start_with_meter(&meter)?
+        let refused = crate::native_mount::prepare_native_mount_start(&meter)?
             .restart_with_meter(old, source.clone(), &meter).err().expect("old permanently retired capture gate is denied");
         let crate::NativeMountError::StartupFailed(refused) = refused else { panic!("original preborn failure custody"); };
         assert!(refused.retired_owner().expect("complete original outcome").cleanup_state().cleanup_complete);
@@ -7007,20 +7007,20 @@ mod tests {
             checkout, config, root_path, original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?,
             &meter, Some(&original),
         )?.into_arc_meter(&meter)?;
-        let cold = crate::native_mount::prepare_native_mount_start_with_meter(&meter)?
+        let cold = crate::native_mount::prepare_native_mount_start(&meter)?
             .start_with_meter(request, fresh.clone(), &meter).err().expect("cold raw ProjFS marker never grants authority");
         let crate::NativeMountError::StartupFailed(mut cold) = cold else { panic!("cold failure retains actual controls"); };
         assert!(matches!(cold.error(), crate::NativeMountError::UnsafeRecoveryDestination { .. }));
         cold.owner_mut().stop(&CancellationToken::new())?;
         let checkout = fresh.native_namespace_lineage().expect("original stock alias")
-            .owner.retain().downcast::<SharedCheckout<
+            .owner.downcast::<SharedCheckout<
                 crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend,
             >>().map_err(|_| "original stock checkout alias differs")?;
         let fresh = CheckoutMountSource::new_at_meter(
             checkout, config, crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
             original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?, &meter, Some(&original),
         )?.into_arc_meter(&meter)?;
-        let mut restarted = crate::native_mount::prepare_native_mount_start_with_meter(&meter)?
+        let mut restarted = crate::native_mount::prepare_native_mount_start(&meter)?
             .restart_with_meter(old.expect("actual original issuer retained once"), fresh, &meter)?;
         assert_eq!(restarted.destination(), destination);
         restarted.stop(&CancellationToken::new())?;

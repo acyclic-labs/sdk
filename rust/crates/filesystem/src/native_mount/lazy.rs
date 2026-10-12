@@ -7054,7 +7054,7 @@ where
 {
     fn native_namespace_lineage(&self) -> Option<super::NativeMountSourceLineage<'_>> {
         let mut lineage = self.authored.native_namespace_lineage()?;
-        lineage.lazy_owner = Some(&self.lazy);
+        lineage.lazy_owner = Some(self.lazy.clone());
         lineage.lazy_root = Some(&self.root);
         Some(lineage)
     }

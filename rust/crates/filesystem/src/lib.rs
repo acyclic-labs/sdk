@@ -323,7 +323,7 @@ pub use native_mount::{
     materialize_checkout_path, materialize_checkout_paths,
     mount_native, mount_native_over_existing, probe_native_mount,
     probe_native_storage_accelerations, probe_native_storage_capabilities,
-    prepare_native_mount_start_with_meter,
+    prepare_native_mount_start,
     reclaim_native_mount_destination_fence, reclaim_stale_native_mount_destination_fences,
     recover_native_mount_destination, restore_checkout_host_path, seal_checkout,
     seal_checkout_with_permit,
