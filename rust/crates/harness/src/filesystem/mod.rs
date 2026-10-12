@@ -124,7 +124,7 @@ pub use native_execution::{
     NativePublicationCleanup, NativePublicationReservation, NativePublicationReservationFailure,
     NativePreparationJournalObservation, NativeRecordedPreparation,
     NativeViewPublicationError, NativeViewPublicationReceipt,
-    NativeTaskViewDrainReceipt, NativeTaskViewDrainFailure,
+    NativeTaskViewDrainReceipt,
     copy_native_mapping_with_work,
     bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
 };

@@ -33,18 +33,10 @@ async fn result_storage_cannot_mutate_a_pinned_native_view() -> Result<()> {
         &fixture.scope,
         65_536,
     )?);
-    assert!(matches!(
-        Process::new(
-            fixture.owner.clone(),
-            fixture.command,
-            fixture.plan.clone(),
-            fixture.view.clone(),
-            fixture.approval,
-            authority,
-        )
-        .await,
-        Err(Error::Unsupported(_))
-    ));
+    assert!(matches!(async {
+        Process::new(fixture.owner.clone(), fixture.command, &fixture.plan, fixture.view.clone(),
+            fixture.approval, authority, fixture.view.work())?.await
+    }.await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
     assert!(
         !fixture
             .view
@@ -166,12 +158,12 @@ async fn original_native_prepared_binding_preserves_approval_and_cancellation_be
     let fixture = process_fixture_with_native_work(
         StreamClient::new(Arc::new(MemoryStream::default())), "write", &work,
     ).await?;
-    assert!(fixture.view.original_native_work().is_some_and(|original| original.shares_ledger(&work)));
+    assert!(fixture.view.work().shares_ledger(&work));
     let foreign_cancellation = acyclic_fs::CancellationToken::new();
     let foreign = test_work(test_budget(1_000_000_000, 1_000_000_000), &foreign_cancellation)?;
     let foreign_prefix = foreign.receipt();
     let original_prefix = work.receipt();
-    assert!(matches!(Process::new_with_native_work(
+    assert!(matches!(Process::new(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.view.clone(),
         fixture.approval, fixture.authority(), &foreign,
     ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, .. })));
@@ -223,7 +215,7 @@ async fn original_native_success_hands_effect_and_receipt_custody_through_cancel
         &format!("harness/v2/native-process/{attempt}"),
     ).await?.tail, 2);
     let query_prefix = work.receipt();
-    let receipt = process.receipt_with_native_work(attempt, &work).await.unwrap().unwrap();
+    let receipt = process.receipt(attempt, &work, None).await.unwrap().unwrap();
     assert_native_receipt_binding(&fixture.owner, fixture.command, &fixture.plan, &receipt, &status, true)?;
     assert!(!receipt.published.is_empty(), "actual materialized publication snapshot");
     let mappings = &fixture.view.manifest().volumes;
@@ -234,7 +226,7 @@ async fn original_native_success_hands_effect_and_receipt_custody_through_cancel
     }
     assert!(receipt.published.iter().any(|published| mappings[published.index].writable),
         "actual writable destination snapshot");
-    let repeated = process.receipt_with_native_work(attempt, &work).await.unwrap().unwrap();
+    let repeated = process.receipt(attempt, &work, None).await.unwrap().unwrap();
     assert_eq!(receipt.published, repeated.published);
     drop(repeated);
     let (observed, observed_custody) = process.reconcile_with_native_work(attempt, &work)?
@@ -280,7 +272,7 @@ async fn cold_unchanged_project_keeps_the_actual_sdk_snapshot_without_relaunch()
     ).await?;
     assert!(matches!(status, EffectStatus::Succeeded { .. }));
     let attempt = process.original_attempt();
-    let receipt = process.receipt_with_native_work(attempt, &original).await.unwrap().unwrap();
+    let receipt = process.receipt(attempt, &original, None).await.unwrap().unwrap();
     let index = fixture.view.manifest().volumes.iter()
         .position(|mapping| mapping.volume == fixture.source).expect("actual original Project mapping");
     assert_eq!(fixture.source.class(), VolumeClass::Project);
@@ -300,7 +292,7 @@ async fn cold_unchanged_project_keeps_the_actual_sdk_snapshot_without_relaunch()
     let original_prefix = original.receipt();
     let query_cancellation = acyclic_fs::CancellationToken::new();
     let query = test_work(test_budget(1_000_000_000, 1_000_000_000), &query_cancellation)?;
-    let recovered = Process::recover_with_native_work(
+    let recovered = Process::recover(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
         fixture.authority(), &query,
     ).await?;
@@ -310,7 +302,7 @@ async fn cold_unchanged_project_keeps_the_actual_sdk_snapshot_without_relaunch()
     )?.await?;
     assert_eq!(candidate, expected);
     assert!(candidate_custody.work().shares_ledger(&query));
-    let repeated = recovered.receipt_with_native_work(attempt, &query).await.unwrap().unwrap();
+    let repeated = recovered.receipt(attempt, &query, None).await.unwrap().unwrap();
     assert_eq!(receipt.published, repeated.published);
     assert_eq!(fixture.owner.stream().bounds(
         &format!("harness/v2/native-process/{attempt}"),
@@ -361,7 +353,7 @@ async fn native_process_drain_factory_rejects_other_attempt_before_admission() -
         crate::EffectAttemptId::from_bytes([255; 16]), &fixture.source, &cleanup,
     ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, .. })));
     assert_eq!(cleanup.receipt(), before);
-    let recovered = Process::recover_with_native_work(
+    let recovered = Process::recover(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
         fixture.authority(), &cleanup,
     ).await?;
@@ -390,7 +382,7 @@ async fn cold_native_drain_proof_authenticates_terminal_result_without_relaunch(
     let original_prefix = original.receipt();
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
     let cleanup = test_work(test_budget(1_000_000_000, 1_000_000_000), &cleanup_cancellation)?;
-    let recovered = Process::recover_with_native_work(
+    let recovered = Process::recover(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
         fixture.authority(), &cleanup,
     ).await?;
@@ -442,7 +434,7 @@ async fn warm_native_drain_keeps_original_tree_and_accepts_authorized_cleanup_sp
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
     let cleanup = test_work(test_budget(1_000_000_000, 1_000_000_000), &cleanup_cancellation)?;
     assert!(!cleanup.shares_ledger(&original));
-    let recovered = Process::recover_with_native_work(
+    let recovered = Process::recover(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.approval,
         fixture.authority(), &cleanup,
     ).await?;
@@ -497,7 +489,7 @@ async fn original_native_receipt_commit_faults_reconcile_the_same_slot_without_r
             ("observed", true) => 2,
             _ => 1,
         });
-        let receipt = process.receipt_with_native_work(attempt, &work).await.unwrap();
+        let receipt = process.receipt(attempt, &work, None).await.unwrap();
         let expected = match &receipt {
             Some(receipt) => {
                 assert_eq!(receipt.observed, kind == "observed" && lost_reply);
@@ -551,7 +543,7 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
     assert_eq!(work.receipt(), prefix);
     let query_cancellation = acyclic_fs::CancellationToken::new();
     let query = test_work(test_budget(1_000_000_000, 1_000_000_000), &query_cancellation)?;
-    let receipt = process.receipt_with_native_work(attempt, &query).await.unwrap().unwrap();
+    let receipt = process.receipt(attempt, &query, None).await.unwrap().unwrap();
     assert!(!receipt.observed);
     assert_eq!(receipt.effect.status, EffectStatus::Indeterminate);
     assert_eq!(query.receipt().backend_write_operations, 0);
@@ -562,7 +554,7 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
     let output = fixture.view.manifest().options.root.join("dst/output.txt");
     assert!(output.exists());
     std::fs::remove_file(&output).map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-    let again = process.receipt_with_native_work(attempt, &query).await.unwrap().unwrap();
+    let again = process.receipt(attempt, &query, None).await.unwrap().unwrap();
     assert_eq!(again.effect, effect);
     assert!(!output.exists());
     assert_eq!(fixture.owner.stream().bounds(&path).await?.tail, 1);
@@ -579,7 +571,7 @@ async fn finite_native_binding_rejects_legacy_view_before_future_or_content_read
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(budget, &cancellation)?;
     let before = work.receipt();
-    let result = Process::new_with_native_work(
+    let result = Process::new(
         fixture.owner.clone(), fixture.command, &fixture.plan, fixture.view.clone(),
         fixture.approval, fixture.authority(), &work,
     );
@@ -655,23 +647,13 @@ where
     }
 
     async fn provider(&self) -> Result<Arc<Process<P>>> {
-        Ok(Arc::new(
-            Process::new(
-                self.owner.clone(),
-                self.command,
-                self.plan.clone(),
-                self.view.clone(),
-                self.approval,
-                self.authority(),
-            )
-            .await?,
-        ))
+        self.provider_with_native_work(self.view.work()).await
     }
 
     async fn provider_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Process<P>>> {
-        Process::new_with_native_work(
+        Process::new(
             self.owner.clone(), self.command, &self.plan, self.view.clone(),
             self.approval, self.authority(), work,
         )?.await?.into_arc_with_native_work(work)
@@ -1255,7 +1237,7 @@ where
     }
     let (preparation_root, native_root_custody) = match original_work {
         Some(work) => {
-            let (root, custody) = NativePreparationRoot::witness_with_native_work(
+            let (root, custody) = NativePreparationRoot::witness(
                 &root, &operation_directory, work,
             )?.await?;
             (root, Some(custody))
@@ -1419,11 +1401,11 @@ where
                 )?.await?;
                 lazy_mount = Some(Arc::clone(&mount));
                 lazy_work = Some(volume_work.clone());
-                NativeVolumeView::prepare_with_native_work(&owner, &guards.0,
+                NativeVolumeView::prepare(&owner, &guards.0,
                     &preparation_root, &options, &mixed_borrowed, &[Some(&held), None, None], work)?.await?
             } else {
-                NativeVolumeView::prepare_with_native_work(
-                    &owner, &guards.0, &preparation_root, &options, &borrowed, &[], work,
+                NativeVolumeView::prepare(
+                    &owner, &guards.0, &preparation_root, &options, &borrowed, &vec![None; borrowed.len()], work,
                 )?.await?
             };
             view.into_arc_with_native_work(work)?
@@ -1957,7 +1939,7 @@ async fn original_native_preparation_resumes_physical_partial_and_lost_acknowled
         &acyclic_fs::CancellationToken::new(),
     ).await.map_err(|(error, _)| error)?.value
         .ok_or_else(|| Error::NotFound("completed original preparation journal".into()))?;
-    assert_eq!(original.journal.plan, seed.view.preparation_receipts()[0].journal.plan);
+    assert_eq!(original.journal.plan, seed.view.preparation().journal.plan);
     assert_eq!(original.journal.phase, Applied);
     assert_eq!(original.journal.plan.operation_id, NativePreparationRoot::operation(&seed.owner));
     let acyclic_fs::MaterializationIntent::NativePreparation { selection, original: request } = &original.journal.plan.intent else {
@@ -2016,7 +1998,7 @@ async fn original_native_preparation_resumes_physical_partial_and_lost_acknowled
             &fixture.owner, original_allocation.unwrap_or_else(|| fixture.allocation.clone()), fixture.options.clone(),
             borrow_preparation_bindings(&fixture.bindings), &acyclic_fs::CancellationToken::new(),
         ).await.map_err(|(cause, _)| cause)?;
-        let receipt = &recovered.value.preparation_receipts()[0];
+        let receipt = &recovered.value.preparation();
         assert_eq!(receipt.journal.phase, Applied);
         assert_eq!(receipt.journal.applied, 3);
         assert_eq!(receipt.journal.plan.operation_id, NativePreparationRoot::operation(&fixture.owner));
@@ -2075,8 +2057,8 @@ async fn native_preparation_incomplete_journal_reopens_on_actual_local_stream() 
     let prepared = PreparationView::prepare(
         &owner, allocation.clone(), options, borrow_preparation_bindings(&bindings), &acyclic_fs::CancellationToken::new(),
     ).await.map_err(|(cause, _)| cause)?;
-    assert_eq!(prepared.value.preparation_receipts()[0].journal.plan, before.journal.plan);
-    assert_eq!(prepared.value.preparation_receipts()[0].journal.phase, acyclic_fs::MaterializationPhase::Applied);
+    assert_eq!(prepared.value.preparation().journal.plan, before.journal.plan);
+    assert_eq!(prepared.value.preparation().journal.phase, acyclic_fs::MaterializationPhase::Applied);
     prepared.value.validate_for_dispatch(prepared.value.manifest().validation_budget()?).await
         .map_err(|(cause, _)| cause)?;
     drop(_directory);
@@ -3051,7 +3033,6 @@ async fn publication_races_preserve_output_and_do_not_claim_joint_volume_success
             cause: acyclic_fs::MountLifecycleError::Source(acyclic_fs::MountSourceError::Stale), ..
         }));
         assert!(failure.accounting_failure.is_none());
-        assert!(failure.rendering_failure.is_none());
         let effect = task_effect_id(fixture.owner.task_binding().0, fixture.command)?;
         let attempt = crate::EffectAttemptId::from_bytes(effect.into_bytes());
         let output = failure.diagnostic.as_ref()
@@ -4057,7 +4038,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             ).await.err().ok_or_else(|| Error::Storage("readonly query adopted a different original generation".into()))?;
             let mismatched_failure = crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
                 ::from_error(&mismatched).expect("whole readonly selection failure");
-            assert!(matches!(mismatched_failure.error, crate::filesystem::NativeReservationError::Selection(_)));
+            assert!(matches!(mismatched_failure.error, Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. }));
             assert!(mismatched_failure.cleanup.is_some());
             assert_eq!(mismatched_failure.work.backend_write_operations, before_query);
             drop(mismatched);
@@ -4082,14 +4063,14 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             let retained = crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
                 ::from_error(&failed).expect("whole denied cleanup owner and cause");
             assert_eq!(retained.work.backend_write_operations, 0);
-            assert!(matches!(retained.error, crate::filesystem::NativeReservationError::Selection(_)));
+            assert!(matches!(retained.error, Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. }));
             assert!(retained.cleanup.is_some());
             let original_failed_work = retained.work;
             let original_before_retry = work.receipt();
             let foreign_before_retry = denied_work.receipt();
             assert!(matches!(crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
                 ::retry_cleanup_with_native_work(&mut failed, &fixture.owner, &denied_work, &cleanup_cancellation).await,
-                Err(crate::filesystem::NativeReservationError::Selection(_))));
+                Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
             assert_eq!(denied_work.receipt(), foreign_before_retry);
             assert_eq!(work.receipt(), original_before_retry);
             assert!(crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>

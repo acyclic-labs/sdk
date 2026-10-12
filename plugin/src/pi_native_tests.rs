@@ -512,12 +512,12 @@ fn actual_publication_metadata_is_admitted_before_mutation_and_preserves_origina
         cause: Error::Unauthorized("original owner denied before mutation".into()),
         accounting_failure: None, work: work.receipt(), destination: Some(destination),
         completed: Vec::new(), published: Vec::new(), custody: Some(custody),
-        rendering_failure: None, diagnostic: None,
+        diagnostic: None,
     };
     assert!(failure.completed.is_empty());
     assert_eq!(failure.destination.as_ref(), manifest.volumes.first());
     assert!(matches!(&failure.cause, Error::Unauthorized(message) if message == "original owner denied before mutation"));
-    assert!(failure.rendering_failure.is_none() && failure.diagnostic.is_none());
+    assert!(failure.diagnostic.is_none());
     assert!(failure.custody.as_ref().unwrap().shares_ledger(&original));
 }
 
