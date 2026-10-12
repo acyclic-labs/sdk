@@ -112,8 +112,16 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .rename(&source, &destination)
+            .rename(
+                &source,
+                &destination,
+                true,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
             .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 

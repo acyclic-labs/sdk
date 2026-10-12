@@ -143,9 +143,17 @@ impl BrowserTransaction {
     /// Atomically renames one namespace binding inside this transaction.
     #[wasm_bindgen]
     pub async fn rename(&mut self, source: String, destination: String) -> Result<(), JsValue> {
-        Box::pin(self.engine.rename(&source, &destination))
-            .await
-            .map_err(js_error)
+        Box::pin(self.engine.rename(
+            &source,
+            &destination,
+            true,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        ))
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
+        .map_err(js_error)
     }
 
     /// Creates one same-workspace hard link.

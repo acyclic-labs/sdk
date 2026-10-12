@@ -5597,10 +5597,10 @@ where
 
         let (changes, changes_custody) = from_generation
             .diff_to_with_native_work(to_generation, u32::MAX, &work, cancellation)
-            .await?;
+            .await.map_err(|error| (error, None))?;
         let (changed, mut changed_custody) = changes
             .changed_paths_with_native_work(u32::MAX, &work, cancellation)
-            .await?;
+            .await.map_err(|error| (error, None))?;
         drop(changes);
         drop(changes_custody);
         let held_root = crate::native_host::HostRoot::open(&root, &mut &work)?;
@@ -5952,7 +5952,7 @@ where
     loop {
         let (mut page, mut page_custody) = generation
             .list_after_with_native_work(&directory, after.as_ref(), 1_024, work, cancellation)
-            .await?;
+            .await.map_err(|error| (error, None))?;
         for entry in &page.entries {
             let mut index = 0;
             let mut found = false;
