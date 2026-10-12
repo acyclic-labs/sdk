@@ -202,7 +202,7 @@ impl VolumeRef {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             inspect_native_metadata(native, 0)?;
-            provider.validate(&mut Some(&mut crate::store::native_work_io(native)?))?;
+            provider.validate(work)?;
         }
         if let Some(reason) = provider.validation_error() {
             return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, reason));
@@ -1257,16 +1257,7 @@ pub fn decode_attachment_manifest(
             ManifestSeed { maximum: maximum_members, io, failure: &mut failure },
             bytes, crate::wire::ErrorCode::Invalid,
         );
-        let mut decoded = match result {
-            Ok(decoded) => decoded,
-            Err(transport) => {
-                if let Some(primary) = failure.take() {
-                    drop(transport);
-                    return Err(primary);
-                }
-                return Err(transport);
-            }
-        };
+        let mut decoded = result.map_err(|transport| failure.take().unwrap_or(transport))?;
         let actual = (std::mem::size_of::<Vec<Attachment>>() as u64)
             .checked_add(manifest_owned_bytes(&decoded.0, decoded.0.capacity())?)
             .ok_or_else(|| io.invalid("manifest ownership overflow"))?;
@@ -1663,7 +1654,7 @@ pub(crate) struct ConversationStateWire {
     pub(crate) archived_prefix: Option<ArchivedConversationPrefix>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct NativeConversationCustody {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     messages: Option<acyclic_fs::NativeAllocation>,
@@ -1682,11 +1673,6 @@ struct NativeConversationCustody {
 
 const INDEX_ROW_BYTES: usize = std::mem::size_of::<(Uuid, (Option<usize>, Option<usize>))>();
 
-impl std::fmt::Debug for NativeConversationCustody {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeConversationCustody").finish_non_exhaustive()
-    }
-}
 impl PartialEq for NativeConversationCustody {
     fn eq(&self, _: &Self) -> bool { true }
 }
@@ -2311,8 +2297,7 @@ impl ConversationState {
         drop(temporary);
         let digest = self.history_prefix_digest(cut, work)?;
         let start = self.messages.partition_point(|message| message.sequence <= cut);
-        let suffix = self.messages.get(start..)
-            .ok_or_else(|| conversation_error(work, crate::wire::ErrorCode::Invalid, "history retirement cut is invalid"))?;
+        let suffix = self.messages.iter().skip(start);
         let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut state = Self { agent: self.agent, ..Self::default() };
         let retained = reserve_conversation_buffer(
