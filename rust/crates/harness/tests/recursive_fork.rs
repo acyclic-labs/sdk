@@ -182,7 +182,6 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
-    .with_limits(Limits::default())?
     .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
         host.clone(),
         &issuer.verifier(&mut None).expect("verifier copy"),
@@ -1260,7 +1259,6 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 issuer.verifier(&mut None).expect("verifier copy"),
                 SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
-            .with_limits(Limits::default())?
             .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
                 host.clone(),
                 &issuer.verifier(&mut None).expect("verifier copy"),

@@ -250,7 +250,8 @@ impl Fixture {
         let verifier = authority.0.1.verifier_with_native_work(work).unwrap();
         let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
             SchemaRegistry::new(), work).await.unwrap();
-        let parent_value = parent.0.with_limits(context.context().scope().limits()).unwrap();
+        let mut parent_value = parent.0;
+        parent_value.set_limits(context.context().scope().limits()).unwrap();
         let bytes = crate::pi_root_provider::canonical_pi_value(&self.commit, maximum, work).unwrap();
         let mut commit = crate::pi_root_provider::guarded_pi_decode::<RetainedSpawnCommit>(&bytes.0, maximum, maximum, acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES, work).unwrap();
         let mut plan = coordinator.begin(&context, &self.journal, &self.fence, parent_value, self.root_handle.workspace.clone(), frozen.0,
@@ -308,7 +309,8 @@ impl Fixture {
         let verifier = authority.0.1.verifier_with_native_work(&work)?;
         let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
             SchemaRegistry::new(), &work).await?;
-        let parent_value = parent.0.with_limits(shared.context().scope().limits())?;
+        let mut parent_value = parent.0;
+        parent_value.set_limits(shared.context().scope().limits())?;
         let frozen = source.snapshot_with_native_work(&work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
         let maximum = self.owner.policy().maximum_payload_bytes;
         let bytes = crate::pi_root_provider::canonical_pi_value(&commit, maximum, &work)?;

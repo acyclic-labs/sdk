@@ -2647,8 +2647,8 @@ mod tests {
             issuer.verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
-        .with_content_verifier(content.clone())
-        .with_resident_event_limit(1)?;
+        .with_content_verifier(content.clone());
+        aggregate.set_resident_event_limit(1)?;
         aggregate
             .execute(Command {
                 operation_id: OperationId::new(),

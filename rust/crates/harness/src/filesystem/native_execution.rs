@@ -2439,11 +2439,11 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     drop(event);
     drop(reader);
     drop(reader_custody);
-    let aggregate = crate::store::StreamAggregate::open_with_native_work(
+    let mut aggregate = crate::store::StreamAggregate::open_with_native_work(
         stream, audience,
         verifier.0, crate::core::SchemaRegistry::new(), work,
     ).await?;
-    let mut aggregate = (aggregate.0.with_limits(limits)?, aggregate.1);
+    aggregate.0.set_limits(limits)?;
     if original_revision.is_none()
         && aggregate.0.reducer().conversation().and_then(|state| state.agent).is_some()
     {
