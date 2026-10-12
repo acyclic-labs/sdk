@@ -4798,7 +4798,7 @@ where
             let generation = self.workspace.generation(
                 frozen.authored_generation, original, cancellation,
             ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
-            let workspace = self.workspace.fork_with_permit_guarded_with_native_work(
+            let workspace = self.workspace.fork_with_native_work(
                 destination, ForkOptions::from_generation(generation, baseline_key),
                 permit, original, cancellation, &mut fork_guard,
             ).await?;
