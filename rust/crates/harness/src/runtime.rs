@@ -410,7 +410,7 @@ impl<I, O> TaskDefinition<I, O> {
         let registry_retained = crate::workflow::workflow_owned_bytes(io)?.checked_sub(before_registry)
             .ok_or_else(|| task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                 "workflow registry custody changed"))?;
-        registry.validate_checkpoint_with_io(&admission.initial, io)?;
+        registry.validate_checkpoint(&admission.initial, io)?;
         match observe_workflow_open_admission(journal.as_ref(), io).await?.value {
             Some(existing) if existing == admission => {}
             Some(_) => return Err(task_workflow_error(native, crate::wire::ErrorCode::Conflict,

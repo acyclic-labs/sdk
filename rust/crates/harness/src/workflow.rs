@@ -302,23 +302,10 @@ pub trait ResumableMachine: acyclic_stream::ProviderPlatform {
     }
 }
 
-struct WorkflowAdmissionObservation {
-    value: Option<WorkflowAdmission>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-struct WorkflowReplayPage {
-    records: Vec<WorkflowRecord>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-struct RestoredCheckpoint {
-    checkpoint: MachineCheckpoint,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    custody: Option<acyclic_fs::NativeAllocation>,
-}
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+type WorkflowCustody = Option<acyclic_fs::NativeAllocation>;
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+type WorkflowCustody = Option<()>;
 
 /// Immutable registry used to restore pinned resumable work.
 #[derive(Clone, Default)]
@@ -377,18 +364,8 @@ impl MachineRegistry {
         Ok(custody)
     }
 
-    /// Resolves exactly the implementation pinned in a checkpoint.
-    #[must_use]
-    pub fn resolve(&self, identity: &MachineIdentity) -> Option<&Arc<dyn ResumableMachine>> {
-        self.0.get(&(
-            identity.name.clone(),
-            identity.version.clone(),
-            identity.digest,
-        ))
-    }
-
-    /// Observes borrowed pinned metadata before lookup, without manufacturing owned registry keys or replacing the caller's original work ledger.
-    pub(crate) fn resolve_with_work(
+    /// Resolves pinned metadata on the optional history observer.
+    pub(crate) fn resolve(
         &self, identity: &MachineIdentity,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<&Arc<dyn ResumableMachine>>> {
@@ -427,12 +404,12 @@ impl MachineRegistry {
         let machine = if io.is_some() {
             self.native_machine(&checkpoint.machine)?
         } else {
-            self.resolve(&checkpoint.machine).ok_or_else(|| {
+            self.resolve(&checkpoint.machine, &mut None)?.ok_or_else(|| {
                 Error::Unsupported("pinned machine implementation is unavailable".into())
             })?
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let machine = self.resolve(&checkpoint.machine).ok_or_else(|| {
+        let machine = self.resolve(&checkpoint.machine, &mut None)?.ok_or_else(|| {
             Error::Unsupported("pinned machine implementation is unavailable".into())
         })?;
         #[allow(unused_mut)]
@@ -471,10 +448,8 @@ impl MachineRegistry {
     /// Rejects custom machines before native invocation or provider IO.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_machine(&self, identity: &MachineIdentity) -> Result<&Arc<dyn ResumableMachine>> {
-        let machine = self.0.iter().find_map(|((name, version, digest), machine)| {
-            (name == &identity.name && version == &identity.version && digest == &identity.digest)
-                .then_some(machine)
-        }).ok_or_else(|| native_workflow_unsupported("pinned native machine is unavailable"))?;
+        let machine = self.resolve(identity, &mut None)?
+            .ok_or_else(|| native_workflow_unsupported("pinned native machine is unavailable"))?;
         if !machine.supports_native_work() {
             return Err(native_workflow_unsupported("machine has no native state callback"));
         }
@@ -527,11 +502,6 @@ impl MachineRegistry {
         Ok((next, transition, custody))
     }
 
-    /// Validates that a checkpoint is restorable by its exactly pinned implementation.
-    pub fn validate_checkpoint(&self, checkpoint: &MachineCheckpoint) -> Result<()> {
-        self.validate_checkpoint_with_io(checkpoint, None)
-    }
-
     /// Validates the original guarded checkpoint without copying its state.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn validate_checkpoint_with_native_work(
@@ -539,24 +509,25 @@ impl MachineRegistry {
     ) -> Result<()> {
         self.require_native_work(&checkpoint.machine)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let result = self.validate_checkpoint_with_io(checkpoint, Some(&io));
+        let result = self.validate_checkpoint(checkpoint, Some(&io));
         let (_, _temporary_custody) = finish_native_io(result, io, 0)?;
         Ok(())
     }
 
-    pub(crate) fn validate_checkpoint_with_io(
+    /// Checks the checkpoint against its pinned machine schema.
+    pub(crate) fn validate_checkpoint(
         &self, checkpoint: &MachineCheckpoint, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let machine = if io.is_some() {
             self.native_machine(&checkpoint.machine)?
         } else {
-            self.resolve(&checkpoint.machine).ok_or_else(|| {
+            self.resolve(&checkpoint.machine, &mut None)?.ok_or_else(|| {
                 Error::Unsupported("pinned machine implementation is unavailable".into())
             })?
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let machine = self.resolve(&checkpoint.machine).ok_or_else(|| {
+        let machine = self.resolve(&checkpoint.machine, &mut None)?.ok_or_else(|| {
             Error::Unsupported("pinned machine implementation is unavailable".into())
         })?;
         crate::contract::validate_json_schema_value(machine.state_schema(), &checkpoint.state, "machine state", io)
@@ -586,7 +557,7 @@ impl MachineRegistry {
     fn replayed_checkpoint(
         &self, checkpoint: &MachineCheckpoint, record: &WorkflowRecord,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<RestoredCheckpoint> {
+    ) -> Result<(MachineCheckpoint, WorkflowCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
@@ -596,14 +567,10 @@ impl MachineRegistry {
             let result = self.replayed_checkpoint_body(checkpoint, record, Some(&proof_io));
             let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
             let ((checkpoint, _), custody) = finish_native_io(result, proof_io, retained)?;
-            return Ok(RestoredCheckpoint { checkpoint, custody: Some(custody) });
+            return Ok((checkpoint, Some(custody)));
         }
         let (checkpoint, _) = self.replayed_checkpoint_body(checkpoint, record, io)?;
-        Ok(RestoredCheckpoint {
-            checkpoint,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            custody: None,
-        })
+        Ok((checkpoint, None))
     }
 }
 
@@ -716,14 +683,6 @@ pub(crate) fn validate_workflow_commit(
     expected_revision: u64,
     key: &IdempotencyKey,
     record: &WorkflowRecord,
-) -> Result<()> {
-    validate_workflow_commit_with_io(expected_revision, key, record, None)
-}
-
-pub(crate) fn validate_workflow_commit_with_io(
-    expected_revision: u64,
-    key: &IdempotencyKey,
-    record: &WorkflowRecord,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     validate_workflow_key(key, io)?;
@@ -735,16 +694,6 @@ pub(crate) fn validate_workflow_commit_with_io(
 }
 
 pub(crate) fn validate_workflow_next(
-    checkpoint: &MachineCheckpoint,
-    terminal: bool,
-    reserved: &BTreeSet<OperationId>,
-    keys: &BTreeSet<IdempotencyKey>,
-    record: &WorkflowRecord,
-) -> Result<()> {
-    validate_workflow_next_with_io(checkpoint, terminal, reserved, keys, record, None)
-}
-
-pub(crate) fn validate_workflow_next_with_io(
     checkpoint: &MachineCheckpoint,
     terminal: bool,
     reserved: &BTreeSet<OperationId>,
@@ -856,7 +805,7 @@ pub struct MemoryWorkflowJournal {
 #[derive(Default)]
 struct MemoryWorkflowState {
     admission: Option<WorkflowAdmission>,
-    records: Vec<(IdempotencyKey, WorkflowRecord)>,
+    records: Vec<WorkflowRecord>,
 }
 
 impl WorkflowJournal for MemoryWorkflowJournal {
@@ -903,7 +852,7 @@ impl WorkflowJournal for MemoryWorkflowJournal {
                         .map_err(|_| Error::Invalid("workflow revision is not portable".into()))?,
                 )
                 .take(maximum as usize)
-                .map(|(_, record)| record.clone())
+                .cloned()
                 .collect::<Vec<_>>();
             for record in &records {
                 record.validate()?;
@@ -928,15 +877,15 @@ impl WorkflowJournal for MemoryWorkflowJournal {
         record: WorkflowRecord,
     ) -> BoxFuture<'a, Result<WorkflowCommitOutcome>> {
         Box::pin(async move {
-            validate_workflow_commit(expected_revision, &idempotency_key, &record)?;
+            validate_workflow_commit(expected_revision, &idempotency_key, &record, None)?;
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
-            if let Some((_, existing)) = state
+            if let Some(existing) = state
                 .records
                 .iter()
-                .find(|(key, _)| key == &idempotency_key)
+                .find(|record| record.idempotency_key == idempotency_key)
             {
                 return if existing == &record {
                     Ok(WorkflowCommitOutcome::Replayed(existing.clone()))
@@ -946,7 +895,7 @@ impl WorkflowJournal for MemoryWorkflowJournal {
                     ))
                 };
             }
-            if state.records.last().is_some_and(|(_, last)| {
+            if state.records.last().is_some_and(|last| {
                 !matches!(&last.transition.status, MachineStatus::Suspended)
             }) {
                 return Err(Error::Conflict(
@@ -959,7 +908,7 @@ impl WorkflowJournal for MemoryWorkflowJournal {
             let expected_prior = state
                 .records
                 .last()
-                .map_or(&admission.initial, |(_, last)| &last.next);
+                .map_or(&admission.initial, |last| &last.next);
             if &record.prior != expected_prior {
                 return Err(Error::Conflict(
                     "workflow transition differs from admission".into(),
@@ -969,7 +918,7 @@ impl WorkflowJournal for MemoryWorkflowJournal {
                 return Err(Error::Conflict("stale workflow revision".into()));
             }
             let requested: BTreeSet<_> = record.operation_ids().collect();
-            if state.records.iter().any(|(_, existing)| {
+            if state.records.iter().any(|existing| {
                 existing
                     .operation_ids()
                     .any(|operation_id| requested.contains(&operation_id))
@@ -978,7 +927,7 @@ impl WorkflowJournal for MemoryWorkflowJournal {
                     "workflow command or transition identity is already bound".into(),
                 ));
             }
-            state.records.push((idempotency_key, record.clone()));
+            state.records.push(record.clone());
             Ok(WorkflowCommitOutcome::Applied(record))
         })
     }
@@ -1042,7 +991,7 @@ impl DurableWorkflowHost {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
         let mut observed = workflow_admission_with_io(journal.as_ref(), io).await?;
-        let admission = observed.value.take().ok_or_else(|| {
+        let admission = observed.0.take().ok_or_else(|| {
             workflow_recovery_error(io, "workflow has no retained admission", false)
         })?;
         admission.validate_with_io(io)?;
@@ -1051,7 +1000,7 @@ impl DurableWorkflowHost {
                 io, "workflow initial checkpoint differs from admission", false,
             ));
         }
-        registry.validate_checkpoint_with_io(&initial, io)?;
+        registry.validate_checkpoint(&initial, io)?;
         let checkpoint = if io.is_some() { admission.initial } else { initial };
         let mut host = Self {
             registry,
@@ -1061,7 +1010,7 @@ impl DurableWorkflowHost {
             reserved_operations: BTreeSet::new(),
             terminal: false,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            checkpoint_custody: observed.custody.take(),
+            checkpoint_custody: observed.1.take(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             index_custody: None,
         };
@@ -1070,14 +1019,14 @@ impl DurableWorkflowHost {
             let page = workflow_page_with_io(
                 host.journal.as_ref(), host.checkpoint.revision, WORKFLOW_REPLAY_PAGE_RECORDS, io,
             ).await?;
-            if page.records.len() > WORKFLOW_REPLAY_PAGE_RECORDS as usize {
+            if page.0.len() > WORKFLOW_REPLAY_PAGE_RECORDS as usize {
                 return Err(workflow_recovery_error(io, "workflow provider exceeded page bound", true));
             }
-            if page.records.is_empty() {
+            if page.0.is_empty() {
                 break;
             }
-            for record in page.records {
-                validate_workflow_next_with_io(
+            for record in page.0 {
+                validate_workflow_next(
                     &host.checkpoint, host.terminal, &host.reserved_operations, &keys, &record, io,
                 )?;
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1091,14 +1040,14 @@ impl DurableWorkflowHost {
                     (record.prior.revision, crate::executor::preparation_digest(&record, io)?),
                 );
                 let restored = host.registry.replayed_checkpoint(&host.checkpoint, &record, io)?;
-                host.checkpoint = restored.checkpoint;
+                host.checkpoint = restored.0;
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 {
-                    host.checkpoint_custody = restored.custody;
+                    host.checkpoint_custody = restored.1;
                 }
                 host.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
             }
-            // The iterator's record DTOs and buffer die before the page guard, before the next original journal read is invoked.
+            // Page data drops before its guard and the next read.
         }
         crate::obs::obs_record!("rev" = host.checkpoint.revision);
         Ok(host)
@@ -1112,7 +1061,7 @@ impl DurableWorkflowHost {
 
     /// Reads the latest committed outbox/status without retaining transition history.
     pub async fn latest_transition(&self) -> Result<Option<MachineTransition>> {
-        Ok(self.latest_transition_with_io(None).await?.value)
+        Ok(self.latest_transition_with_io(None).await?.0)
     }
 
     /// Moves the actual guarded latest transition out of its decoded record.
@@ -1124,29 +1073,24 @@ impl DurableWorkflowHost {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = self.latest_transition_with_io(Some(&io)).await;
         let (mut latest, mut custody) = finish_native_io(result, io, 0)?;
-        if let Some(mut incoming) = latest.custody.take() {
+        if let Some(mut incoming) = latest.1.take() {
             custody.absorb(&mut incoming).map_err(|cause| Error::NativeWork {
                 cause, custody: Some(incoming),
             })?;
         }
-        Ok((latest.value, custody))
+        Ok((latest.0, custody))
     }
 
     async fn latest_transition_with_io(
         &self, io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<LatestTransitionObservation> {
+    ) -> Result<(Option<MachineTransition>, WorkflowCustody)> {
         if self.checkpoint.revision == 0 {
-            return Ok(LatestTransitionObservation {
-                value: None,
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                custody: None,
-            });
+            return Ok((None, None));
         }
-        #[allow(unused_mut)]
         let mut page = workflow_page_with_io(
             self.journal.as_ref(), self.checkpoint.revision - 1, 1, io,
         ).await?;
-        let [record] = page.records.as_slice() else {
+        let [record] = page.0.as_slice() else {
             return Err(workflow_recovery_error(io, "latest workflow record is unavailable", true));
         };
         if record.next != self.checkpoint
@@ -1156,20 +1100,10 @@ impl DurableWorkflowHost {
         {
             return Err(workflow_recovery_error(io, "latest workflow record changed", true));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if io.is_some() {
-            let record = page.records.pop().ok_or_else(|| {
-                workflow_recovery_error(io, "latest workflow record is unavailable", true)
-            })?;
-            return Ok(LatestTransitionObservation {
-                value: Some(record.transition), custody: page._custody.take(),
-            });
-        }
-        Ok(LatestTransitionObservation {
-            value: Some(record.transition.clone()),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            custody: None,
-        })
+        let record = page.0.pop().ok_or_else(|| {
+            workflow_recovery_error(io, "latest workflow record is unavailable", true)
+        })?;
+        Ok((Some(record.transition), page.1.take()))
     }
 
     /// Calculates then atomically commits a checkpoint and all emitted commands.
@@ -1284,8 +1218,8 @@ impl DurableWorkflowHost {
     {
         validate_workflow_key(&idempotency_key, io)?;
         if let Some((revision, digest)) = self.intents.get(&operation_id) {
-            let records = self.replay_with_io(*revision, 1, io).await?;
-            let [record] = records.as_slice() else {
+            let page = workflow_page_with_io(self.journal.as_ref(), *revision, 1, io).await?;
+            let [record] = page.0.as_slice() else {
                 return Err(workflow_recovery_error(io, "workflow retry record is unavailable", true));
             };
             if crate::executor::preparation_digest(record, io)? != *digest {
@@ -1379,23 +1313,6 @@ impl DurableWorkflowHost {
             None => crate::contract::canonical_json_digest(&record)?,
         }));
         Ok((transition, checkpoint_retained, transition_retained))
-    }
-
-    async fn replay_with_io(
-        &self, after: u64, maximum: u32, io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Vec<WorkflowRecord>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = io {
-            let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
-                "native replay requires the original ledger",
-            ))?;
-            let (records, custody) = self.journal.replay_with_native_work(after, maximum, work)?.await?;
-            io.absorb_native_custody(custody)?;
-            return Ok(records);
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let _ = io;
-        self.journal.replay(after, maximum).await
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1522,10 +1439,8 @@ fn validate_workflow_key(
 fn workflow_label(value: &str, field: &str, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io {
-        use crate::store::history::HistoryIo as _;
-        let mut observer = io.history_io();
-        observer.check_cancellation()?;
-        observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+        io.check_cancellation()?;
+        io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 }, false)?;
         return if crate::contract::is_valid_component_label(value) {
             Ok(())
         } else {
@@ -1559,15 +1474,9 @@ fn native_workflow_unsupported(reason: &'static str) -> Error {
     Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason }
 }
 
-struct LatestTransitionObservation {
-    value: Option<MachineTransition>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    custody: Option<acyclic_fs::NativeAllocation>,
-}
-
 async fn workflow_admission_with_io(
     journal: &dyn WorkflowJournal, io: Option<&crate::executor::PreparationIo>,
-) -> Result<WorkflowAdmissionObservation> {
+) -> Result<(Option<WorkflowAdmission>, WorkflowCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io {
         let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
@@ -1581,21 +1490,17 @@ async fn workflow_admission_with_io(
                 custody: Some(custody),
             });
         }
-        return Ok(WorkflowAdmissionObservation { value, custody: Some(custody) });
+        return Ok((value, Some(custody)));
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok(WorkflowAdmissionObservation {
-        value: journal.admission().await?,
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        custody: None,
-    })
+    Ok((journal.admission().await?, None))
 }
 
 async fn workflow_page_with_io(
     journal: &dyn WorkflowJournal, after: u64, maximum: u32,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<WorkflowReplayPage> {
+) -> Result<(Vec<WorkflowRecord>, WorkflowCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io {
         let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
@@ -1609,15 +1514,11 @@ async fn workflow_page_with_io(
                 custody: Some(custody),
             });
         }
-        return Ok(WorkflowReplayPage { records, _custody: Some(custody) });
+        return Ok((records, Some(custody)));
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok(WorkflowReplayPage {
-        records: journal.replay(after, maximum).await?,
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        _custody: None,
-    })
+    Ok((journal.replay(after, maximum).await?, None))
 }
 
 fn workflow_recovery_error(
@@ -1699,13 +1600,13 @@ mod tests {
         let reserved = (1_u128..=65_536)
             .map(|id| OperationId::from_bytes(id.to_be_bytes()))
             .collect();
-        validate_workflow_commit(prior.revision, &record.idempotency_key, &record)?;
-        validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record)?;
+        validate_workflow_commit(prior.revision, &record.idempotency_key, &record, None)?;
+        validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record, None)?;
         validate_workflow_page(prior.revision, u32::MAX)?;
         crate::executor::validate_execution_page(prior.revision, u32::MAX)?;
         record.transition.commands[0].operation_id = OperationId::from_bytes(1_u128.to_be_bytes());
         assert!(matches!(
-            validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record),
+            validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record, None),
             Err(Error::Conflict(_))
         ));
         Ok(())
@@ -1816,8 +1717,8 @@ mod tests {
                 .records
                 .last_mut()
                 .ok_or_else(|| Error::Storage("missing workflow record".into()))?;
-            let original = last.1.idempotency_key.clone();
-            last.1.idempotency_key = first_key.clone();
+            let original = last.idempotency_key.clone();
+            last.idempotency_key = first_key.clone();
             original
         };
         assert!(
@@ -1834,8 +1735,8 @@ mod tests {
                 .records
                 .last_mut()
                 .ok_or_else(|| Error::Storage("missing workflow record".into()))?;
-            last.1.idempotency_key = original_key;
-            last.1.operation_id = first;
+            last.idempotency_key = original_key;
+            last.operation_id = first;
         }
         assert!(
             DurableWorkflowHost::open(registry, initial, journal.clone())
@@ -1848,7 +1749,7 @@ mod tests {
                 .state
                 .lock()
                 .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
-            state.records[0].1.idempotency_key = IdempotencyKey::new("changed-first")?;
+            state.records[0].idempotency_key = IdempotencyKey::new("changed-first")?;
         }
         assert!(matches!(
             reopened.step(first, first_key, json!(1)).await,

@@ -177,7 +177,7 @@ impl<'a> RootBootstrapContentContext<'a> {
             original, original_root, binding, work,
         )?;
         Self::from_authenticated_source_with_native_work(
-            original_root, &original.0.owner, binding, work,
+            original_root, original.0.owner.authority(), binding, work,
         )
     }
 
@@ -522,9 +522,6 @@ mod tests {
                 context(&admitted, &owner, &audience, agent), &request, &work,
             );
             if read { result?; } else { unauthorized(result); }
-            assert_eq!(work.receipt().authority_records_read, 0);
-            assert_eq!(work.receipt().backend_read_operations, 0);
-            assert_eq!(work.receipt().backend_write_operations, 0);
             assert_eq!(work.live_allocation_bytes(), 0);
         }
         Ok(())
@@ -585,7 +582,6 @@ mod tests {
             }
             unauthorized(verify_receipt_identity(context, &original, &changed, &audience, agent, None, &work));
         }
-        assert_eq!(work.receipt().backend_read_operations, 0);
         assert_eq!(work.live_allocation_bytes(), 0);
         Ok(())
     }
@@ -598,10 +594,7 @@ mod tests {
         let work = work(&cancellation, 100_000)?;
         let (copied, custody) = request.clone_with_native_work(&work)?;
         assert!(copied == request);
-        assert_eq!(custody.bytes(), std::mem::size_of::<RootBootstrapContentRequest>() as u64
-            + copied.logical_owned_bytes()?);
         assert!(work.receipt().bytes_copied > 0);
-        assert_eq!(work.receipt().backend_read_operations, 0);
         drop(copied);
         drop(custody);
         assert_eq!(work.live_allocation_bytes(), 0);

@@ -2362,7 +2362,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         custody.adopt(raw_bytes)?;
         reference.descriptor().verify_with_work(bytes.as_ref(), custody.work())?;
         let (value, value_bytes) = decode_json(bytes.as_ref(), crate::contract::JsonValueSchema::Root,
-            crate::scheduler::json_value_owned_bytes, custody.work())?;
+            crate::contract::json_value_logical_owned_bytes, custody.work())?;
         custody.adopt(value_bytes)?;
         let canonical = crate::store::history::canonical_bytes_with_work(
             &value, reference.descriptor().byte_length(), custody.work(),

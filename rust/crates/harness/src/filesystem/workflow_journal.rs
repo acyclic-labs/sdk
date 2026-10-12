@@ -57,7 +57,7 @@ impl VerifiedSummary {
             self.terminal,
             &self.reserved,
             &self.keys,
-            record,
+            record, None,
         )
     }
 
@@ -831,7 +831,7 @@ where
         identities: &FiniteWorkflowIdentities<'_>, record: &WorkflowRecord,
         io: &PreparationIo,
     ) -> Result<()> {
-        crate::workflow::validate_workflow_next_with_io(
+        crate::workflow::validate_workflow_next(
             checkpoint, terminal, &identities.reserved, &identities.keys, record, Some(io),
         )
     }
@@ -1177,7 +1177,7 @@ where
         _admission = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| Error::Invalid("workflow admission custody underflow".into()))?))
             .transpose()?;
-        crate::workflow::validate_workflow_commit_with_io(
+        crate::workflow::validate_workflow_commit(
             expected_revision, &idempotency_key, &record, io,
         )?;
         if let Some(owner) = &self.owner {
