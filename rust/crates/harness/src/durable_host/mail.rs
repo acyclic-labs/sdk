@@ -401,7 +401,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             hash.update(&physical);
             let digest = *hash.finalize().as_bytes();
             drop(physical);
-            let mut request = crate::distributed::PreparedCommitRequest::new_with_digest(digest, &mut work)?;
+            let (key, held) = crate::distributed::digest_key(&digest, &mut work)?;
+            let mut request = crate::distributed::PreparedCommitRequest::new(key, held, &mut work);
             request.push_condition(target)?;
             request.push_condition(absent)?;
             if let Some(condition) = owner_condition { request.push_condition(condition)?; }
