@@ -4810,7 +4810,7 @@ where
                 baseline_key.operation_id(), original, cancellation,
             ).await.map_err(native_workspace_error_pair)?
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-            let current = workspace.head(*original, cancellation)
+            let current = workspace.head(original, cancellation)
                 .await.map_err(|error| native_workspace_error_pair((error, None)))?;
             if current.id() != baseline.id() { return Err(E::from(LazyWorkspaceError::Concurrent)); }
             drop(current);
@@ -6234,7 +6234,7 @@ where
                     return Err((LazyWorkspaceError::NotRegularFile, None));
                 }
                 let reader = if matches!(lookup, LazyLookup::Shadow { .. }) {
-                    let head = self.workspace.head(*original, cancellation)
+                    let head = self.workspace.head(original, cancellation)
                         .await.map_err(|error| (error, None)).map_err(|error| (native_workspace_error_pair(error), None))?;
                     Some(self.workspace.readonly_pinned_reader_with_native_work(head.id(), original, cancellation)
                         .await.map_err(|error| (native_workspace_error(error), None))?)
@@ -7125,7 +7125,7 @@ where
                 self.workspace.head(work.remaining()?, cancellation).await.map_err(measured_workspace_error),
             ),
             |original| {
-                self.workspace.head(*original, cancellation).await.map_err(|error| native_workspace_error_pair((error, None)))
+                self.workspace.head(original, cancellation).await.map_err(|error| native_workspace_error_pair((error, None)))
             }
         }
     }
