@@ -60,11 +60,7 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .readonly_task_context_with_native_work(self.owner.policy().root_task, work)
             .await?;
-        return actual
-            .1
-            .context()
-            .read_file_with_native_work(reference, work)
-            .await;
+        return actual.1.read_file_with_native_work(reference, work).await;
     }
 
     pub(super) fn require_input_read(

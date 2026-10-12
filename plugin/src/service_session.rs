@@ -616,7 +616,7 @@ impl PiSession {
                     original_native_work,
                 )
                 .await?;
-                let protected = pi_owner::PiOwnerConfig::load_readonly_with_native_work(
+                let protected = pi_owner::PiOwnerConfig::load(
                     &self.resources.private_state_root,
                     &self.relative_directory,
                     original_native_work,
@@ -866,7 +866,7 @@ impl PiSession {
             },
         )?;
         context_custody
-            .resize_retained(actual_context_bytes)
+            .reconcile_capacity(actual_context_bytes)
             .map_err(|cause| RootError::NativeWork {
                 cause,
                 custody: None,

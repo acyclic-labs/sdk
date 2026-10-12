@@ -219,7 +219,8 @@ impl PiOwnerConfig {
     pub(crate) fn into_native_shared(self, work: &NativeMaterializationWork) -> Result<Arc<Self>> {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         if !self._native_custody.as_ref().is_some_and(|custody| {
-            custody.matches_work(work) && custody.bytes() >= std::mem::size_of::<Self>() as u64
+            custody.work().shares_allocation_context(work)
+                && custody.bytes() >= std::mem::size_of::<Self>() as u64
         }) {
             return Err(native_invalid(
                 "Pi owner sharing requires its original native metadata custody",
@@ -487,39 +488,20 @@ impl PiOwnerConfig {
         .map_err(acyclic_harness::Error::from)
     }
 
-    /// Reopens the original protected credential record with the request's borrowed native work.
+    /// Reads the original protected credential record.
     pub(crate) fn load(
         root: &acyclic_fs::NativeHostPrivateStateRoot,
         session: &Path,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
-        Self::load_native(root, session, work, false)
-    }
-
-    /// Observes the same immutable protected record without a durability write.
-    pub(crate) fn load_readonly_with_native_work(
-        root: &acyclic_fs::NativeHostPrivateStateRoot,
-        session: &Path,
-        work: &NativeMaterializationWork,
-    ) -> Result<Self> {
-        Self::load_native(root, session, work, true)
-    }
-
-    fn load_native(
-        root: &acyclic_fs::NativeHostPrivateStateRoot,
-        session: &Path,
-        work: &NativeMaterializationWork,
-        readonly: bool,
-    ) -> Result<Self> {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         work.validate_private_state_directory(root, session)?;
         let path = work.join_path(session, Path::new(OWNER_FILE))?;
-        let mode = if readonly {
-            acyclic_fs::NativeStateFileMode::Readonly
-        } else {
-            acyclic_fs::NativeStateFileMode::ReadWriteExisting
-        };
-        let mut file = work.open_state_file_with_native_work(root, &path.0, mode)?;
+        let mut file = work.open_state_file_with_native_work(
+            root,
+            &path.0,
+            acyclic_fs::NativeStateFileMode::Readonly,
+        )?;
         file.validate_private_owner()?;
         let bytes = file.read_owned(MAXIMUM_OWNER_BYTES as usize)?;
         let bytes = NativeOwnerPlaintext {
@@ -562,10 +544,6 @@ impl PiOwnerConfig {
         owner._native_custody = Some(custody);
         let authority = owner.authority(work)?;
         drop(authority);
-        if !readonly {
-            file.sync_file()?;
-            file.sync_parent()?;
-        }
         Ok(owner)
     }
 }

@@ -152,11 +152,7 @@ pub(crate) fn verify<'a>(
     );
     drop(authority);
     verified?;
-    let capabilities = Capabilities::new_with_native_work([CALLER_CAPABILITY], work)?;
-    let caller_only = scope.capabilities() == &capabilities.0;
-    drop(capabilities.0);
-    drop(capabilities.1);
-    if !caller_only {
+    if !scope.capabilities().iter().eq([CALLER_CAPABILITY]) {
         return Err(denied("Pi caller scope carries non-caller authority"));
     }
     let binding = match &state.task_binding {

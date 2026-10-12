@@ -64,7 +64,7 @@ fn encode_pi<T>(
                         reason: "SDK raw parser quota omits its diagnostic inventory",
                     })?;
                 let mut quota = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
-                quota.resize_retained(parser_owned)?;
+                quota.resize(parser_owned)?;
                 parser_quota = Some(quota);
                 Ok(())
             }
@@ -87,14 +87,10 @@ fn encode_pi<T>(
                 }
                 if let Some(mut quota) = parser_quota.take() {
                     custody.absorb(&mut quota)?;
-                    custody
-                        .substitute(observed)
-                        .map_err(acyclic_harness::Error::from)
-                } else {
-                    custody
-                        .resize_retained(observed)
-                        .map_err(acyclic_harness::Error::from)
                 }
+                custody
+                    .resize(observed)
+                    .map_err(acyclic_harness::Error::from)
             }
             charge => native_buffer_codec_charge(work, &mut custody, charge),
         }
@@ -153,7 +149,7 @@ pub(crate) fn native_buffer_codec_charge(
             maximum_owned_bytes,
             ..
         } => {
-            custody.resize_retained(maximum_owned_bytes)?;
+            custody.resize(maximum_owned_bytes)?;
             Ok(())
         }
         JsonCodecCharge::Retain { bytes } => {
@@ -161,11 +157,14 @@ pub(crate) fn native_buffer_codec_charge(
                 .bytes()
                 .checked_add(bytes)
                 .ok_or(NativeTreeMaterializationError::Work(WorkError::Overflow))?;
-            custody.resize_retained(retained)?;
+            custody.resize(retained)?;
             Ok(())
         }
         JsonCodecCharge::Release { .. } => unreachable!(),
-        charge => acyclic_harness::store::native_work_io(work)?.codec_charge(charge),
+        charge => acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        )
+        .codec_charge(charge),
     }
 }
 
@@ -292,7 +291,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
                         .and_then(|bytes| bytes.checked_add(diagnostic))
                         .ok_or(NativeTreeMaterializationError::Work(WorkError::Overflow))?;
                     custody
-                        .resize_retained(admitted)
+                        .resize(admitted)
                         .map_err(acyclic_harness::Error::from)
                 }
                 charge => native_buffer_codec_charge(work, &mut custody, charge),
@@ -301,7 +300,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
     );
     match result {
         Ok(value) => {
-            custody.substitute(retained_owned)?;
+            custody.resize(retained_owned)?;
             Ok((value, custody))
         }
         Err(Error::NativeDecode {
@@ -315,7 +314,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
         }),
         Err(error) => {
             // The SDK has already destroyed its partial DTO and parser here.
-            custody.substitute(0)?;
+            custody.resize(0)?;
             drop(custody);
             Err(error)
         }

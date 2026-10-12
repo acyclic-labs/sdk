@@ -17,10 +17,6 @@ pub(super) struct NativeGate {
 }
 
 impl NativeGate {
-    pub(super) fn is_settled(&self) -> bool {
-        self.reservation.is_none() && !self.requires_original_recovery
-    }
-
     pub(super) async fn reserve(
         &mut self,
         owner: &TaskJournalOwner<LocalStream>,
@@ -95,7 +91,7 @@ pub(super) struct BoundEffect {
     pub(super) effects: Arc<Effects>,
     pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
     pub(super) journal: Arc<Journal>,
-    pub(super) context: Arc<NativeTaskContext>,
+    pub(super) context: Arc<TaskContext>,
     pub(super) command: OperationId,
 }
 
@@ -123,36 +119,11 @@ pub(super) struct LiveHandles {
     pub(super) effect: Option<Arc<BoundEffect>>,
     pub(super) scratch_gate: NativeGate,
     pub(super) project_gate: NativeGate,
-    pub(super) mounts_drained: bool,
-    pub(super) scratch_released: bool,
-    pub(super) dispose_requested: bool,
     pub(super) preparation_owner: Option<(
         Arc<TaskJournalOwner<LocalStream>>,
-        Arc<NativeTaskContext>,
+        Arc<TaskContext>,
         OperationId,
     )>,
-    // The actual SDK proof owns its original view and intrinsic allocation custody.
-    pub(super) process_drained: Option<NativeProcessDrainProof>,
-    pub(super) drained: Option<NativeTaskViewDrainReceipt>,
-}
-
-impl LiveHandles {
-    pub(super) fn stop_startup_mount(&mut self, command: OperationId) -> Result<()> {
-        if let Some(session) = self.project_startup_owner.as_mut() {
-            let volume_work = self
-                .project_work
-                .as_ref()
-                .ok_or(Error::Indeterminate(command))?;
-            let stopped = session.stop_with_meter(&volume_work).map_err(|cause| {
-                Error::from(acyclic_fs::native_mount::MountLifecycleError::Native(cause))
-            })?;
-            if !stopped || !session.cleanup_state().cleanup_complete() {
-                return Err(Error::Indeterminate(command));
-            }
-            self.project_startup_owner = None;
-        }
-        Ok(())
-    }
 }
 
 pub(super) struct NativeEntry {

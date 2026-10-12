@@ -50,68 +50,6 @@ impl PiNativeCommandHost {
         Ok((admission.0, input.0, admission.1))
     }
 
-    pub(super) async fn original_never_started(
-        &self,
-        task: TaskId,
-        meter: &NativeMaterializationWork,
-    ) -> Result<bool> {
-        let admission = self.child_admission(task, meter).await?;
-        let input = &admission.1;
-        let PiTaskExecution::Child { launch } = &input.execution else {
-            unreachable!()
-        };
-        let entry = self.registered_entry(task)?;
-        {
-            let handles = entry.handles.lock().await;
-            if handles.effect.is_some()
-                || handles.preparation_owner.is_some()
-                || handles.root.is_some()
-                || handles.project.is_some()
-                || handles.project_allocation.is_some()
-                || handles.project_startup_owner.is_some()
-                || !handles.scratch_gate.is_settled()
-                || !handles.project_gate.is_settled()
-                || self.live_view(task).is_some()
-            {
-                return Ok(false);
-            }
-        }
-        let observed = {
-            let mut io = native_work_io(meter)?;
-            HistoryIo::retain_owned(
-                &mut io,
-                std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
-                    as u64,
-            )?;
-            let value = self
-                .runtime
-                .runtime
-                .task_host()
-                .recover_work(task, &mut Some(&mut io))
-                .await?;
-            (value, io.into_custody())
-        };
-        let lease = match observed.0 {
-            WorkPull::Claimed(lease) => lease,
-            WorkPull::Unresolved { error, .. } => return Err(error),
-            WorkPull::Idle => return Ok(false),
-        };
-        let fence = LeaseFence::from(&lease.reservation);
-        let owner = self
-            .runtime
-            .runtime
-            .task_host()
-            .journal_owner_with_native_work(task, &fence, meter)
-            .await?;
-        match self
-            .observe_preparation_journal(task, &owner, meter)
-            .await?
-        {
-            Some(_) => Ok(false),
-            None => Err(Error::Indeterminate(launch.operation_id)),
-        }
-    }
-
     pub(super) async fn authenticated_command(
         &self,
         context: &TaskContext,
@@ -349,14 +287,14 @@ impl PiNativeCommandHost {
 
     pub(super) async fn bind_recovery(
         &self,
-        shared: Arc<NativeTaskContext>,
+        shared: Arc<TaskContext>,
         input: &PiTaskInput,
         owner: Arc<TaskJournalOwner<LocalStream>>,
         command: OperationId,
         effect: &acyclic_harness::core::EffectState,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<BoundEffect>> {
-        let context = shared.context();
+        let context = shared.as_ref();
         let borrowed = BorrowedEffectPlan {
             provider: &effect.provider,
             guarantee: &effect.guarantee,
@@ -433,7 +371,6 @@ impl PiNativeCommandHost {
             let handles = entry.handles.lock().await;
             if handles.scratch_gate.reservation.is_none()
                 || handles.project_gate.reservation.is_none()
-                || handles.mounts_drained
             {
                 return Ok(None);
             }
@@ -456,14 +393,6 @@ impl PiNativeCommandHost {
             return Err(unauthorized(
                 "Pi Planned effect differs from its original retained SDK launch",
             ));
-        }
-        if bound
-            .provider
-            .receipt(bound.provider.original_attempt(), &bound.work, None)
-            .await?
-            .is_some()
-        {
-            return Ok(None);
         }
         Ok(Some(bound))
     }

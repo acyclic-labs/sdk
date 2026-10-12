@@ -96,7 +96,7 @@ impl PiNativeCommandHost {
 
     async fn execute_stock(
         &self,
-        context: Arc<NativeTaskContext>,
+        context: Arc<TaskContext>,
         fence: LeaseFence,
         stock: WorkflowCommand,
         plan: &TaskEffectPlan,
@@ -104,7 +104,6 @@ impl PiNativeCommandHost {
         work: &NativeMaterializationWork,
     ) -> Result<TaskCommandProgress> {
         let maximum = context
-            .context()
             .scope()
             .limits()
             .file_bytes
@@ -132,27 +131,13 @@ impl PiNativeCommandHost {
         }
         let task = bound.owner.task_id();
         let work = self.preparation_work(&self.registered_entry(task)?).await?;
-        let receipt = bound
-            .provider
-            .receipt(bound.provider.original_attempt(), &work, None)
-            .await?
-            .ok_or(Error::Indeterminate(bound.command))?;
-        if !receipt.observed
-            || receipt.task != task
-            || receipt.command != bound.command
-            || receipt.effect.status != observed.0
-        {
-            return Err(Error::Indeterminate(bound.command));
-        }
-        let (effect, mut original_custody) = receipt.into_effect()?;
         let maximum = bound
             .context
-            .context()
             .scope()
             .limits()
             .file_bytes
             .min(self.protected.policy().maximum_payload_bytes);
-        let mut completed = match effect.status {
+        let mut completed = match observed.0 {
             EffectStatus::Succeeded { result } => crate::pi_root_provider::guarded_pi_value(
                 &Outcome::Succeeded(result),
                 maximum,
@@ -165,9 +150,7 @@ impl PiNativeCommandHost {
             )?,
             _ => return Err(Error::Indeterminate(bound.command)),
         };
-        completed.1.absorb(&mut original_custody)?;
         completed.1.absorb(&mut observed.1)?;
-        drop(observed.0);
         let (value, custody) = completed;
         Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody })
     }
@@ -220,7 +203,7 @@ impl TaskCommandHost for PiNativeCommandHost {
 
     fn execute_with_native_work<'a>(
         &'a self,
-        shared: Arc<NativeTaskContext>,
+        shared: Arc<TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -235,7 +218,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                     .execute_with_native_work(shared, fence, command, payload, work)?
                     .await;
             }
-            let context = shared.context();
+            let context = shared.as_ref();
             self.bind_invocation_work(
                 context.durable_task_id().ok_or_else(|| {
                     unauthorized("Pi native invocation has no original durable owner")
@@ -262,7 +245,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                     let progress = self
                         .execute_stock(shared, fence, stock.clone(), &bound.plan.0, &bound, work)
                         .await?;
-                    return self.settle_progress(input.binding.task_id, progress).await;
+                    return Ok(progress);
                 }
                 let planned = effect.status == EffectStatus::Planned;
                 let recovery = self
@@ -275,13 +258,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                         work,
                     )
                     .await?;
-                if planned
-                    && recovery
-                        .provider
-                        .receipt(recovery.provider.original_attempt(), work, None)
-                        .await?
-                        .is_none()
-                {
+                if planned {
                     let bound = self
                         .prepare_effect(
                             Arc::clone(&shared),
@@ -309,7 +286,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                     let progress = self
                         .execute_stock(shared, fence, stock.clone(), &bound.plan.0, &bound, work)
                         .await?;
-                    return self.settle_progress(input.binding.task_id, progress).await;
+                    return Ok(progress);
                 }
                 let progress = self
                     .effect_progress(
@@ -325,7 +302,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                             .await?,
                     )
                     .await?;
-                return self.settle_progress(input.binding.task_id, progress).await;
+                return Ok(progress);
             }
             let bound = self
                 .prepare_effect(
@@ -345,13 +322,13 @@ impl TaskCommandHost for PiNativeCommandHost {
             let progress = self
                 .execute_stock(shared, fence, stock.clone(), &bound.plan.0, &bound, work)
                 .await?;
-            self.settle_progress(input.binding.task_id, progress).await
+            Ok(progress)
         })
     }
 
     fn reconcile_with_native_work<'a>(
         &'a self,
-        shared: Arc<NativeTaskContext>,
+        shared: Arc<TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -366,7 +343,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                     .reconcile_with_native_work(shared, fence, command, payload, work)?
                     .await;
             }
-            let context = shared.context();
+            let context = shared.as_ref();
             self.bind_invocation_work(
                 context.durable_task_id().ok_or_else(|| {
                     unauthorized("Pi native recovery has no original durable owner")
@@ -382,18 +359,6 @@ impl TaskCommandHost for PiNativeCommandHost {
                 .original_effect(context, input, command.operation_id, work)
                 .await?;
             let Some(effect) = recorded_effect.0.as_ref() else {
-                let entry = self.registered_entry(input.binding.task_id)?;
-                if entry.handles.lock().await.preparation_owner.is_some() {
-                    self.rollback_preparation_owned(
-                        input.binding.task_id,
-                        &entry,
-                        work,
-                        work.cancellation(),
-                    )
-                    .await?;
-                } else {
-                    return Err(Error::Indeterminate(command.operation_id));
-                }
                 return Ok(TaskCommandProgress::Ready(Value::Null));
             };
             let bound = self
@@ -413,7 +378,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                         .await?,
                 )
                 .await?;
-            self.settle_progress(input.binding.task_id, progress).await
+            Ok(progress)
         })
     }
 }

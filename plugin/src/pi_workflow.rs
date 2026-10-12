@@ -257,7 +257,7 @@ impl PiControlHost<'_> {
 
     async fn dispatch_workflow(
         &self,
-        context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: Arc<acyclic_harness::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -265,10 +265,9 @@ impl PiControlHost<'_> {
         reconcile: bool,
     ) -> acyclic_harness::Result<TaskCommandProgress> {
         let task = context
-            .context()
             .durable_task_id()
             .ok_or_else(|| boundary("Pi command has no original task"))?;
-        let owner = pi_owner::PiOwnerConfig::load_readonly_with_native_work(
+        let owner = pi_owner::PiOwnerConfig::load(
             &self.resources.private_state_root,
             self.directory,
             work,
@@ -314,8 +313,11 @@ impl PiControlHost<'_> {
             }
             drop(expected);
             let journal_owner = journal_owner.into_native_shared(work)?;
-            let content =
-                context.content_residency_verifier_with_native_work(journal_owner.clone(), work)?;
+            let content = acyclic_harness::runtime::content_residency_verifier(
+                Arc::clone(&context),
+                journal_owner.clone(),
+                Some(&PreparationIo::from_native_work(work)?),
+            )?;
             let authority = owner.effect_authority_with_native_work(work)?;
             let provider = pi_root_provider::root_provider(
                 owner,
@@ -447,7 +449,7 @@ impl TaskCommandHost for PiControlHost<'_> {
     }
     fn execute_with_native_work<'a>(
         &'a self,
-        context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: Arc<acyclic_harness::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -459,7 +461,7 @@ impl TaskCommandHost for PiControlHost<'_> {
     }
     fn reconcile_with_native_work<'a>(
         &'a self,
-        context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+        context: Arc<acyclic_harness::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,

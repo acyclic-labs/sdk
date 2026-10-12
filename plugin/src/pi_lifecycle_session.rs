@@ -179,12 +179,7 @@ impl PiSession {
                 )
             });
             if !terminal {
-                retain_first_failure(
-                    &mut failure,
-                    host.cancel_child_with_native_work(*task, &work)
-                        .await
-                        .map(|_| ()),
-                );
+                retain_first_failure(&mut failure, host.signal_stop_child(*task, &work).await);
             }
             if !self.native_jobs.contains_key(task) {
                 match async {
@@ -461,14 +456,6 @@ impl PiSession {
             }
         };
         if deactivate && authenticated {
-            if let Some(native) = &native {
-                for task in &tasks {
-                    retain_first_failure(
-                        &mut failure,
-                        native.request_scratch_disposal(*task, &work).await,
-                    );
-                }
-            }
             if let Some(root) = root {
                 retain_first_failure(
                     &mut failure,
@@ -557,9 +544,7 @@ impl PiSession {
             let retained_work = work.clone();
             let task = *task;
             match spawn_native_job(work, || async move {
-                native
-                    .drain_stopped_child(task, mode == NativeDrainMode::Deactivate, &retained_work)
-                    .await
+                native.drain_stopped_child(task, &retained_work).await
             }) {
                 Ok(drain) => drains.push((task, drain)),
                 Err(error) => retain_first_failure(failure, Err(error)),
