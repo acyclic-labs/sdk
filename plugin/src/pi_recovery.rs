@@ -208,7 +208,7 @@ where
             None => PiTaskOrigin::RootState(state),
             Some(parent) => PiTaskOrigin::Child(parent),
         };
-        let input = authenticate_pi_task_inner(runtime, task.binding, origin, work, pi_definition.0.identity()).await?;
+        let input = authenticate_pi_task_inner(runtime, task.binding, origin, work, pi_definition.identity()).await?;
         authenticate_original_alias(runtime, task.binding.task_id, input.0.1,
             &input.0.0, task.alias, work).await?;
     }
@@ -320,7 +320,7 @@ where
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
     let definition = PiTaskMachine::new(work)?.definition(work)?;
-    let admitted = authenticate_pi_task_inner(runtime, binding, origin, work, definition.0.identity()).await?;
+    let admitted = authenticate_pi_task_inner(runtime, binding, origin, work, definition.identity()).await?;
     Ok((admitted.0.0, admitted.1))
 }
 

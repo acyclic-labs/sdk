@@ -619,6 +619,7 @@ mod native_effect_paid_point_tests {
     use super::super::{checkpoints, history::native_work_io};
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
     use acyclic_stream::{IdempotencyKey, MemoryStream};
+    use bytes::Bytes;
     use crate::{
         Capabilities, IdempotencyKey as CommandKey, OperationId,
         conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
