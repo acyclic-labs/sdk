@@ -327,7 +327,7 @@ fn run_loop(
                 .unwrap_or_else(PoisonError::into_inner)
                 .control
                 .start_aborted = true;
-            let work = original.native_read_meter().lock().work;
+            let work = (&original.state).lock().work;
             resources.context.record_failure(error, work);
             -libc::EIO
         }

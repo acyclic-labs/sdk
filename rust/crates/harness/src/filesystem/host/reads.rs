@@ -306,7 +306,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace = fork_preparer_io::open(self, &reference, io).await?;
         let pinned = fork_preparer_io::generation(self, &workspace, generation, io).await?;
         fork_preparer_io::retain(&pinned, Some(io)).await?;
-        let path = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
+        let path = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("/{path}"), work))?;
         let path_hold = io.guard_owned(path.capacity() as u64)?;
         io.remaining()?;
         let stat = io.sdk(pinned.stat(&path, io, io.cancellation()).await)?;

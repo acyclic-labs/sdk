@@ -13,6 +13,14 @@ mod custody;
 mod namespace;
 mod positional;
 
+fn wait_until(ready: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(ready());
+}
+
 struct ThreadWake(Thread);
 
 impl Wake for ThreadWake {

@@ -1,5 +1,4 @@
 use super::*;
-use crate::materializer::NativeOwnedCleanupCredit;
 use std::future::Future;
 use std::task::Poll;
 
@@ -31,7 +30,7 @@ impl DirectDetach {
             None
         };
         let meter = if resources.is_some() {
-            NativeOwnedCleanupCredit::from_reserved(original.reserve_work(WRITE_WORK)?)?
+            original.reserve_work(WRITE_WORK)?.into_runtime_credit()?
                 .runtime_meter()
         } else {
             original.runtime_meter()
@@ -126,8 +125,7 @@ impl Diskutil {
             acyclic_native_runtime::ProcessTree::TERMINATION_TIMEOUT,
             acyclic_native_runtime::ProcessTree::TERMINATION_POLL_INTERVAL,
         )?;
-        let credit = NativeOwnedCleanupCredit::from_reserved(
-            original.reserve_work(crate::WorkCounters {
+        let credit = original.reserve_work(crate::WorkCounters {
                 backend_read_operations: termination
                     .checked_mul(5)
                     .and_then(|n| n.checked_add(observations + 1))
@@ -138,8 +136,7 @@ impl Diskutil {
                 items_examined: 4,
                 bytes_copied: (5 * std::mem::size_of::<*mut c_char>()) as u64,
                 ..crate::WorkCounters::UNCHARGED
-            })?,
-        )?;
+            })?.into_runtime_credit()?;
         let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process(
             3,
             original.allocation_work().runtime_meter(),
