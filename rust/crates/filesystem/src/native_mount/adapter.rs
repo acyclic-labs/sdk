@@ -2549,8 +2549,8 @@ impl<A, O> SharedCheckout<A, O> {
         });
         let result = result.map(|outcome| {
             let resolved = matches!(outcome,
-                Some(crate::CheckoutCommitOutcome::Committed { generation_id, .. }
-                    | crate::CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. })
+                Some(crate::LivePublicationObservation::Committed { generation_id, .. }
+                    | crate::LivePublicationObservation::AlreadyCommitted { generation_id, .. })
                 if generation_id == generation);
             if resolved { original.clear_retained_operation(operation); }
             resolved
