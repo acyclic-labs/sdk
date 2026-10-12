@@ -15,10 +15,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
     fn publication_read_preflight(&self, attempt: crate::EffectAttemptId,
         project: &VolumeRef, work: &NativeMaterializationWork) -> Result<()> {
         finite_dispatch::require_finite(work)?;
-        if self._custody.is_none() {
-            return Err(boundary(crate::wire::ErrorCode::Unsupported,
-                "published native metadata requires original provider payload custody"));
-        }
         if attempt != self.original_attempt() {
             return Err(boundary(crate::wire::ErrorCode::Conflict,
                 "published native metadata differs from the original attempt"));

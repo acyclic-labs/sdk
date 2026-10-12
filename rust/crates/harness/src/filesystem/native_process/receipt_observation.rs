@@ -358,38 +358,16 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             if authority.history_limits.maximum_events == 0 || authority.history_limits.maximum_bytes == 0 {
                 return Err(receipt_error("native effect history allowances must be finite and positive"));
             }
-            let mut io = crate::store::history::native_work_io(work)?;
-            let history = HistoryReader::new_with_work(&owner.stream(),
-                authority.verifier.audience(), &authority.verifier, Some(&mut io))?;
-            let effect_id = crate::effect_host::task_effect_id_with_native_work(owner.task_binding().0, command, work)?;
-            let mut custody = io.into_custody();
-            let mut copied_plan_custody;
-            let plan_io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            let plan = finite_binding::copy_plan_with_io(plan, &plan_io)?;
-            let copied_plan_bytes = plan_io.owned_bytes()?;
-            copied_plan_custody = plan_io.into_native_custody(copied_plan_bytes)?;
-            custody.absorb(&mut copied_plan_custody)?;
-            let mut authority_custody = work.claim(size_of::<NativeProcessAuthority>() as u64)?;
-            custody.absorb(&mut authority_custody)?;
-            let authority = Arc::new(authority);
-            let mut supervisor_custody = work.claim(size_of::<NativeSupervisorControl>() as u64)?;
-            custody.absorb(&mut supervisor_custody)?;
-            let supervisor = Arc::new(NativeSupervisorControl::new());
-            let mut history_custody = work.claim(size_of::<HistoryReader<P>>() as u64)?;
-            custody.absorb(&mut history_custody)?;
-            let history = Arc::new(history);
-            let mut plan_custody = work.claim(size_of::<TaskEffectPlan>() as u64)?;
-            custody.absorb(&mut plan_custody)?;
-            let plan = Arc::new(plan);
-            let (after, after_custody) = owner.outcome_with_native_work(work).await?;
-            if after.is_none() { owner.verify_with_native_work(true, work).await?; }
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let plan = finite_binding::copy_plan_with_io(plan, &io)?;
+            let provider = finite_binding::assemble(owner, command, plan, NativeAdmission::ReceiptOnly,
+                None, approval, authority, work, io)?;
+            let (after, after_custody) = provider.owner.outcome_with_native_work(work).await?;
+            if after.is_none() { provider.owner.verify_with_native_work(true, work).await?; }
             drop(after); drop(after_custody);
             check(work)?;
             drop(outcome); drop(outcome_custody);
-            Ok(Self { owner, command, plan, admission: NativeAdmission::ReceiptOnly,
-                view: None, approval, authority, supervisor, effect_id, history,
-                _native_work: Some(work.clone()),
-                _custody: Some(finite_binding::shared_custody(custody, work)?) })
+            Ok(provider)
             }).await)
         })?.await?
     }

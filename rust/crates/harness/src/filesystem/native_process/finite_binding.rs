@@ -61,11 +61,8 @@ pub(super) fn shared_custody(
 }
 
 pub(super) fn absorb_shared(
-    held: &Option<Arc<Mutex<NativeAllocation>>>, mut incoming: NativeAllocation,
+    held: &Arc<Mutex<NativeAllocation>>, mut incoming: NativeAllocation,
 ) -> Result<()> {
-    let held = held.as_ref().ok_or(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Storage, reason: "original provider payload custody is unavailable",
-    })?;
     let mut held = held.lock().map_err(|_| Error::NativeBoundary {
         code: crate::wire::ErrorCode::Storage, reason: "original provider payload custody is poisoned",
     })?;
@@ -87,17 +84,6 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
 ) -> Result<NativeProcessProvider<P>> {
     let io = PreparationIo::from_native_work(work)?;
     let plan = copy_plan_with_io(plan, &io)?;
-    let mut provider = bind_body(owner, command, plan, view, approval, authority, work, &io).await?;
-    let retained = io.owned_bytes()?;
-    provider._custody = Some(shared_custody(io.into_native_custody(retained)?, work)?);
-    Ok(provider)
-}
-
-async fn bind_body<P: StreamProvider + 'static>(
-    owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: TaskEffectPlan,
-    view: Arc<dyn NativeProcessView<P>>, approval: InteractionId,
-    authority: NativeProcessAuthority, work: &NativeMaterializationWork, io: &PreparationIo,
-) -> Result<NativeProcessProvider<P>> {
     use crate::filesystem::native_contract::validation_error;
     require_view_family(view.as_ref(), work)?;
     owner.verify_with_native_work(false, work).await?;
@@ -105,21 +91,21 @@ async fn bind_body<P: StreamProvider + 'static>(
     owner.validate_input_file_with_native_work(&plan.request, work)?;
     owner.validate_input_file_with_native_work(&plan.result_schema, work)?;
     if authority.history_limits.maximum_events == 0 || authority.history_limits.maximum_bytes == 0 {
-        return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
+        return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid,
             "native effect history allowances must be finite and positive"));
     }
     if plan.effect_kind != NATIVE_PROCESS_EFFECT_KIND || plan.guarantee != EffectGuarantee::AtMostOnce {
-        return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
+        return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid,
             "native process requires its one-shot at-most-once contract"));
     }
     if plan.request.descriptor().media_type() != "application/json" {
-        return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid, "native request must be JSON content"));
+        return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid, "native request must be JSON content"));
     }
     let bytes = authority.content.read_with_native_work(&plan.request, owner.input_limits().file_bytes, work)?.await?;
     let request = io.decode_preparation_with_code::<NativeProcessRequest>(
         bytes.as_ref(), crate::wire::ErrorCode::Invalid)?.into_retained();
     drop(bytes);
-    request.view.validate_with_io(Some(io))?;
+    request.view.validate_with_io(Some(&io))?;
     for mapping in &request.view.volumes {
         owner.require_volume_grant_with_native_work(&mapping.volume, crate::conversation::VolumeOperation::Read, work)?;
         if mapping.writable {
@@ -128,42 +114,55 @@ async fn bind_body<P: StreamProvider + 'static>(
     }
     request.validate_native_paths(view.manifest(), io)?;
     if request.view.volumes.iter().any(|mapping| &mapping.volume == authority.results.volume()) {
-        return Err(validation_error(Some(io), crate::wire::ErrorCode::Unsupported,
+        return Err(validation_error(Some(&io), crate::wire::ErrorCode::Unsupported,
             "native result storage must be separate from materialized volumes"));
     }
     if u64::from(request.maximum_result_bytes) > owner.input_limits().file_bytes {
-        return Err(validation_error(Some(io), crate::wire::ErrorCode::Unauthorized,
+        return Err(validation_error(Some(&io), crate::wire::ErrorCode::Unauthorized,
             "native result bound exceeds retained task file allowance"));
     }
     if request.standard_input.as_ref().is_some_and(|input| input.len() as u64 > owner.input_limits().file_bytes) {
-        return Err(validation_error(Some(io), crate::wire::ErrorCode::Unauthorized,
+        return Err(validation_error(Some(&io), crate::wire::ErrorCode::Unauthorized,
             "native stdin exceeds retained task file allowance"));
     }
     if plan.result_schema.descriptor().media_type() != "application/schema+json" {
-        return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
+        return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid,
             "effect schema must be JSON schema content"));
     }
     let schema = authority.content.read_with_native_work(&plan.result_schema, owner.input_limits().file_bytes, work)?.await?;
     let decoded = io.decode_preparation_with_code::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
-    crate::contract::compile_json_schema_with_io(&decoded.value, "effect result", Some(io))?;
+    crate::contract::compile_json_schema_with_io(&decoded.value, "effect result", Some(&io))?;
     let result_schema = decoded.into_retained();
     drop(schema);
     for operation in [crate::conversation::VolumeOperation::Write, crate::conversation::VolumeOperation::Read] {
         owner.require_volume_grant_with_native_work(authority.results.volume(), operation, work)?;
     }
-    let approval_digest = request.approval_digest_with_io(owner.task_binding().0, command, Some(io))?;
+    let approval_digest = request.approval_digest_with_io(owner.task_binding().0, command, Some(&io))?;
+    authority.approvals.verify_with_native_work(approval, command, approval_digest, work)?.await?;
+    let admission = NativeAdmission::Executable {
+        request: arc(request, &io)?, result_schema: arc(result_schema, &io)?, approval_digest,
+    };
+    let provider = assemble(owner, command, plan, admission, Some(view), approval, authority, work, io)?;
+    provider.owner.verify_with_native_work(false, work).await?;
+    require_view_family(provider.view.as_ref().expect("executable binding retains its view").as_ref(), work)?;
+    Ok(provider)
+}
+
+pub(super) fn assemble<P: StreamProvider + 'static>(
+    owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: TaskEffectPlan,
+    admission: NativeAdmission, view: Option<Arc<dyn NativeProcessView<P>>>, approval: InteractionId,
+    authority: NativeProcessAuthority, work: &NativeMaterializationWork, io: PreparationIo,
+) -> Result<NativeProcessProvider<P>> {
     let effect_id = crate::effect_host::task_effect_id_with_native_work(owner.task_binding().0, command, work)?;
     let (history, history_custody) = HistoryReader::new_with_native_work(
         &owner.stream(), authority.verifier.audience(), &authority.verifier, work)?;
     io.absorb_native_custody(history_custody)?;
-    authority.approvals.verify_with_native_work(approval, command, approval_digest, work)?.await?;
-    let provider = NativeProcessProvider {
-        owner, command, plan: arc(plan, io)?,
-        admission: NativeAdmission::Executable { request: arc(request, io)?, result_schema: arc(result_schema, io)?, approval_digest },
-        view: Some(view), approval, authority: arc(authority, io)?, supervisor: arc(NativeSupervisorControl::new(), io)?,
-        effect_id, history: arc(history, io)?, _native_work: Some(work.clone()), _custody: None,
-    };
-    provider.owner.verify_with_native_work(false, work).await?;
-    require_view_family(provider.view.as_ref().expect("executable binding retains its view").as_ref(), work)?;
-    Ok(provider)
+    let plan = arc(plan, &io)?;
+    let authority = arc(authority, &io)?;
+    let history = arc(history, &io)?;
+    let supervisor = arc(NativeSupervisorControl::new(), &io)?;
+    let retained = io.owned_bytes()?;
+    Ok(NativeProcessProvider { owner, command, plan, admission, view, approval, authority,
+        supervisor, effect_id, history, _native_work: work.clone(),
+        _custody: shared_custody(io.into_native_custody(retained)?, work)? })
 }

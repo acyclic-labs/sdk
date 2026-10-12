@@ -138,8 +138,8 @@ pub struct NativeProcessProvider<P: StreamProvider> {
     supervisor: Arc<NativeSupervisorControl>,
     effect_id: crate::EffectId,
     history: Arc<HistoryReader<P>>,
-    _native_work: Option<acyclic_fs::NativeMaterializationWork>,
-    _custody: Option<Arc<Mutex<acyclic_fs::NativeAllocation>>>,
+    _native_work: acyclic_fs::NativeMaterializationWork,
+    _custody: Arc<Mutex<acyclic_fs::NativeAllocation>>,
 }
 
 enum NativeAdmission {
@@ -584,7 +584,7 @@ where
     }
 
     fn require_work_family(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        finite_binding::require_family(self._native_work.as_ref(), work)
+        finite_binding::require_family(Some(&self._native_work), work)
     }
 
     fn executable_admission(&self) -> Result<(&Arc<NativeProcessRequest>, &Arc<serde_json::Value>, [u8; 32])> {

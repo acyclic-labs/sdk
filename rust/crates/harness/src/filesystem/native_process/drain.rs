@@ -109,8 +109,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         O: AsyncObjectStore + Send + Sync + 'static,
     {
         finite_dispatch::require_finite(work)?;
-        let provider_custody = self._custody.as_ref()
-            .ok_or(boundary(crate::wire::ErrorCode::Unsupported, "process drain requires original provider payload custody"))?;
+        let provider_custody = &self._custody;
         let original = view.original_native_work()
             .ok_or(boundary(crate::wire::ErrorCode::Unsupported, "process drain requires an existing original native view"))?;
         let preparation = view.preparation_receipts().first()
@@ -122,7 +121,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         }
         if let Some(held) = &self.view {
             if !std::ptr::addr_eq(Arc::as_ptr(held), Arc::as_ptr(view))
-                || !self._native_work.as_ref().is_some_and(|work| work.shares_ledger(original))
+                || !self._native_work.shares_ledger(original)
             {
                 return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain must retain the same originally dispatched physical view"));
             }
