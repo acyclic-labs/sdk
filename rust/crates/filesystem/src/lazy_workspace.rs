@@ -4668,9 +4668,9 @@ where
                 }
                 let baseline = work.accept(workspace.head(work.remaining()?, cancellation)
                     .await.map_err(measured_workspace_error))?;
-                let mut removed = work.accept((async { let accounting = LazyTreapWork::new(work.remaining()?, cancellation); let result = self.selected_paths(paths, None, Some(&baseline), &accounting).await; accounting.measured(result, |error, spent| crate::OperationFailure::new(error, spent)) }).await.map(|receipt| OperationReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)))?;
+                let mut removed = work.accept((async { let accounting = LazyTreapWork::new(work.remaining().map_err(crate::OperationFailure::before_work)?, cancellation); let result = self.selected_paths(paths, None, Some(&baseline), &accounting).await; accounting.measured(result, |error, spent| crate::OperationFailure::new(error, spent)) }).await.map(|receipt| OperationReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)))?;
                 work.adopt(exactify_paths_retained_bytes(&removed)?)?;
-                let present = work.accept((async { let accounting = LazyTreapWork::new(work.remaining()?, cancellation); let result = self.selected_paths(paths, None, Some(imported), &accounting).await; accounting.measured(result, |error, spent| crate::OperationFailure::new(error, spent)) }).await.map(|receipt| OperationReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)))?;
+                let present = work.accept((async { let accounting = LazyTreapWork::new(work.remaining().map_err(crate::OperationFailure::before_work)?, cancellation); let result = self.selected_paths(paths, None, Some(imported), &accounting).await; accounting.measured(result, |error, spent| crate::OperationFailure::new(error, spent)) }).await.map(|receipt| OperationReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)))?;
                 work.adopt(exactify_paths_retained_bytes(&present)?)?;
                 filter_selected_removals(&mut removed, &present, &work, cancellation, ||
                     cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled))?;
@@ -9338,18 +9338,18 @@ where
         Ok(())
     }
 
-    async fn write_batch<'path, E, F, I>(
-        &self, basis: Option<LazySnapshotRef>, mutations: I,
-        key: IdempotencyKey, permit: crate::PublicationPermit, work: &LazyTreapWork<'_>,
-        before_mutation: &mut F,
-    ) -> Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>
+    fn write_batch<'a, 'work: 'a, 'path: 'a, E, F, I>(
+        &'a self, basis: Option<LazySnapshotRef>, mutations: I,
+        key: IdempotencyKey, permit: crate::PublicationPermit, work: &'a LazyTreapWork<'work>,
+        before_mutation: &'a mut F,
+    ) -> impl Future<Output = Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>> + Send + 'a
     where
-        E: From<LazyWorkspaceError> + Send,
-        F: LazyWriteGuard<A, O, D, S, Error = E>,
-        I: Iterator<Item = LazyWriteMutation<'path>> + Send,
+        E: From<LazyWorkspaceError> + Send + 'a,
+        F: LazyWriteGuard<A, O, D, S, Error = E> + 'a,
+        I: Iterator<Item = LazyWriteMutation<'path>> + Send + 'a,
     {
         let cancellation = work.cancellation;
-        in_heap_lazy(work, || async {
+        in_heap_lazy(work, move || async move {
             let frozen_basis = basis.is_some();
             if let Some(basis) = basis
                 && let Some(original) = self.write_original_record(key, work, before_mutation).await?
@@ -9535,7 +9535,7 @@ where
             };
             drop(evidence_scope);
             Ok((commit, snapshot))
-        }).await
+        })
     }
 
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
