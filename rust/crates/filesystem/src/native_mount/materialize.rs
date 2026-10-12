@@ -2460,7 +2460,7 @@ mod windows_name_tests {
             NameEncoding::Utf8, b"sparse-control.bin".to_vec(), limits.maximum_component_bytes,
         )?], limits)?;
         let host_path = GenerationHostPath::new(None, namespace.components(), &mut receipt).map_err(MaterializeError::from)?;
-        let native = create_file(&root.0, &host_path.0, &mut receipt)?;
+        let native = create_file(&root.0, &host_path.0, &mut receipt).map_err(MaterializeError::from)?;
         let meter = receipt.custody.work().runtime_meter_owner();
         let control = receipt.runtime_result(native.control_async(|file, meter| mark_sparse_measured(file, meter.expect("metered control")), Some(meter))).map_err(MaterializeError::from)?;
         receipt.runtime_result(control.await).map_err(MaterializeError::from)?;
