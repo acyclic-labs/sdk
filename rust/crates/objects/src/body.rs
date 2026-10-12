@@ -122,7 +122,7 @@ impl StoredBody {
         Self::Memory(body)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(crate) fn composite_measured(
         parts: Vec<StoredBody>,
         length: usize,

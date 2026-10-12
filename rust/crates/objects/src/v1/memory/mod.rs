@@ -8,10 +8,11 @@ use super::Guarded;
 use super::{Error, Object, ObjectsProvider, request, wire};
 #[cfg(not(target_arch = "wasm32"))]
 use super::{
-    NativeObjectsCause, NativeObjectsError, NativeObjectsSharedFailure, ObjectsBatch,
-    ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt, native_future,
-    native_input_meter, native_preparation_error,
+    NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest,
+    ObjectsPutReceipt, native_future, native_input_meter, native_preparation_error,
 };
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+use super::{NativeObjectsCause, NativeObjectsSharedFailure};
 use crate::body::{BodyReadError, BodyReadMode, StoredBody};
 use crate::obs;
 #[cfg(not(target_arch = "wasm32"))]
@@ -252,7 +253,7 @@ mod read;
 mod state;
 mod transaction;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(super) use native::clone_native_text;
 #[cfg(not(target_arch = "wasm32"))]
 use native::*;

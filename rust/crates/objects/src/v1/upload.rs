@@ -15,7 +15,6 @@ use std::{
 pub(super) struct State {
     result: Mutex<Option<Result<Option<u64>, Error>>>,
     waker: AtomicWaker,
-    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 impl State {
     pub(super) fn finish(&self) -> Result<u64, Error> {
@@ -57,47 +56,19 @@ impl Drop for SourceState {
         self.0.waker.wake();
     }
 }
-pub(super) fn chunks(
-    body: UploadBody,
-    controls: Option<Arc<super::NativeTransportErrors>>,
-) -> Result<(UploadBody, Arc<State>), Error> {
-    let allocation = match &controls {
-        Some(controls) => {
-            controls.check()?;
-            let allocation = acyclic_native_runtime::ReadAllocation::new(
-                &controls.meter,
-                std::mem::size_of::<State>(),
-            )
-            .map_err(|error| controls.fail(error))?;
-            Some(allocation)
-        }
-        None => None,
-    };
+pub(super) fn chunks(body: UploadBody) -> (UploadBody, Arc<State>) {
     let state = Arc::new(State {
         result: Mutex::new(None),
         waker: AtomicWaker::new(),
-        _allocation: allocation,
     });
     let chunks = stream::try_unfold(
-        (
-            body,
-            OwnedBytes::new(),
-            0_u64,
-            SourceState(state.clone()),
-            controls.clone(),
-        ),
-        |(mut body, mut pending, mut length, state, controls)| async move {
+        (body, OwnedBytes::new(), 0_u64, SourceState(state.clone())),
+        |(mut body, mut pending, mut length, state)| async move {
             let fail = |failure| {
                 state.0.fail(failure);
                 failure
             };
-            if let Some(controls) = &controls {
-                controls.check().map_err(fail)?;
-            }
             while pending.is_empty() {
-                if let Some(controls) = &controls {
-                    controls.check().map_err(fail)?;
-                }
                 match body.next().await {
                     Some(Ok(bytes)) => {
                         length = length
@@ -127,39 +98,12 @@ pub(super) fn chunks(
             let size = pending.len().min(65_536);
             let chunk = pending.slice(..size);
             pending = pending.slice(size..);
-            Ok(Some((chunk, (body, pending, length, state, controls))))
+            Ok(Some((chunk, (body, pending, length, state))))
         },
     );
-    let chunks = match &controls {
-        Some(controls) => {
-            box_native(chunks, &controls.meter).map_err(|error| controls.fail(error))?
-        }
-        None => chunks.boxed().into(),
-    };
-    Ok((chunks, state))
+    (chunks.boxed().into(), state)
 }
 
-fn box_native<S>(
-    stream: S,
-    meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-) -> Result<UploadBody, super::NativeObjectsError>
-where
-    S: futures::Stream<Item = Result<OwnedBytes, Error>> + Send + 'static,
-{
-    let allocation = acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<S>())?;
-    Ok(UploadBody {
-        value: stream.boxed(),
-        _allocation: Some(allocation),
-    })
-}
-
-pub(super) fn chunks_native(
-    body: OwnedBytes,
-    errors: Arc<super::NativeTransportErrors>,
-) -> Result<UploadBody, super::NativeObjectsError> {
-    errors.meter.check()?;
-    box_native(stream::once(std::future::ready(Ok(body))), &errors.meter)
-}
 pub(super) async fn run<T: Send>(
     request: impl Future<Output = Result<T, Error>> + Send,
     state: &State,
