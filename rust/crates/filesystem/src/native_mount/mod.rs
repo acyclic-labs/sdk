@@ -1351,7 +1351,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Mutates actual metadata and optional length through the same source.
-    fn set_attributes_with_meter(
+    fn set_attributes(
         &self, path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
@@ -1373,13 +1373,13 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn create_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
         -> Result<MountLookup, MountSourceError>;
     /// Preserves the source's actual absent-since proof while creating.
-    fn create_absent_file_with_meter(&self, path: &MountPath, metadata: FileMetadata,
+    fn create_absent_file(&self, path: &MountPath, metadata: FileMetadata,
         absent_since: ViewStamp, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
     /// Creates an actual directory through the same source engine.
-    fn create_directory_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
+    fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
         -> Result<MountLookup, MountSourceError>;
     /// Consumes the exact already-admitted opaque symbolic-link target.
-    fn create_symbolic_link_with_meter(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk,
+    fn create_symbolic_link(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk,
         metadata: FileMetadata, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
     /// Creates the exact native special-file kind and device identity.
     fn create_special(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>,
@@ -1613,36 +1613,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         path: &MountPath,
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError>;
-    /// Creates one empty regular file at `path`, which the caller found absent in the view as of `absent_since`; the source verifies the absence still holds as it creates, and fails with [`MountSourceError::AlreadyExists`] otherwise.
-    fn create_absent_file(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-        absent_since: ViewStamp,
-    ) -> Result<MountLookup, MountSourceError> {
-        let _ = absent_since;
-        self.create_file(path, metadata)
-    }
-    /// Creates one empty directory.
-    fn create_directory(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError>;
-    /// Creates one symbolic link with an exact opaque target.
-    fn create_symbolic_link(
-        &self,
-        path: &MountPath,
-        target: Bytes,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError>;
-    /// Atomically replaces complete metadata and optionally logical size.
-    fn set_attributes(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-        logical_bytes: Option<u64>,
-    ) -> Result<(), MountSourceError>;
     /// Reads one exact native named attribute.
     fn read_attribute(
         &self,
