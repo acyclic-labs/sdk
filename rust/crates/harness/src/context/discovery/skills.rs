@@ -165,7 +165,7 @@ pub(super) fn skill_text_native(
     }
     let maximum = usize::try_from(size).map_err(|_| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "discovered skill serialization capacity overflows" })?;
     let mut output = (Vec::new(), work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(discovery_work_error)?);
-    let mut backing = super::reserve_context_vec_native(&mut output.0, maximum, work)?;
+    let mut backing = super::super::reserve_context_vec_native(&mut output.0, maximum, work)?;
     output.1.absorb(&mut backing).map_err(discovery_work_error)?;
     let labels = ["SkillMetadata", "name", "description", "fields", "source",
         "PinnedContextPath", "root", "generation", "path", "ContextRoot", "volume", "directory",
