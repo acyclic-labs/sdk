@@ -293,10 +293,6 @@ impl Encoder {
         Ok(())
     }
 
-    pub(crate) fn remaining_capacity(&self) -> usize {
-        self.bytes.capacity() - self.bytes.len()
-    }
-
     pub(crate) fn finish(self) -> Vec<u8> {
         self.bytes
     }

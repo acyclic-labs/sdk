@@ -1974,12 +1974,12 @@ async fn observer_cache_and_cold_frame_overlap_survives_unwind_without_phantom_r
     })).await;
     assert!(unwind.is_err());
     let frame_bytes = u64::try_from(size_of::<PanicAfterAdmission<'_>>())?;
-    let completed = custody.pending_data_work();
+    let completed = custody.take_completed_data_work();
     assert_eq!(completed.allocation_operations, 2);
     assert_eq!(completed.peak_allocation_bytes, setup.peak_allocation_bytes + frame_bytes);
     assert_eq!(custody.retained_bytes(), 0, "cache and frames are not retained proof keys");
     drop(cache);
-    assert_eq!(custody.take_completed_data_work(), completed);
+    assert_eq!(custody.take_completed_data_work(), WorkCounters::default());
     let next_observer = |event| custody.record_heap_future_event(event);
     let next = (crate::heap_future::in_heap_measured(
         |_| {
@@ -1990,7 +1990,7 @@ async fn observer_cache_and_cold_frame_overlap_survives_unwind_without_phantom_r
         WorkBudget::UNBOUNDED, &cancellation,
         PathLookupError::Tree(TreeReadError::Cancelled), Some(&next_observer),
     )).await?;
-    assert_eq!(custody.pending_data_work(), next.work, "dead cache backing is not carried forward");
+    assert_eq!(custody.take_completed_data_work(), next.work, "dead cache backing is not carried forward");
     Ok(())
 }
 
