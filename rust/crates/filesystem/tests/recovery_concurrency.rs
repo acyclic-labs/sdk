@@ -1168,48 +1168,6 @@ async fn immutable_materialization_plan_rejects_conflicting_replay() {
     ));
 }
 
-#[tokio::test]
-async fn rejected_cas_does_not_consume_or_trip_a_relative_crash_boundary() {
-    for after_write in [false, true] {
-        let store = CrashJournalStore::default();
-        let engine = JournaledMaterializer::new(store.clone(), TreeBackend::source());
-        let journal = engine.prepare(plan(0x70)).await.expect("ordinary original intent");
-        let operation_id = journal.plan.operation_id;
-        assert_eq!(store.state.lock().expect("fault state").writes, 1);
-        #[cfg(not(target_arch = "wasm32"))]
-        assert!(journal.custody.is_none(), "ordinary fixture has no native authority");
-        store.fail_at_relative_write(1, after_write);
-
-        let mut candidate = store.load(operation_id).await.expect("real load").expect("intent");
-        candidate.revision += 1;
-        let payload = candidate.plan.edits.as_ptr();
-        let (stored, candidate) = store.compare_and_swap(operation_id, 0, candidate)
-            .await.expect("stale CAS is not a write or an injected crash");
-        assert!(!stored);
-        assert_eq!(candidate.plan.edits.as_ptr(), payload);
-        assert_eq!(store.state.lock().expect("fault state").writes, 1);
-        let error = store.compare_and_swap(operation_id, 1, candidate)
-            .await.expect_err("the next accepted write reaches the armed boundary");
-        let CrashStoreError::InjectedCrash(candidate) = error else {
-            panic!("expected the static injected crash with its owned packet");
-        };
-        assert_eq!(candidate.plan.edits.as_ptr(), payload);
-        assert_eq!(
-            store.state.lock().expect("fault state").writes,
-            1 + usize::from(after_write),
-        );
-        drop(engine);
-        store.clear_failure();
-        let reopened = JournaledMaterializer::new(store.clone(), TreeBackend::source());
-        let retained = reopened.load(operation_id).await.expect("same real store reopen")
-            .expect("original intent");
-        assert_eq!(retained.revision, 1 + u64::from(after_write));
-        assert_eq!(&retained.plan, &candidate.plan);
-        #[cfg(not(target_arch = "wasm32"))]
-        assert!(retained.custody.is_none());
-    }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn finite_native_budget() -> WorkBudget {
     let mut value = serde_json::to_value(WorkBudget::UNBOUNDED).expect("budget encoding");

@@ -16,7 +16,6 @@ use crate::{
     tool::ToolApprovalVerifier,
 };
 use acyclic_stream::{BoxProviderFuture, StreamError, StreamPath, StreamProvider};
-use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::{

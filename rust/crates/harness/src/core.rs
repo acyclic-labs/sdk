@@ -31,6 +31,8 @@ pub(crate) use snapshot::{
     resource_creation_proof_clone_with_custody,
     resource_preparation_owned_bytes,
 };
+#[cfg(feature = "filesystem")]
+pub(crate) use snapshot::resource_creation_clone_reservation;
 pub(crate) use native_custody::{
     copy_iter, copy_copy_vector, reserve_copy_vector, copy_text, copy_authority, copy_provider,
     copy_file, copy_vector, copy_boxed, copy_configuration, copy_value, copy_capabilities,
@@ -903,11 +905,7 @@ impl AuthorityVerifier {
         self.verify_audience(authority)
     }
 
-    fn verify_effect(&self, observation: &EffectAttestation) -> Result<()> {
-        self.verify_effect_with_work(observation, &mut None)
-    }
-
-    fn verify_effect_with_work(
+    fn verify_effect(
         &self, observation: &EffectAttestation,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -2526,7 +2524,7 @@ impl Reducer {
             return native_custody::clone_reducer(self, work);
         }
         let native_custody = NativeComponentCustody::default();
-        let conversation = self.conversation.clone_with_work(work)?;
+        let conversation = self.conversation.copy(work, None)?.0;
         Ok(Self {
             authority: self.authority.clone(),
             authority_verifier: self.authority_verifier.clone(),
@@ -4277,7 +4275,7 @@ impl Reducer {
                     ));
                 }
                 let effect = self.transition_effect(&observation.effect_id, archived_effect)?;
-                self.authority_verifier.verify_effect_with_work(observation, quota.work())?;
+                self.authority_verifier.verify_effect(observation, quota.work())?;
                 validate_effect_observation(effect, observation)?;
                 if effect.attempts.last() != Some(&observation.attempt_id) {
                     return Err(Error::Conflict(
@@ -4636,7 +4634,7 @@ impl Reducer {
                     .effects
                     .get_mut(&observation.effect_id)
                     .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
-                self.authority_verifier.verify_effect_with_work(observation, work)?;
+                self.authority_verifier.verify_effect(observation, work)?;
                 validate_effect_observation(effect, observation)?;
                 if !observation.status.is_terminal()
                     || effect.attempts.last() != Some(&observation.attempt_id)
@@ -5635,7 +5633,7 @@ mod tests {
             let observed = issuer.attest_effect_with_work(
                 effect_id, effect, attempt_id, status, &mut Some(&mut io))?;
             assert_eq!(observed, expected);
-            issuer.verifier().verify_effect(&observed)?;
+            issuer.verifier().verify_effect(&observed, &mut None)?;
             assert_eq!(ledger.receipt().bytes_hashed, expected_bytes.len() as u64);
             assert!(ledger.receipt().bytes_copied >= effect.provider.len() as u64);
             for denied in ["bytes_copied", "bytes_hashed", "peak_allocation_bytes", "cancelled"] {

@@ -329,7 +329,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         &self, task: crate::TaskId, fence: &crate::scheduler::LeaseFence,
         turn: OperationId, operation: OperationId,
         host: &crate::durable_host::CoordinatorTaskHost<P>,
-    ) -> bool {
+    ) -> bool where P: StreamProvider {
         self.execution.as_ref().is_some_and(|identity|
             identity.0 == operation && identity.1 == turn)
             && self.owner.as_ref().is_some_and(|(owner, bound)|
@@ -357,7 +357,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
     {
-        owner.validate_storage(&verifier, maximum_payload_bytes)?;
+        owner.validate_storage(&verifier, maximum_payload_bytes, &mut None)?;
         let mut journal = Self::new(
             owner.stream(),
             host,
@@ -431,7 +431,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     fn require_operation(
         &self, operation: OperationId, io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if self.execution.as_ref().is_some_and(|bound| bound.operation != operation) {
+        if self.execution.as_ref().is_some_and(|bound| bound.0 != operation) {
             return Err(Self::journal_read_boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "journal belongs to another task execution"));
         }
@@ -495,13 +495,13 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("quiescence requires a task-owned execution journal".into())
         })?;
-        owner.verify(true).await?;
+        owner.verify(true, &mut None).await?;
         let quiescent = {
             let mut summary = self.verified.lock().await;
             Box::pin(self.refresh_summary(*operation, &mut summary, None)).await?;
             summary.quiescent(None)?
         };
-        owner.verify(true).await?;
+        owner.verify(true, &mut None).await?;
         Ok(quiescent)
     }
 
@@ -550,7 +550,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         workflow.require_execution_owner(owner, &self.volume, self.verifier.audience())?;
         let result: Result<_> = async {
             let mut borrowed = io.history_io();
-            owner.verify_with_work(true, &mut Some(&mut borrowed)).await?;
+            owner.verify(true, &mut Some(&mut borrowed)).await?;
             let tail = {
                 let before = io.owned_bytes()?;
                 let summary_hold;
@@ -712,7 +712,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         }
         let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes())).map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some() { return Error::NativeStream { source: error, custody: None }; }
+            if io.is_some() { return Error::NativeStream { code: crate::wire::ErrorCode::Invalid, source: error, custody: None }; }
             Error::Invalid(error.to_string())
         })?;
         let retry_hashing = acyclic_fs::WorkCounters { bytes_hashed: 64, ..Default::default() };
@@ -756,7 +756,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             summary.validate_next_with_io(event, model.as_ref(), limits, io)?;
             let committed = if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
-                owner.append_execution_with_work(operation_id, summary.tail, &key, &bytes, event,
+                owner.append_execution_with_work(operation_id, summary.tail, &key, bytes.clone(), event,
                     &mut borrowed.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo)).await?
             } else {
                 self.append_local_with_io(operation_id, summary.tail, key.clone(), bytes.clone(),
@@ -1337,7 +1337,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant_with_work(&mut work)?;
+            owner.require_interaction_grant(&mut work)?;
         } else if self.verifier.audience().kind == crate::core::AggregateKind::Task {
             return Err(super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Unauthorized,
@@ -1436,8 +1436,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant_with_work(&mut work)?;
-            owner.verify_with_work(true, &mut work).await?;
+            owner.require_interaction_grant(&mut work)?;
+            owner.verify(true, &mut work).await?;
         }
         let records_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -1512,7 +1512,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 }
                 _ => false,
             };
-            if let Some((owner, _)) = &self.owner { owner.verify_with_work(true, &mut work).await?; }
+            if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
             return if same { Ok(()) } else {
                 Err(super::interaction_host::interaction_boundary(
                     io, crate::wire::ErrorCode::Conflict, "interaction was already resolved"))
@@ -1523,7 +1523,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Invalid,
                     "interaction version exhausted")))?;
         let resolution_operation = interaction_resolution_operation(id, expected_version, io)?;
-        if let Some((owner, _)) = &self.owner { owner.verify_with_work(true, &mut work).await?; }
+        if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
         let staged = host.stage_answer_with_io(id, expected_version, resolution_operation, response, io).await?;
         let (outcome, detail) = match response {
             InteractionResponse::Approval { approved: true, .. } => (InteractionOutcome::Approved, Some(staged)),
@@ -1539,7 +1539,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         host.resolve_with_io(resolution_operation, responder, InteractionResolution {
             id: ticket.id, expected_version, outcome, detail,
         }, io).await?;
-        if let Some((owner, _)) = &self.owner { owner.verify_with_work(true, &mut work).await?; }
+        if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
         drop(request);
         drop(request_hold);
         drop(prior);
@@ -1818,11 +1818,11 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         if let Some((owner, _)) = &self.owner {
             if let Some(io) = io {
                 let mut work = io.history_io();
-                owner.verify_model_history_with_work(
+                owner.verify_model_history(
                     operation_id, result.iter().map(|(record, _)| record), &mut Some(&mut work),
                 ).await?;
             } else {
-                owner.verify_model_history_with_work(
+                owner.verify_model_history(
                     operation_id, result.iter().map(|(record, _)| record), &mut None).await?;
             }
         }
@@ -1900,7 +1900,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                         let _canonical_hold;
                         let canonical = io.encode_json(&parsed.value, self.maximum_payload_bytes, true)?;
                         _canonical_hold = io.guard_bytes(&canonical)?;
-                        if canonical != bytes {
+                        if canonical.as_ref() != bytes {
                             return Err(Self::journal_read_boundary(Some(io), crate::wire::ErrorCode::Storage,
                                 "execution journal JSON is not canonical"));
                         }
@@ -1930,7 +1930,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             return match io {
                 Some(io) => {
                     let mut work = io.history_io();
-                    crate::store::history::HistoryIo::verify_content(&mut work, verifier.as_ref(), reference).await
+                    crate::store::history::HistoryIo::verify_content(&mut work, verifier.as_ref(), reference)?.await
                 }
                 None => verifier.verify(reference).await,
             };
@@ -2062,11 +2062,11 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant_with_work(&mut work)?;
-            owner.verify_with_work(true, &mut work).await?;
+            owner.require_interaction_grant(&mut work)?;
+            owner.verify(true, &mut work).await?;
         }
         host.verify_approval_with_io(id, operation, digest, io).await?;
-        if let Some((owner, _)) = &self.owner { owner.verify_with_work(true, &mut work).await?; }
+        if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
         Ok(())
     }
 }
@@ -2655,8 +2655,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             |work| work as &mut dyn crate::store::history::HistoryIo);
         interaction.validate_with_work(&mut work)?;
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant_with_work(&mut work)?;
-            owner.verify_with_work(false, &mut work).await?;
+            owner.require_interaction_grant(&mut work)?;
+            owner.verify(false, &mut work).await?;
         }
         let host = self.interactions.as_ref().ok_or_else(|| super::interaction_host::interaction_boundary(
             io, crate::wire::ErrorCode::Unsupported, "task execution has no conversation interaction owner"))?;
@@ -2668,7 +2668,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
                     crate::wire::ErrorCode::Invalid, "interaction request custody underflows"))?)).transpose()?;
             if let Some(original) = &original {
-                if let Some((owner, _)) = &self.owner { owner.verify_with_work(false, &mut work).await?; }
+                if let Some((owner, _)) = &self.owner { owner.verify(false, &mut work).await?; }
                 return if original == interaction { Ok(()) } else {
                     Err(super::interaction_host::interaction_boundary(
                         io, crate::wire::ErrorCode::Conflict, "interaction identity reused"))
@@ -2688,7 +2688,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             operation, &ticket, self.owner.as_ref().map(|(owner, _)| owner), io).await;
         drop(ticket);
         drop(ticket_hold);
-        if let Some((owner, _)) = &self.owner { owner.verify_with_work(false, &mut work).await?; }
+        if let Some((owner, _)) = &self.owner { owner.verify(false, &mut work).await?; }
         let result = match publication {
             Ok(()) => Ok(()),
             Err(error) if matches!(error.code(),
@@ -2711,7 +2711,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             }
             Err(error) => Err(error),
         };
-        if let Some((owner, _)) = &self.owner { owner.verify_with_work(false, &mut work).await?; }
+        if let Some((owner, _)) = &self.owner { owner.verify(false, &mut work).await?; }
         result
     }
 
@@ -2722,13 +2722,13 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant_with_work(&mut work)?;
-            owner.verify_with_work(true, &mut work).await?;
+            owner.require_interaction_grant(&mut work)?;
+            owner.verify(true, &mut work).await?;
         }
         let host = self.interactions.as_ref().ok_or_else(|| super::interaction_host::interaction_boundary(
             io, crate::wire::ErrorCode::Unsupported, "task execution has no conversation interaction owner"))?;
         let outcome = host.read_outcome_with_io(id, io).await?;
-        if let Some((owner, _)) = &self.owner { owner.verify_with_work(true, &mut work).await?; }
+        if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
         Ok(outcome)
     }
 }
@@ -3015,7 +3015,12 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     let (history, _) = crate::conversation::ConversationState::selected_view_with_work(
         loaded, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo),
     )?;
-    let selection = super::summary_fork::clone_selection(selection, io)?;
+    let mut message_ids = Vec::new();
+    for id in &selection.message_ids { crate::executor::stock_vec_push(&mut message_ids, *id, io)?; }
+    let selection = crate::conversation::ModelContextSelection {
+        conversation_revision: selection.conversation_revision, message_ids,
+        checkpoint: selection.checkpoint.as_ref().map(|file| super::fork_preparer_io::clone_file(file, io)).transpose()?,
+    };
     let selected = match io {
         Some(io) => {
             let resolver = JournalSelectedResolver {

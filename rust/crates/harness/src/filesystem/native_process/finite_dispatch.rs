@@ -2,7 +2,6 @@
 
 use super::*;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
-use crate::contract::JsonBounds;
 use std::future::Future;
 
 #[derive(Serialize)]
@@ -306,38 +305,14 @@ async fn append_receipt_original<P: StreamProvider>(
     receipt: &ReceiptWrite<'_, '_>, write: JournalWrite,
     work: &NativeMaterializationWork,
 ) -> Result<bool> {
-    let codec_slot = Some(NativeReceiptCodecSlot::new(work)?);
-    let diagnostic_bytes = crate::contract::sdk_json_diagnostic_bytes();
-    let mut custody = Some(work.retain_owned(diagnostic_bytes)?);
-    let bytes = {
-            let codec_slot = codec_slot.ok_or(receipt_error(
-                "native receipt codec slot is missing"))?;
-            let remaining = work.remaining()?;
-            let guard = custody.as_mut().ok_or(receipt_error("native receipt encode custody is missing"))?;
-            crate::contract::canonical_json_bytes_bounded(receipt,
-                JsonBounds { maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
-                    maximum_items: remaining.items_examined, maximum_depth: 256 },
-                &mut |charge| {
-                    crate::filesystem::native_execution::native_codec_charge_typed(charge, work, guard)
-                        .map_err(Error::from)
-                }).map_err(|source| codec_slot.retain(source, custody.take()))?
-        };
-    if let Some(guard) = custody.as_mut() {
-        guard.release(diagnostic_bytes)?;
-    }
-    if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-        return Err(receipt_error("native receipt exceeds Stream limit"));
-    }
+    let io = super::super::PreparationIo::from_native_work(work)?;
+    let bytes = io.encode_json(receipt, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
     work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() })?;
     let (key_bytes, key_custody) = work.copy_bytes(blake3::hash(&bytes).as_bytes())?;
-    let key = acyclic_stream::IdempotencyKey::new(Bytes::from(key_bytes))?;
-    let target = path.clone();
-    let bytes = Bytes::from(bytes);
-    let result = owner.append_with_native_work(target, tail, &key, bytes.clone(), write, work).await;
-    drop(bytes);
-    drop(key);
-    drop(key_custody);
-    drop(custody);
-    result
+    let key_bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
+        key_bytes, key_custody, work.runtime_meter_owner(),
+    ).map_err(|failure| super::super::native_execution::native_owned_bytes_failure(failure, work))?;
+    let key = acyclic_stream::IdempotencyKey::new(key_bytes)?;
+    owner.append_with_native_work(path.clone(), tail, &key, bytes, write, work).await
 }
 

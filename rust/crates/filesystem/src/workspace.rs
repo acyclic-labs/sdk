@@ -8060,18 +8060,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Lists this exact generation with authenticated bounded work.
-    pub async fn list_directory_measured(
-        &self,
-        path: &str,
-        after: Option<&LogicalName>,
+    pub fn list_directory_measured<'a>(
+        &'a self,
+        path: &'a str,
+        after: Option<&'a LogicalName>,
         maximum_entries: u32,
         budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError> {
+        cancellation: &'a crate::CancellationToken,
+    ) -> impl std::future::Future<Output = crate::MeasuredResult<
+        crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError,
+    >> + StorageFuture + 'a {
         list_generation_directory_measured(
             &self.workspace, GenerationSelector::Exact(self.id), path, after,
             maximum_entries, budget, cancellation,
-        ).await
+        )
     }
 
     /// Returns the same exact-generation tree page with original native custody.
