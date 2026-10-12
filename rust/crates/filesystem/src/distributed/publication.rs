@@ -111,7 +111,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         let result = async {
             let meter = &mut meter;
 
-            use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, StreamError};
+            use acyclic_stream::{CommitCondition, CommitOutcome, StreamError};
             let crate::GuardedAppend {
                 authority_id,
                 epoch,

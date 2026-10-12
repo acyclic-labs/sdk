@@ -92,12 +92,11 @@ pub(super) fn read_identity<W: NativeHostWork>(
     read_exact(file, &mut bytes, work)?;
     Ok(crate::NativeRootIdentity::from_bytes(bytes))
 }
-pub(super) fn with_service_name<W: NativeHostWork, T>(
+pub(super) fn service_name<W: NativeHostWork>(
     name: &Path,
     suffix: &str,
     work: &mut W,
-    operation: impl FnOnce(&Path, &mut W) -> Result<T, W::Error>,
-) -> Result<T, W::Error> {
+) -> Result<(PathBuf, W::Allocation), W::Error> {
     let bytes = name
         .as_os_str()
         .as_encoded_bytes()
@@ -122,10 +121,15 @@ pub(super) fn with_service_name<W: NativeHostWork, T>(
             bytes_copied: bytes as u64,
             ..crate::WorkCounters::UNCHARGED
         })?;
-        operation(Path::new(&service_name), work)
+        Ok(PathBuf::from(service_name))
     })();
-    work.release(allocation)?;
-    result
+    match result {
+        Ok(name) => Ok((name, allocation)),
+        Err(error) => {
+            work.release(allocation)?;
+            Err(error)
+        }
+    }
 }
 pub(super) fn write_path<W: NativeHostWork>(
     file: &mut std::fs::File,

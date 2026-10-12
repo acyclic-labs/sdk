@@ -60,8 +60,7 @@ pub(super) fn attempted<W: NativeHostWork, T>(
     operation: impl FnOnce() -> std::io::Result<T>,
 ) -> Result<T, W::Error> {
     work.admit(delta)?;
-    // The noncancellable fixed charge immediately precedes the actual call;
-    // cancellation arriving during it cannot erase the attempted operation.
+    // Charge the attempt immediately before the syscall.
     work.record(delta)?;
     operation().map_err(Into::into)
 }
@@ -175,24 +174,27 @@ where
     validate_leaf(name).map_err(W::Error::from)?;
     #[cfg(windows)]
     {
-        with_service_name(name, ".acyclic-exchange", work, |scratch_name, work| {
-            with_service_name(
-                name,
-                ".acyclic-exchange-witness",
-                work,
-                |witness_name, work| {
-                    if crate::native_host::entry_identity(parent, witness_name, work)?.is_none() {
-                        if crate::native_host::entry_identity(parent, scratch_name, work)?.is_some()
-                        {
-                            return Err(NativeExchangeError::IncompatibleJournal.into());
-                        }
-                        return Ok(());
+        let scratch = service_name(name, ".acyclic-exchange", work)?;
+        let scratch_name = scratch.0.as_path();
+        let result = (|| {
+            let witness = service_name(name, ".acyclic-exchange-witness", work)?;
+            let witness_name = witness.0.as_path();
+            let result = (|| {
+                if crate::native_host::entry_identity(parent, witness_name, work)?.is_none() {
+                    if crate::native_host::entry_identity(parent, scratch_name, work)?.is_some() {
+                        return Err(NativeExchangeError::IncompatibleJournal.into());
                     }
-                    recover_entry_held(parent, name, scratch_name, witness_name, None, work)
-                        .map(|_| ())
-                },
-            )
-        })
+                    return Ok(());
+                }
+                recover_entry_held(parent, name, scratch_name, witness_name, None, work).map(|_| ())
+            })();
+            drop(witness.0);
+            work.release(witness.1)?;
+            result
+        })();
+        drop(scratch.0);
+        work.release(scratch.1)?;
+        result
     }
     #[cfg(unix)]
     {

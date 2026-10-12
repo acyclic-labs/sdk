@@ -191,11 +191,13 @@ impl<'a> AuthorityWork<'a> {
 }
 
 /// Publication failed in the authority provider or its owner guard.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AuthorityError<E> {
     /// The authority provider rejected the operation.
+    #[error(transparent)]
     Authority(crate::AuthorityStoreError),
     /// The owner guard rejected the operation.
+    #[error(transparent)]
     Owner(E),
 }
 

@@ -137,8 +137,7 @@ pub(super) async fn original_append_owner_seals_after_planning_and_again_on_reco
     let mut work = AuthorityWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation);
     store
         .create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
+        .await?;
     let original = crate::NativeMaterializationWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;
     let expected = Head::genesis(Epoch::GENESIS);
@@ -175,8 +174,7 @@ pub(super) async fn original_append_owner_seals_after_planning_and_again_on_reco
     let mut work = AuthorityWork::native(&original, &cancellation);
     let outcome = store
         .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
+        .await?;
     assert!(matches!(outcome, FsAppendOutcome::Committed(_)));
     drop(outcome);
     let before = original.receipt();
@@ -430,8 +428,7 @@ pub(super) async fn publication_reservation_excludes_unreserved_writers()
     };
     let ordinary = (authority
         .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
-        .await
-        .map_err(|error| error.into_error(std::convert::identity)))?;
+        .await)?;
     assert!(matches!(ordinary, FsAppendOutcome::Fenced { .. }));
     let reserved = (authority
         .compare_and_append(
@@ -446,8 +443,7 @@ pub(super) async fn publication_reservation_excludes_unreserved_writers()
             &mut work,
             None::<&mut ()>,
         )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity)))?;
+        .await)?;
     assert!(matches!(reserved, FsAppendOutcome::Committed(_)));
     let changed = (authority.head(authority_id, &mut work).await)?;
     let stale = (authority
@@ -689,8 +685,7 @@ pub(super) async fn release_fixture()
     let id = AuthorityId::from_bytes([0xd1; 16]);
     authority
         .create_authority(id, Epoch::GENESIS, &mut work, None::<&mut ()>)
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
+        .await?;
     let head = authority.head(id, &mut work).await?;
     let outcome = authority
         .reserve_publication(id, head, OperationId::from_bytes([0xd2; 16]), &mut work)
@@ -929,8 +924,7 @@ pub(super) async fn generation_owner_guard_seals_after_planning_and_on_recovery(
             &mut work,
             None::<&mut ()>,
         )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
+        .await?;
     let source = crate::GenerationForkSource {
         authority: source_authority,
         generation: GenerationId::new(root.digest),
@@ -979,8 +973,7 @@ pub(super) async fn generation_owner_guard_seals_after_planning_and_on_recovery(
     let mut work = AuthorityWork::new(budget, &cancellation);
     authority
         .fork_authority(source, destination, operation, &mut work, None::<&mut ()>)
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
+        .await?;
     let mut work = AuthorityWork::new(budget, &cancellation);
     let retried = authority
         .fork_authority(
@@ -1048,8 +1041,7 @@ pub(super) async fn native_first_record_seals_prepared_request_and_ack_recovery(
     assert!(
         authority
             .create_first_record(destination, proposed(), &mut work, None::<&mut ()>)
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))?
+            .await?
     );
     let mut seals = 0;
     let mut reject_recovery = |_| {
@@ -1093,8 +1085,7 @@ pub(super) async fn readonly_reservation_recovers_original_head_after_authority_
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     authority
         .create_authority(authority_id, Epoch::GENESIS, &mut work, None::<&mut ()>)
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
+        .await?;
     let original_head = authority.head(authority_id, &mut work).await?;
     let ReservationOutcome::Reserved(reservation) = authority
         .reserve_publication(authority_id, original_head, operation_id, &mut work)
@@ -1122,8 +1113,7 @@ pub(super) async fn readonly_reservation_recovers_original_head_after_authority_
             &mut work,
             None::<&mut ()>,
         )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
+        .await?;
     assert_ne!(
         authority.head(authority_id, &mut work).await?,
         original_head

@@ -4,12 +4,23 @@ pub(super) fn reservation_identity(
     authority: AuthorityId,
     operation: OperationId,
     tail: u64,
-) -> [u8; 40] {
+    meter: &mut AuthorityWork<'_>,
+) -> Result<[u8; 40], AuthorityStoreError> {
+    let copies = WorkCounters {
+        bytes_copied: 40,
+        ..WorkCounters::UNCHARGED
+    };
+    if meter.is_native() {
+        meter.admit(copies)?;
+    }
     let mut identity = [0_u8; 40];
     identity[..16].copy_from_slice(&authority.into_bytes());
     identity[16..32].copy_from_slice(&operation.into_bytes());
     identity[32..].copy_from_slice(&tail.to_le_bytes());
-    identity
+    if meter.is_native() {
+        meter.charge(copies)?;
+    }
+    Ok(identity)
 }
 
 /// The original acquisition/release request, with caller-transferred gate custody.
@@ -74,17 +85,7 @@ pub(super) fn reservation_request(
     };
     let mut mutations = meter.vec::<CommitMutation>(1)?;
     meter.append_record(&mut mutations, gate, [body])?;
-    let copies = WorkCounters {
-        bytes_copied: 40,
-        ..WorkCounters::UNCHARGED
-    };
-    if meter.is_native() {
-        meter.admit(copies)?;
-    }
-    let identity = reservation_identity(authority, operation, gate_tail);
-    if meter.is_native() {
-        meter.charge(copies)?;
-    }
+    let identity = reservation_identity(authority, operation, gate_tail, meter)?;
     let key = meter.stream_key(
         if snapshot.is_none() {
             b"release-publication"
@@ -141,6 +142,70 @@ pub(super) fn reservation_request_digest(
     Ok(digest)
 }
 
+pub(super) fn qualified_reservation_observation(
+    observation: &acyclic_stream::IdempotencyObservation,
+    authority: AuthorityId,
+    operation: OperationId,
+    gate_tail: u64,
+    meter: &mut AuthorityWork<'_>,
+) -> Result<bool, AuthorityStoreError> {
+    let Some(prior) = gate_tail.checked_sub(1) else {
+        return Ok(false);
+    };
+    let identity = reservation_identity(authority, operation, prior, meter)?;
+    let key = observation.idempotency_key.as_bytes();
+    let domain = b"reserve-publication";
+    if key.len() != domain.len() + 1 + identity.len()
+        || !key.starts_with(domain)
+        || key[domain.len()] != 0
+        || key[domain.len() + 1..] != identity
+    {
+        return Ok(false);
+    }
+    let acyclic_stream::IdempotencyOutcome::Commit(acyclic_stream::CommitOutcome::Committed(
+        envelope,
+    )) = &observation.outcome
+    else {
+        return Ok(false);
+    };
+    let [acyclic_stream::CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
+        return Ok(false);
+    };
+    let path = append.path.as_str();
+    let prefix = b"fs/authorities/";
+    let encoding = WorkCounters {
+        bytes_encoded: 32,
+        ..WorkCounters::UNCHARGED
+    };
+    if meter.is_native() {
+        meter.admit(encoding)?;
+    }
+    let mut encoded_authority = [0_u8; 32];
+    hex::encode_to_slice(authority.into_bytes(), &mut encoded_authority)
+        .expect("fixed authority hex width");
+    if meter.is_native() {
+        meter.charge(encoding)?;
+    }
+    if path.len() != prefix.len() + 32 + b"/publication-gate".len()
+        || !path.as_bytes().starts_with(prefix)
+        || path.as_bytes()[prefix.len()..prefix.len() + 32] != encoded_authority
+        || !path.ends_with("/publication-gate")
+        || append.start != prior
+        || append.end != gate_tail
+        || append.tail != gate_tail
+    {
+        return Ok(false);
+    }
+    let [record] = append.records.as_slice() else {
+        return Ok(false);
+    };
+    Ok(record.sequence == prior
+        && record.commit_id == envelope.commit_id
+        && record.value.len() == PUBLICATION_GATE_ACTIVE.len() + 16
+        && record.value.starts_with(PUBLICATION_GATE_ACTIVE)
+        && record.value[PUBLICATION_GATE_ACTIVE.len()..] == operation.into_bytes())
+}
+
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     pub(super) async fn reservation(
         &self,
@@ -162,11 +227,12 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             gate_tail,
         };
         let prior_gate = gate_tail.checked_sub(1).ok_or_else(|| unavailable())?;
+        let identity = reservation_identity(authority_id, operation_id, prior_gate, meter)?;
         let (observed, _retained_key_bytes) = self
-            .reservation_observation(authority_id, operation_id, prior_gate, meter)
+            .reservation_inspect(b"reserve-publication", &identity, meter)
             .await?;
         let observation = observed.0.as_ref().ok_or_else(|| unavailable())?;
-        if !self.qualified_reservation_observation(
+        if !qualified_reservation_observation(
             observation,
             authority_id,
             operation_id,
@@ -373,13 +439,18 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             bytes_copied: 40,
             ..WorkCounters::UNCHARGED
         };
-        meter.admit(copies)?;
+        if !meter.is_native() {
+            meter.admit(copies)?;
+        }
         let identity = reservation_identity(
             reservation.authority_id,
             reservation.operation_id,
             reservation.gate_tail,
-        );
-        meter.charge(copies)?;
+            meter,
+        )?;
+        if !meter.is_native() {
+            meter.charge(copies)?;
+        }
         // Resolve a lost release acknowledgement before consulting a newer gate.
         let (observed, retained_bytes) = self
             .reservation_inspect(b"release-publication", &identity, meter)
@@ -526,37 +597,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         Ok((gate, tail, active))
     }
 
-    pub(super) async fn reservation_observation(
-        &self,
-        authority: AuthorityId,
-        operation: OperationId,
-        prior_gate_tail: u64,
-        meter: &mut AuthorityWork<'_>,
-    ) -> Result<
-        (
-            (
-                Option<acyclic_stream::IdempotencyObservation>,
-                ProviderAllocation,
-            ),
-            u64,
-        ),
-        AuthorityStoreError,
-    > {
-        let copies = WorkCounters {
-            bytes_copied: 40,
-            ..WorkCounters::UNCHARGED
-        };
-        if meter.is_native() {
-            meter.admit(copies)?;
-        }
-        let identity = reservation_identity(authority, operation, prior_gate_tail);
-        if meter.is_native() {
-            meter.charge(copies)?;
-        }
-        self.reservation_inspect(b"reserve-publication", &identity, meter)
-            .await
-    }
-
     pub(super) async fn reservation_inspect(
         &self,
         domain: &[u8],
@@ -669,82 +709,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         Ok((result, retained_bytes))
     }
 
-    pub(super) fn qualified_reservation_observation(
-        &self,
-        observation: &acyclic_stream::IdempotencyObservation,
-        authority: AuthorityId,
-        operation: OperationId,
-        gate_tail: u64,
-        meter: &mut AuthorityWork<'_>,
-    ) -> Result<bool, AuthorityStoreError> {
-        let Some(prior) = gate_tail.checked_sub(1) else {
-            return Ok(false);
-        };
-        let copies = WorkCounters {
-            bytes_copied: 40,
-            ..WorkCounters::UNCHARGED
-        };
-        if meter.is_native() {
-            meter.admit(copies)?;
-        }
-        let identity = reservation_identity(authority, operation, prior);
-        if meter.is_native() {
-            meter.charge(copies)?;
-        }
-        let key = observation.idempotency_key.as_bytes();
-        let domain = b"reserve-publication";
-        if key.len() != domain.len() + 1 + identity.len()
-            || !key.starts_with(domain)
-            || key[domain.len()] != 0
-            || key[domain.len() + 1..] != identity
-        {
-            return Ok(false);
-        }
-        let acyclic_stream::IdempotencyOutcome::Commit(acyclic_stream::CommitOutcome::Committed(
-            envelope,
-        )) = &observation.outcome
-        else {
-            return Ok(false);
-        };
-        let [acyclic_stream::CommittedMutation::Append(append)] = envelope.mutations.as_slice()
-        else {
-            return Ok(false);
-        };
-        let path = append.path.as_str();
-        let prefix = b"fs/authorities/";
-        let encoding = WorkCounters {
-            bytes_encoded: 32,
-            ..WorkCounters::UNCHARGED
-        };
-        if meter.is_native() {
-            meter.admit(encoding)?;
-        }
-        let mut encoded_authority = [0_u8; 32];
-        hex::encode_to_slice(authority.into_bytes(), &mut encoded_authority)
-            .expect("fixed authority hex width");
-        if meter.is_native() {
-            meter.charge(encoding)?;
-        }
-        if path.len() != prefix.len() + 32 + b"/publication-gate".len()
-            || !path.as_bytes().starts_with(prefix)
-            || path.as_bytes()[prefix.len()..prefix.len() + 32] != encoded_authority
-            || !path.ends_with("/publication-gate")
-            || append.start != prior
-            || append.end != gate_tail
-            || append.tail != gate_tail
-        {
-            return Ok(false);
-        }
-        let [record] = append.records.as_slice() else {
-            return Ok(false);
-        };
-        Ok(record.sequence == prior
-            && record.commit_id == envelope.commit_id
-            && record.value.len() == PUBLICATION_GATE_ACTIVE.len() + 16
-            && record.value.starts_with(PUBLICATION_GATE_ACTIVE)
-            && record.value[PUBLICATION_GATE_ACTIVE.len()..] == operation.into_bytes())
-    }
-
     pub(super) async fn reservation_matches_original(
         &self,
         authority: AuthorityId,
@@ -756,19 +720,15 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let Some(prior) = gate_tail.checked_sub(1) else {
             return Ok(false);
         };
+        let identity = reservation_identity(authority, operation, prior, meter)?;
         let (observed, retained_bytes) = self
-            .reservation_observation(authority, operation, prior, meter)
+            .reservation_inspect(b"reserve-publication", &identity, meter)
             .await?;
         let Some(observation) = observed.0.as_ref() else {
             return Ok(false);
         };
-        if !self.qualified_reservation_observation(
-            observation,
-            authority,
-            operation,
-            gate_tail,
-            meter,
-        )? {
+        if !qualified_reservation_observation(observation, authority, operation, gate_tail, meter)?
+        {
             drop(observed);
             meter.release(retained_bytes)?;
             meter.release_opaque(acyclic_stream::MAX_COMMAND_BYTES as u64)?;

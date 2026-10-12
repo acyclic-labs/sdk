@@ -220,28 +220,28 @@ delegate!(
     fn put(
         context: &mut crate::AuthorityWork<'_>,
         id: ObjectId,
-        bytes: OwnedBytes,
-    ) -> Result<(), crate::ObjectStoreError>;,
+        bytes: OwnedBytes
+    ) -> Result<(), crate::ObjectStoreError>;
     fn put_many(
         context: &mut crate::AuthorityWork<'_>,
-        writes: &[ObjectWrite],
-    ) -> Result<(), crate::ObjectStoreError>;,
+        writes: &[ObjectWrite]
+    ) -> Result<(), crate::ObjectStoreError>;
     fn read(
         context: &mut crate::AuthorityWork<'_>,
         id: ObjectId,
-        maximum: u64,
-    ) -> Result<ObjectRead, crate::ObjectStoreError>;,
+        maximum: u64
+    ) -> Result<ObjectRead, crate::ObjectStoreError>;
     fn read_many(
         context: &mut crate::AuthorityWork<'_>,
-        requests: &[ObjectReadRequest],
-    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>;,
+        requests: &[ObjectReadRequest]
+    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>;
     fn contains(
         context: &mut crate::AuthorityWork<'_>,
-        id: ObjectId,
-    ) -> Result<bool, crate::ObjectStoreError>;,
+        id: ObjectId
+    ) -> Result<bool, crate::ObjectStoreError>;
     fn flush_before_publish(
         context: &mut crate::AuthorityWork<'_>,
-        scope: crate::PublicationScope<'_>,
+        scope: crate::PublicationScope<'_>
     ) -> Result<crate::PublicationHold, crate::ObjectStoreError>;
 );
 

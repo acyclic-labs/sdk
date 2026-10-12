@@ -39,8 +39,7 @@ pub(super) fn create_entry_witness<W: NativeHostWork>(
     roots: [crate::NativeRootIdentity; 2],
     work: &mut W,
 ) -> Result<crate::NativeRootIdentity, W::Error> {
-    // The newly and exclusively created handle remains delete-on-close until
-    // every witness byte is durable. No failed prefix can become restart authority.
+    // Delete-on-close keeps a failed witness from authorizing recovery.
     let mut file = crate::native_host::with_wide_path(witness_name, work, |name, work| {
         crate::native_host::create_windows_wide_at(left, name, false, false, false, true, work)
     })?;
@@ -111,76 +110,68 @@ pub(super) fn exchange_windows_held<W: NativeHostWork>(
 where
     W::Error: From<NativeExchangeError>,
 {
-    with_service_name(
-        left_name,
-        ".acyclic-exchange",
-        work,
-        |scratch_name, work| {
-            with_service_name(
+    let scratch = service_name(left_name, ".acyclic-exchange", work)?;
+    let scratch_name = scratch.0.as_path();
+    let result = (|| {
+        let witness = service_name(left_name, ".acyclic-exchange-witness", work)?;
+        let witness_name = witness.0.as_path();
+        let result = (|| {
+            if crate::native_host::entry_identity(left, witness_name, work)?.is_some()
+                && recover_entry_held(
+                    left,
+                    left_name,
+                    scratch_name,
+                    witness_name,
+                    Some((right, right_name)),
+                    work,
+                )?
+            {
+                // A completed witness preserves its decision; rollback permits retry.
+                return Ok(());
+            }
+            if crate::native_host::entry_identity(left, scratch_name, work)?.is_some() {
+                return Err(NativeExchangeError::IncompatibleJournal.into());
+            }
+            let roots = [
+                crate::native_host::entry_identity(left, left_name, work)?
+                    .ok_or(NativeExchangeError::InvalidLayout)?,
+                crate::native_host::entry_identity(right, right_name, work)?
+                    .ok_or(NativeExchangeError::InvalidLayout)?,
+            ];
+            let witness = create_entry_witness(
+                left,
                 left_name,
-                ".acyclic-exchange-witness",
+                right,
+                right_name,
+                witness_name,
+                roots,
                 work,
-                |witness_name, work| {
-                    if crate::native_host::entry_identity(left, witness_name, work)?.is_some()
-                        && recover_entry_held(
-                            left,
-                            left_name,
-                            scratch_name,
-                            witness_name,
-                            Some((right, right_name)),
-                            work,
-                        )?
-                    {
-                        // A surviving completed witness acknowledges its original
-                        // decision; a recovered rollback proceeds with this request.
-                        return Ok(());
-                    }
-                    if crate::native_host::entry_identity(left, scratch_name, work)?.is_some() {
-                        return Err(NativeExchangeError::IncompatibleJournal.into());
-                    }
-                    let roots = [
-                        crate::native_host::entry_identity(left, left_name, work)?
-                            .ok_or(NativeExchangeError::InvalidLayout)?,
-                        crate::native_host::entry_identity(right, right_name, work)?
-                            .ok_or(NativeExchangeError::InvalidLayout)?,
-                    ];
-                    let witness = create_entry_witness(
-                        left,
-                        left_name,
-                        right,
-                        right_name,
-                        witness_name,
-                        roots,
-                        work,
-                    )?;
-                    // Revalidate the original physical preimages at each mutation;
-                    // replacements never become newly adopted durable authority.
-                    if crate::native_host::entry_identity(left, left_name, work)? != Some(roots[0])
-                        || crate::native_host::entry_identity(right, right_name, work)?
-                            != Some(roots[1])
-                        || crate::native_host::entry_identity(left, witness_name, work)?
-                            != Some(witness)
-                    {
-                        return Err(NativeExchangeError::IncompatibleJournal.into());
-                    }
-                    rename_durable_held(left, left_name, left, scratch_name, roots[0], work)?;
-                    if crate::native_host::entry_identity(right, right_name, work)?
-                        != Some(roots[1])
-                    {
-                        return Err(NativeExchangeError::IncompatibleJournal.into());
-                    }
-                    rename_durable_held(right, right_name, left, left_name, roots[1], work)?;
-                    if crate::native_host::entry_identity(left, scratch_name, work)?
-                        != Some(roots[0])
-                    {
-                        return Err(NativeExchangeError::IncompatibleJournal.into());
-                    }
-                    rename_durable_held(left, scratch_name, right, right_name, roots[0], work)?;
-                    remove_owned_witness(left, witness_name, witness, work)
-                },
-            )
-        },
-    )
+            )?;
+            // Each rename verifies its original physical preimage.
+            if crate::native_host::entry_identity(left, left_name, work)? != Some(roots[0])
+                || crate::native_host::entry_identity(right, right_name, work)? != Some(roots[1])
+                || crate::native_host::entry_identity(left, witness_name, work)? != Some(witness)
+            {
+                return Err(NativeExchangeError::IncompatibleJournal.into());
+            }
+            rename_durable_held(left, left_name, left, scratch_name, roots[0], work)?;
+            if crate::native_host::entry_identity(right, right_name, work)? != Some(roots[1]) {
+                return Err(NativeExchangeError::IncompatibleJournal.into());
+            }
+            rename_durable_held(right, right_name, left, left_name, roots[1], work)?;
+            if crate::native_host::entry_identity(left, scratch_name, work)? != Some(roots[0]) {
+                return Err(NativeExchangeError::IncompatibleJournal.into());
+            }
+            rename_durable_held(left, scratch_name, right, right_name, roots[0], work)?;
+            remove_owned_witness(left, witness_name, witness, work)
+        })();
+        drop(witness.0);
+        work.release(witness.1)?;
+        result
+    })();
+    drop(scratch.0);
+    work.release(scratch.1)?;
+    result
 }
 pub(super) fn recover_entry_held<W: NativeHostWork>(
     left: &cap_std::fs::Dir,

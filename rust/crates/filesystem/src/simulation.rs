@@ -968,7 +968,7 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
             .compare_and_append(request, work, guard.as_deref_mut())
             .await?;
         if matches!(
-            &value.0,
+            &value,
             AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_)
         ) && matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend))
         {
