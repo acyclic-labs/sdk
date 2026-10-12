@@ -320,24 +320,6 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn fence_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation)> {
-        if !self._native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "created publication lease differs from its original SDK metadata ledger" });
-        }
-        let fence = self.fence.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Conflict, reason: "created resource task has no execution reservation",
-        })?;
-        let mut io = crate::store::history::native_work_io(work)?;
-        crate::store::history::HistoryIo::retain_owned(&mut io,
-            std::mem::size_of::<crate::scheduler::LeaseFence>() as u64)?;
-        let fence = host_fence_with_work(fence, &mut Some(&mut io))?;
-        let custody = io.into_custody();
-        Ok((fence, custody))
-    }
 }
 
 /// Original root binding cache, shared by its issued read witnesses.
