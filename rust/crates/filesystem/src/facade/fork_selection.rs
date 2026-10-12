@@ -220,7 +220,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 let (lookup, allocation) = checkout.lookup_no_follow_with_accounting(&directory.value, accounting, cancellation).await?;
                 fork_selection_reconcile_checkout(&checkout, &mut checkout_bytes, accounting)?;
                 let original = lookup.record.ok_or(WorkspaceError::NotFound)?;
-                drop(lookup);
                 drop(allocation);
                 if original.kind != FileKind::Directory { return Err(WorkspaceError::NotDirectory); }
                 let mut entries = Owned::<Vec<TreeMutation>>::allocate(plan.children.value.len(), accounting)?;
@@ -236,8 +235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     let (lookup, allocation) = checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation).await?;
                     fork_selection_reconcile_checkout(&checkout, &mut checkout_bytes, accounting)?;
                     let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
-                    drop(lookup);
-                    drop(allocation);
+                        drop(allocation);
                     path.retire(accounting)?;
                     fork_file_table_copy::<TreeMutation>(1, accounting, cancellation)?;
                     let (name, allocation) = name.clone_with_accounting(accounting, cancellation)?;

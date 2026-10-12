@@ -5101,7 +5101,7 @@ fn with_mount_wide_path_on_meter<T>(
     let mut units = path.components().len().saturating_sub(1);
     for component in path.components() {
         meter.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        crate::kernel::types::utf16le_units(component).ok_or(crate::DemandError::InvalidRequest)?;
+        let _ = crate::kernel::types::utf16le_units(component).ok_or(crate::DemandError::InvalidRequest)?;
         units = units.checked_add(component.len() / 2).ok_or(crate::WorkError::Overflow)?;
     }
     let bytes = (units as u64).checked_mul(2).ok_or(crate::WorkError::Overflow)?;
