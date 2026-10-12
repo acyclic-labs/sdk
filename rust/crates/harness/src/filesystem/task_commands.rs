@@ -706,22 +706,12 @@ where
         payload: Value, io: Option<&super::PreparationIo>,
     ) -> Result<TaskCommandProgress> {
         let input: TaskCancelCommand = mail::decode_command(payload, io)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io {
-            let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "native child cancellation requires original work",
-            })?;
-            let state = self.runtime.task_host().cancel_child_owned_with_native_work(
-                task, fence, input.child, command.operation_id, work,
-            ).await?;
-            io.absorb_native_custody(state.1)?;
-            return mail::mail_ready(Outcome::Succeeded(state.0), Some(io));
-        }
+        let mut observer = io.map(super::PreparationIo::history_io);
+        let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let state = self.runtime.task_host().cancel_child_owned(
-            task, fence.clone(), input.child, command.operation_id,
+            task, fence, input.child, command.operation_id, &mut work,
         ).await?;
-        ready(Outcome::Succeeded(state))
+        mail::mail_ready(Outcome::Succeeded(state), io)
     }
 
     async fn effect_command_with_io(
