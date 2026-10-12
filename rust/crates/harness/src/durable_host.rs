@@ -1104,7 +1104,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         OperationId::from_bytes(self.task_id.into_bytes())
     }
 
-    async fn condition(
+    pub(crate) async fn condition(
         &self,
         write: crate::distributed::JournalWrite,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1917,7 +1917,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if fresh && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline) {
             return Err(Error::Indeterminate(self.operation_id()));
         }
-        let (outcome, retained) = request.commit(&self.stream, Some(publication.operation_id), phase, None, None).await?;
+        let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(publication.operation_id), phase, None, None).await?;
         let mut received = crate::wire_codec::CodecQuota::from_retained(work, retained);
         let result = match &outcome {
             acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
@@ -2029,7 +2029,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         bytes: &OwnedBytes,
         write: crate::distributed::JournalWrite,
         work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<crate::distributed::PreparedCommitRequest<'a, 'b>> {
+    ) -> Result<(acyclic_stream::CommitRequest, crate::wire_codec::CodecQuota<'a, 'b>)> {
         use acyclic_stream::CommitCondition;
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
             return Err(admission_boundary(
@@ -2088,10 +2088,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let Some(io) = work.as_deref_mut() { io.hashed_bytes(32)?; }
         hash.update(payload_digest.as_bytes());
         let (key, held) = crate::distributed::digest_key(hash.finalize().as_bytes(), work)?;
-        let mut request = crate::distributed::PreparedCommitRequest::new(key, held, work);
-        request.push_condition(owner)?;
-        request.push_condition(target)?;
-        request.append(path.clone(), bytes.clone())?;
+        let mut request = crate::distributed::commit_request(key, held, work);
+        crate::distributed::add_condition(&mut request, owner)?;
+        crate::distributed::add_condition(&mut request, target)?;
+        crate::distributed::add_record(&mut request, path.clone(), bytes.clone())?;
         Ok(request)
     }
 
@@ -2108,7 +2108,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let request = self
             .prepare_append_with_work(&path, expected_tail, key, &bytes, write, work)
             .await?;
-        let (outcome, retained) = request.commit(&self.stream, Some(self.operation_id()), None, None, None).await?;
+        let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(self.operation_id()), None, None, None).await?;
         let mut received = crate::wire_codec::CodecQuota::from_retained(work, retained);
         let result = match &outcome {
             CommitOutcome::Conflict(_) => Ok(false),
