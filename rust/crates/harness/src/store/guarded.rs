@@ -53,7 +53,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if let Some(work) = work.as_deref_mut() {
             work.check_cancellation()?;
         }
-        let intent = crate::contract::canonical_json_digest(
+        let intent = crate::executor::json::canonical_json_digest(
             &command,
             crate::store::default_projection_read_limits().maximum_bytes,
             work,

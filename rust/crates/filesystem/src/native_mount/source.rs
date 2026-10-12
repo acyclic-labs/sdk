@@ -652,20 +652,6 @@ impl MountSourceError {
         }
         error
     }
-
-    pub(crate) fn native_allocation_mut(&mut self) -> Option<&mut Option<crate::NativeAllocation>> {
-        match self {
-            Self::Io(_, allocation)
-            | Self::NativeRecordJson(_, allocation)
-            | Self::NativeRecordLockTimeout(_, allocation)
-            | Self::NativeRecordOwnershipConflict(_, allocation)
-            | Self::NativeRecordContextTransaction(_, allocation)
-            | Self::NativeRecordCorrupt(_, allocation) => Some(allocation),
-            Self::MutationFinalization { custody, .. } => Some(custody),
-            Self::NativeWorkspaceCause(_, allocation) => Some(allocation),
-            _ => None,
-        }
-    }
 }
 
 impl From<std::io::Error> for MountSourceError {

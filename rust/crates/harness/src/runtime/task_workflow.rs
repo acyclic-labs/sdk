@@ -5,7 +5,7 @@ pub(super) fn validate_task_transition(
     transition: &MachineTransition,
 ) -> Result<()> {
     if let MachineStatus::Completed { value } = &transition.status {
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             output_schema,
             value,
             "task output",
@@ -56,7 +56,7 @@ pub(super) fn inspect_task_metadata(
         observer.check_cancellation()?;
         crate::store::history::HistoryIo::codec_charge(
             &mut observer,
-            crate::contract::JsonCodecCharge::Inspect { items },
+            crate::executor::json::JsonCodecCharge::Inspect { items },
         )?;
     }
     #[cfg(not(feature = "filesystem"))]
@@ -153,12 +153,19 @@ pub(super) async fn observe_workflow_open_admission(
 ) -> Result<(Option<WorkflowAdmission>, Option<NativeCustody>)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = task_original_work(io)? {
-        let (value, custody) = journal.admission_with_native_work(work)?.await?;
+        let (value, custody) = journal.admission(io)?.await?;
+        let Some(custody) = custody else {
+            drop(value);
+            return Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                custody: None,
+            });
+        };
         return native_task_open_value(value, custody, work);
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok((journal.admission().await?, None))
+    Ok((journal.admission(None)?.await?.0, None))
 }
 
 pub(super) async fn admit_workflow_open(
@@ -188,7 +195,7 @@ pub(super) async fn validate_latest_task_transition(
         if let Some(transition) = &latest.0 {
             if let MachineStatus::Completed { value } = &transition.status {
                 crate::executor::with_history_io(io, |work| {
-                    crate::contract::validate_json_schema_value(schema, value, "task output", work)
+                    crate::executor::validate_json_schema_value(schema, value, "task output", work)
                 })?;
             }
         }
@@ -318,7 +325,7 @@ impl ResumableTaskSession {
                     |transition| {
                         crate::executor::with_history_io(Some(&io), |observer| {
                             if let MachineStatus::Completed { value } = &transition.status {
-                                crate::contract::validate_json_schema_value(
+                                crate::executor::validate_json_schema_value(
                                     schema,
                                     value,
                                     "task output",

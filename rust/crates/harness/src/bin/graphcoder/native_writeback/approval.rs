@@ -112,10 +112,10 @@ impl NativeSession {
                 "approval requires the complete captured original plan".into(),
             ));
         }
-        journal.open_interaction(interaction_id(binding), Interaction::Approval {
+        journal.open_interaction(interaction_id(binding), &Interaction::Approval {
             prompt: "Approve the exact retained native root generation publication; display text grants no authority.".into(),
             operation_id: binding.operation_id, action_digest: digest,
-        }).await
+        }, None)?.await
     }
     pub(super) async fn publication_result(
         &self,

@@ -45,7 +45,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         E: From<LazyWorkspaceError> + From<WorkspaceError> + From<crate::FsError> + Send + 'static,
     {
         seal::<_, E>(guard, ctx).await?;
-        self.validate_snapshot(basis, ctx)?;
+        self.validate_snapshot(basis, ctx).await?;
         let domain = b"acyclic-fs-lazy-write-input-v1\0";
         let mut hash = blake3::Hasher::new();
         ctx.charge(WorkCounters {

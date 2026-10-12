@@ -31,7 +31,7 @@ async fn stopped_projection_cannot_publish_a_late_open_writer()
     late.flush()?;
     drop(late);
 
-    assert_eq!(source.read_range(&seed, 0, 4)?, b"seed"[..]);
+    assert_eq!(source.read_range(&seed, 0, 4)?.as_ref(), b"seed");
     session.stop()?;
     Ok(())
 }

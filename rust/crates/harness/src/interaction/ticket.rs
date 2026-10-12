@@ -75,7 +75,7 @@ impl InteractionTicket {
         self.request.descriptor().verify(bytes, work)?;
         let mut decoded = decode_interaction_json::<Interaction>(
             bytes,
-            crate::contract::JsonValueSchema::Interaction,
+            crate::executor::json::JsonValueSchema::Interaction,
             std::mem::size_of::<ChoiceOption>() as u64,
             work,
         )?;
@@ -177,7 +177,7 @@ impl InteractionTicket {
         answer.descriptor().verify(bytes, work)?;
         let mut response = decode_interaction_json::<InteractionResponse>(
             bytes,
-            crate::contract::JsonValueSchema::InteractionResponse,
+            crate::executor::json::JsonValueSchema::InteractionResponse,
             std::mem::size_of::<String>() as u64,
             work,
         )?;
@@ -199,7 +199,7 @@ impl InteractionTicket {
         detail.descriptor().verify(bytes, work)?;
         let mut response = decode_interaction_json::<InteractionResponse>(
             bytes,
-            crate::contract::JsonValueSchema::InteractionResponse,
+            crate::executor::json::JsonValueSchema::InteractionResponse,
             std::mem::size_of::<String>() as u64,
             work,
         )?;

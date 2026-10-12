@@ -177,7 +177,7 @@ mod tests {
                 ProjectionMode::Reference.schema::<String>()?,
             ),
         ] {
-            crate::contract::validate_json_schema_value(&schema, &projection, "file reference projection", &mut None)?;
+            crate::executor::validate_json_schema_value(&schema, &projection, "file reference projection", &mut None)?;
             let wire: ToolResultContent = serde_json::from_value(projection.clone())
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             let ToolResultContent::Parts { parts } = wire else {
@@ -190,7 +190,7 @@ mod tests {
             let mut changed = projection;
             changed["parts"][1]["policy"] = json!("bounded_full");
             assert!(
-                crate::contract::validate_json_schema_value(&schema, &changed, "unselected policy", &mut None).is_err()
+                crate::executor::validate_json_schema_value(&schema, &changed, "unselected policy", &mut None).is_err()
             );
         }
         assert_eq!(
@@ -241,12 +241,12 @@ mod tests {
         let output_schema = output::<FileResult>()?;
         let projection_schema = ProjectionMode::Full.schema::<FileResult>()?;
         for schema in [&input_schema, &output_schema, &projection_schema] {
-            crate::contract::compile_json_schema(schema, "generated native tool", &mut None)?;
+            crate::executor::compile_json_schema(schema, "generated native tool", &mut None)?;
         }
-        crate::contract::validate_json_schema_value(&input_schema, &json!({"file":file}), "generated read", &mut None)?;
-        crate::contract::validate_json_schema_value(&output_schema, &canonical, "generated result", &mut None)?;
+        crate::executor::validate_json_schema_value(&input_schema, &json!({"file":file}), "generated read", &mut None)?;
+        crate::executor::validate_json_schema_value(&output_schema, &canonical, "generated result", &mut None)?;
         let projection = project_json(&result, None)?.0;
-        crate::contract::validate_json_schema_value(&projection_schema, &projection, "generated projection", &mut None)?;
+        crate::executor::validate_json_schema_value(&projection_schema, &projection, "generated projection", &mut None)?;
         assert_eq!(projection, json!({"kind":"json","value":canonical}));
         assert_eq!(
             serde_json::from_value::<FileResult>(canonical.clone())
@@ -254,11 +254,11 @@ mod tests {
             result
         );
         assert!(
-            crate::contract::validate_json_schema_value(&projection_schema, &canonical, "bare result", &mut None)
+            crate::executor::validate_json_schema_value(&projection_schema, &canonical, "bare result", &mut None)
                 .is_err()
         );
         assert!(
-            crate::contract::validate_json_schema_value(&output_schema, &projection, "wrong canonical envelope", &mut None)
+            crate::executor::validate_json_schema_value(&output_schema, &projection, "wrong canonical envelope", &mut None)
             .is_err()
         );
         for (pointer, value) in [
@@ -279,7 +279,7 @@ mod tests {
                 .pointer_mut(pointer)
                 .ok_or_else(|| Error::Invalid("fixture field missing".into()))? = value;
             assert!(
-                crate::contract::validate_json_schema_value(&output_schema, &changed, "invalid nested field", &mut None)
+                crate::executor::validate_json_schema_value(&output_schema, &changed, "invalid nested field", &mut None)
                     .is_err()
             );
         }
@@ -290,7 +290,7 @@ mod tests {
             .ok_or_else(|| Error::Invalid("fixture ref missing".into()))?
             .remove("version");
         assert!(
-            crate::contract::validate_json_schema_value(&output_schema, &changed, "missing nested field", &mut None)
+            crate::executor::validate_json_schema_value(&output_schema, &changed, "missing nested field", &mut None)
                 .is_err()
         );
         let mut changed = canonical.clone();
@@ -300,7 +300,7 @@ mod tests {
             .ok_or_else(|| Error::Invalid("fixture descriptor missing".into()))?
             .insert("extra".into(), json!(true));
         assert!(
-            crate::contract::validate_json_schema_value(&output_schema, &changed, "unknown nested field", &mut None)
+            crate::executor::validate_json_schema_value(&output_schema, &changed, "unknown nested field", &mut None)
                 .is_err()
         );
         Ok(())
@@ -321,7 +321,7 @@ mod tests {
                 json!({"file":file,"diff":""}),
             ),
         ] {
-            assert!(crate::contract::validate_json_schema_value(schema, &value, "empty edit", &mut None).is_err());
+            assert!(crate::executor::validate_json_schema_value(schema, &value, "empty edit", &mut None).is_err());
         }
         let mut invalid = json!({"file":file});
         *invalid

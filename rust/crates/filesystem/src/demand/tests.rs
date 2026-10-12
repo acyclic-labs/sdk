@@ -850,9 +850,17 @@ async fn native_lookup_accepts_windows_names_longer_than_127_code_units()
     )?;
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join(&host_name), b"data")?;
-    let source =
-        NativeDemandSource::open(root.path(), FilesystemProfile::Windows, limits, None, None)
-            .await?;
+    let source = NativeDemandSource::open(
+        std::borrow::Cow::Borrowed(root.path()),
+        FilesystemProfile::Windows,
+        limits,
+        None,
+        None,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?
+    .value;
     let exact = NamespacePath::new(vec![name], limits)?;
     assert!(
         source

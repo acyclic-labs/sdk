@@ -191,7 +191,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 quota.work(),
             )
             .await?
-            .map_err(|error| crate::distributed::sdk_error(error, quota.work()))?;
+            .map_err(|error| crate::store::operations::stream_error_with_work(error, quota.work()))?;
             let mut bytes = 0_u64;
             loop {
                 if let Some(io) = quota.work().as_deref() {

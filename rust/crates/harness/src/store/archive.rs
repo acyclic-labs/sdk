@@ -23,7 +23,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Err(Error::Invalid("effect read bounds must be positive".into()));
         }
         if let Some(state) = self.reducer.effect(effect) {
-            crate::contract::json_byte_length(state, limits.maximum_bytes, work).map(|_| ())?;
+            crate::executor::json::json_byte_length(state, limits.maximum_bytes, work).map(|_| ())?;
             return crate::wire_codec::CodecQuota::produce(work, |quota| {
                 crate::core::copy_effect(state, quota)
             })

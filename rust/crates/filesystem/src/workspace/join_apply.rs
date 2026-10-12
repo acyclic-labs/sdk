@@ -18,15 +18,6 @@ pub enum DrivenJoinError {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
-    /// Expands exact kernel conflicts into immutable, driver-ready values.
-    pub async fn describe_conflicts(
-        &self,
-        conflicts: &[MergeConflict],
-        truncated: bool,
-    ) -> Result<MergePlan, WorkspaceError> {
-        self.typed_merge_plan(conflicts.to_vec(), truncated).await
-    }
-
     /// Runs merge drivers and publishes only while the supplied writer permit remains valid.
     pub async fn apply_with_drivers<C: MergeResolutionCache>(
         &self,
@@ -44,7 +35,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         else {
             return Ok(initial);
         };
-        let plan = self.typed_merge_plan(conflicts, truncated).await?;
+        let plan = self.describe_conflicts(conflicts, truncated).await?;
         let candidate = resolve_merge_plan(plan, registry, cache, replanning)?;
         self.apply_candidate(options, &candidate, permit).await
     }
