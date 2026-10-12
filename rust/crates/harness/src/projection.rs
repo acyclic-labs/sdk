@@ -12,30 +12,13 @@ use crate::{
 };
 use std::borrow::Cow;
 use serde::{Deserialize, Serialize};
-use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize)]
 struct ProjectedToolInvocation {
     call_id: String,
     name: String,
     arguments: serde_json::Value,
-}
-
-#[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for ProjectedToolInvocation {
-    fn maximum_slot_bytes() -> u64 {
-        <crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
-            .max(std::mem::size_of::<Self>() as u64)
-    }
-    fn diagnostic_label_bytes() -> u64 {
-        const PRIVATE_LABEL_BYTES: u64 =
-            concat!("ProjectedToolInvocation", "call_id", "name", "arguments").len() as u64 + 4 * 4;
-        crate::contract::preparation_serde_diagnostic_label_bytes() + PRIVATE_LABEL_BYTES
-    }
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::ProjectedToolInvocation
-    }
 }
 
 /// Transient model context with explicit canonical provenance.
@@ -265,25 +248,21 @@ impl SelectedModelContext {
 
 
 /// Projects a selection from the explicitly pinned conversation revision.
-#[allow(clippy::too_many_arguments,
-    reason = "the original revision selection ABI adds only its original optional preparation IO")]
-pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
+pub async fn select_model_context(
     conversation: &ConversationState,
     conversation_revision: u64,
     selection: ModelContextSelection,
-    resolver: &R,
-    maximum_messages: usize,
-    maximum_attachments: usize,
-    maximum_render_bytes: u64,
+    resolver: &dyn ContentResidencyVerifier,
+    limits: Limits,
     maximum_projected_attachments: usize,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<SelectedModelContext> {
     crate::executor::with_history_io(io, |work| validate_model_context_selection(conversation, &selection, conversation_revision, work))?;
-    if maximum_messages == 0
-        || maximum_render_bytes == 0
-        || maximum_render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+    if limits.context_messages == 0
+        || limits.render_bytes == 0
+        || limits.render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
         || maximum_projected_attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
-        || selection.message_ids.len() > maximum_messages
+        || selection.message_ids.len() > limits.context_messages
     {
         return Err(projection_invalid(io, "selected message count exceeds projection limit"));
     }
@@ -295,8 +274,9 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             .ok_or_else(|| projection_invalid(io, "selected conversation message is missing"))?;
         if message.kind == MessageKind::ToolCall {
             let invocation: ProjectedToolInvocation =
-                read_projected_invocation(resolver, &message.content, maximum_render_bytes, io).await?;
-            validate_projection_tool_identity(&invocation.call_id, &invocation.name, io)?;
+                read_projected_invocation(resolver, &message.content, limits.render_bytes, io).await?;
+            crate::executor::with_history_io(io, |work|
+                ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
             if message.tool_call_id.as_deref() != Some(invocation.call_id.as_str()) {
                 return Err(projection_invalid(io, "tool call artifact identity does not match its record"));
             }
@@ -335,11 +315,11 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
                 return Err(projection_invalid(io, "selected tool result lacks its call"));
             }
             let _attachments_hold;
-            let (attachments, hold) = resolve_projection_attachments(message, resolver, maximum_attachments, io).await?;
+            let (attachments, hold) = resolve_projection_attachments(message, resolver, limits.attachments, io).await?;
             _attachments_hold = hold;
             let projection = projection_result_attachment(attachments.as_ref(), io)?;
             let value =
-                read_projected_tool_result(resolver, &projection.file, maximum_render_bytes, io).await?;
+                read_projected_tool_result(resolver, &projection.file, limits.render_bytes, io).await?;
             let call_id = crate::executor::stock_string_copy(call_id, io)?;
             let name = crate::executor::stock_string_copy(name, io)?;
             messages.push(ModelMessage {
@@ -369,16 +349,16 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             }
         };
         let primary_policy = match message.content.descriptor().media_type() {
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => projection_native_image(maximum_render_bytes, io)?,
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => projection_native_image(limits.render_bytes, io)?,
             kind if kind.starts_with("text/")
-                && message.content.descriptor().byte_length() <= maximum_render_bytes =>
+                && message.content.descriptor().byte_length() <= limits.render_bytes =>
             {
                 FileProjectionPolicy::BoundedFull
             }
             _ => FileProjectionPolicy::Reference,
         };
         let attachments_hold;
-        let (attachments, hold) = resolve_projection_attachments(message, resolver, maximum_attachments, io).await?;
+        let (attachments, hold) = resolve_projection_attachments(message, resolver, limits.attachments, io).await?;
         attachments_hold = hold;
         let projected_count = attachments.len().min(maximum_projected_attachments);
         let omitted_count = attachments.len() - projected_count;
@@ -388,7 +368,7 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             file: crate::model::clone_file(&message.content, io)?,
             policy: primary_policy,
         });
-        append_projected_attachments(attachments, attachments_hold, projected_count, &mut parts, maximum_render_bytes, io)?;
+        append_projected_attachments(attachments, attachments_hold, projected_count, &mut parts, limits.render_bytes, io)?;
         if omitted_count > 0 {
             let text = projection_omission_text(omitted_count, io)?;
             parts.push(ModelContentPart::Text { text });
@@ -528,28 +508,6 @@ fn projection_result_attachment<'a>(
     Err(projection_invalid(io, "tool result lacks its model projection"))
 }
 
-fn validate_projection_tool_identity(
-    call_id: &str, name: &str, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        crate::model::charge_items(Some(io), 1)?;
-        if !crate::contract::is_valid_component_label(name) {
-            return Err(projection_invalid(Some(io), "tool name is invalid"));
-        }
-        if call_id.is_empty() || call_id.len() as u64 > crate::COMPONENT_LABEL_MAX_BYTES as u64
-            || call_id.chars().any(char::is_control) || call_id.contains('/')
-            || call_id.contains('\\') || call_id == "." || call_id == ".."
-        {
-            return Err(projection_invalid(Some(io), "tool call identity is invalid"));
-        }
-        io.check_cancellation()?;
-        return Ok(());
-    }
-    let _ = io;
-    ToolInvocation::validate_identity(call_id, Some(name), &mut None)
-}
-
 fn append_projected_attachments(
     attachments: Cow<'_, [Attachment]>, source_hold: Option<crate::conversation::ContentHold<'_>>,
     count: usize, parts: &mut Vec<ModelContentPart>, maximum_render_bytes: u64,
@@ -578,7 +536,7 @@ fn append_projected_attachments(
         Cow::Owned(items) => items,
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let move_files = if let Some(io) = io.filter(|io| io.uses_native_work()) {
+    let move_files = if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         let hold = source_hold.as_ref().expect("native manifest retains ownership");
         let mut retained = 0_u64;
         for attachment in items.iter().take(count) {
@@ -617,8 +575,8 @@ fn projection_native_image(
     })))
 }
 
-async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized>(
-    message: &'a ConversationMessage, resolver: &'a R, maximum_attachments: usize,
+async fn resolve_projection_attachments<'a>(
+    message: &'a ConversationMessage, resolver: &'a dyn ContentResidencyVerifier, maximum_attachments: usize,
     io: Option<&'a crate::executor::PreparationIo>,
 ) -> Result<(Cow<'a, [Attachment]>, Option<crate::conversation::ContentHold<'a>>)> {
     #[cfg(feature = "filesystem")]
@@ -640,35 +598,39 @@ async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized
     }
 }
 
-async fn read_projected_invocation<R: ContentResidencyVerifier + ?Sized>(
-    resolver: &R, file: &FileRef, maximum_bytes: u64,
+async fn read_projected_invocation(
+    resolver: &dyn ContentResidencyVerifier, file: &FileRef, maximum_bytes: u64,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<ProjectedToolInvocation> {
+    let (value, hold) = read_projection_value(resolver, file, maximum_bytes, io).await?;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        let parsed = read_projection_value(resolver, file, maximum_bytes, io).await?;
-        let (value, custody) = convert_projection_value(parsed, maximum_bytes, io)?;
+        let (value, custody) = convert_projection_value(
+            (value, hold.expect("observed projection reservation")), maximum_bytes, io)?;
         custody.into_retained();
         return Ok(value);
     }
-    let _ = io;
-    read_json_artifact(resolver, file, maximum_bytes).await
+    let _ = hold;
+    serde_json::from_value(value)
+        .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))
 }
 
-async fn read_projected_tool_result<R: ContentResidencyVerifier + ?Sized>(
-    resolver: &R, file: &FileRef, maximum_bytes: u64,
+async fn read_projected_tool_result(
+    resolver: &dyn ContentResidencyVerifier, file: &FileRef, maximum_bytes: u64,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<crate::model::ToolResultContent> {
+    let (value, hold) = read_projection_value(resolver, file, maximum_bytes, io).await?;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        let parsed = read_projection_value(resolver, file, maximum_bytes, io).await?;
-        let intermediate = convert_projection_value::<serde_json::Value>(parsed, maximum_bytes, io)?;
+        let intermediate = convert_projection_value::<serde_json::Value>(
+            (value, hold.expect("observed projection reservation")), maximum_bytes, io)?;
         let (value, custody) = convert_projection_value(intermediate, maximum_bytes, io)?;
         custody.into_retained();
         return Ok(value);
     }
-    let _ = io;
-    let value = read_json_artifact(resolver, file, maximum_bytes).await?;
+    let _ = hold;
+    let value: serde_json::Value = serde_json::from_value(value)
+        .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
     serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
@@ -764,7 +726,7 @@ fn convert_projection_value<'a, T: crate::filesystem::UploadRecord>(
         .checked_add(additional.as_ref().expect("conversion reservation").bytes())
         .ok_or_else(|| projection_invalid(Some(io), "owned tool conversion allowance overflows"))?;
     #[cfg(not(target_arch = "wasm32"))]
-    if io.uses_native_work() {
+    if io.original_native_work().is_some() {
         reservation.take().expect("source reservation").into_retained();
         additional.take().expect("conversion reservation").into_retained();
         native_custody = Some(io.take_native_custody(total)?);
@@ -801,57 +763,43 @@ fn convert_projection_value<'a, T: crate::filesystem::UploadRecord>(
     Ok((value, io.guard_owned(retained)?))
 }
 
-#[cfg(feature = "filesystem")]
-async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
-    resolver: &R, file: &FileRef, maximum_bytes: u64,
-    io: &'io crate::executor::PreparationIo,
-) -> Result<(serde_json::Value, crate::filesystem::DecodeReservation<'io>)> {
-    io.check_cancellation()?;
+async fn read_projection_value<'io>(
+    resolver: &dyn ContentResidencyVerifier, file: &FileRef, maximum_bytes: u64,
+    io: Option<&'io crate::executor::PreparationIo>,
+) -> Result<(serde_json::Value, Option<crate::conversation::ContentHold<'io>>)> {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io { io.check_cancellation()?; }
     if file.descriptor().media_type() != "application/json"
         || file.descriptor().byte_length() > maximum_bytes
     {
-        return Err(projection_invalid(Some(io), "tool artifact type or rendering limit is invalid"));
+        return Err(projection_invalid(io, "tool artifact type or rendering limit is invalid"));
     }
+    #[cfg(feature = "filesystem")]
     let _source_hold;
-    let bytes = resolver.read(file, maximum_bytes, Some(io))?.await?;
-    _source_hold = if io.uses_native_work() { None } else {
-        bytes.retained_capacity().map(|capacity| io.reserve_decode(capacity as u64)).transpose()?
-    };
-    if bytes.len() as u64 > maximum_bytes {
-        return Err(projection_invalid(Some(io), "resolved tool artifact exceeds rendering limit"));
-    }
-    crate::executor::with_history_io(Some(io), |work| file.descriptor().verify(&bytes, work))?;
-    let parsed = io.decode(std::marker::PhantomData::<serde_json::Value>,
-        &bytes, crate::wire::ErrorCode::Invalid,
-    )?;
-    validate_model_json_numbers(&parsed.0, Some(io))?;
-    Ok(parsed)
-}
-
-async fn read_json_artifact<T: DeserializeOwned, R: ContentResidencyVerifier + ?Sized>(
-    resolver: &R,
-    file: &FileRef,
-    maximum_bytes: u64,
-) -> Result<T> {
-    if file.descriptor().media_type() != "application/json"
-        || file.descriptor().byte_length() > maximum_bytes
+    let bytes = resolver.read(file, maximum_bytes, io)?.await?;
+    #[cfg(feature = "filesystem")]
     {
-        return Err(Error::Invalid(
-            "tool artifact type or rendering limit is invalid".into(),
-        ));
+        _source_hold = match io {
+            Some(io) if io.original_native_work().is_none() => bytes.retained_capacity()
+                .map(|capacity| io.reserve_decode(capacity as u64)).transpose()?,
+            _ => None,
+        };
     }
-    let bytes = resolver.read(file, maximum_bytes, None)?.await?;
     if bytes.len() as u64 > maximum_bytes {
-        return Err(Error::Invalid(
-            "resolved tool artifact exceeds rendering limit".into(),
-        ));
+        return Err(projection_invalid(io, "resolved tool artifact exceeds rendering limit"));
     }
-    file.descriptor().verify(&bytes, &mut None)?;
-    let value: serde_json::Value = crate::contract::json_from_slice(&bytes)
+    crate::executor::with_history_io(io, |work| file.descriptor().verify(&bytes, work))?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let parsed = io.decode(std::marker::PhantomData::<serde_json::Value>,
+            &bytes, crate::wire::ErrorCode::Invalid)?;
+        validate_model_json_numbers(&parsed.0, Some(io))?;
+        return Ok((parsed.0, Some(parsed.1)));
+    }
+    let value = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
     validate_model_json_numbers(&value, None)?;
-    serde_json::from_value(value)
-        .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))
+    Ok((value, None))
 }
 
 fn validate_model_json_numbers(
@@ -1083,9 +1031,7 @@ mod tests {
                 (&conversation).logical_revision(),
                 selection.clone(),
                 &resolver,
-                256,
-                1,
-                128 * 1024,
+                crate::conversation::Limits { context_messages: 256, attachments: 1, render_bytes: 128 * 1024, ..Default::default() },
                 1,
                 None,
             )
@@ -1099,9 +1045,7 @@ mod tests {
                 (&conversation).logical_revision(),
                 selection.clone(),
                 &resolver,
-                256,
-                2,
-                128 * 1024,
+                crate::conversation::Limits { context_messages: 256, attachments: 2, render_bytes: 128 * 1024, ..Default::default() },
                 2,
                 None,
             )
@@ -1118,7 +1062,7 @@ mod tests {
         conversation.append(message, &mut None)?;
         let resolver = Resolver { bytes, ..Resolver::default() };
         let projected =
-            select_model_context(&conversation, (&conversation).logical_revision(), selection, &resolver, 256, 2, 128 * 1024, 2, None).await?;
+            select_model_context(&conversation, (&conversation).logical_revision(), selection, &resolver, crate::conversation::Limits { context_messages: 256, attachments: 2, render_bytes: 128 * 1024, ..Default::default() }, 2, None).await?;
         assert_eq!(projected.messages.len(), 1);
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
         Ok(())
@@ -1134,7 +1078,7 @@ mod tests {
             ..Resolver::default()
         };
         assert!(matches!(
-            read_json_artifact::<serde_json::Value, _>(&resolver, &reference, 1_024).await,
+            read_projection_value(&resolver, &reference, 1_024, None).await,
             Err(Error::Invalid(_))
         ));
         Ok(())
@@ -1172,7 +1116,7 @@ mod tests {
             fn read<'a>(&'a self, _: &'a FileRef, _: u64, io: Option<&'a crate::executor::PreparationIo>)
                 -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
                 crate::conversation::BoundedContentFuture::new(io, || async move {
-                    let counter = if io.is_some_and(|io| io.uses_native_work()) { &self.native } else { &self.ordinary };
+                    let counter = if io.is_some_and(|io| io.original_native_work().is_some()) { &self.native } else { &self.ordinary };
                     counter.fetch_add(1, Ordering::SeqCst);
                     Ok(acyclic_stream::OwnedBytes::from_static(b"[]"))
                 })

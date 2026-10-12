@@ -215,7 +215,7 @@ impl ModelProvider for Deterministic {
             }
             let capacity = complete.len() - observed.len();
             let bytes = (capacity * std::mem::size_of::<ModelEvent>()) as u64;
-            let mut custody = if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? };
+            let mut custody = if bytes == 0 { work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)? } else { work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED)? };
             let mut suffix = Vec::with_capacity(capacity);
             for mut item in complete.into_iter().skip(observed.len()) {
                 custody.absorb(&mut item.1)?;

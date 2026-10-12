@@ -1056,7 +1056,7 @@ async fn worker_restart_with_options(
                     admission_operation: OperationId::from_bytes([26; 16]),
                 })
                 .map_err(|error| Error::Invalid(error.to_string()))?;
-                json!({"admit":payloads.stage(operation, "child-admit", &admit).await?, "observe":payloads.stage(operation, "child-observe", &observe).await?})
+                json!({"admit":payloads.stage(operation, "child-admit", &admit, None)?.await?, "observe":payloads.stage(operation, "child-observe", &observe, None)?.await?})
             } else if with_two_waits {
                 let timer = serde_json::to_vec(&TimerTaskCommand {
                     deadline_unix_ms: 200,
@@ -1064,13 +1064,13 @@ async fn worker_restart_with_options(
                 .map_err(|error| Error::Invalid(error.to_string()))?;
                 let mail = serde_json::to_vec(&MailReceiveTaskCommand { after: 0 })
                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                json!({"timer":payloads.stage(operation, "two-waits-timer", &timer).await?,
-                    "mail":payloads.stage(operation, "two-waits-mail", &mail).await?})
+                json!({"timer":payloads.stage(operation, "two-waits-timer", &timer, None)?.await?,
+                    "mail":payloads.stage(operation, "two-waits-mail", &mail, None)?.await?})
             } else if with_command {
                 let payload = if with_mail_send {
                     serde_json::to_value(MailSendTaskCommand {
                         recipient: task,
-                        payload: payloads.stage(operation, "mail-body", b"7").await?,
+                        payload: payloads.stage(operation, "mail-body", b"7", None)?.await?,
                     })
                 } else if with_mail_receive {
                     serde_json::to_value(MailReceiveTaskCommand { after: 0 })
@@ -1079,7 +1079,7 @@ async fn worker_restart_with_options(
                         deadline_unix_ms: 200,
                     })
                 } else if with_tool && !with_model_approval {
-                    let file = payloads.stage(operation, "tool-input", b"hello").await?;
+                    let file = payloads.stage(operation, "tool-input", b"hello", None)?.await?;
                     serde_json::to_value(ToolTaskCommand {
                         name: "test.restore".into(),
                         revision: "1".into(),
@@ -1093,7 +1093,7 @@ async fn worker_restart_with_options(
                     serde_json::to_value(ModelTaskCommand {
                         input: if with_model_approval {
                             ModelContent::Part(acyclic_harness::model::ModelContentPart::File {
-                                file: payloads.stage(operation, "model-input", b"hello").await?,
+                                file: payloads.stage(operation, "model-input", b"hello", None)?.await?,
                                 policy: acyclic_harness::model::FileProjectionPolicy::Reference,
                             })
                         } else {
@@ -1109,7 +1109,7 @@ async fn worker_restart_with_options(
                 .map_err(|error| Error::Invalid(error.to_string()))?;
                 let bytes = serde_json::to_vec(&payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                serde_json::to_value(payloads.stage(operation, "command-payload", &bytes).await?)
+                serde_json::to_value(payloads.stage(operation, "command-payload", &bytes, None)?.await?)
                     .map_err(|error| Error::Invalid(error.to_string()))?
             } else {
                 json!(0)
@@ -1254,7 +1254,7 @@ async fn worker_restart_with_options(
                 ))
                 .await?;
             }
-            let input = payloads.stage(operation, "wake-seven", b"7").await?;
+            let input = payloads.stage(operation, "wake-seven", b"7", None)?.await?;
             assert!(
                 runtime
                     .task_host()
@@ -1293,7 +1293,7 @@ async fn worker_restart_with_options(
                         Some(OperationId::from_bytes([27; 16]))
                     );
                     assert!(!runtime.poll_task_wake(task, None).await?);
-                    let file = payloads.stage(operation, "second-wait-mail", b"7").await?;
+                    let file = payloads.stage(operation, "second-wait-mail", b"7", None)?.await?;
                     runtime
                         .task_host()
                         .send(task, task, OperationId::from_bytes([30; 16]), file)
@@ -1484,13 +1484,7 @@ async fn worker_restart_with_options(
                     }
                     let probe = OperationId::from_bytes([99; 16]);
                     let (stock, legacy) = tokio::join!(
-                        runtime.task_host().send_owned(
-                            task,
-                            fence.clone(),
-                            task,
-                            probe,
-                            input.payload.clone()
-                        ),
+                        runtime.task_host().send_mail(task, &fence, task, probe, input.payload.clone(), None),
                         runtime
                             .task_host()
                             .send(task, task, probe, input.payload.clone())
@@ -1511,7 +1505,7 @@ async fn worker_restart_with_options(
                             .await?,
                         TaskCommandProgress::Ready(_)
                     ));
-                    let other = payloads.stage(operation, "mail-conflict", b"8").await?;
+                    let other = payloads.stage(operation, "mail-conflict", b"8", None)?.await?;
                     let changed = serde_json::to_value(MailSendTaskCommand {
                         payload: other,
                         ..input
@@ -1878,13 +1872,7 @@ async fn worker_restart_with_options(
                 assert!(
                     runtime
                         .task_host()
-                        .send_owned(
-                            task,
-                            LeaseFence::from(&lease.reservation),
-                            task,
-                            OperationId::from_bytes([99; 16]),
-                            first.payload.clone()
-                        )
+                        .send_mail(task, &LeaseFence::from(&lease.reservation), task, OperationId::from_bytes([99; 16]), first.payload.clone(), None)
                         .await
                         .is_err()
                 );
@@ -2301,7 +2289,6 @@ async fn stock_restart_with_publication_fault(
         if !reopened || !cancel_after_failure {
             coordinator
                 .apply(
-                    operation,
                     IdempotencyKey::new(if reopened { "restart" } else { "start" })?,
                     SchedulerEvent::Started {
                         operation_id: operation,
@@ -2547,7 +2534,7 @@ async fn stock_restart_with_publication_fault(
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel-uncertain-model")?,
-                    false, &mut None,
+                    false, None, &mut None,
                 )
                 .await?;
             assert!(coordinator.pull(&worker).await?.is_none());
@@ -2635,7 +2622,7 @@ async fn stock_restart_with_publication_fault(
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel")?,
-                    false, &mut None,
+                    false, None, &mut None,
                 )
                 .await?;
             assert!(
@@ -2722,11 +2709,11 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             let model_payload = payloads.stage(operation, "model", &serde_json::to_vec(&ModelTaskCommand {
                 input: ModelContent::Text("original prompt".into()), selected_context: None, max_steps: 1,
                 max_output_tokens: None, mailbox_operation: None, selected_output_volume: None,
-            }).map_err(|error| Error::Invalid(error.to_string()))?).await?;
+            }).map_err(|error| Error::Invalid(error.to_string()))?, None)?.await?;
             let model_command = WorkflowCommand { operation_id: model_operation, kind: MODEL_TASK_COMMAND_KIND.into(), payload: model_payload };
             let receive = WorkflowCommand { operation_id: receive_operation, kind: MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
                 payload: payloads.stage(operation, "receive", &serde_json::to_vec(&MailReceiveTaskCommand { after: 0 })
-                    .map_err(|error| Error::Invalid(error.to_string()))?).await? };
+                    .map_err(|error| Error::Invalid(error.to_string()))?, None)?.await? };
             assert!(matches!(runtime.harness().admit(operation, &definition, json!({"receive":receive,"model":model_command}), None).await?, Admission::Accepted(_)));
             admitted_model = Some(model_command);
             let WorkPull::Claimed(lease) = runtime.task_host().pull_work(&worker).await? else {
@@ -2735,8 +2722,8 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             runtime.task_host().start_task(&lease, None).await?;
             let fence = LeaseFence::from(&lease.reservation);
             for (path, bytes) in [("first", b"first steering".as_slice()), ("second", b"later steering".as_slice())].into_iter().filter(|_| queued) {
-                let payload = payloads.stage(OperationId::new(), path, bytes).await?;
-                runtime.task_host().send_owned(task, fence.clone(), task, OperationId::new(), payload).await?;
+                let payload = payloads.stage(OperationId::new(), path, bytes, None)?.await?;
+                runtime.task_host().send_mail(task, &fence, task, OperationId::new(), payload, None).await?;
             }
             let items = runtime.task_host().inbox(task, 0, 2).await?;
             assert_eq!(items.len(), if queued { 2 } else { 0 });

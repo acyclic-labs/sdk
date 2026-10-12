@@ -990,7 +990,7 @@ impl Shared {
         let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(original) = &self.delivery.original {
             cleanup.records -= 1;
-            original.meter().with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
+            original.state.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
         } else if self.delivery.birth_matches(work) {
             cleanup.records -= 1;
             work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
@@ -1053,23 +1053,10 @@ impl Shared {
         &self, directory: i32, relative: &Path, work: &mut W,
     ) -> Result<i32, DemandError> {
         if self.stopping.load(Ordering::Acquire) { return Err(DemandError::Cancelled); }
-        // Render the held descriptor on the stack: only the final C path is owned, and it is admitted before any bytes are copied.
-        let mut digits = [0_u8; 10];
-        let mut start = digits.len();
-        let mut descriptor = directory as u32;
-        loop {
-            start -= 1;
-            digits[start] = b'0' + (descriptor % 10) as u8;
-            descriptor /= 10;
-            if descriptor == 0 {
-                break;
-            }
-        }
+        let (prefix, prefix_length) = proc_fd_path(directory);
         let relative = relative.as_os_str().as_bytes();
-        let prefix = b"/proc/self/fd/";
-        let length = prefix.len()
-            .checked_add(digits.len() - start)
-            .and_then(|length| length.checked_add(usize::from(!relative.is_empty())))
+        let length = prefix_length
+            .checked_add(usize::from(!relative.is_empty()))
             .and_then(|length| length.checked_add(relative.len()))
             .and_then(|length| length.checked_add(1))
             .ok_or(WorkError::Overflow)?;
@@ -1079,8 +1066,7 @@ impl Shared {
             work.allocate(bytes)?;
             work.record(WorkCounters { bytes_copied: bytes - 1, ..WorkCounters::default() })?;
             let mut path = Vec::with_capacity(length);
-            path.extend_from_slice(prefix);
-            path.extend_from_slice(&digits[start..]);
+            path.extend_from_slice(&prefix[..prefix_length]);
             if !relative.is_empty() {
                 path.push(b'/');
                 path.extend_from_slice(relative);
@@ -1996,7 +1982,7 @@ mod admission_tests {
                 &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
             ) -> Result<(), DemandError> {
                 let original = self.original.upgrade().expect("live original callback");
-                assert!(Arc::ptr_eq(&original, work.original_arc()));
+                assert!(Arc::ptr_eq(&original, work.original));
                 assert!(original.0.try_lock().is_ok());
                 work.charge(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
                 self.invoked.store(true, Ordering::Release);
@@ -2073,7 +2059,7 @@ mod admission_tests {
                 &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
             ) -> Result<(), DemandError> {
                 let original = self.original.upgrade().expect("the actual reader retains its original");
-                assert!(Arc::ptr_eq(&original, work.original_arc()));
+                assert!(Arc::ptr_eq(&original, work.original));
                 assert!(original.0.try_lock().is_ok());
                 let watch = self.watch.lock().unwrap_or_else(PoisonError::into_inner).take();
                 drop(watch);

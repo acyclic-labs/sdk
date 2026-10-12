@@ -676,20 +676,12 @@ fn collect_manifest_grants(
 
 /// Precomputed reader authority for a fork.
 struct ForkVolumeReaders {
-    all: BTreeSet<AgentId>,
     selected_projects: BTreeSet<[u8; 32]>,
     shared: BTreeMap<[u8; 32], BTreeSet<AgentId>>,
 }
 
 impl ForkVolumeReaders {
     fn new(seed: &ForkSeed, owned: &mut CodecQuota<'_, '_>) -> Result<Self> {
-        let mut all = BTreeSet::new();
-        for agent in std::iter::once(seed.child_agent).chain(seed.attached_agents.iter().copied()) {
-            if !all.contains(&agent) {
-                owned.slots::<AgentId>(1)?;
-                all.insert(agent);
-            }
-        }
         let mut selected_projects = BTreeSet::new();
         for resource in &seed.resources {
             if let ResourceRevision::Project { volume, .. } = &resource.revision {
@@ -717,7 +709,6 @@ impl ForkVolumeReaders {
             }
         }
         Ok(Self {
-            all,
             selected_projects,
             shared,
         })
@@ -725,10 +716,8 @@ impl ForkVolumeReaders {
 
     fn allows(&self, volume: &VolumeRef, digest: &[u8; 32], reader: &AgentId) -> bool {
         match volume.class() {
-            VolumeClass::AgentPrivate => volume.owner() == &VolumeOwner::Agent(*reader)
-                && self.all.contains(reader),
-            VolumeClass::Project => self.selected_projects.contains(digest)
-                && self.all.contains(reader),
+            VolumeClass::AgentPrivate => volume.owner() == &VolumeOwner::Agent(*reader),
+            VolumeClass::Project => self.selected_projects.contains(digest),
             VolumeClass::SessionShared => self.shared.get(digest)
                 .is_some_and(|readers| readers.contains(reader)),
         }
@@ -1434,32 +1423,9 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
         Ok(bytes)
     }
 
-    fn capability<T: Serialize + ?Sized>(&mut self, prefix: &str, value: &T) -> Result<String> {
-        let digest = crate::contract::canonical_json_digest_with_work(value, crate::store::default_projection_read_limits().maximum_bytes, self.work())?;
-        let length = prefix.len().checked_add(64)
-            .ok_or_else(|| Error::Invalid("fork capability storage overflows".into()))?;
-        if let Some(observer) = self.work().as_deref_mut() {
-            observer.admit_allocation(length as u64)?;
-        }
-        self.retain(length as u64)?;
-        let mut capability = String::new();
-        capability.try_reserve_exact(length).map_err(|error| Error::Invalid(error.to_string()))?;
-        if let Some(observer) = self.work().as_deref_mut() {
-            observer.copy_bytes(length as u64)?;
-        }
-        capability.push_str(prefix);
-        capability.push_str(blake3::Hash::from_bytes(digest).to_hex().as_str());
-        self.retain((capability.capacity() - length) as u64)?;
-        Ok(capability)
-    }
-
     pub(super) fn file_digest(&mut self, file: &FileRef) -> Result<[u8; 32]> {
         file.validate(self.work())?;
         crate::contract::canonical_json_digest_with_work(file, crate::store::default_projection_read_limits().maximum_bytes, self.work())
-    }
-
-    pub(super) fn volume_capability(&mut self, volume: &VolumeRef) -> Result<String> {
-        self.capability("volume:read:", volume)
     }
 
     fn stream_path(&mut self, authority: &Authority) -> Result<String> {

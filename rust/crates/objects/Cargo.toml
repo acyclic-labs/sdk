@@ -23,15 +23,15 @@ default = ["grpc"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "dep:http-body", "dep:http-body-util", "tokio/time"]
 json = ["dep:prost-reflect", "dep:serde_json"]
 http = ["json", "dep:reqwest"]
-local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
+local = ["dep:fs2", "dep:libc", "tokio/rt"]
 
 [dependencies]
+pin-project-lite = "0.2.16"
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 async-trait.workspace = true
 blake3 = "1.8.2"
 bytes.workspace = true
 futures.workspace = true
-fs2 = { workspace = true, optional = true }
 getrandom = { version = "=0.4.3", features = ["wasm_js"] }
 hex.workspace = true
 prost.workspace = true
@@ -50,7 +50,7 @@ libc = { version = "0.2.175", optional = true }
 js-sys.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pin-project-lite = "0.2.16"
+fs2 = { workspace = true, optional = true }
 tonic = { version = "0.14.6", features = ["tls-ring"], optional = true }
 tonic-prost = { workspace = true, optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }

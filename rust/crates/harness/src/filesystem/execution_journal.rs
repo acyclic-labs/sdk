@@ -351,7 +351,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             });
         }
         let io = PreparationIo::from_native_work(work)?;
-        let mut body = work.retain_owned(std::mem::size_of::<Self>() as u64)
+        let mut body = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(Error::from)?;
         self._native_metadata.as_mut().expect("original funded metadata checked")
             .absorb(&mut body)
@@ -1016,7 +1016,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             _ => unreachable!("execution authority validated before assembly"),
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let _native_metadata = io.filter(|io| io.uses_native_work())
+        let _native_metadata = io.filter(|io| io.original_native_work().is_some())
             .map(|io| io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| io.invalid("execution journal custody underflows"))?)).transpose()?;
         Ok(Self {
@@ -1045,7 +1045,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         scope: &Scope, private_volume: &VolumeRef, io: Option<&PreparationIo>,
     ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io.filter(|io| io.uses_native_work()) {
+        if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             let guard = self._native_metadata.as_mut().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "native interaction binding requires original journal custody",
@@ -1745,13 +1745,13 @@ where
             code: crate::wire::ErrorCode::Unsupported,
             reason: "native staging requires an original dispatch owner",
         })?;
-        owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Write, work)?;
+        owner.require_volume_grant(&self.volume, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             let file = self.stage_with_io(
                 operation_id, idempotency_key, bytes, media_type, Some(&io)).await?;
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             let retained = file.logical_owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((file, custody))
@@ -1768,7 +1768,7 @@ where
             code: crate::wire::ErrorCode::Unsupported,
             reason: "original staged-payload observation requires a task-owned journal",
         })?;
-        owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Read, work)?;
+        owner.require_volume_grant(&self.volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let file = {
@@ -2150,9 +2150,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             committed.conversation_revision,
             committed,
             &resolver,
-            messages,
-            attachments,
-            render_bytes,
+            crate::conversation::Limits { context_messages: messages, attachments: attachments, render_bytes: render_bytes, ..Default::default() },
             attachments,
             io,
         ).await?;
@@ -2417,8 +2415,13 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     let resolver = JournalSelectedResolver { journal, inner: verifier };
     let resolver: &dyn ContentResidencyVerifier = if io.is_some() { &resolver } else { verifier };
     let selected = select_model_context(
-        &history, selection.conversation_revision, selection, resolver,
-        limits.context_messages, limits.attachments, limits.render_bytes, limits.attachments, io,
+        &history,
+        selection.conversation_revision,
+        selection,
+        resolver,
+        limits,
+        limits.attachments,
+        io,
     ).await?;
     let input = crate::executor::with_history_io(io, |work| crate::model::clone_content(&selected.messages.last().ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid, "canonical input is missing"))?.content, work).map(|(copy, _)| copy))?;
     let mut selected_delta = selected;
@@ -2633,8 +2636,8 @@ mod tests {
             issuer.verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
-        .with_content_verifier(content.clone())
-        .with_resident_event_limit(1)?;
+        .with_content_verifier(content.clone());
+        aggregate.set_resident_event_limit(1)?;
         aggregate
             .execute(Command {
                 operation_id: OperationId::new(),
@@ -2744,9 +2747,7 @@ mod tests {
                 selection.conversation_revision,
                 selection,
                 content,
-                limits.context_messages,
-                limits.attachments,
-                limits.render_bytes,
+                limits,
                 limits.attachments,
                 None,
             )
@@ -2778,9 +2779,7 @@ mod tests {
             complete.conversation_revision,
             complete.clone(),
             content.as_ref(),
-            limits.context_messages,
-            limits.attachments,
-            limits.render_bytes,
+            limits,
             limits.attachments,
             None,
         )

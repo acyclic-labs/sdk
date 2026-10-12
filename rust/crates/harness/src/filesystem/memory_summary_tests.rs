@@ -174,7 +174,7 @@ async fn sealed_summary_preparation(
     let (resources, proofs) = preparer.creation_allocations(fork, prep_task, None)?;
     let child = admission(OperationId::new(), Some(root), serde_json::json!({})).with_resource_proofs(proofs)?;
     let command_payload = payloads.stage(fork.operation_id, "summary-fork-request",
-        &crate::contract::canonical_json_bytes(fork)?).await?;
+        &crate::contract::canonical_json_bytes(fork)?, None)?.await?;
     let request = crate::resource_preparation::ResourcePreparationRequest {
         provider: storage.volume.provider().clone(), child,
         resources, creation_grant: "fork:publish".into(),
@@ -196,7 +196,7 @@ async fn sealed_summary_preparation(
     let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
     let owner = Arc::new(host.journal_owner(prep_task, (&lease.reservation).into()).await?
         .with_invocation_cancellation(&invocation.0));
-    Ok((owner.resource_preparation(request).await?, invocation))
+    Ok((owner.resource_preparation(request, &mut None).await?, invocation))
 }
 
 #[tokio::test]
@@ -246,7 +246,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         3
     );
     {
-        let aggregate = storage.open_conversation(limits).await?;
+        let aggregate = storage.journal.conversation_projection(limits).await?;
         let conversation = aggregate
             .reducer()
             .conversation()
@@ -1119,7 +1119,7 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
         if original.is_none() {
             original = Some((operation, input, output));
         }
-        let aggregate = storage.open_conversation(limits).await?;
+        let aggregate = storage.journal.conversation_projection(limits).await?;
         let conversation = aggregate
             .reducer()
             .conversation()
@@ -1191,7 +1191,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
             b"small input", "text/plain", "input.txt").await?;
         storage.run_conversation(&bundle, operation, input, Vec::new(), 1).await?;
     }
-    let mut parent = storage.open_conversation(limits).await?;
+    let mut parent = storage.journal.conversation_projection(limits).await?;
     let conversation = parent.reducer().conversation()
         .ok_or_else(|| Error::Invalid("missing full-fork parent".into()))?;
     assert!(conversation.resident_after_sequence() > 0);
@@ -1288,7 +1288,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         action: Action::PublishFork { seed: Box::new(seed.clone()) },
     };
     parent.execute(command.clone()).await?;
-    let mut reopened = storage.open_conversation(limits).await?
+    let mut reopened = storage.journal.conversation_projection(limits).await?
         .with_fork_verifier(fork_verifier);
     assert!(matches!(reopened.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await?, crate::core::ApplyResult::Replayed { .. }));
     let mut count = 0;

@@ -11,7 +11,7 @@ use acyclic_harness::conversation::{
 };
 use acyclic_harness::core::{AggregateKind, Authority, AuthorityIssuer};
 use acyclic_harness::distributed::{
-    DistributedCoordinator, DurableReducer, ReducerRegistry,
+    DistributedCoordinator, ReducerRegistry,
     SchedulerPayloadStore,
 };
 use acyclic_harness::filesystem::{
@@ -33,26 +33,18 @@ fn id(byte: u8) -> OperationId {
     OperationId::from_bytes([byte; 16])
 }
 
-struct SumReducer(EntrypointRef);
-
-impl DurableReducer for SumReducer {
-    fn entrypoint(&self) -> &EntrypointRef {
-        &self.0
-    }
-
-    fn reduce(&self, values: &[(String, serde_json::Value)]) -> Result<Outcome<serde_json::Value>> {
-        let sum = values
-            .iter()
-            .map(|(_, value)| {
-                value.as_i64().ok_or_else(|| {
-                    acyclic_harness::Error::Invalid("reducer expected integer children".into())
-                })
+fn sum(values: &[(String, serde_json::Value)]) -> Result<Outcome<serde_json::Value>> {
+    let sum = values
+        .iter()
+        .map(|(_, value)| {
+            value.as_i64().ok_or_else(|| {
+                acyclic_harness::Error::Invalid("reducer expected integer children".into())
             })
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .sum::<i64>();
-        Ok(Outcome::Succeeded(serde_json::json!(sum)))
-    }
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .sum::<i64>();
+    Ok(Outcome::Succeeded(serde_json::json!(sum)))
 }
 
 fn spec(
@@ -97,7 +89,6 @@ async fn start(
     let fence = LeaseFence::from(&reservation);
     coordinator
         .apply(
-            operation_id,
             IdempotencyKey::new(format!("admit-{operation_id}"))?,
             SchedulerEvent::Admitted {
                 operation_id,
@@ -107,7 +98,6 @@ async fn start(
         .await?;
     coordinator
         .apply(
-            operation_id,
             IdempotencyKey::new(format!("start-{operation_id}"))?,
             SchedulerEvent::Started {
                 operation_id,
@@ -118,7 +108,6 @@ async fn start(
     if waiting_for_children {
         coordinator
             .apply(
-                operation_id,
                 IdempotencyKey::new(format!("wait-{operation_id}"))?,
                 SchedulerEvent::WaitingForChildren {
                     operation_id,
@@ -241,7 +230,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             assert!(
                 coordinator
                     .apply(
-                        child,
                         IdempotencyKey::new("corrupt-child")?,
                         SchedulerEvent::Completed {
                             operation_id: child,
@@ -269,7 +257,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             assert!(
                 coordinator
                     .apply(
-                        child,
                         IdempotencyKey::new("missing-child")?,
                         SchedulerEvent::Completed {
                             operation_id: child,
@@ -296,7 +283,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             assert!(
                 coordinator
                     .apply(
-                        child,
                         IdempotencyKey::new("schema-child")?,
                         SchedulerEvent::Completed {
                             operation_id: child,
@@ -317,7 +303,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         }
         coordinator
             .apply(
-                child,
                 IdempotencyKey::new(format!("finish-{slot}"))?,
                 SchedulerEvent::Completed {
                     operation_id: child,
@@ -355,7 +340,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .revision;
     let forged_result = coordinator
         .apply(
-            parent,
             IdempotencyKey::new("forged-join")?,
             SchedulerEvent::Orchestrated {
                 operation_id: parent,
@@ -410,7 +394,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         serde_json::json!([{"slot":"a","value":2},{"slot":"b","value":3}])
     );
     assert!(matches!(
-        stager.stage(parent, "join-once", b"different").await,
+        stager.stage(parent, "join-once", b"different", None)?.await,
         Err(acyclic_harness::Error::Conflict(_))
     ));
 
@@ -474,7 +458,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             .await?;
         coordinator
             .apply(
-                child,
                 IdempotencyKey::new(format!("finish-{slot}"))?,
                 SchedulerEvent::Completed {
                     operation_id: child,
@@ -525,7 +508,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         result_schema: serde_json::json!({"type":"number"}),
     };
     let mut reducers = ReducerRegistry::default();
-    reducers.register(Arc::new(SumReducer(reducer.clone())))?;
+    reducers.register(reducer.clone(), sum)?;
     let reduction = id(8);
     coordinator
         .declare_operation(
@@ -581,7 +564,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .await?;
     coordinator
         .apply(
-            child,
             IdempotencyKey::new("finish-reduce-child")?,
             SchedulerEvent::Completed {
                 operation_id: child,

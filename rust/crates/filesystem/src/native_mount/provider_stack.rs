@@ -60,13 +60,7 @@ impl ProviderFailure {
         }
     }
 
-    pub(super) fn hresult(self) -> windows::core::HRESULT {
-        match self {
-            Self::Native(code) => code,
-            Self::Work(_) | Self::OriginalWorkPoisoned => windows::core::HRESULT(0x8007_045d_u32.cast_signed()),
-            Self::Cancelled => windows::core::HRESULT(0x8007_03ee_u32.cast_signed()),
-        }
-    }
+
 }
 
 fn materialization_failure(error: crate::NativeTreeMaterializationError) -> ProviderFailure {
@@ -191,7 +185,7 @@ fn provider_fiber(
             let delete = meter.reserve_cleanup_write().map_err(materialization_failure)?;
             meter.admit(crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED })
                 .map_err(materialization_failure)?;
-            let allocation = meter.claim(bytes).map_err(materialization_failure)?;
+            let allocation = meter.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(materialization_failure)?;
             Some(OwnedExchange { allocation, delete })
         } else {
             None

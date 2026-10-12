@@ -17,7 +17,7 @@ use crate::NativeRootIdentity;
 
 pub(crate) struct PreparedMaterializationRecord {
     file: File,
-    parent: Dir,
+    _parent: Dir,
     #[cfg(unix)]
     temporary_name: NativeOwned<Vec<u8>>,
     #[cfg(unix)]
@@ -46,7 +46,7 @@ impl PreparedMaterializationRecord {
         if !has_current || current == previous || current == temporary || previous == temporary {
             return Err(E::InvalidLayout);
         }
-        let allocation = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let allocation = work.claim(std::mem::size_of::<Self>() as u64, 0, crate::WorkCounters::UNCHARGED)?;
         let parent = open_root_directory_with_work(parent_path, &mut &*work)?;
         if entry_identity_with_work(&parent, current, &mut &*work)?.is_none() {
             return Err(io::Error::from(io::ErrorKind::NotFound).into());
@@ -87,7 +87,7 @@ impl PreparedMaterializationRecord {
             create_windows_provisional_file_with_work(&parent, name, work)
         })?;
         let prepared = Self {
-            file, parent,
+            file, _parent: parent,
             #[cfg(unix)] temporary_name,
             #[cfg(unix)] current_name,
             #[cfg(windows)] rename_packet,
@@ -124,14 +124,14 @@ impl PreparedMaterializationRecord {
             let temporary = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.temporary_name.data) };
             // SAFETY: preparation validated and terminated these owned names; borrowing them performs no late scan, encoding or allocation.
             let current = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.current_name.data) };
-            rename_unix_names_once(&self.parent, temporary, &self.parent, current, true)?;
+            rename_unix_names_once(&self._parent, temporary, &self._parent, current, true)?;
         }
         #[cfg(windows)]
         windows_rename_packet_once(file, &self.rename_packet.data, self.rename_length)?;
         drop(self.cleanup.take());
         self.credit.record_completed(WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED })?;
         #[cfg(unix)]
-        sync_held_descriptor_once(&self.parent)?;
+        sync_held_descriptor_once(&self._parent)?;
         #[cfg(windows)]
         sync_held_descriptor_once(&self.parent_sync)?;
         Ok(())
@@ -146,7 +146,7 @@ impl Drop for PreparedMaterializationRecord {
             // SAFETY: preparation validated and terminated this retained name.
             let name = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.temporary_name.data) };
             // SAFETY: the exact held parent and prepared name remain alive; no cancelled allocator/path traversal can gate this cleanup.
-            if unsafe { libc::unlinkat(self.parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+            if unsafe { libc::unlinkat(self._parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
                 Ok(())
             } else { Err(io::Error::last_os_error()) }
         });
@@ -350,10 +350,10 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.record_admitted(delta) }
     fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.charge(delta) }
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> {
-        crate::materializer::NativeMaterializationWork::claim(self, bytes)
+        crate::materializer::NativeMaterializationWork::claim(self, bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)
     }
     fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
-        self.retain_owned(logical_max)
+        crate::materializer::NativeMaterializationWork::claim(self, logical_max, 0, WorkCounters::UNCHARGED)
     }
     fn reconcile_allocation(&mut self, allocation: &mut Self::Allocation, actual: u64) -> Result<(), Self::Error> {
         allocation.reconcile_capacity(actual)
@@ -392,7 +392,7 @@ pub(crate) fn native_buffer<T>(
     capacity: usize, mut work: &crate::materializer::NativeMaterializationWork,
 ) -> Result<NativeOwned<Vec<T>>, crate::materializer::NativeTreeMaterializationError> {
     let bytes = capacity.checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?;
-    let mut allocation = work.claim(bytes as u64)?;
+    let mut allocation = work.claim(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED)?;
     let mut data = Vec::new();
     let reserved = data.try_reserve_exact(capacity);
     let actual = data.capacity().checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?;
@@ -1247,61 +1247,6 @@ pub(crate) fn open_leaf_with_work<W: NativeHostWork>(
     #[cfg(windows)]
     { with_wide_path_with_work(name, work, |name, work| open_windows_leaf_with_options_with_work(parent, name, options, work)) }
 }
-#[cfg(unix)]
-fn validate_private_state_descriptor_with_work<W: NativeHostWork>(
-    file: &impl std::os::fd::AsRawFd, directory: bool, work: &mut W,
-) -> Result<(), W::Error> {
-    let stat = loop {
-        let result = work.attempt_io( WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
-            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-            // SAFETY: live held descriptor and correctly sized output storage.
-            if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 { return Err(io::Error::last_os_error()); }
-            Ok(unsafe { stat.assume_init() })
-        });
-        match result {
-            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => {}
-            result => break result?,
-        }
-    };
-    let user = work.attempt_io( WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
-        // SAFETY: the effective-user query has no arguments or retained data.
-        Ok(unsafe { libc::geteuid() })
-    })?;
-    let kind = if directory { libc::S_IFDIR } else { libc::S_IFREG } as libc::mode_t;
-    let mode = stat.st_mode & 0o777;
-    if stat.st_mode & libc::S_IFMT as libc::mode_t != kind
-        || stat.st_uid != user
-        || (directory && mode & 0o022 != 0)
-        || (!directory && (mode != 0o600 || stat.st_nlink != 1))
-    {
-        return Err(W::invalid_request());
-    }
-    work.check()
-}
-
-#[cfg(windows)]
-fn validate_private_state_descriptor_with_work<W: NativeHostWork>(
-    file: &impl std::os::windows::io::AsRawHandle, directory: bool, work: &mut W,
-) -> Result<(), W::Error> {
-    use windows::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, GetFileInformationByHandle,
-    };
-    let information = work.attempt_io( WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
-        let mut information = BY_HANDLE_FILE_INFORMATION::default();
-        // SAFETY: the exact held handle and fixed output storage remain live.
-        unsafe { GetFileInformationByHandle(windows::Win32::Foundation::HANDLE(file.as_raw_handle()), &raw mut information) }
-            .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
-        Ok(information)
-    })?;
-    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
-        || (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0) != directory
-    {
-        return Err(W::invalid_request());
-    }
-    // The existing host policy checks regular/reparse metadata on Windows; DPAPI's current-user protection belongs to its existing caller engine.
-    work.check()
-}
-
 pub(crate) fn open_builtin_directory_with_work<W: NativeHostWork>(
     parent: &Dir, name: &Path, create: bool, work: &mut W,
 ) -> Result<Dir, W::Error> {
@@ -2060,7 +2005,8 @@ use windows::Win32::Storage::FileSystem::FILE_BASIC_INFO;
 #[cfg(any(feature = "native-mount", test))]
 #[derive(Debug, thiserror::Error)]
 #[error("native metadata cannot represent {0}")]
-pub(crate) struct NativeMetadataError(pub(crate) &'static str);
+/// Metadata the host cannot represent.
+pub struct NativeMetadataError(pub(crate) &'static str);
 
 #[cfg(target_os = "macos")]
 #[cfg(any(feature = "native-mount", test))]
@@ -3373,7 +3319,7 @@ fn prepare_source_link_buffer<W: crate::demand::SourceDemandReadWork>(
     let copied = original.reserve_work(crate::WorkCounters { bytes_copied: allocation, ..crate::WorkCounters::UNCHARGED }).map_err(crate::native_name::original_name_error)?;
     buffer.resize(buffer.capacity(), 0);
     { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: allocation, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
-    acyclic_stream::PreparedOwnedBytes::new(buffer, ownership, original.runtime_meter_owner())
+    acyclic_stream::PreparedOwnedBytes::new(buffer, ownership, original.runtime_meter())
         .map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
                 crate::native_name::original_name_error(original.runtime_error(error))
@@ -8397,9 +8343,9 @@ mod bounded_record_tests {
             }
             Ok(())
         }
-        fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> { self.work.claim(bytes) }
+        fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> { self.work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED) }
         fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
-            self.work.retain_owned(logical_max)
+            self.work.claim(logical_max, 0, crate::WorkCounters::UNCHARGED)
         }
         fn reconcile_allocation(&mut self, allocation: &mut Self::Allocation, actual: u64) -> Result<(), Self::Error> {
             allocation.reconcile_capacity(actual)

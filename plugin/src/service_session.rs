@@ -48,7 +48,7 @@ impl SessionController {
                 Ok(Self::from(host))
             }
             PluginTaskBinding::Pi(_) => {
-                let mut custody = work.retain_owned(std::mem::size_of::<PiSession>() as u64)
+                let mut custody = work.claim(std::mem::size_of::<PiSession>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
                 let session = PiSession::open(directory, loaded.0.0, loaded.0.1, resources, work).await?;
                 custody.absorb(&mut loaded.1)
@@ -465,18 +465,17 @@ impl PiSession {
         }
         self.roots.extend(handles);
         for (key, handle) in &self.roots {
-            let rebound = handle.workspace.rebind_source_with_native_work(original_native_work)
+            let rebound = handle.workspace.rebind_source(&acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(original_native_work, original_native_work.cancellation()).map_err(|source| RootError::NativeSource { source, custody: None })?)
                 .await.map_err(|source| RootError::NativeSource { source, custody: None })?;
             let original = allocation.0.1.roots.get_mut(key).ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi retained root handle is not selected by allocation" })?;
-            if rebound.0.source.identity != original.source_identity
-                || rebound.0.source.epoch < original.source_epoch
+            if rebound.as_state().source.identity != original.source_identity
+                || rebound.as_state().source.epoch < original.source_epoch
             {
                 return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root observation does not descend from original creation" });
             }
             // Only the genuine SDK rebind may advance the admitted creation epoch.
-            original.source_epoch = rebound.0.source.epoch;
-            drop(rebound.0);
-            drop(rebound.1);
+            original.source_epoch = rebound.as_state().source.epoch;
+            drop(rebound);
         }
         let PluginTaskBinding::Pi(binding) = &mut self.state.task_binding else {
             return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root binding changed during allocation" });
@@ -501,7 +500,7 @@ impl PiSession {
                     })
             },
         )?;
-        let mut context_custody = original_native_work.retain_owned(context_bytes)
+        let mut context_custody = original_native_work.claim(context_bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         let mut context_roots = Vec::with_capacity(self.roots.len());
         for (key, handle) in &self.roots {
@@ -709,7 +708,7 @@ impl PiSession {
         let work = self.mail_work(caller, owner, query_work).await?;
         let operation = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation, &work)?;
         let message = arguments.get("message").and_then(Value::as_str).ok_or_else(|| RootError::Invalid("Pi mail message must be a string".to_owned()))?;
-        let _envelope_custody = work.retain_owned(message.len() as u64)
+        let _envelope_custody = work.claim(message.len() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         let envelope = pi_mail::PiMailEnvelope { kind, message: message.to_owned() };
         if caller == owner.policy().root_task {

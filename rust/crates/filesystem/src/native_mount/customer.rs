@@ -759,7 +759,7 @@ where
                 (E::from(MountLifecycleError::Native(error)), spent)
             })?;
         let result = async {
-            let plan_allocation = work.retain_owned(plan.logical_owned_bytes())
+            let plan_allocation = work.claim(plan.logical_owned_bytes(), 0, crate::WorkCounters::UNCHARGED)
                 .map_err(|error| E::from(MountLifecycleError::Native(NativeMountError::Materialization(error))))?;
             self.import_selected_work_guarded(
                 destination, plan, plan_allocation, operation, permit, &work,
@@ -1118,7 +1118,9 @@ pub enum MountLifecycleError {
     #[error("{source}")]
     NativeWorkspace {
         #[source]
+        /// Original workspace failure.
         source: WorkspaceError,
+        /// Allocation custody retained until the cause drops.
         custody: Option<crate::NativeAllocation>,
     },
     /// Lazy source or sparse-overlay admission failed.
@@ -1128,7 +1130,9 @@ pub enum MountLifecycleError {
     #[error("{source}")]
     NativeLazy {
         #[source]
+        /// Original lazy workspace failure.
         source: LazyWorkspaceError,
+        /// Allocation custody retained until the cause drops.
         custody: Option<crate::NativeAllocation>,
     },
     /// Native driver admission or teardown failed.
@@ -1138,7 +1142,9 @@ pub enum MountLifecycleError {
     #[error("native capture or namespace cleanup failed: {source}")]
     NativeCaptureFailure {
         #[source]
+        /// Original native capture failure.
         source: NativeMountError,
+        /// Distinct namespace cleanup failure.
         cleanup_failure: Option<NativeMountError>,
     },
     /// Native callback publication failed.
@@ -1211,7 +1217,7 @@ where
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             (&original, &mut frame_custody),
             |(work, custody), bytes| {
-                **custody = Some(work.claim(bytes)?);
+                **custody = Some(work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?);
                 Ok::<(), crate::NativeTreeMaterializationError>(())
             },
             |(work, _)| async move {
@@ -1223,7 +1229,7 @@ where
                 let exact = (async { let accounting = LazyTreapWork::native_with_work(work, cancellation)?; self.exactify(subdirectory, permit, &accounting).await }).await?;
                 let mut mount = (
                     MountOptions::read_write().publication(MountPublication::Manual),
-                    work.retain_owned(0)?,
+                    work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
                 );
                 if subdirectory != "/" {
                     let (subdirectory, mut custody) = work.display(&subdirectory)?;
@@ -1423,7 +1429,7 @@ where
                 std::borrow::Cow::Borrowed(_) => 0,
                 std::borrow::Cow::Owned(value) => value.capacity() as u64,
             };
-            let _options_custody = original.retain_owned(options_bytes)
+            let _options_custody = original.claim(options_bytes, 0, crate::WorkCounters::UNCHARGED)
                 .map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
             let options = options;
             if options.writable && options.publication == MountPublication::PerMutation {
@@ -1448,7 +1454,7 @@ where
             let lazy = self.clone().into_arc_with_native_work(&original)
                 .map_err(MountLifecycleError::Lazy)?;
             // Admit the actual existing payload slot before starting its watch.
-            let mut source_allocation = original.claim_allocation(
+            let mut source_allocation = original.claim(
                 std::mem::size_of::<LazyMountSource<A, O, D, S>>() as u64, 1, crate::WorkCounters::UNCHARGED,
             ).map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
             let mut source = Arc::<LazyMountSource<A, O, D, S>>::new_uninit();
@@ -1528,24 +1534,6 @@ fn native_demand_lifecycle_error(error: crate::demand::DemandError) -> MountLife
 }
 
 
-fn portable_namespace_path(
-    path: &crate::kernel::NamespacePath,
-) -> Result<String, MountLifecycleError> {
-    let mut value = String::new();
-    for component in path.components() {
-        value.push('/');
-        value.push_str(std::str::from_utf8(component.as_bytes()).map_err(|_| {
-            MountLifecycleError::Source(MountSourceError::Unsupported(
-                "lazy portable mounts cannot root at a non-UTF-8 path".to_owned(),
-            ))
-        })?);
-    }
-    if value.is_empty() {
-        value.push('/');
-    }
-    Ok(value)
-}
-
 impl<A, O> Workspace<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -1618,12 +1606,12 @@ where
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             (&original, &mut frame_custody),
             |(original, custody), bytes| {
-                **custody = Some(original.claim(bytes)?);
+                **custody = Some(original.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?);
                 Ok::<(), crate::NativeTreeMaterializationError>(())
             },
             |(original, _)| async move {
                 let workspace = self.workspace();
-                let reader = workspace.readonly_pinned_reader_with_native_work(
+                let reader = workspace.reader(
                     self.id(), original, cancellation,
                 ).await?;
                 super::materialize_checkout_with_work(&reader, options, work).await
@@ -1747,7 +1735,7 @@ where
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             (&original, &mut frame_custody),
             |(original, custody), bytes| {
-                **custody = Some(original.claim(bytes)?);
+                **custody = Some(original.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?);
                 Ok::<(), crate::NativeTreeMaterializationError>(())
             },
             |(original, _)| async move {
@@ -1779,9 +1767,9 @@ where
                 let config = checkout.volume_config();
                 let root = original.allocations(
                     |allocations, work, budget, cancellation| {
-                        crate::workspace::customer_path_measured(
-                            &mount.subdirectory, config, allocations, work, budget, cancellation,
-                        ).map_err(MountLifecycleError::Workspace)
+                        crate::kernel::NamespacePath::parse_in_profile_with_ledger(
+                            &mount.subdirectory, config.profile, config.limits, allocations, work, budget, cancellation,
+                        ).map_err(|error| MountLifecycleError::Workspace(WorkspaceError::from(error)))
                     },
                 )?;
                 if checkout.lookup_no_follow(&root.0, original, cancellation)
@@ -1812,7 +1800,7 @@ where
                 let source_identity = prepare_root_identity_with_work(
                     &source_root.0, &selected_root.0, meter, expected_root_identity,
                 )?;
-                let baseline = NativeViewBaseline::new_with_native_work(
+                let baseline = NativeViewBaseline::new(
                     source_identity, !mount.writable, original,
                 )?;
                 let shared = SharedCheckout::with_publication_meter(
@@ -2092,7 +2080,7 @@ mod tests {
             .map_err(|(error, _)| error)?;
         assert!(!payload_work.shares_ledger(mount._destination_custody.work()));
         let payload_bytes = std::mem::size_of_val(&mount) as u64;
-        let mut payload_custody = payload_work.claim(payload_bytes)?;
+        let mut payload_custody = payload_work.claim(payload_bytes, u64::from((payload_bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let mut slot = Arc::new_uninit();
         let before_transfer = payload_work.receipt();
         mount.retain_payload_allocation(&mut payload_custody)?;
@@ -2101,7 +2089,7 @@ mod tests {
         assert_eq!(mount.payload_custody.as_ref().map(crate::NativeAllocation::bytes), Some(payload_bytes));
         let foreign_work = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let mut foreign_custody = foreign_work.claim(8)?;
+        let mut foreign_custody = foreign_work.claim(8, 1, crate::WorkCounters::UNCHARGED)?;
         let foreign_data = Box::new([0u8; 8]);
         let foreign_prefix = foreign_work.receipt();
         assert!(matches!(
@@ -2488,7 +2476,7 @@ mod tests {
         let capture_work = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED, &capture_token,
         ).map_err(|(error, _)| error)?;
-        let caller_payload = capture_work.claim(64)?;
+        let caller_payload = capture_work.claim(64, 1, crate::WorkCounters::UNCHARGED)?;
         let mut caller_buffer = Vec::<u8>::new();
         caller_buffer.try_reserve_exact(64)?;
         assert_eq!(caller_payload.bytes(), caller_buffer.capacity() as u64);
