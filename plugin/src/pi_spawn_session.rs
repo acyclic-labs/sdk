@@ -433,7 +433,7 @@ impl PiSession {
         let bytes = bytes;
         let owned = std::mem::size_of::<T>() as u64;
         let (value, custody) = pi_root_provider::guarded_pi_decode(
-            &bytes, maximum, owned, acyclic_harness::JsonValueSchema::None,
+            &bytes, maximum, owned, acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
             schema_label_bytes, work)?;
         drop(bytes);
         drop(bytes_custody);
@@ -669,7 +669,7 @@ impl PiSession {
         let ((route_key, route), mut route_custody): ((String, Route), NativeAllocation) =
             pi_root_provider::guarded_pi_decode(&bytes, MAXIMUM_ADAPTER_STATE_BYTES,
                 std::mem::size_of::<(String, Route)>() as u64,
-                acyclic_harness::JsonValueSchema::None, SPAWN_ROUTE_DIAGNOSTIC_LABEL_BYTES, work)?;
+                acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, SPAWN_ROUTE_DIAGNOSTIC_LABEL_BYTES, work)?;
         let (route_key, route) = (route_key, route);
         drop(bytes);
         drop(bytes_custody);
