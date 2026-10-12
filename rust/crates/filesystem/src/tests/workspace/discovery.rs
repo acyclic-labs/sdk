@@ -139,24 +139,24 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
     let base = main.head(B, &cancel).await?.value;
     let fork_key = IdempotencyKey::from_bytes([0x42; 16]);
     let fork = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-42",
             ForkOptions::from_generation(base.clone(), fork_key),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
     let retried = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-42",
             ForkOptions::from_generation(base.clone(), fork_key),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -172,13 +172,13 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
         fork.head(B, &cancel).await?.value.id()
     );
     assert!(
-        main.fork(
+        main.fork::<_, _, crate::WorkspaceError>(
             "agent-42",
             ForkOptions::from_generation(base, IdempotencyKey::from_bytes([0x43; 16])),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>
+            &mut allow::<FsError>
         )
         .await
         .is_err()
