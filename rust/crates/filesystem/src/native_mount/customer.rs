@@ -701,7 +701,7 @@ where
         };
         session.stop().map_err(MountLifecycleError::Native)?;
         owner.take();
-        self.source.cancel();
+        { let cleanup = crate::CancellationToken::new(); let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cleanup); self.source.cancel(&mut super::adapter::NativeDemandCarrier::Borrowed(&mut work)).expect("ordinary SDK source cancellation uses the same unbounded cleanup engine"); }
         Ok(())
     }
 }
@@ -1705,8 +1705,8 @@ where
                 mount_id: MountId::new(), volume_id, destination: session_destination.0,
                 writable: options.writable,
             };
-            let initialized = match LazyMountSource::new_with_native_work(
-                lazy, authored, root_text, root_allocation, &mut source_allocation, native_work,
+            let initialized = match LazyMountSource::new(
+                lazy, authored, root_text, super::adapter::NativeDemandCarrier::Native(native_work), Some((root_allocation, &mut source_allocation)),
             ) {
                 Ok(source) => source,
                 Err(error) => return Err(MountLifecycleError::Native(
