@@ -156,20 +156,20 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
     let fs = Fs::memory();
     let workspace = fs.create_workspace("ntfs-metadata-view", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    transaction.create_directory("/tree").await?;
+    transaction.create_directory("/tree", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .write("/tree/file", OwnedBytes::from_static(b"payload"))
         .await?;
-    transaction.hard_link("/tree/file", "/tree/alias").await?;
+    transaction.hard_link("/tree/file", "/tree/alias", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
-        .create_symbolic_link("/tree/link", OwnedBytes::from(component("file")))
-        .await?;
+        .create_symbolic_link("/tree/link", OwnedBytes::from(component("file")), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
-        .set_metadata("/tree/file", metadata(ARCHIVE | HIDDEN))
-        .await?;
+        .set_metadata("/tree/file", metadata(ARCHIVE | HIDDEN), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
-        .set_metadata("/tree", metadata(DIRECTORY | HIDDEN))
-        .await?;
+        .set_metadata("/tree", metadata(DIRECTORY | HIDDEN), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .set_metadata(
             "/tree/link",
@@ -179,9 +179,8 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
                 accessed_ns: MetadataField::Value(FIXED_NS + 200),
                 changed_ns: MetadataField::Value(FIXED_NS + 300),
                 ..FileMetadata::default()
-            },
-        )
-        .await?;
+            }, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let TransactionCommit::Committed(generation) = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
         return Err("metadata fixture did not commit".into());
     };

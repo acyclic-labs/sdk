@@ -963,7 +963,7 @@ pub(crate) async fn create_parent_directories<A: AsyncAuthorityStore, O: AsyncOb
     if let Some((parent, _)) = key.rsplit_once('/')
         && !parent.is_empty()
     {
-        transaction.create_dir_all(&format!("/{parent}")).await?;
+        transaction.create_dir_all(&format!("/{parent}"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     }
     Ok(())
 }
