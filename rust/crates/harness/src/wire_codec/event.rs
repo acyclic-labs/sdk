@@ -51,7 +51,7 @@ pub(crate) fn encode_event(
     let mut output = Vec::new();
     if let Some(work) = metadata.work().as_deref_mut() {
         work.admit_encoding(length as u64)?;
-        work.reserve_bytes(&mut output, length)?;
+        crate::store::history::reserve(&mut output, length, work)?;
     } else {
         output.reserve_exact(length);
     }

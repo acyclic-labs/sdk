@@ -88,19 +88,10 @@ where
         destination: impl AsRef<Path>,
         options: MountOptions,
     ) -> Result<Mount<A, O>, MountLifecycleError> {
-        let work = match options.work.as_ref() {
-            Some(work) => work.clone(),
-            None => {
-                acyclic_native_runtime::initialize_native_io_services()
-                    .map_err(NativeMountError::from)?;
-                super::super::initialize_native_mount_services()?;
-                NativeMaterializationWork::new(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?
-            }
-        };
+        let work = options.work(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )?;
         let cancellation = work.cancellation();
         super::super::adapter::validate_native_source_io_binding(
             &work,

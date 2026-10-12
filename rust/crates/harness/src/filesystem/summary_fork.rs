@@ -17,8 +17,8 @@ type References = BTreeMap<[u8; 32], FileRef>;
 
 pub(super) fn summary_keys(key: &IdempotencyKey, io: Option<&PreparationIo>) -> Result<[IdempotencyKey; 2]> {
     Ok([
-        IdempotencyKey::new(crate::contract::preparation_format(format_args!("{}:summary-payloads", key.as_str()), io)?)?,
-        IdempotencyKey::new(crate::contract::preparation_format(format_args!("{}:summary-context", key.as_str()), io)?)?,
+        IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{}:summary-payloads", key.as_str()), work))?)?,
+        IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{}:summary-context", key.as_str()), work))?)?,
     ])
 }
 
@@ -88,7 +88,7 @@ fn copy_references(payloads: &References, child: &VolumeRef, generation: &str, i
     for (key, source) in payloads {
         fork_preparer_io::item(io, std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
         let encoded = fork_preparer_io::hex_key(key, io)?;
-        let path = crate::contract::preparation_format(format_args!(".system/inherited-conversation/summary-payloads/{encoded}"), io)?;
+        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/inherited-conversation/summary-payloads/{encoded}"), work))?;
         copies.insert(*key, crate::executor::with_history_io(io, |work| FileRef::new(
             child.copy(work)?, path, fork_preparer_io::clone_text(generation, io)?,
             FileDescriptor::new(*source.descriptor().sha256(), source.descriptor().byte_length(),
@@ -275,7 +275,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 crate::executor::with_history_io(io, |work| file.descriptor().verify(&bytes, work))?;
                 let encoded = fork_preparer_io::hex_key(key, io)?;
                 writes.push(WorkspaceMutation::PutFile {
-                    path: crate::contract::preparation_format(format_args!("/.system/inherited-conversation/summary-payloads/{encoded}"), io)?, bytes });
+                    path: crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/.system/inherited-conversation/summary-payloads/{encoded}"), work))?, bytes });
             }
             publish(self, &workspace, initial_generation, &writes, &keys[0], io, preparation,
                 #[cfg(not(target_arch = "wasm32"))] native_creation_guard).await?

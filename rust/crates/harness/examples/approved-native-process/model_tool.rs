@@ -206,7 +206,7 @@ pub(super) async fn run<P: StreamProvider>(
         .ok_or_else(|| Error::NotFound("native MCP tool".into()))?
         .definition
         .clone();
-    let context = ToolContext::new(task, operation, operation.to_string())?;
+    let context = ToolContext::new(std::sync::Arc::new(task), operation, &(operation.to_string()), None)?;
     if !replay {
         let mut changed = arguments.clone();
         *changed

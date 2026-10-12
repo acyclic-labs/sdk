@@ -29,7 +29,6 @@ pub use approval::ToolApprovalVerifier;
 mod registry;
 pub use registry::{Tool, ToolRegistry};
 mod codec;
-pub(crate) use crate::contract::validate_json_schema_value as validate_value;
 pub(crate) use codec::decode;
 #[cfg(feature = "filesystem")]
 pub(crate) use codec::tool_serde_diagnostic_label_bytes;

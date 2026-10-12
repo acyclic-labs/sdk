@@ -101,7 +101,7 @@ pub enum NativeMountError {
     Allocation(#[from] std::collections::TryReserveError),
     /// Startup failed after retaining its actual driver and destination fence.
     #[error("native mount startup failed: {0}")]
-    StartupFailed(#[source] NativeMountStartupFailure),
+    StartupFailed(#[source] Box<NativeMountStartupFailure>),
     /// No admitted startup-storage allocation exists yet.
     #[error("native mount startup admission failed: {cause}")]
     StartupAdmissionFailed {

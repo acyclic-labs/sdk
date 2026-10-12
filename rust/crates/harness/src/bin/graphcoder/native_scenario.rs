@@ -639,10 +639,10 @@ async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
 {
     let verifier = AuthorityIssuer::new(&owner.issuer, owner.key, owner.authority.clone()).verifier(&mut None).expect("verifier copy");
     let content = FilesystemContentVerifier::new(files.clone(), &verifier, &owner.scope, PAYLOAD_BYTES, None)?;
-    let forks = Arc::new(CompositeForkVerifier::new(&[
+    let forks = CompositeForkVerifier::new(&[
         FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES, None, None)?,
-        Arc::new(StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?),
-    ], &mut None)?);
+        StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?,
+    ], &mut None)?;
     let mut aggregate = StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
         .with_content_verifier(content).with_fork_verifier(forks)
         .with_merge_verifier(FilesystemProjectMergeVerifier::new(files, None)?);
