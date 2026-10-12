@@ -58,7 +58,7 @@ pub(super) async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
         let digest = *blake3::hash(path.as_str().as_bytes()).as_bytes();
         let key = if let Some(observer) = work.as_deref_mut() {
             let mut key = Vec::new();
-            observer.reserve_bytes(&mut key, 32)?;
+            crate::store::history::reserve(&mut key, 32, observer)?;
             let copied = observer.copy_bytes(32);
             if let Err(error) = copied {
                 let capacity = key.capacity() as u64;
@@ -343,7 +343,9 @@ pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
                 let mut copied = Vec::new();
                 let copied_result = (|| {
                     match work.as_deref_mut() {
-                        Some(observer) => observer.reserve_bytes(&mut copied, chunk.len())?,
+                        Some(observer) => {
+                            crate::store::history::reserve(&mut copied, chunk.len(), observer)?
+                        }
                         None => copied.reserve_exact(chunk.len()),
                     }
                     if let Some(observer) = work.as_deref_mut() {

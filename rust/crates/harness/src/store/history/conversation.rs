@@ -160,7 +160,11 @@ impl<P: StreamProvider> HistoryReader<P> {
                 .checked_add(bytes)
                 .ok_or_else(|| Error::Invalid("conversation range byte count overflows".into()))?;
             if let Some(work) = work.as_deref_mut() {
-                work.reserve_messages(&mut messages, limits.maximum_events as usize)?;
+                crate::store::history::ensure_slot(
+                    &mut messages,
+                    limits.maximum_events as usize,
+                    work,
+                )?;
             }
             messages.push(message.ok_or_else(|| {
                 Error::Storage("conversation range is incomplete at its pinned cutoff".into())

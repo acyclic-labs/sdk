@@ -86,7 +86,7 @@ pub(super) fn native_task_open_value<T>(
     custody: acyclic_fs::NativeAllocation,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(T, Option<NativeCustody>)> {
-    if !custody.matches_work(work) {
+    if !custody.work().shares_allocation_context(work) {
         drop(value);
         return Err(Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
@@ -250,7 +250,7 @@ impl ResumableTaskSession {
             || self
                 .native_metadata_custody
                 .as_ref()
-                .is_none_or(|held| !held.matches_work(work))
+                .is_none_or(|held| !held.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,

@@ -435,7 +435,7 @@ mod tests {
             role, volume,
             evidence: ResourceRef::new(crate::resources::ResourceKind::Workspace, provider.clone(),
                 b"protected-original-allocation".to_vec().into(), None, &mut None)?,
-            generation: GenerationRef::new(provider, b"actual-selected-generation".to_vec(), None)?,
+            generation: GenerationRef::new(&(provider), b"actual-selected-generation", None, None)?.0,
             native_snapshot: Some(serde_json::json!({"actual":"descriptor","selected":121})),
         })
     }
@@ -541,7 +541,7 @@ mod tests {
             let mut changed = original.clone();
             match kind {
                 0 => changed.native_snapshot = Some(serde_json::json!({"actual":"different"})),
-                1 => changed.generation = GenerationRef::new(original.volume.provider().clone(), b"other".to_vec(), None)?,
+                1 => changed.generation = GenerationRef::new(&(original.volume.provider()), b"other", None, None)?.0,
                 _ => changed.evidence = ResourceRef::new(crate::resources::ResourceKind::Workspace,
                     original.volume.provider().clone(), b"other-evidence".to_vec().into(), None, &mut None)?,
             }

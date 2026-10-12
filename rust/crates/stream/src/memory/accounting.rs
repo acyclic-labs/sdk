@@ -1,5 +1,4 @@
 use super::*;
-use crate::wire_codec::WireMeter;
 
 #[derive(Debug)]
 pub(crate) enum MemoryFailure {
@@ -8,16 +7,19 @@ pub(crate) enum MemoryFailure {
 }
 
 impl From<StreamError> for MemoryFailure {
-    fn from(error: StreamError) -> Self { Self::Provider(error) }
+    fn from(error: StreamError) -> Self {
+        Self::Provider(error)
+    }
 }
 
 impl From<std::io::Error> for MemoryFailure {
-    fn from(error: std::io::Error) -> Self { Self::Observer(error) }
+    fn from(error: std::io::Error) -> Self {
+        Self::Observer(error)
+    }
 }
 
 pub(crate) type MemoryResult<T> = Result<T, MemoryFailure>;
 
-use crate::wire_codec::WireMeter;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) type Allocation = Option<ReadAllocation>;
@@ -27,8 +29,11 @@ pub(crate) type Allocation = ();
 pub(crate) fn absorb(output: &mut Allocation, incoming: Allocation) -> std::io::Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(mut incoming) = incoming {
-        if let Some(output) = output.as_mut() { output.absorb(&mut incoming)?; }
-        else { *output = Some(incoming); }
+        if let Some(output) = output.as_mut() {
+            output.absorb(&mut incoming)?;
+        } else {
+            *output = Some(incoming);
+        }
     }
     #[cfg(target_arch = "wasm32")]
     let _ = (output, incoming);
@@ -36,17 +41,60 @@ pub(crate) fn absorb(output: &mut Allocation, incoming: Allocation) -> std::io::
 }
 
 pin_project_lite::pin_project! {
-    #[derive(Default)]
-    pub(crate) struct MemoryOutput<T> {
+    /// A value retaining its actual allocation until physical storage retires.
+    pub struct NativeStreamOutput<T> {
         #[pin]
         pub(crate) value: T,
         pub(crate) allocation: Allocation,
     }
 }
 
-impl<T> MemoryOutput<T> {
-    pub(crate) fn map<U>(self, convert: impl FnOnce(T) -> U) -> MemoryOutput<U> {
-        MemoryOutput { value: convert(self.value), allocation: self.allocation }
+impl<T> NativeStreamOutput<T> {
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Transfers already admitted storage.
+    pub fn new(value: T, allocation: ReadAllocation) -> Self {
+        Self {
+            value,
+            allocation: Some(allocation),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Borrows the output with its allocation owner.
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Borrows the output while retaining its allocation owner.
+    pub fn value_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Transfers the value and its original allocation owner.
+    pub fn into_parts(self) -> (T, ReadAllocation) {
+        (
+            self.value,
+            self.allocation
+                .expect("public native outputs have their original owner"),
+        )
+    }
+
+    pub(crate) fn map<U>(self, convert: impl FnOnce(T) -> U) -> NativeStreamOutput<U> {
+        NativeStreamOutput {
+            value: convert(self.value),
+            allocation: self.allocation,
+        }
+    }
+}
+
+impl<T: Default> NativeStreamOutput<T> {
+    pub(crate) fn default() -> Self {
+        Self {
+            value: T::default(),
+            allocation: Allocation::default(),
+        }
     }
 }
 
@@ -55,16 +103,23 @@ pub(crate) type ByteReservation<'a> = Option<NativeByteReservation<&'a dyn Nativ
 #[cfg(target_arch = "wasm32")]
 pub(crate) type ByteReservation<'a> = Option<&'a ()>;
 
-pub(crate) fn record_bytes(reservation: &mut ByteReservation<'_>, bytes: usize) -> std::io::Result<()> {
+pub(crate) fn record_bytes(
+    reservation: &mut ByteReservation<'_>,
+    bytes: usize,
+) -> std::io::Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(reservation) = reservation { return reservation.record(bytes); }
+    if let Some(reservation) = reservation {
+        return reservation.record(bytes);
+    }
     let _ = (reservation, bytes);
     Ok(())
 }
 
 pub(crate) fn check(_meter: WireMeter<'_>) -> std::io::Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(meter) = _meter { meter.check()?; }
+    if let Some(meter) = _meter {
+        meter.check()?;
+    }
     Ok(())
 }
 
@@ -73,34 +128,56 @@ pub(crate) fn allocate(_meter: WireMeter<'_>, bytes: usize) -> std::io::Result<A
     if let Some(meter) = _meter {
         return Ok(Some(if bytes == 0 {
             ReadAllocation::empty(meter)
-        } else { ReadAllocation::new(meter, bytes)? }));
+        } else {
+            ReadAllocation::new(meter, bytes)?
+        }));
     }
     let _ = bytes;
     Ok(Allocation::default())
 }
 
-pub(crate) fn vec<T>(_meter: WireMeter<'_>, capacity: usize) -> std::io::Result<MemoryOutput<Vec<T>>> {
-    let mut funding = crate::memory::MemoryOutput::fund(_meter);
+pub(crate) fn vec<T>(
+    _meter: WireMeter<'_>,
+    capacity: usize,
+) -> std::io::Result<NativeStreamOutput<Vec<T>>> {
+    let mut funding = crate::memory::NativeStreamOutput::fund(_meter);
     let value = funding.vector(capacity)?;
     Ok(funding.map(|_| value))
 }
 
 pub(crate) fn admit_item(_meter: WireMeter<'_>) -> std::io::Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(meter) = _meter { meter.admit_examination(1, 0)?; }
+    if let Some(meter) = _meter {
+        meter.admit_examination(1, 0)?;
+    }
     check(_meter)
 }
 
 pub(crate) fn record_item(_meter: WireMeter<'_>) -> std::io::Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(meter) = _meter { meter.record_examination(1, 0)?; }
+    if let Some(meter) = _meter {
+        meter.record_examination(1, 0)?;
+    }
     Ok(())
 }
 
-pub(crate) fn bytes<'a>(_meter: WireMeter<'a>, write: bool, bytes: usize) -> std::io::Result<ByteReservation<'a>> {
+pub(crate) fn bytes<'a>(
+    _meter: WireMeter<'a>,
+    write: bool,
+    bytes: usize,
+) -> std::io::Result<ByteReservation<'a>> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(meter) = _meter {
-        return NativeByteReservation::new(meter.as_ref(), if write { NativeOperationKind::Write } else { NativeOperationKind::Read }, bytes).map(Some);
+        return NativeByteReservation::new(
+            meter.as_ref(),
+            if write {
+                NativeOperationKind::Write
+            } else {
+                NativeOperationKind::Read
+            },
+            bytes,
+        )
+        .map(Some);
     }
     let _ = (write, bytes);
     Ok(None)
@@ -112,7 +189,15 @@ pub(crate) fn boundary(_meter: WireMeter<'_>, write: bool) -> std::io::Result<()
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(meter) = _meter {
         // The boundary is this SDK call, not an opaque transport/syscall.
-        let mut operation = NativeOperationReservation::new(meter.as_ref(), if write { NativeOperationKind::Write } else { NativeOperationKind::Read }, 1)?;
+        let mut operation = NativeOperationReservation::new(
+            meter.as_ref(),
+            if write {
+                NativeOperationKind::Write
+            } else {
+                NativeOperationKind::Read
+            },
+            1,
+        )?;
         let ((), recorded) = operation.attempt(|| ());
         recorded?;
     }
@@ -130,13 +215,20 @@ pub(crate) fn adopt(_meter: WireMeter<'_>, bytes: usize) -> std::io::Result<Allo
 
 pub(crate) fn retain_path(_meter: WireMeter<'_>, path: &StreamPath) -> std::io::Result<StreamPath> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(meter) = _meter { return path.retain_native(meter); }
+    if let Some(meter) = _meter {
+        return path.retain_native(meter);
+    }
     Ok(path.clone())
 }
 
-pub(crate) fn parent_path(_meter: WireMeter<'_>, path: &StreamPath) -> std::io::Result<Option<StreamPath>> {
+pub(crate) fn parent_path(
+    _meter: WireMeter<'_>,
+    path: &StreamPath,
+) -> std::io::Result<Option<StreamPath>> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(meter) = _meter { return path.parent_native(meter); }
+    if let Some(meter) = _meter {
+        return path.parent_native(meter);
+    }
     Ok(path.parent())
 }
 
@@ -150,7 +242,7 @@ pub(crate) fn provider_result<T>(result: MemoryResult<T>) -> Result<T, StreamErr
     }
 }
 
-pub(crate) fn ordinary<T>(result: MemoryResult<MemoryOutput<T>>) -> Result<T, StreamError> {
+pub(crate) fn ordinary<T>(result: MemoryResult<NativeStreamOutput<T>>) -> Result<T, StreamError> {
     provider_result(result).map(|output| output.value)
 }
 
@@ -164,8 +256,18 @@ pub(crate) fn native_result<T>(result: MemoryResult<T>) -> std::io::Result<Resul
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn native<T>(result: MemoryResult<MemoryOutput<T>>, meter: &Arc<dyn NativeReadMeter>) -> NativeStreamResult<T> {
-    native_result(result).map(|result| result.map(|output| NativeStreamOutput::new(
-        output.value, output.allocation.unwrap_or_else(|| ReadAllocation::empty(meter)),
-    )))
+pub(crate) fn native<T>(
+    result: MemoryResult<NativeStreamOutput<T>>,
+    meter: &Arc<dyn NativeReadMeter>,
+) -> NativeStreamResult<T> {
+    native_result(result).map(|result| {
+        result.map(|output| {
+            NativeStreamOutput::new(
+                output.value,
+                output
+                    .allocation
+                    .unwrap_or_else(|| ReadAllocation::empty(meter)),
+            )
+        })
+    })
 }

@@ -15,8 +15,7 @@ impl Client {
         bearer_token: impl AsRef<str>,
         certificate_pem: impl AsRef<[u8]>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_eager_tls(endpoint, bearer_token, Some(certificate_pem.as_ref()))
-            .await
+        Self::connect_eager_tls(endpoint, bearer_token, Some(certificate_pem.as_ref())).await
     }
 
     /// Builds a TLS endpoint pool, optionally trusting an exclusive private CA.
@@ -30,8 +29,11 @@ impl Client {
         S: AsRef<str>,
     {
         let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
-        let channels = Self::endpoints_with_tls(endpoints, certificate_pem)?.into_iter()
-            .map(|endpoint| endpoint.connect_lazy()).collect::<Vec<_>>().into();
+        let channels = Self::endpoints_with_tls(endpoints, certificate_pem)?
+            .into_iter()
+            .map(|endpoint| endpoint.connect_lazy())
+            .collect::<Vec<_>>()
+            .into();
         let authorization = Self::authorization(bearer_token.as_ref())?;
         Ok(Self::from_channels(channels, authorization))
     }
@@ -44,7 +46,8 @@ impl Client {
         let authorization = Self::authorization(bearer_token.as_ref())?;
         let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
         let endpoint = Self::endpoints_with_tls([endpoint], certificate_pem)?
-            .pop().expect("one endpoint was configured");
+            .pop()
+            .expect("one endpoint was configured");
         let channel = endpoint.connect().await?;
         Ok(Self::from_channels(vec![channel].into(), authorization))
     }
@@ -76,8 +79,8 @@ impl Client {
             if endpoint.len() > MAX_ENDPOINT_URI_BYTES {
                 return Err(ConnectError::EndpointLimit);
             }
-            let endpoint =
-                Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT);
+            let endpoint = Endpoint::from_shared(endpoint.to_owned())?
+                .connect_timeout(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT);
             if endpoint.uri().scheme_str() != Some("https") {
                 return Err(ConnectError::InsecureEndpoint);
             }
@@ -112,7 +115,10 @@ impl Client {
         Ok(authorization)
     }
 
-    pub(super) fn from_channels(channels: Arc<[Channel]>, authorization: MetadataValue<Ascii>) -> Self {
+    pub(super) fn from_channels(
+        channels: Arc<[Channel]>,
+        authorization: MetadataValue<Ascii>,
+    ) -> Self {
         Self {
             channels,
             authorization,
@@ -139,5 +145,4 @@ impl Client {
             .insert("authorization", self.authorization.clone());
         request
     }
-
 }

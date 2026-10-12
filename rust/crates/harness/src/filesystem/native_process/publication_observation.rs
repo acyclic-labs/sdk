@@ -145,7 +145,8 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             if published.index == index { accepted = Some(&published.snapshot); }
         }
         let accepted = accepted.ok_or(Error::Indeterminate(self.command))?;
-        let snapshot = accepted.snapshot().lazy_snapshot_with_native_work(work, work.cancellation())?
+        let snapshot = accepted. lazy_snapshot ( &mut acyclic_fs::kernel::KernelAccounting::native (work, work.cancellation() ,
+            ) )?
             .ok_or(boundary(crate::wire::ErrorCode::Conflict,
                 "published native project changed its SDK namespace kind"))?;
         work.charge(WorkCounters { items_examined: 1, ..Default::default() }).map_err(Error::from)?;

@@ -185,7 +185,7 @@ impl NativeSession {
                 return Err(Error::Unauthorized("original fork source request differs from its authenticated cut".into()));
             }
             acyclic_harness::core::Reducer::restore(
-                source.snapshot.clone(), source.owner.verifier()?, SchemaRegistry::default(),
+                source.snapshot.clone(), source.owner.verifier()?, SchemaRegistry::default(), &mut None,
             )?;
         }
         for publication in &config.native_publications {
@@ -196,11 +196,11 @@ impl NativeSession {
         #[cfg(feature = "native-execution")]
         acyclic_fs::initialize_native_mount_services()
             .map_err(|error| Error::Storage(format!("native mount service startup: {error}")))?;
-        let files = Arc::new(FilesystemHost::new(
+        let files = FilesystemHost::new(
             acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&config.filesystem_root)).await
                 .map_err(|error| Error::Storage(error.to_string()))?,
-            config.filesystem_provider.clone(),
-        )?);
+            &config.filesystem_provider, None,
+        )?;
         let stream = Arc::new(
             LocalStream::open(&config.stream_root, Default::default()).await
                 .map_err(|error| Error::Storage(error.to_string()))?,
@@ -249,8 +249,7 @@ impl NativeSession {
         let mut context = config.context.clone();
         if context.discovered.is_none() {
             if let Some(discovery) = &context.discovery {
-                let reader = FilesystemContentVerifier::new(files.clone(), &config.owner.verifier()?,
-                    &config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
+                let reader = FilesystemContentVerifier::new(files.clone(), &config.owner.verifier()?, &config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
                 context.discovered = Some(discovery.capture(&reader).await?);
             }
         }
@@ -270,8 +269,7 @@ impl NativeSession {
 
     pub async fn configure_context(&self, mut context: WorkflowContext) -> Result<String> {
         if let Some(discovery) = &context.discovery {
-            let reader = FilesystemContentVerifier::new(self.files.clone(), &self.config.owner.verifier()?,
-                &self.config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
+            let reader = FilesystemContentVerifier::new(self.files.clone(), &self.config.owner.verifier()?, &self.config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
             context.discovered = Some(discovery.capture(&reader).await?);
         }
         context.pipeline()?;
@@ -288,7 +286,7 @@ impl NativeSession {
             source.caller == caller && source.request.operation_id == operation)
             .ok_or_else(|| Error::NotFound("original fork source".into()))?;
         let reducer = acyclic_harness::core::Reducer::restore(source.snapshot.clone(),
-            source.owner.verifier()?, SchemaRegistry::default())?;
+            source.owner.verifier()?, SchemaRegistry::default(), &mut None)?;
         let request = source.request.clone().with_history_policy(&reducer, history, &mut None)?;
         Ok(format!("fork-selection-json={}\n", serde_json::to_string(&request)
             .map_err(|error| Error::Invalid(error.to_string()))?))
@@ -350,10 +348,7 @@ impl NativeSession {
         if bytes.len() > MAX_FRAME_BYTES {
             return Err(Error::Invalid("published prompt command exceeds terminal bounds".into()));
         }
-        let publisher = FilesystemContentPublisher::new(
-            self.files.clone(), &self.config.private_volume, &self.config.owner.verifier()?,
-            &self.config.owner.scope, MAX_FRAME_BYTES as u64, None,
-        )?;
+        let publisher = FilesystemContentPublisher::new(self.files.clone(), &self.config.private_volume, &self.config.owner.verifier()?, &self.config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
         let payload = publisher.stage_once(operation, &format!("graphcoder-inputs/{operation}.json"),
             &bytes, "application/json", "GraphCoder prompt command").await?;
         Ok(WorkflowCommand { operation_id: operation,
@@ -444,15 +439,12 @@ impl NativeSession {
         let child_binding = self.config.observed_authorities.iter()
             .find(|binding| binding.authority == report.request.child)
             .ok_or_else(|| Error::Unsupported("explicit child conversation provider binding unavailable".into()))?;
-        let content = Arc::new(FilesystemContentVerifier::new(
-            self.files.clone(), &parent_binding.owner.verifier()?, &parent_binding.owner.scope,
-            MAX_FRAME_BYTES as u64, None,
-        )?);
+        let content = FilesystemContentVerifier::new(self.files.clone(), &parent_binding.owner.verifier()?, &parent_binding.owner.scope, MAX_FRAME_BYTES as u64, None)?;
         let mut parent = StreamAggregate::open(
             &self.stream, parent_binding.owner.authority.clone(), parent_binding.owner.verifier()?,
             SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_content_verifier(content)
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-                Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
+                FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64, None, None)?,
                 Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
             ], &mut None)?));
         let mut child = StreamAggregate::open(
@@ -530,16 +522,14 @@ impl HarnessWireApi for NativeSession {
             let wire_authority = encode_authority(&authority);
             let binding = self.binding(&wire_authority)?;
             let verifier = binding.verifier()?;
-            let reader = Arc::new(FilesystemContentVerifier::new(
-                self.files.clone(), &verifier, &binding.scope, MAX_FRAME_BYTES as u64, None,
-            )?);
+            let reader = FilesystemContentVerifier::new(self.files.clone(), &verifier, &binding.scope, MAX_FRAME_BYTES as u64, None)?;
             let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
                 .with_content_verifier(reader)
                 .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-                    Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
+                    FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64, None, None)?,
                     Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
                 ], &mut None)?))
-                .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.files.clone())));
+                .with_merge_verifier(FilesystemProjectMergeVerifier::new(self.files.clone(), None)?);
             let (state, error) = match aggregate.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await {
                 Ok(_) => (wire::AdmissionState::Accepted, None),
                 Err(error @ Error::Indeterminate(_)) => (wire::AdmissionState::Indeterminate, Some(acyclic_harness::encode_error(&error))),

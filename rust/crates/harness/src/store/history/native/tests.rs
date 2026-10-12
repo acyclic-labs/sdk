@@ -454,8 +454,7 @@ fn accepted_preheld_sdk_guard_transfers_without_new_admission_or_counter_aliases
         "ordinary dispatch is unchanged"
     );
     let mut sdk_bytes = Vec::new();
-    preparation
-        .reserve_bytes(&mut sdk_bytes, 16)
+    crate::store::history::reserve(&mut sdk_bytes, 16, &mut preparation)
         .expect("actual prepaid SDK buffer");
     let sdk_guard = preparation.into_custody().expect("native custody");
     let prefix = work.receipt();
@@ -526,8 +525,7 @@ fn accepted_sdk_guard_overprefix_keeps_source_guard_and_never_widens_closed_pool
             .expect("first original SDK allocator"),
     );
     let mut oversized = Vec::new();
-    oversized_preparation
-        .reserve_bytes(&mut oversized, 16)
+    crate::store::history::reserve(&mut oversized, 16, &mut oversized_preparation)
         .expect("real oversized SDK backing");
     let oversized_guard = oversized_preparation
         .into_custody()
@@ -537,8 +535,7 @@ fn accepted_sdk_guard_overprefix_keeps_source_guard_and_never_widens_closed_pool
             .expect("second original SDK allocator"),
     );
     let mut bounded = Vec::new();
-    bounded_preparation
-        .reserve_bytes(&mut bounded, 8)
+    crate::store::history::reserve(&mut bounded, 8, &mut bounded_preparation)
         .expect("real bounded SDK backing");
     let bounded_guard = bounded_preparation.into_custody().expect("native custody");
     let prefix = work.receipt();
@@ -701,8 +698,7 @@ fn accepted_virtual_release_keeps_actual_buffer_claim_until_genuine_guard_transf
             .expect("original pre-action allocator"),
     );
     let mut dto = Vec::new();
-    preparation
-        .reserve_bytes(&mut dto, 16)
+    crate::store::history::reserve(&mut dto, 16, &mut preparation)
         .expect("actual original-ledger buffer allocation");
     assert_eq!(dto.capacity(), 16);
     let pool = preparation.into_custody().expect("native custody");

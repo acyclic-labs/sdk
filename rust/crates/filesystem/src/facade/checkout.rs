@@ -20,24 +20,15 @@ pub struct Checkout<A, O> {
     pub(super) mode: CheckoutMode,
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum CheckoutControlOrigin {
-    Standalone,
-    #[cfg(not(target_arch = "wasm32"))]
-    NativeOriginal,
-}
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
-
-
-    /// Opens one immutable pinned checkout after authenticating its bounded root.
-    pub async fn checkout(
+    /// Opens one authenticated checkout under the supplied work limits.
+    pub async fn checkout<W: FsWork>(
         &self,
         selector: GenerationSelector,
         mode: CheckoutMode,
-        budget: WorkBudget,
+        budget: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<Checkout<A, O>> {
+    ) -> W::Output<Checkout<A, O>, FsError> {
         let span = crate::obs::span!(
             INFO,
             "acyclic.fs.checkout",
@@ -46,207 +37,226 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             work.items = crate::obs::Empty,
             work.bytes = crate::obs::Empty,
             work.durability = crate::obs::Empty,
-            volume_id = crate::obs::hex(&self.id.into_bytes()),
+            volume_id = crate::obs::hex(&self.id.into_bytes())
         );
-        let result = crate::obs::in_span(&span, async move {
-            cancellation
-                .check()
-                .map_err(|error| OperationFailure::before_work(error.into()))?;
-            validate_checkout(mode, self.config)?;
-            let mut work = WorkCounters::default();
-            let (generation_root, mut authority_head, next_work) = self
-                .resolve_checkout_generation(selector, mode, work, budget, cancellation)
-                .await?;
-            work = next_work;
-            let (root, root_work) = read_generation_root(
+        let mut accounting = budget.accounting(cancellation);
+        let result = crate::obs::in_span(&span, async {
+            accounting.check()?;
+            validate_checkout(mode, self.config).map_err(|failure| failure.error)?;
+            let (generation_root, mut authority_head) = {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = accounting.native_work() {
+                    let (root, head, _) = self
+                        .resolve_checkout_generation(selector, mode, original, cancellation)
+                        .await?;
+                    (root, head)
+                } else {
+                    let resolved = self
+                        .resolve_checkout_generation(
+                            selector,
+                            mode,
+                            accounting.remaining()?,
+                            cancellation,
+                        )
+                        .await;
+                    let work = match &resolved {
+                        Ok(receipt) => receipt.work,
+                        Err(failure) => *failure.work,
+                    };
+                    merge_creation_backend_work(&mut accounting, work)?;
+                    let (root, head, _) = resolved.map_err(|failure| failure.error)?.value;
+                    (root, head)
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let resolved = self
+                        .resolve_checkout_generation(
+                            selector,
+                            mode,
+                            accounting.remaining()?,
+                            cancellation,
+                        )
+                        .await;
+                    let work = match &resolved {
+                        Ok(receipt) => receipt.work,
+                        Err(failure) => *failure.work,
+                    };
+                    merge_creation_backend_work(&mut accounting, work)?;
+                    let (root, head, _) = resolved.map_err(|failure| failure.error)?.value;
+                    (root, head)
+                }
+            };
+            let before = readonly_standalone_live(&accounting);
+            let (root, allocation) = read_generation_root_with_accounting(
                 &self.fs.inner.objects,
                 generation_root,
                 self.config,
-                remaining(work, budget)?,
+                &mut accounting,
                 cancellation,
             )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-            work = add(work, root_work)?;
+            .await?;
+            let root_bytes = root_parent_bytes(&root)?;
+            readonly_cleanup_standalone(&mut accounting, before, root_bytes)?;
             if root.volume_id != self.id {
-                return Err(OperationFailure::new(FsError::VolumeMismatch, work));
+                return Err(FsError::VolumeMismatch);
             }
             if mode.access == AccessMode::ReadWrite
                 && self.config.concurrency == ConcurrencyMode::ExclusiveWriter
             {
-                let expected = authority_head.ok_or_else(|| {
-                    OperationFailure::new(FsError::WritableCheckoutRequiresHead, work)
-                })?;
-                let fenced = self
+                let expected = authority_head.ok_or(FsError::WritableCheckoutRequiresHead)?;
+                let mut work = authority_work(&accounting, cancellation)?;
+                let result = self
                     .fs
                     .inner
                     .authority
-                    .fence(
-                        volume_authority_id(self.id),
-                        expected,
-                        remaining(work, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-                work = add(work, fenced.work)?;
-                authority_head = Some(match fenced.value {
+                    .fence(volume_authority_id(self.id), expected, &mut work)
+                    .await;
+                record_authority_work(&mut accounting, &work)?;
+                authority_head = Some(match result? {
                     FenceOutcome::Advanced(head) => head,
                     FenceOutcome::Conflict { actual } => {
-                        return Err(OperationFailure::new(
-                            FsError::ExclusiveWriterConflict { actual },
-                            work,
-                        ));
+                        return Err(FsError::ExclusiveWriterConflict { actual });
                     }
                 });
             }
-            let mut allocations = AllocationLedger::default();
-            allocations.claim_bytes(
-                usize_to_u64(root.parents.capacity() * size_of::<GenerationId>()), 0, &mut work, budget,
-            ).map_err(|error| OperationFailure::new(crate::collection::handle_allocation_error(error), work))?;
+            let custody = Checkout::<A, O>::checkout_custody(&mut accounting, cancellation)?;
             let captured_bytes = usize_to_u64(CheckoutDependencies::empty_logical_owned_bytes());
-            allocations.claim_bytes(captured_bytes, 1, &mut work, budget)
-                .map_err(|error| OperationFailure::new(crate::collection::handle_allocation_error(error), work))?;
-            let dependencies = CheckoutDependencies::new(
+            let mut captured_allocation = accounting.claim_owned(captured_bytes, 1)?;
+            let captured = CheckoutDependencies::new(
                 std::iter::empty(),
                 std::iter::empty(),
                 self.config.limits.maximum_checkout_dependencies,
-            )
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-            let lock_and_paths_bytes = usize_to_u64(size_of::<Mutex<Proof>>() + size_of::<ObservedPathMap>());
-            allocations.claim_bytes(lock_and_paths_bytes, 2, &mut work, budget)
-                .map_err(|error| OperationFailure::new(crate::collection::handle_allocation_error(error), work))?;
-            let custody_bytes = allocations.claim_elements::<ProofDataCustody>(
-                1, &mut work, budget,
-            ).map_err(|error| OperationFailure::new(crate::collection::handle_allocation_error(error), work))?;
-            let mut dependencies = DependencyLedger::new(dependencies);
-            dependencies.proof().control = ProofDataClaim::control(
-                &dependencies.data_custody, usize_to_u64(size_of::<Mutex<Proof>>()),
-            );
-            assert!(dependencies.proof().dependencies.attach_fresh_control_custody(
-                &dependencies.data_custody,
-            ), "a freshly constructed checkout owns its unique empty dependency map");
-            Arc::get_mut(dependencies.proof().observed_paths.as_mut().expect("a fresh checkout owns its observed map"))
-                .expect("a freshly constructed checkout owns its unique empty observed map").control =
-                ProofDataClaim::control(&dependencies.data_custody, usize_to_u64(size_of::<ObservedPathMap>()));
-            let proof_owned_bytes = captured_bytes.checked_add(lock_and_paths_bytes).and_then(|bytes| bytes.checked_add(custody_bytes))
-                .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
-            let base_root = crate::collection::clone_generation_root(
-                &root, &mut allocations, &mut work, budget, &cancellation,
-            ).map_err(|error| OperationFailure::new(error, work))?;
-            dependencies.base_root_control = ProofDataClaim::control(
-                &dependencies.data_custody, root_parent_bytes(&base_root).map_err(|error| OperationFailure::new(error, work))?,
-            );
-            let mut root = crate::collection::CheckoutRoots::new_measured(
-                self.fs.inner.objects.collection(), self.config, generation_root, root, &mut allocations, &mut work, budget, cancellation,
-            ).map_err(|error| OperationFailure::new(error, work))?;
-            root.attach_control_custody(&dependencies.data_custody);
-            Ok(FsReceipt {
-                value: Checkout {
-                    volume: self.clone(),
-                    generation_root,
-                    base_file_table: root.file_table,
-                    base_root, root,
-                    authority_head,
-                    authored_operation_id: None,
-                    live_operation_id: None,
-                    last_commit: None,
-                    publication_closure: None,
-                    prepared_merge_parent: None,
-                    dependencies, proof_owned_bytes,
-                    mode,
-                },
-                work,
+            )?;
+            let proof_bytes = usize_to_u64(size_of::<Mutex<Proof>>());
+            let paths_bytes = usize_to_u64(size_of::<ObservedPathMap>());
+            let mut proof_allocation = accounting.claim_owned(proof_bytes, 1)?;
+            let mut paths_allocation = accounting.claim_owned(paths_bytes, 1)?;
+            let (base_root, root, dependencies) = match allocation {
+                #[cfg(not(target_arch = "wasm32"))]
+                KernelOwnedAllocation::NativeOriginal(mut root_allocation) => {
+                    let original = accounting
+                        .native_work()
+                        .expect("native checkout allocation");
+                    let witness = original.checkout_control_sink(&custody)?;
+                    let working = root_allocation.transfer_checkout_control(&custody, &witness)?;
+                    let mut captured_control = native_pinned_allocation(captured_allocation)?
+                        .transfer_checkout_control(&custody, &witness)?;
+                    let mut captured = captured;
+                    assert!(
+                        captured.attach_fresh_paid_control(&mut captured_control),
+                        "fresh checkout owns its dependency map"
+                    );
+                    let proof_control = native_pinned_allocation(proof_allocation)?
+                        .transfer_checkout_control(&custody, &witness)?;
+                    let paths_control = native_pinned_allocation(paths_allocation)?
+                        .transfer_checkout_control(&custody, &witness)?;
+                    let mut dependencies = DependencyLedger::new_with_native_custody(
+                        captured,
+                        custody,
+                        proof_control,
+                        paths_control,
+                    );
+                    let (base, control) = crate::collection::clone_generation_root_native(
+                        &root,
+                        &mut accounting,
+                        &dependencies.data_custody,
+                    )?;
+                    dependencies.base_root_control = control;
+                    let root = crate::collection::CheckoutRoots::new_native_measured(
+                        self.fs.inner.objects.collection(),
+                        self.config,
+                        generation_root,
+                        (root, working),
+                        &mut accounting,
+                        &dependencies.data_custody,
+                    )?;
+                    (base, root, dependencies)
+                }
+                KernelOwnedAllocation::Standalone => {
+                    drop((captured_allocation, proof_allocation, paths_allocation));
+                    let mut dependencies =
+                        DependencyLedger::sharing_with_custody(Proof::new(captured), custody);
+                    dependencies.proof().control =
+                        ProofDataClaim::control(&dependencies.data_custody, proof_bytes);
+                    assert!(
+                        dependencies
+                            .proof()
+                            .dependencies
+                            .attach_fresh_control_custody(&dependencies.data_custody),
+                        "fresh checkout owns its dependency map"
+                    );
+                    Arc::get_mut(
+                        dependencies
+                            .proof()
+                            .observed_paths
+                            .as_mut()
+                            .expect("fresh observed map"),
+                    )
+                    .expect("fresh observed map is unique")
+                    .control = ProofDataClaim::control(&dependencies.data_custody, paths_bytes);
+                    let (base, _allocation) =
+                        crate::collection::clone_generation_root_with_accounting(
+                            &root,
+                            &mut accounting,
+                        )?;
+                    dependencies.base_root_control = ProofDataClaim::control(
+                        &dependencies.data_custody,
+                        root_parent_bytes(&base)?,
+                    );
+                    let (allocations, work, allowance, _) =
+                        accounting.standalone_parts().expect("standalone checkout");
+                    let mut root = crate::collection::CheckoutRoots::new_measured(
+                        self.fs.inner.objects.collection(),
+                        self.config,
+                        generation_root,
+                        root,
+                        allocations,
+                        work,
+                        allowance,
+                        cancellation,
+                    )?;
+                    root.attach_control_custody(&dependencies.data_custody);
+                    (base, root, dependencies)
+                }
+            };
+            let proof_owned_bytes = captured_bytes
+                .checked_add(proof_bytes)
+                .and_then(|bytes| bytes.checked_add(paths_bytes))
+                .and_then(|bytes| bytes.checked_add(size_of::<ProofDataCustody>() as u64))
+                .ok_or(WorkError::Overflow)?;
+            accounting.check()?;
+            Ok(Checkout {
+                volume: self.clone(),
+                generation_root,
+                base_file_table: root.file_table,
+                base_root,
+                root,
+                authority_head,
+                authored_operation_id: None,
+                live_operation_id: None,
+                last_commit: None,
+                publication_closure: None,
+                prepared_merge_parent: None,
+                dependencies,
+                proof_owned_bytes,
+                mode,
             })
         })
         .await;
-        result.observe_on(&span, "checkout")
-    }
-
-
-    /// Opens the authenticated checkout on the supplied original native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn checkout_with_native_work(
-        &self, selector: GenerationSelector, mode: CheckoutMode, original: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<Checkout<A, O>, FsError> {
-        cancellation.check()?;
-        validate_checkout(mode, self.config).map_err(|failure| failure.error)?;
-        let (generation_root, mut authority_head) = self
-            .resolve_checkout_generation_with_native_work(selector, mode, original, cancellation).await?;
-        let mut accounting = KernelAccounting::native(original, cancellation);
-        let decoded = read_generation_root_with_accounting(
-            &self.fs.inner.objects, generation_root, self.config, &mut accounting, cancellation,
-        ).await?;
-        let mut root_guard = match decoded.1 {
-            KernelOwnedAllocation::NativeOriginal(guard) => guard, KernelOwnedAllocation::Standalone =>
-                unreachable!("native root accounting returns its original allocation guard"),
-        };
-        let root = decoded.0;
-        if root.volume_id != self.id { return Err(FsError::VolumeMismatch); }
-        if mode.access == AccessMode::ReadWrite
-            && self.config.concurrency == ConcurrencyMode::ExclusiveWriter {
-            let expected = authority_head.ok_or(FsError::WritableCheckoutRequiresHead)?;
-            authority_head = Some(match self.fs.inner.authority.fence_with_native_work(
-                volume_authority_id(self.id), expected, original, cancellation,
-            ).await? {
-                FenceOutcome::Advanced(head) => head,
-                FenceOutcome::Conflict { actual } => return Err(FsError::ExclusiveWriterConflict { actual }),
-            });
-        }
-        cancellation.check()?;
-        let mut token_header = original.claim_root_metadata(std::mem::size_of::<ProofDataCustody>() as u64)?;
-        let custody_bytes = token_header.bytes();
-        let custody = Arc::new(ProofDataCustody::default());
-        let witness = original.register_native_checkout_control(&custody, &mut token_header)?;
-        let working_control = root_guard.transfer_checkout_control(&custody, &witness)?;
-        let working = (root, working_control);
-        let captured_bytes = usize_to_u64(CheckoutDependencies::empty_logical_owned_bytes());
-        cancellation.check()?;
-        let mut captured_guard = original.claim(captured_bytes, 1, crate::WorkCounters::UNCHARGED)?;
-        let mut captured_control = captured_guard.transfer_checkout_control(&custody, &witness)?;
-        let mut captured = CheckoutDependencies::new(
-            std::iter::empty(), std::iter::empty(), self.config.limits.maximum_checkout_dependencies,
-        )?;
-        assert!(captured.attach_fresh_paid_control(&mut captured_control),
-            "a fresh checkout owns its unique empty dependency map");
-        let proof_bytes = usize_to_u64(size_of::<Mutex<Proof>>());
-        let paths_bytes = usize_to_u64(size_of::<ObservedPathMap>());
-        cancellation.check()?;
-        let mut proof_guard = original.claim(proof_bytes, 1, crate::WorkCounters::UNCHARGED)?;
-        let mut paths_guard = original.claim(paths_bytes, 1, crate::WorkCounters::UNCHARGED)?;
-        let proof_control = proof_guard.transfer_checkout_control(&custody, &witness)?;
-        let paths_control = paths_guard.transfer_checkout_control(&custody, &witness)?;
-        let mut dependencies = DependencyLedger::new_with_native_custody(
-            captured, custody, proof_control, paths_control,
-        );
-        let (base_root, base_control) = crate::collection::clone_generation_root_native(
-            &working.0, &mut accounting, &dependencies.data_custody,
-        )?;
-        dependencies.base_root_control = base_control;
-        let root = crate::collection::CheckoutRoots::new_native_measured(
-            self.fs.inner.objects.collection(), self.config, generation_root, working, &mut accounting, &dependencies.data_custody,
-        )?;
-        let proof_owned_bytes = captured_bytes.checked_add(proof_bytes).and_then(|bytes| bytes.checked_add(paths_bytes))
-            .and_then(|bytes| bytes.checked_add(custody_bytes)).ok_or(WorkError::Overflow)?;
-        accounting.check()?;
-        Ok(Checkout {
-            volume: self.clone(), generation_root, base_file_table: root.file_table,
-            base_root, root, authority_head, authored_operation_id: None,
-            live_operation_id: None, last_commit: None, publication_closure: None,
-            prepared_merge_parent: None, dependencies, proof_owned_bytes, mode,
-        })
+        let result = measured(result, &accounting)
+            .observe_on(&span, "checkout")
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error);
+        budget.finish(result, &accounting)
     }
 }
 
 impl<A, O> Checkout<A, O> {
-
-
     /// Owning volume identity.
     #[must_use]
     pub const fn volume_id(&self) -> VolumeId {
         self.volume.id
     }
-
 
     /// Immutable owning-volume semantics and operation bounds.
     #[must_use]
@@ -254,13 +264,11 @@ impl<A, O> Checkout<A, O> {
         self.volume.config
     }
 
-
     /// Exact immutable generation identity.
     #[must_use]
     pub const fn generation_id(&self) -> GenerationId {
         GenerationId::new(self.generation_root.digest)
     }
-
 
     /// Authenticated decoded generation root.
     #[must_use]
@@ -268,20 +276,17 @@ impl<A, O> Checkout<A, O> {
         &self.root
     }
 
-
     /// Admitted checkout behavior.
     #[must_use]
     pub const fn mode(&self) -> CheckoutMode {
         self.mode
     }
 
-
     /// Whether the private candidate differs from its immutable base.
     #[must_use]
     pub fn has_pending_mutations(&self) -> bool {
         self.root.file_table != self.base_file_table || self.prepared_merge_parent.is_some()
     }
-
 
     /// Whether reads retain exact observations for safe rebase and commit.
     pub(super) fn tracks_observations(&self) -> bool {
@@ -290,8 +295,6 @@ impl<A, O> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-
-
     /// Discards a private candidate and reauthenticates its immutable base.
     pub async fn discard(
         &mut self,
@@ -313,11 +316,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             return Err(OperationFailure::new(FsError::VolumeMismatch, work));
         }
         let live = root_parent_bytes(&root).map_err(|error| OperationFailure::new(error, work))?;
-        let mut root_accounting = KernelAccounting::standalone(remaining_owned(work, budget, live)?, cancellation);
-        let prepared = measured(self.prepare_root_replacement(
-            &root, &root, &mut root_accounting, cancellation, None,
-        ), &root_accounting)
-            .map_err(|failure| merge_simultaneous_failure(work, *failure.work, live, failure.error))?;
+        let mut root_accounting =
+            KernelAccounting::standalone(remaining_owned(work, budget, live)?, cancellation);
+        let prepared = measured(
+            self.prepare_root_replacement(&root, &root, &mut root_accounting, cancellation, None),
+            &root_accounting,
+        )
+        .map_err(|failure| merge_simultaneous_failure(work, *failure.work, live, failure.error))?;
         work = merge_simultaneous_work(work, prepared.work, live, budget)?;
         self.install_root_replacement(self.root.base(), root, prepared.value);
         self.base_file_table = self.root.file_table;
@@ -325,9 +330,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.live_operation_id = None;
         self.prepared_merge_parent = None;
         self.dependencies.proof().clear();
-        Ok(FsReceipt { value: (), work })
+        Ok(OperationReceipt { value: (), work })
     }
-
 
     /// Explicitly advances one clean manual or tracking checkout to head.
     pub async fn refresh_head(
@@ -349,10 +353,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let (generation_root, head, mut work) = self
             .volume
             .resolve_head_generation(budget, cancellation)
-            .await?;
+            .await
+            .map(|receipt| receipt.value)?;
         if generation_root == self.generation_root {
             self.authority_head = Some(head);
-            return Ok(FsReceipt {
+            return Ok(OperationReceipt {
                 value: self.generation_id(),
                 work,
             });
@@ -371,23 +376,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             return Err(OperationFailure::new(FsError::VolumeMismatch, work));
         }
         let live = root_parent_bytes(&root).map_err(|error| OperationFailure::new(error, work))?;
-        let mut root_accounting = KernelAccounting::standalone(remaining_owned(work, budget, live)?, cancellation);
-        let prepared = measured(self.prepare_root_replacement(
-            &root, &root, &mut root_accounting, cancellation, None,
-        ), &root_accounting)
-            .map_err(|failure| merge_simultaneous_failure(work, *failure.work, live, failure.error))?;
+        let mut root_accounting =
+            KernelAccounting::standalone(remaining_owned(work, budget, live)?, cancellation);
+        let prepared = measured(
+            self.prepare_root_replacement(&root, &root, &mut root_accounting, cancellation, None),
+            &root_accounting,
+        )
+        .map_err(|failure| merge_simultaneous_failure(work, *failure.work, live, failure.error))?;
         work = merge_simultaneous_work(work, prepared.work, live, budget)?;
         self.generation_root = generation_root;
         self.install_root_replacement(generation_root, root, prepared.value);
         self.base_file_table = self.root.file_table;
         self.authority_head = Some(head);
         self.dependencies.proof().clear();
-        Ok(FsReceipt {
+        Ok(OperationReceipt {
             value: self.generation_id(),
             work,
         })
     }
-
 
     /// Checks retained original custody, without admitting work or granting rights.
     #[cfg(not(target_arch = "wasm32"))]
@@ -396,14 +402,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         original: &crate::NativeMaterializationWork,
     ) -> Result<(), FsError> {
         if !original.owns_native_checkout_token(&self.dependencies.data_custody)
-            || !self.root.same_original_scope(original.native_read_meter())
-            || !self.dependencies.base_root_control.is_native_original(
-                original.native_read_meter(), root_parent_bytes(&self.base_root)?,
-            )
+            || !self.root.same_original_scope(&original.state)
+            || !self
+                .dependencies
+                .base_root_control
+                .is_native_original(&original.state, root_parent_bytes(&self.base_root)?)
         {
-            return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
+            return Err(FsError::NativeKernel(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ));
         }
         Ok(())
     }
 }
-

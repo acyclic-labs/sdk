@@ -382,7 +382,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
             }
         }
         let (cloned, returned_owned) =
-            crate::core::native_event_clone_with_custody(&event, transient.work())?;
+            crate::wire_codec::CodecQuota::produce(transient.work(), |copy_quota| {
+                crate::core::copy_event(&event, copy_quota)
+            })?;
         transient.adopt(returned_owned)?;
         let applied = self
             .reducer

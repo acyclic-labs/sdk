@@ -350,7 +350,11 @@ pub async fn effect_events<P: StreamProvider>(
                 if let Some(observer) = work.as_deref_mut() {
                     observer.stage_output(bytes - record.value.len() as u64, 1)?;
                     if events.len() == events.capacity() {
-                        observer.reserve_events(&mut events, limits.maximum_events as usize)?;
+                        crate::store::history::ensure_slot(
+                            &mut events,
+                            limits.maximum_events as usize,
+                            observer,
+                        )?;
                     }
                 }
                 Ok(())

@@ -380,7 +380,7 @@ async fn measured_snapshot_authentication_observes_original_encoder_and_mac_fail
     )?);
     work.preflight()?;
     provider.reset_io();
-    let result = Reducer::restore_with_work(
+    let result = Reducer::restore(
         snapshot.copy(&mut None)?,
         issuer().verifier(&mut None).expect("verifier copy"),
         schemas(),
@@ -412,7 +412,7 @@ async fn measured_snapshot_authentication_observes_original_encoder_and_mac_fail
             crate::filesystem::PreparationIo::from_budget(narrow, &cancellation)?,
         );
         work.preflight()?;
-        let result = Reducer::restore_with_work(
+        let result = Reducer::restore(
             snapshot.copy(&mut None)?,
             issuer().verifier(&mut None).expect("verifier copy"),
             schemas(),
@@ -451,7 +451,7 @@ async fn measured_snapshot_authentication_observes_original_encoder_and_mac_fail
         budget(),
         &cancellation,
     )?);
-    let result = Reducer::restore_with_work(
+    let result = Reducer::restore(
         forged,
         issuer().verifier(&mut None).expect("verifier copy"),
         schemas(),
@@ -472,7 +472,7 @@ async fn measured_snapshot_authentication_observes_original_encoder_and_mac_fail
         budget(),
         &cancellation,
     )?);
-    let result = Reducer::restore_with_work(
+    let result = Reducer::restore(
         forged,
         issuer().verifier(&mut None).expect("verifier copy"),
         schemas(),

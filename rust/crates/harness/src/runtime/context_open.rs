@@ -273,7 +273,7 @@ impl AgentHarness {
                 let mut admitted = host
                     .resume_scope_with_native_work(task, operation, work)?
                     .await?;
-                if !admitted.1.matches_work(work) {
+                if !admitted.1.work().shares_allocation_context(work) {
                     return Err(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unauthorized,
                         reason: "resumed scope differs from its original metadata ledger",

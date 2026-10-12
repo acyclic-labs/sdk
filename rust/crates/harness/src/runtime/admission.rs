@@ -244,8 +244,8 @@ impl TaskAdmissionRecord {
             .extensions
             .as_ref()
             .map(|source| -> Result<_> {
-                let copied = source.copy(quota.work())?;
-                quota.adopt(copied.logical_owned_bytes()?)?;
+                let (copied, retained) = source.copy(quota.work())?;
+                quota.adopt(retained)?;
                 Ok(copied)
             })
             .transpose()?;
@@ -293,7 +293,7 @@ impl TaskAdmissionRecord {
         drop(quota);
         drop(observer);
         let custody = io.take_native_custody(held)?;
-        if !custody.matches_work(work) {
+        if !custody.work().shares_allocation_context(work) {
             drop(copied);
             return Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
@@ -574,8 +574,9 @@ impl TaskAdmissionRecord {
                             Some(crate::wire::ErrorCode::Invalid),
                         )?
                         .0;
-                        let diagnostics = crate::contract::audited_preparation_diagnostic_bytes(
-                            value_shape.input_bytes(),
+                        let diagnostics = crate::contract::json_typed_diagnostic_owned_bytes(
+                            value_shape,
+                            crate::contract::preparation_serde_diagnostic_label_bytes(),
                             Some(crate::wire::ErrorCode::Invalid),
                         )?;
                         let bytes = containers

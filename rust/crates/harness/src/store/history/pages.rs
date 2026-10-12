@@ -264,13 +264,17 @@ impl<P: StreamProvider> HistoryReader<P> {
                 })?;
             if let Some(work) = work.as_deref_mut() {
                 work.admit_output(bytes, events.len() as u64 + 1)?;
-                work.reserve_events(&mut events, count as usize)?;
+                crate::store::history::ensure_slot(&mut events, count as usize, work)?;
             }
             next.after_revision = event.revision;
             events.push(event);
             if retain_records {
                 if let Some(work) = work.as_deref_mut() {
-                    work.reserve_records(&mut retained_records, count as usize)?;
+                    crate::store::history::ensure_slot(
+                        &mut retained_records,
+                        count as usize,
+                        work,
+                    )?;
                 }
                 retained_records.push(record);
             } else {

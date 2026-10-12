@@ -1,5 +1,5 @@
 //! Aggregate accounting on the existing IO context.
-use super::{HistoryContentFuture, HistoryIo};
+use super::HistoryIo;
 use crate::filesystem::PreparationIo;
 use crate::{
     Error, Result,
@@ -53,48 +53,7 @@ impl HistoryWork {
         let held = self.io.owned_bytes()?;
         self.io.into_native_custody(held)
     }
-    fn reserve<T>(&mut self, values: &mut Vec<T>, capacity: usize) -> Result<()> {
-        let old = values.capacity();
-        if capacity <= old {
-            return Ok(());
-        }
-        let extra = (capacity - old)
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| self.overflow())? as u64;
-        self.retain_owned(extra)?;
-        let reserved = self.io.allocation_attempt(extra).and_then(|()| {
-            values
-                .try_reserve_exact(capacity - values.len())
-                .map_err(|cause| self.allocation_failure(cause))
-        });
-        if let Err(error) = reserved {
-            self.release_owned(extra)?;
-            return Err(error);
-        }
-        let actual = (values.capacity() - old)
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| self.overflow())? as u64;
-        if actual > extra {
-            self.retain_owned(actual - extra)
-        } else {
-            self.release_owned(extra - actual)
-        }
-    }
-    fn grow<T>(&mut self, values: &mut Vec<T>, maximum: usize) -> Result<()> {
-        if values.len() < values.capacity() {
-            return Ok(());
-        }
-        let capacity = values
-            .capacity()
-            .checked_mul(2)
-            .unwrap_or(maximum)
-            .max(4)
-            .min(maximum);
-        if capacity <= values.capacity() {
-            return Err(self.io.invalid("history vector exceeds declared maximum"));
-        }
-        self.reserve(values, capacity)
-    }
+
     fn overflow(&self) -> Error {
         #[cfg(not(target_arch = "wasm32"))]
         if self.io.original_native_work().is_some() {
@@ -194,32 +153,9 @@ impl HistoryIo for HistoryWork {
         }
         Ok(value)
     }
-    fn reserve_events(&mut self, values: &mut Vec<Event>, maximum: usize) -> Result<()> {
-        self.grow(values, maximum)
-    }
-    fn reserve_records(
-        &mut self,
-        values: &mut Vec<crate::store::operations::ObservedRecord>,
-        maximum: usize,
-    ) -> Result<()> {
-        self.grow(values, maximum)
-    }
-    fn reserve_messages(
-        &mut self,
-        values: &mut Vec<crate::conversation::ConversationMessage>,
-        maximum: usize,
-    ) -> Result<()> {
-        self.grow(values, maximum)
-    }
-    fn reserve_values(
-        &mut self,
-        values: &mut Vec<serde_json::Value>,
-        maximum: usize,
-    ) -> Result<()> {
-        self.grow(values, maximum)
-    }
-    fn reserve_bytes(&mut self, values: &mut Vec<u8>, capacity: usize) -> Result<()> {
-        self.reserve(values, capacity)
+
+    fn allocation_attempt(&mut self, bytes: u64) -> Result<()> {
+        self.io.allocation_attempt(bytes)
     }
     fn reserve_text(&mut self, values: &mut String, capacity: usize) -> Result<()> {
         let old = values.capacity();
@@ -239,10 +175,7 @@ impl HistoryIo for HistoryWork {
         }
         self.retain_owned((values.capacity() - capacity) as u64)
     }
-    fn admit_allocation(&mut self, bytes: u64) -> Result<()> {
-        self.admit_owned(bytes)?;
-        HistoryIo::admit_allocation(&mut &self.io, bytes)
-    }
+
     fn admit_copy(&self, bytes: u64) -> Result<()> {
         HistoryIo::admit_copy(&&self.io, bytes)
     }
@@ -341,52 +274,38 @@ impl HistoryIo for HistoryWork {
         &'a mut self,
         verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
-    ) -> Result<HistoryContentFuture<'a, ()>> {
-        let io = &self.io;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(work, || async move {
-                if !verifier.supports_read(reference.volume(), Some(io))? {
-                    return Err(io.invalid("content verifier has no native read support"));
-                }
-                verifier
-                    .verify(reference, reference.descriptor().byte_length(), Some(io))?
-                    .await
-            })
-            .map(HistoryContentFuture::Native);
+        if self.io.original_native_work().is_some()
+            && !verifier.supports_read(reference.volume(), Some(&self.io))?
+        {
+            return Err(self
+                .io
+                .invalid("content verifier has no native read support"));
         }
-        io.history_future(|| async move {
-            verifier
-                .verify(reference, reference.descriptor().byte_length(), Some(io))?
-                .await
-        })
+        verifier.verify(
+            reference,
+            reference.descriptor().byte_length(),
+            Some(&self.io),
+        )
     }
     fn read_content<'a>(
         &'a mut self,
         verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
-    ) -> Result<HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
-        let io = &self.io;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(work, || async move {
-                if !verifier.supports_read(reference.volume(), Some(io))? {
-                    return Err(io.invalid("content verifier has no native read support"));
-                }
-                let bytes = verifier
-                    .read(reference, reference.descriptor().byte_length(), Some(io))?
-                    .await?;
-                Ok((bytes, 0))
-            })
-            .map(HistoryContentFuture::Native);
+        if self.io.original_native_work().is_some()
+            && !verifier.supports_read(reference.volume(), Some(&self.io))?
+        {
+            return Err(self
+                .io
+                .invalid("content verifier has no native read support"));
         }
-        io.history_future(|| async move {
-            let bytes = verifier
-                .read(reference, reference.descriptor().byte_length(), Some(io))?
-                .await?;
-            let held = bytes.retained_capacity().unwrap_or(0) as u64;
-            io.retain_owned(held)?;
-            Ok((bytes, held))
-        })
+        verifier.read(
+            reference,
+            reference.descriptor().byte_length(),
+            Some(&self.io),
+        )
     }
 }

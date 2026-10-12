@@ -222,8 +222,9 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         &self, attempt: crate::EffectAttemptId, request: &NativeProcessRequest,
         work: &NativeMaterializationWork,
     ) -> Result<NativeProcessReceipt> {
-        let digest = request.approval_digest_with_native_work(
-            self.owner.task_binding().0, self.command, work,
+        let digest = request.approval_digest(
+            self.owner.task_binding().0, self.command,
+            Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
         )?;
         self.authority.approvals.verify_with_native_work(self.approval, self.command, digest, work)?.await?;
         self.receipt(attempt, work, Some(digest)).await?

@@ -243,7 +243,7 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let files = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
+    let files = FilesystemHost::new(filesystem, &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
     let volume = |name| {
         VolumeRef::new(
@@ -305,7 +305,7 @@ where
             "input.txt",
             128,
             &IdempotencyKey::new("example-source")?,
-        )
+         None, None)
         .await?;
     let runtime = runtime(
         stream.clone(),
@@ -337,7 +337,7 @@ where
         &stream.clone(),
         issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     conversation
         .execute(Command {
@@ -410,19 +410,8 @@ where
     if restart_path.is_some() {
         request.timeout_ms = 30_000;
     }
-    let content = Arc::new(FilesystemContentVerifier::new(
-        files.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_000_000, None,
-    )?);
-    let results = Arc::new(FilesystemContentPublisher::new(
-        files.clone(),
-        &results_volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_000_000, None,
-    )?);
+    let content = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
+    let results = FilesystemContentPublisher::new(files.clone(), &results_volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
     let request_ref = results
         .stage(
             command,
@@ -461,7 +450,7 @@ where
             Interaction::approval(
                 "Run this exact example process".into(),
                 command,
-                request.approval_digest(task_id, command)?,
+                request.approval_digest(task_id, command, None)?,
             )?,
         )
         .await?;
@@ -587,10 +576,10 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let issuer = issuer();
-    let files = Arc::new(FilesystemHost::new(
+    let files = FilesystemHost::new(
         filesystem,
-        seed.destination.provider().clone(),
-    )?);
+        seed.destination.provider(), None,
+    )?;
     let runtime = runtime(
         stream.clone(),
         files.clone(),
@@ -765,18 +754,10 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let content: Arc<dyn ContentResidencyVerifier> = Arc::new(FilesystemContentVerifier::new(
-        files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None,
-    )?);
+    let content: Arc<dyn ContentResidencyVerifier> = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
     Ok(NativeProcessAuthority { verifier: issuer.verifier(&mut None).expect("verifier copy"), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 },
     content: content.clone(), result_content: content,
-    results: Arc::new(FilesystemContentPublisher::new(
-        files.clone(),
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_000_000, None,
-    )?),
+    results: FilesystemContentPublisher::new(files.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?,
     approvals: execution_journal(stream, files, volume, issuer, scope)?, authority_custody: None, })
 }
 

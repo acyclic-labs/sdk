@@ -1,12 +1,12 @@
-use crate::async_storage::AsyncObjectStore;
 use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{
     FileKind, FileMetadata, MetadataField, NameEncoding, TreeEntry, TreePage, encode_file_metadata,
     encode_tree_page, file_metadata_id, tree_page_id,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectKind, };
+use crate::storage::ObjectKind;
 use acyclic_stream::OwnedBytes;
 
 fn object(kind: ObjectKind, byte: u8) -> ObjectId {
@@ -78,11 +78,17 @@ async fn put_metadata(
     metadata: FileMetadata,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let object = file_metadata_id(metadata)?;
-    AsyncObjectStore::put(
-        store,
-        object,
+    {
+        let __object_args = (
+            object,
         OwnedBytes::from(encode_file_metadata(metadata, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object)
 }
 
@@ -100,11 +106,17 @@ async fn put_tree(
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let page = TreePage::Leaf(entries);
     let object = tree_page_id(&page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        object,
+    {
+        let __object_args = (
+            object,
         OwnedBytes::from(encode_tree_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object)
 }
 
@@ -114,11 +126,17 @@ async fn put_table(
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let page = super::super::FileTablePage::Leaf(records);
     let object = super::super::file_table_page_id(&page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        object,
+    {
+        let __object_args = (
+            object,
         OwnedBytes::from(super::super::encode_file_table_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object)
 }
 
@@ -131,7 +149,19 @@ async fn put_generation(
         kind: ObjectKind::GenerationRoot,
         digest: crate::storage::object_digest(ObjectKind::GenerationRoot, &encoded),
     };
-    AsyncObjectStore::put(store, object, OwnedBytes::from(encoded), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            object,
+            OwnedBytes::from(encoded),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object)
 }
 
@@ -1054,13 +1084,39 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
     let merged_directory = changes.changes.iter().find(|change| change.key == FileId::from_bytes([1; 16]))
         .and_then(|change| change.after).ok_or("merged directory missing")?;
     let entries = directory_entries(Some(merged_directory)).ok_or("merged directory payload missing")?;
-    let read = AsyncObjectStore::read(&store, entries, DecodeLimits::default().maximum_object_bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
-    let TreePage::Leaf(entries) = super::super::decode_tree_page(&read.value.bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
+    let read = {
+        let __object_args = (
+            entries,
+            DecodeLimits::default().maximum_object_bytes,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
+    let TreePage::Leaf(entries) = super::super::decode_tree_page(&read.value.bytes, DecodeLimits::default(), &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
         else { return Err("small merged directory was not a leaf".into()); };
     assert_eq!(entries.len(), 4);
     assert!(entries.iter().any(|entry| entry.name.as_bytes() == b"left" && entry.file_id == a));
     assert!(entries.iter().any(|entry| entry.name.as_bytes() == b"right" && entry.file_id == b));
-    let stored = AsyncObjectStore::read(&store, generation_root, DecodeLimits::default().maximum_object_bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    let stored = {
+        let __object_args = (
+            generation_root,
+            DecodeLimits::default().maximum_object_bytes,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     assert_eq!(super::super::decode_generation_root(&stored.value.bytes, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, root);
     assert!(original.receipt().page_reads > 0);
     assert!(original.receipt().page_writes > 0);

@@ -29,7 +29,11 @@ pub(super) fn task_registered_portable_admission(
     let resource_proofs = RuntimeScope::copy_resource_proofs(scope.resource_proofs(), &mut quota)?;
     let extensions = scope
         .extensions()
-        .map(|extension| extension.copy_with_quota(&mut quota))
+        .map(|extension| {
+            let (copied, retained) = extension.copy(quota.work())?;
+            quota.adopt(retained)?;
+            Ok::<_, Error>(copied)
+        })
         .transpose()?;
     let record = TaskAdmissionRecord {
         operation_id: operation,

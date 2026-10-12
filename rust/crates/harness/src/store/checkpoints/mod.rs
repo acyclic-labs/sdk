@@ -500,7 +500,7 @@ async fn load_chunks<P: StreamProvider>(
     let mut bytes = match work.as_deref_mut() {
         Some(work) => {
             let mut bytes = Vec::new();
-            work.reserve_bytes(&mut bytes, length)?;
+            crate::store::history::reserve(&mut bytes, length, work)?;
             bytes
         }
         None => Vec::with_capacity(length),

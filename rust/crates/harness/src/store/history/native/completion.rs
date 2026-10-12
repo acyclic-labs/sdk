@@ -108,14 +108,6 @@ impl AcceptedCompletionIo {
         })?;
         Ok(())
     }
-
-    pub(super) fn reserved_slot<T>(&self, values: &[T], capacity: usize) -> Result<()> {
-        if values.len() < capacity {
-            Ok(())
-        } else {
-            Err(Self::unsupported())
-        }
-    }
 }
 
 impl HistoryIo for AcceptedCompletionIo {
@@ -226,32 +218,9 @@ impl HistoryIo for AcceptedCompletionIo {
     fn clone_text(&mut self, _: &str) -> Result<String> {
         Err(Self::unsupported())
     }
-    fn reserve_events(&mut self, values: &mut Vec<Event>, _: usize) -> Result<()> {
-        self.reserved_slot(values, values.capacity())
-    }
-    fn reserve_records(
-        &mut self,
-        values: &mut Vec<crate::store::operations::ObservedRecord>,
-        _: usize,
-    ) -> Result<()> {
-        self.reserved_slot(values, values.capacity())
-    }
-    fn reserve_messages(
-        &mut self,
-        values: &mut Vec<crate::conversation::ConversationMessage>,
-        _: usize,
-    ) -> Result<()> {
-        self.reserved_slot(values, values.capacity())
-    }
-    fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, _: usize) -> Result<()> {
-        self.reserved_slot(values, values.capacity())
-    }
-    fn reserve_bytes(&mut self, values: &mut Vec<u8>, capacity: usize) -> Result<()> {
-        if capacity <= values.capacity() {
-            Ok(())
-        } else {
-            Err(Self::unsupported())
-        }
+
+    fn allocation_attempt(&mut self, _: u64) -> Result<()> {
+        Err(Self::unsupported())
     }
     fn reserve_text(&mut self, value: &mut String, capacity: usize) -> Result<()> {
         if capacity <= value.capacity() {
@@ -374,15 +343,14 @@ impl HistoryIo for AcceptedCompletionIo {
         &'a mut self,
         _: &'a dyn crate::conversation::ContentResidencyVerifier,
         _: &'a crate::conversation::FileRef,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         Err(Self::unsupported())
     }
     fn read_content<'a>(
         &'a mut self,
         _: &'a dyn crate::conversation::ContentResidencyVerifier,
         _: &'a crate::conversation::FileRef,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>>
-    {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         Err(Self::unsupported())
     }
 }

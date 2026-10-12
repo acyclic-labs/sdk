@@ -468,7 +468,7 @@ where
         stream,
         issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     let events = aggregate.reducer().events_after(0, 64)?;
     assert_eq!(events.len(), 2, "request retry must reuse its ticket");
@@ -909,7 +909,7 @@ async fn worker_restart_with_options(
         reconciled: AtomicUsize::new(0),
     });
     let mut tools = ToolRegistry::default();
-    tools.register(Tool {
+    tools.register((Tool {
         definition: ToolDefinition {
             name: "test.restore".into(),
             revision: "1".into(),
@@ -922,15 +922,15 @@ async fn worker_restart_with_options(
         },
         executor: tool.clone(),
         projection: tool.clone(),
-    })?;
+    }, None), &mut None, None)?;
     for reopened in [false, true] {
         let (filesystem, stream, payloads, reader, runtime) = boxed_restart_phase(|| async {
-            let filesystem = Arc::new(FilesystemHost::new(
+            let filesystem = FilesystemHost::new(
                 Fs::local(fs_options.clone())
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?,
-                provider.clone(),
-            )?);
+                &provider, None,
+            )?;
             if !reopened {
                 filesystem.create_volume(&volume).await?;
             }
@@ -946,19 +946,14 @@ async fn worker_restart_with_options(
                 &signed,
                 65_536, None,
             )?);
-            let reader = Arc::new(FilesystemContentVerifier::new(
-                filesystem.clone(),
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                &signed,
-                65_536, None,
-            )?);
+            let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
             if with_policy && !reopened {
                 Box::pin(async {
                     let mut aggregate = acyclic_harness::store::StreamAggregate::open(
                         &stream,
                         conversation_issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
                         conversation_issuer.verifier(&mut None).expect("verifier copy"),
-                        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                     .await?;
                     aggregate
                         .execute(Command {
@@ -1981,12 +1976,12 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     let source_head;
     let target_head;
     {
-        let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
+        let host = FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, &provider, None)?;
         host.create_volume(&project).await?;
         host.create_volume(&private).await?;
         let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, VolumeOperation::Write)?;
         host.put_content(&project, &write, "shared.txt", b"base", "text/plain", "shared.txt", 128,
-            &IdempotencyKey::new("base")?).await?;
+            &IdempotencyKey::new("base")?, None, None).await?;
         let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
         let base = host.resolve(&workspace_ref(provider.clone(), &project.storage_name()?)?).await?;
         let fork = controller.fork_project(&base.generation, &source, &IdempotencyKey::new("fork")?).await?;
@@ -2027,7 +2022,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     let calls = driver.0.load(Ordering::SeqCst);
     assert!(calls > 0);
     for retry in 0..2 {
-        let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
+        let host = FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, &provider, None)?;
         let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
             .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", &private, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
         let retained = journal.admission().await?.ok_or_else(|| Error::NotFound("merge admission".into()))?;
@@ -2050,7 +2045,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         if retry == 0 {
             let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, VolumeOperation::Write)?;
             host.put_content(&project, &write, "concurrent.txt", b"user edit", "text/plain", "concurrent.txt", 128,
-                &IdempotencyKey::new("concurrent")?).await?;
+                &IdempotencyKey::new("concurrent")?, None, None).await?;
         }
         assert_eq!(host.read(&workspace_ref(provider.clone(), &project.storage_name()?)?, None, "/concurrent.txt", 128).await?.as_ref(), b"user edit");
         assert_eq!(host.read(&workspace_ref(provider.clone(), &project.storage_name()?)?, None, "/shared.txt", 128).await?.as_ref(), b"custom resolution");
@@ -2171,12 +2166,12 @@ async fn stock_restart_with_publication_fault(
         model_steps: if cancel_after_failure { 2 } else { 1 },
     };
     for reopened in [false, true] {
-        let filesystem = Arc::new(FilesystemHost::new(
+        let filesystem = FilesystemHost::new(
             Fs::local(fs_options.clone())
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?,
-            provider.clone(),
-        )?);
+            &provider, None,
+        )?;
         if !reopened {
             filesystem.create_volume(&volume).await?;
         }
@@ -2193,12 +2188,7 @@ async fn stock_restart_with_publication_fault(
             &signed,
             65_536, None,
         )?);
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            filesystem.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &signed,
-            65_536, None,
-        )?);
+        let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
         let host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
                 .await?, stream.clone(), payloads.clone(), reader.clone(), &(authority), signed.clone(), issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), tasks.clone(), machines.clone(), Arc::new(SystemUnixMillisClock), None)?
         .with_session_limits(if reopened {
@@ -2280,7 +2270,7 @@ async fn stock_restart_with_publication_fault(
         } else {
             if let Some(old) = &previous_lease {
                 coordinator
-                    .release_lease(old, IdempotencyKey::new("release-crashed")?)
+                    .apply(IdempotencyKey::new("release-crashed")?, acyclic_harness::scheduler::SchedulerEvent::LeaseReleased { operation_id: old.operation.operation_id, fence: acyclic_harness::scheduler::LeaseFence::from(&old.reservation) }, &mut None)
                     .await?;
             }
             coordinator
@@ -2509,12 +2499,12 @@ async fn stock_restart_with_publication_fault(
                 stale.reservation.id = "stale".into();
                 assert!(
                     coordinator
-                        .release_lease(&stale, IdempotencyKey::new("stale-cancelled-release")?)
+                        .apply(IdempotencyKey::new("stale-cancelled-release")?, acyclic_harness::scheduler::SchedulerEvent::LeaseReleased { operation_id: stale.operation.operation_id, fence: acyclic_harness::scheduler::LeaseFence::from(&stale.reservation) }, &mut None)
                         .await
                         .is_err()
                 );
                 coordinator
-                    .release_lease(old, IdempotencyKey::new("cancelled-reconciled-release")?)
+                    .apply(IdempotencyKey::new("cancelled-reconciled-release")?, acyclic_harness::scheduler::SchedulerEvent::LeaseReleased { operation_id: old.operation.operation_id, fence: acyclic_harness::scheduler::LeaseFence::from(&old.reservation) }, &mut None)
                     .await?;
                 let terminal = coordinator
                     .scheduler()
@@ -2707,8 +2697,8 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
     let mut admitted_model = None;
     let mut selected = None;
     for phase in 0..4 {
-        let filesystem = Arc::new(FilesystemHost::new(Fs::local(fs_options.clone()).await
-            .map_err(|error| Error::Storage(error.to_string()))?, provider.clone())?);
+        let filesystem = FilesystemHost::new(Fs::local(fs_options.clone()).await
+            .map_err(|error| Error::Storage(error.to_string()))?, &provider, None)?;
         if phase == 0 { filesystem.create_volume(&volume).await?; }
         let stream = Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await?);
         let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(),

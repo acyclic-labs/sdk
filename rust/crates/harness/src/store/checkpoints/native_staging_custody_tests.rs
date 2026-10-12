@@ -41,7 +41,7 @@ async fn original_staged_vec_capacity_releases_on_ack_error_cancel_and_retry() -
                 .expect("original source custody"),
         );
         let mut source = Vec::new();
-        io.reserve_bytes(&mut source, 4096)?;
+        crate::store::history::reserve(&mut source, 4096, &mut io)?;
         io.copy_bytes(9)?;
         source.extend_from_slice(b"immutable");
         assert!(source.capacity() > source.len());
@@ -89,7 +89,7 @@ async fn original_staged_vec_capacity_releases_on_ack_error_cancel_and_retry() -
                     .expect("same original retry ledger"),
             );
             let mut source = Vec::new();
-            io.reserve_bytes(&mut source, 4096)?;
+            crate::store::history::reserve(&mut source, 4096, &mut io)?;
             io.copy_bytes(9)?;
             source.extend_from_slice(b"immutable");
             stage_immutable_vec_with_work(
@@ -192,7 +192,7 @@ async fn competing_immutable_identity_recovers_or_rejects_without_retained_sourc
                 .expect("original staging source custody"),
         );
         let mut source = Vec::new();
-        io.reserve_bytes(&mut source, 4096)?;
+        crate::store::history::reserve(&mut source, 4096, &mut io)?;
         let body: &[u8] = if identical { b"immutable" } else { b"hostile" };
         io.copy_bytes(body.len() as u64)?;
         source.extend_from_slice(body);

@@ -23,15 +23,15 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::InspectIdempotencyRequest>,
     ) -> Result<Response<wire::InspectIdempotencyResponse>, Status> {
-        let mut completion = Completion::new(tracing::info_span!(
+        let span = tracing::info_span!(
             "acyclic.stream.grpc.serve.inspect_idempotency",
             rpc.code = Empty,
             outcome = Empty,
             error.kind = Empty
-        ));
-        let span = completion.span.clone();
-        let result = span
-            .scope(async {
+        );
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let key = IdempotencyKey::new(request.into_inner().idempotency_key)
                     .map_err(|error| error_status(&error))?;
@@ -44,24 +44,25 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 Ok(Response::new(wire::InspectIdempotencyResponse {
                     observation,
                 }))
-            })
-            .await;
-        finish_served(&mut completion, result, false)
+            },
+            false,
+        )
+        .await
     }
 
     async fn append(
         &self,
         request: Request<wire::AppendRequest>,
     ) -> Result<Response<wire::AppendResponse>, Status> {
-        let mut completion = Completion::new(tracing::info_span!(
+        let span = tracing::info_span!(
             "acyclic.stream.grpc.serve.append",
             rpc.code = Empty,
             outcome = Empty,
             error.kind = Empty
-        ));
-        let span = completion.span.clone();
-        let result = span
-            .scope(async {
+        );
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let outcome = self
@@ -70,24 +71,25 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .await
                     .map_err(|error| error_status(&error))?;
                 Ok(Response::new(append_outcome_to_wire(outcome)))
-            })
-            .await;
-        finish_served(&mut completion, result, false)
+            },
+            false,
+        )
+        .await
     }
 
     async fn tail(
         &self,
         request: Request<wire::TailRequest>,
     ) -> Result<Response<wire::TailResponse>, Status> {
-        let mut completion = Completion::new(tracing::info_span!(
+        let span = tracing::info_span!(
             "acyclic.stream.grpc.serve.tail",
             rpc.code = Empty,
             outcome = Empty,
             error.kind = Empty
-        ));
-        let span = completion.span.clone();
-        let result = span
-            .scope(async {
+        );
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let path = path(request.into_inner().path).map_err(|error| error_status(&error))?;
                 let bounds = self
@@ -96,24 +98,25 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .await
                     .map_err(|error| error_status(&error))?;
                 Ok(Response::new(wire::TailResponse { tail: bounds.tail }))
-            })
-            .await;
-        finish_served(&mut completion, result, false)
+            },
+            false,
+        )
+        .await
     }
 
     async fn fork(
         &self,
         request: Request<wire::ForkRequest>,
     ) -> Result<Response<wire::ForkReceipt>, Status> {
-        let mut completion = Completion::new(tracing::info_span!(
+        let span = tracing::info_span!(
             "acyclic.stream.grpc.serve.fork",
             rpc.code = Empty,
             outcome = Empty,
             error.kind = Empty
-        ));
-        let span = completion.span.clone();
-        let result = span
-            .scope(async {
+        );
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let receipt = self
@@ -129,24 +132,25 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .await
                     .map_err(|error| error_status(&error))?;
                 Ok(Response::new(fork_receipt_to_wire(&receipt)))
-            })
-            .await;
-        finish_served(&mut completion, result, false)
+            },
+            false,
+        )
+        .await
     }
 
     async fn read(
         &self,
         request: Request<wire::ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
-        let mut completion = Completion::new(tracing::info_span!(
+        let span = tracing::info_span!(
             "acyclic.stream.grpc.serve.read",
             rpc.code = Empty,
             outcome = Empty,
             error.kind = Empty
-        ));
-        let span = completion.span.clone();
-        let result = span
-            .scope(async {
+        );
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let records = self
@@ -170,24 +174,25 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     )
                     .boxed(),
                 ))
-            })
-            .await;
-        finish_served(&mut completion, result, true)
+            },
+            true,
+        )
+        .await
     }
 
     async fn follow(
         &self,
         request: Request<wire::FollowRequest>,
     ) -> Result<Response<Self::FollowStream>, Status> {
-        let mut completion = Completion::new(tracing::info_span!(
+        let span = tracing::info_span!(
             "acyclic.stream.grpc.serve.follow",
             rpc.code = Empty,
             outcome = Empty,
             error.kind = Empty
-        ));
-        let span = completion.span.clone();
-        let result = span
-            .scope(async {
+        );
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let records = self
@@ -210,24 +215,25 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     )
                     .boxed(),
                 ))
-            })
-            .await;
-        finish_served(&mut completion, result, true)
+            },
+            true,
+        )
+        .await
     }
 
     async fn children(
         &self,
         request: Request<wire::ChildrenRequest>,
     ) -> Result<Response<Self::ChildrenStream>, Status> {
-        let mut completion = Completion::new(tracing::info_span!(
+        let span = tracing::info_span!(
             "acyclic.stream.grpc.serve.children",
             rpc.code = Empty,
             outcome = Empty,
             error.kind = Empty
-        ));
-        let span = completion.span.clone();
-        let result = span
-            .scope(async {
+        );
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let children = self
@@ -257,24 +263,25 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     )
                     .boxed(),
                 ))
-            })
-            .await;
-        finish_served(&mut completion, result, true)
+            },
+            true,
+        )
+        .await
     }
 
     async fn children_page(
         &self,
         request: Request<wire::ChildrenPageRequest>,
     ) -> Result<Response<wire::ChildrenPageResponse>, Status> {
-        let mut completion = Completion::new(tracing::info_span!(
+        let span = tracing::info_span!(
             "acyclic.stream.grpc.serve.children_page",
             rpc.code = Empty,
             outcome = Empty,
             error.kind = Empty
-        ));
-        let span = completion.span.clone();
-        let result = span
-            .scope(async {
+        );
+        serve(
+            span.clone(),
+            async {
                 let request = request.into_inner();
                 let page = self
                     .provider
@@ -310,24 +317,25 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                         .collect(),
                     next_after: page.next_after.map(|path| path.to_string()),
                 }))
-            })
-            .await;
-        finish_served(&mut completion, result, false)
+            },
+            false,
+        )
+        .await
     }
 
     async fn commit(
         &self,
         request: Request<wire::CommitRequest>,
     ) -> Result<Response<wire::CommitResponse>, Status> {
-        let mut completion = Completion::new(tracing::info_span!(
+        let span = tracing::info_span!(
             "acyclic.stream.grpc.serve.commit",
             rpc.code = Empty,
             outcome = Empty,
             error.kind = Empty
-        ));
-        let span = completion.span.clone();
-        let result = span
-            .scope(async {
+        );
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let deadline_unix_millis = request.deadline_unix_millis;
@@ -339,24 +347,25 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 }
                 .map_err(|error| error_status(&error))?;
                 Ok(Response::new(commit_outcome_to_wire(outcome)))
-            })
-            .await;
-        finish_served(&mut completion, result, false)
+            },
+            false,
+        )
+        .await
     }
 
     async fn read_commit(
         &self,
         request: Request<wire::ReadCommitRequest>,
     ) -> Result<Response<wire::CommittedEnvelope>, Status> {
-        let mut completion = Completion::new(tracing::info_span!(
+        let span = tracing::info_span!(
             "acyclic.stream.grpc.serve.read_commit",
             rpc.code = Empty,
             outcome = Empty,
             error.kind = Empty
-        ));
-        let span = completion.span.clone();
-        let result = span
-            .scope(async {
+        );
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let commit_id = commit_id(&request.into_inner().commit_id)
                     .map_err(|error| error_status(&error))?;
@@ -366,20 +375,22 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .await
                     .map_err(|error| error_status(&error))?;
                 Ok(Response::new(envelope_to_wire(envelope)))
-            })
-            .await;
-        finish_served(&mut completion, result, false)
+            },
+            false,
+        )
+        .await
     }
 }
 
-fn finish_served<T>(
-    completion: &mut Completion,
-    result: Result<T, Status>,
+async fn serve<T>(
+    span: tracing::Span,
+    response: impl Future<Output = Result<T, Status>>,
     streaming: bool,
 ) -> Result<T, Status> {
+    let mut completion = Completion::new(span);
+    let result = completion.span.scope(response).await;
     match &result {
         Err(error) => completion.status(error),
-        // The returned body guard now owns this same span. Headers are not terminal success.
         Ok(_) if streaming => completion.finished = true,
         Ok(_) => completion.ok(),
     }

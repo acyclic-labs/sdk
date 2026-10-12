@@ -211,7 +211,7 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
             ));
         }
         work.charge(WorkCounters::default()).map_err(native_error)?;
-        if !self.custody.matches_work(work) {
+        if !self.custody.work().shares_allocation_context(work) {
             return Err(denied(
                 "native callback differs from its original per-volume work view",
             ));

@@ -34,7 +34,7 @@ async fn original_corrupt_receipt_drops_source_and_keeps_first_native_quota_caus
             &mut Some(&mut io),
         )?;
         let mut source = Vec::new();
-        io.reserve_bytes(&mut source, 4096)?;
+        crate::store::history::reserve(&mut source, 4096, &mut io)?;
         io.copy_bytes(9)?;
         source.extend_from_slice(b"immutable");
         provider

@@ -149,7 +149,7 @@ impl AgentHarness {
         scope: &RuntimeScope,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
-        if !input.1.matches_work(work) {
+        if !input.1.work().shares_allocation_context(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "child input belongs to another original metadata ledger",
@@ -195,7 +195,7 @@ impl AgentHarness {
                 cause,
                 custody: None,
             })?;
-        if !input.1.matches_work(work) {
+        if !input.1.work().shares_allocation_context(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "root input belongs to another original resource ledger",

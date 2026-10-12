@@ -43,7 +43,7 @@ impl TaskContext {
                 cause,
                 custody: None,
             })?;
-        if !custody.matches_work(work) {
+        if !custody.work().shares_allocation_context(work) {
             return Err(boundary(
                 crate::wire::ErrorCode::Unauthorized,
                 "issued task metadata custody belongs to another original ledger",
@@ -389,7 +389,7 @@ impl TaskContext {
     #[cfg(feature = "native-execution")]
     pub async fn bind_root_output_context_with_native_work(
         &self,
-        source: crate::filesystem::NativeRootOutputSource,
+        source: Arc<crate::filesystem::NativeRootOutputSource>,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         if !self.native_metadata_matches(work) {

@@ -1,3 +1,5 @@
+#[cfg(not(target_arch = "wasm32"))]
+use super::prepared::record_prepared_work;
 use super::*;
 
 pub(super) fn planned_commit_id(
@@ -21,7 +23,12 @@ pub(crate) fn append_digest(
     hash_update(&mut hash, b"acyclic.stream.request.v1\0", meter, &mut late)?;
     hash_update(&mut hash, b"append", meter, &mut late)?;
     digest_path(&mut hash, &request.path, meter, &mut late)?;
-    hash_update(&mut hash, &request.if_tail.unwrap_or(u64::MAX).to_le_bytes(), meter, &mut late)?;
+    hash_update(
+        &mut hash,
+        &request.if_tail.unwrap_or(u64::MAX).to_le_bytes(),
+        meter,
+        &mut late,
+    )?;
     digest_records(&mut hash, &request.records, meter, &mut late)?;
     Ok(hash.finalize().into())
 }
@@ -47,7 +54,9 @@ pub(super) fn hash_update(
     if late.is_none() {
         check(meter)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = meter { meter.admit_codec(0, 0, bytes.len() as u64)?; }
+        if let Some(meter) = meter {
+            meter.admit_codec(0, 0, bytes.len() as u64)?;
+        }
     }
     hash.update(bytes);
     #[cfg(not(target_arch = "wasm32"))]
@@ -61,7 +70,10 @@ pub(super) fn hash_update(
     Ok(())
 }
 
-pub(super) fn digest_record_item(meter: WireMeter<'_>, late: &mut Option<&mut Option<std::io::Error>>) -> std::io::Result<()> {
+pub(super) fn digest_record_item(
+    meter: WireMeter<'_>,
+    late: &mut Option<&mut Option<std::io::Error>>,
+) -> std::io::Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(late) = late.as_deref_mut() {
         record_prepared_work(meter.expect("prepared digest meter"), late, 1, 0);
@@ -72,15 +84,32 @@ pub(super) fn digest_record_item(meter: WireMeter<'_>, late: &mut Option<&mut Op
     record_item(meter)
 }
 
-pub(super) fn digest_path(hash: &mut Sha256, path: &StreamPath, meter: WireMeter<'_>, late: &mut Option<&mut Option<std::io::Error>>) -> std::io::Result<()> {
-    hash_update(hash, &(path.as_str().len() as u64).to_le_bytes(), meter, late)?;
+pub(super) fn digest_path(
+    hash: &mut Sha256,
+    path: &StreamPath,
+    meter: WireMeter<'_>,
+    late: &mut Option<&mut Option<std::io::Error>>,
+) -> std::io::Result<()> {
+    hash_update(
+        hash,
+        &(path.as_str().len() as u64).to_le_bytes(),
+        meter,
+        late,
+    )?;
     hash_update(hash, path.as_str().as_bytes(), meter, late)
 }
 
-pub(super) fn digest_records(hash: &mut Sha256, records: &[OwnedBytes], meter: WireMeter<'_>, late: &mut Option<&mut Option<std::io::Error>>) -> std::io::Result<()> {
+pub(super) fn digest_records(
+    hash: &mut Sha256,
+    records: &[OwnedBytes],
+    meter: WireMeter<'_>,
+    late: &mut Option<&mut Option<std::io::Error>>,
+) -> std::io::Result<()> {
     hash_update(hash, &(records.len() as u64).to_le_bytes(), meter, late)?;
     for record in records {
-        if late.is_none() { admit_item(meter)?; }
+        if late.is_none() {
+            admit_item(meter)?;
+        }
         hash_update(hash, &(record.len() as u64).to_le_bytes(), meter, late)?;
         hash_update(hash, record, meter, late)?;
         digest_record_item(meter, late)?;
@@ -89,12 +118,18 @@ pub(super) fn digest_records(hash: &mut Sha256, records: &[OwnedBytes], meter: W
 }
 
 /// One canonical Commit writer.
-pub(crate) fn commit_digest(request: &CommitRequest, meter: WireMeter<'_>, mut late: Option<&mut Option<std::io::Error>>) -> std::io::Result<[u8; 32]> {
+pub(crate) fn commit_digest(
+    request: &CommitRequest,
+    meter: WireMeter<'_>,
+    mut late: Option<&mut Option<std::io::Error>>,
+) -> std::io::Result<[u8; 32]> {
     let mut hash = Sha256::new();
     hash_update(&mut hash, b"acyclic.stream.request.v1\0", meter, &mut late)?;
     hash_update(&mut hash, b"commit", meter, &mut late)?;
     for condition in &request.conditions {
-        if late.is_none() { admit_item(meter)?; }
+        if late.is_none() {
+            admit_item(meter)?;
+        }
         match condition {
             CommitCondition::Tail { path, expected } => {
                 hash_update(&mut hash, &[1], meter, &mut late)?;
@@ -109,14 +144,21 @@ pub(crate) fn commit_digest(request: &CommitRequest, meter: WireMeter<'_>, mut l
         digest_record_item(meter, &mut late)?;
     }
     for mutation in &request.mutations {
-        if late.is_none() { admit_item(meter)?; }
+        if late.is_none() {
+            admit_item(meter)?;
+        }
         match mutation {
             CommitMutation::Append { path, records } => {
                 hash_update(&mut hash, &[1], meter, &mut late)?;
                 digest_path(&mut hash, path, meter, &mut late)?;
                 digest_records(&mut hash, records, meter, &mut late)?;
             }
-            CommitMutation::Fork { source, destination, at_tail, records } => {
+            CommitMutation::Fork {
+                source,
+                destination,
+                at_tail,
+                records,
+            } => {
                 hash_update(&mut hash, &[2], meter, &mut late)?;
                 digest_path(&mut hash, source, meter, &mut late)?;
                 digest_path(&mut hash, destination, meter, &mut late)?;

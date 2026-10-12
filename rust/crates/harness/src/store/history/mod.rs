@@ -22,7 +22,7 @@ mod native;
 pub(crate) use native::{AcceptedCompletionIo, adopt_native_sdk_output, native_sdk_result};
 
 /// The native branch owns its original pre-funded frame outside the boxed future.
-pub(crate) enum HistoryContentFuture<'a, T> {
+pub enum HistoryContentFuture<'a, T> {
     Ordinary {
         future: acyclic_stream::BoxProviderFuture<'a, Result<T>>,
         frame_bytes: u64,
@@ -61,47 +61,25 @@ pub(crate) async fn verify_content_with_work(
     verifier: &dyn crate::conversation::ContentResidencyVerifier,
     reference: &crate::conversation::FileRef,
 ) -> Result<()> {
-    let future = observer.verify_content(verifier, reference)?;
-    let frame_bytes = future.ordinary_frame_bytes();
-    let result = future.await;
-    let released = if frame_bytes == 0 {
-        Ok(())
-    } else {
-        observer.release_owned(frame_bytes)
-    };
-    match result {
-        Err(error) => Err(error),
-        Ok(()) => released,
-    }
+    observer.verify_content(verifier, reference)?.await
 }
 
-/// Returns the original carrier and only its separately retained observer claim.
 pub(crate) async fn read_content_with_work(
     observer: &mut dyn HistoryIo,
     verifier: &dyn crate::conversation::ContentResidencyVerifier,
     reference: &crate::conversation::FileRef,
 ) -> Result<(acyclic_stream::OwnedBytes, u64)> {
-    let future = observer.read_content(verifier, reference)?;
-    let frame_bytes = future.ordinary_frame_bytes();
-    let result = future.await;
-    let released = if frame_bytes == 0 {
-        Ok(())
+    let bytes = observer.read_content(verifier, reference)?.await?;
+    let held = if super::operations::original_native_decode_mode(observer) {
+        0
     } else {
-        observer.release_owned(frame_bytes)
+        bytes.retained_capacity().unwrap_or(0) as u64
     };
-    match result {
-        Err(error) => Err(error),
-        Ok((bytes, retained_bytes)) => match released {
-            Ok(()) => Ok((bytes, retained_bytes)),
-            Err(error) => {
-                drop(bytes);
-                if retained_bytes != 0 {
-                    let _ = observer.release_owned(retained_bytes);
-                }
-                Err(error)
-            }
-        },
+    if let Err(error) = observer.retain_owned(held) {
+        drop(bytes);
+        return Err(error);
     }
+    Ok((bytes, held))
 }
 
 #[doc(hidden)]
@@ -151,29 +129,16 @@ pub trait HistoryIo: Send {
     fn clone_authority(&mut self, authority: &Authority) -> Result<Authority>;
     /// Clone text.
     fn clone_text(&mut self, value: &str) -> Result<String>;
-    /// Reserve events.
-    fn reserve_events(&mut self, events: &mut Vec<Event>, maximum: usize) -> Result<()>;
-    /// Reserve records.
-    fn reserve_records(
-        &mut self,
-        records: &mut Vec<super::operations::ObservedRecord>,
-        maximum: usize,
-    ) -> Result<()>;
-    /// Reserve messages.
-    fn reserve_messages(
-        &mut self,
-        messages: &mut Vec<crate::conversation::ConversationMessage>,
-        maximum: usize,
-    ) -> Result<()>;
-    /// Reserve values.
-    fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize)
-    -> Result<()>;
-    /// Reserve bytes.
-    fn reserve_bytes(&mut self, bytes: &mut Vec<u8>, capacity: usize) -> Result<()>;
+
     /// Reserve text.
     fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()>;
+    /// Records the attempt after its storage has been admitted.
+    fn allocation_attempt(&mut self, bytes: u64) -> Result<()>;
     /// Admit allocation.
-    fn admit_allocation(&mut self, bytes: u64) -> Result<()>;
+    fn admit_allocation(&mut self, bytes: u64) -> Result<()> {
+        self.admit_owned(bytes)?;
+        self.allocation_attempt(bytes)
+    }
     /// Admit copy.
     fn admit_copy(&self, bytes: u64) -> Result<()>;
     /// Copy bytes.
@@ -233,13 +198,13 @@ pub trait HistoryIo: Send {
         &'a mut self,
         verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
-    ) -> Result<HistoryContentFuture<'a, ()>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
     /// Read content.
     fn read_content<'a>(
         &'a mut self,
         verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
-    ) -> Result<HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>;
     #[cfg(feature = "filesystem")]
     /// Remaining.
     fn remaining(&self) -> Result<acyclic_fs::WorkBudget>;
@@ -249,6 +214,70 @@ pub trait HistoryIo: Send {
     #[cfg(feature = "filesystem")]
     /// Receive work.
     fn receive_work(&mut self, work: acyclic_fs::WorkCounters) -> Result<()>;
+}
+
+pub(crate) fn reserve<T>(
+    values: &mut Vec<T>,
+    capacity: usize,
+    observer: &mut dyn HistoryIo,
+) -> Result<()> {
+    let old = values.capacity();
+    if capacity <= old {
+        return Ok(());
+    }
+    let extra = (capacity - old)
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| Error::Invalid("history vector storage overflows".into()))?
+        as u64;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if observer.requires_prepared_native_dispatch() {
+        return observer.allocation_attempt(extra);
+    }
+    observer.retain_owned(extra)?;
+    let reserved = observer.allocation_attempt(extra).and_then(|()| {
+        values
+            .try_reserve_exact(capacity - values.len())
+            .map_err(|cause| observer.allocation_failure(cause))
+    });
+    if let Err(error) = reserved {
+        observer.release_owned(extra)?;
+        return Err(error);
+    }
+    let actual = (values.capacity() - old)
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| Error::Invalid("history vector capacity overflows".into()))?
+        as u64;
+    if actual > extra {
+        observer.retain_owned(actual - extra)
+    } else {
+        observer.release_owned(extra - actual)
+    }
+}
+
+pub(crate) fn ensure_slot<T>(
+    values: &mut Vec<T>,
+    maximum: usize,
+    observer: &mut dyn HistoryIo,
+) -> Result<()> {
+    if values.len() < values.capacity() {
+        return Ok(());
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if observer.requires_prepared_native_dispatch() {
+        return observer.allocation_attempt(1);
+    }
+    let capacity = values
+        .capacity()
+        .checked_mul(2)
+        .unwrap_or(maximum)
+        .max(4)
+        .min(maximum);
+    if capacity <= values.capacity() {
+        return Err(Error::Invalid(
+            "history vector exceeds declared maximum".into(),
+        ));
+    }
+    reserve(values, capacity, observer)
 }
 
 /// Explicit archival position. Revisions are inclusive; later appends are excluded.

@@ -546,7 +546,7 @@ fn only_file(file: &FileRef, policy: &NativeMediaPolicy) -> Vec<ModelMessage> {
 
 async fn exercise_live_native_boundary() -> Result<()> {
     let provider = ProviderRef::new("native-boundary".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent_id = AgentId::new();
     let volume = VolumeRef::new(
         provider,
@@ -574,13 +574,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "task:spawn:fixture.native_replay@1".into(),
             "tool:call:example.convert_image".into(),
         ]), Some(agent_id), None, &mut None).expect("scope proof");
-    let writer = FilesystemContentPublisher::new(
-        host.clone(),
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &owner,
-        65_536, None,
-    )?;
+    let writer = FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &owner, 65_536, None)?;
     let options_bytes = br#"{"mode":"strict","scale":2}"#;
     let options_file = writer
         .stage(
@@ -597,7 +591,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let mut schemas = SchemaRegistry::new();
     schemas.register(extension.name.clone(),1,json!({"type":"object"}),[31;32],ExtensionForkPolicy::Inherit,[],Some(json!({"type":"object","required":["mode","scale"],"properties":{"mode":{"const":"strict"},"scale":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false})))?;
     let mut agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schemas.clone());
-    agent.validate_configuration_bytes(&extension, &options_file, options_bytes, None)?;
+    agent.schemas().validate_configuration_bytes(&extension, &options_file, options_bytes, None)?;
     for (revision, action) in [
         (
             0,
@@ -698,12 +692,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         ));
     }
     let reader = Arc::new(ReaderSpy {
-        inner: Arc::new(FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &owner,
-            65_536, None,
-        )?),
+        inner: FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &owner, 65_536, None)?,
         reads: AtomicUsize::new(0),
         corrupt: AtomicBool::new(false),
         missing: AtomicBool::new(false),
@@ -1142,7 +1131,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "application/json",
             "options.json", None,
         )?.await?.0;
-    agent.validate_configuration_bytes(&extension, &next, next_bytes, None)?;
+    agent.schemas().validate_configuration_bytes(&extension, &next, next_bytes, None)?;
     for (revision, action) in [
         (
             2,
@@ -1277,7 +1266,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let counts = adapter.counts.load(Ordering::SeqCst);
     let generated = adapter.generates.load(Ordering::SeqCst);
     assert!(
-        agent
+        agent.schemas()
             .validate_configuration_bytes(&extension, &malformed, malformed_bytes, None)
             .is_err()
     );
@@ -1458,13 +1447,7 @@ where
             interactions: None,
             content: Some(ContentBindings {
                 reader: adapter.reader.clone(),
-                writer: Some(Arc::new(FilesystemContentPublisher::new(
-                    host.clone(),
-                    &volume,
-                    &issuer.verifier(&mut None).expect("verifier copy"),
-                    &signed,
-                    65_536, None,
-                )?)),
+                writer: Some(FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?),
             }),
             artifacts: None,
             policy: None,
@@ -1842,17 +1825,14 @@ where
     let prefix = journal.stage(OperationId::new(), "fork/media-prefix".into(),
         ModelPrefix::select(&admitted, None)?.canonical_bytes()?.to_vec(), ModelPrefix::MEDIA_TYPE).await?;
     let forks = Arc::new(acyclic_harness::fork::CompositeForkVerifier::new(&[
-        Arc::new(acyclic_harness::filesystem::FilesystemForkVerifier::new(
-            host.clone(),
-            65_536,
-        )?),
+        acyclic_harness::filesystem::FilesystemForkVerifier::new(host.clone(), 65_536, None, None)?,
         Arc::new(acyclic_harness::fork::StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?);
     let mut aggregate = StreamAggregate::open(
         &stream,
         parent.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(reader.clone())
     .with_fork_verifier(forks.clone());
@@ -1919,7 +1899,7 @@ where
     let preparer = FilesystemForkPreparer::new(
         host.clone(),
         Reducer::restore(aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
-            issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new())?,
+            issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &mut None)?,
         issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),
@@ -2001,17 +1981,12 @@ where
                     .collect::<Result<Vec<_>>>()?,
             ),
         ), Some(child_agent), None, &mut None).expect("scope proof");
-    let child_reader = Arc::new(FilesystemContentVerifier::new(
-        host.clone(),
-        &child_issuer.verifier(&mut None).expect("verifier copy"),
-        &child_scope,
-        65_536, None,
-    )?);
+    let child_reader = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, 65_536, None)?;
     let mut child_aggregate = StreamAggregate::open(
         &stream,
         child,
         child_issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(child_reader.clone())
     .with_fork_verifier(forks);
