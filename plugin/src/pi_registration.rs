@@ -178,13 +178,11 @@ pub(crate) async fn register(
     ).await?;
     let request = PiRootRequest { binding, root };
     let command = pi_root_inputs::stage_root_command(&owner, &filesystem, &request, work).await?;
-    let admitted_input = request.clone_with_native_work(work)?;
-    let admission = runtime.admit_root_with_native_work(
-        admitted_input.0.binding, admitted_input.0.root, command.0, work,
+    let admission = runtime.admit_root(
+        &request.binding, &request.root, &command.0, work,
     ).await?;
     drop(admission.0);
     drop(admission.1);
-    drop(admitted_input.1);
     drop(command.1);
     let state_session = work.display(session).map_err(native_error)?;
     let state_agent = work.display(session).map_err(native_error)?;
