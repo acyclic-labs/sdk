@@ -730,6 +730,7 @@ pub enum MountSourceError {
 }
 
 impl MountSourceError {
+    /// Returns the underlying semantic failure.
     pub fn semantic_error(&self) -> &Self {
         let mut error = self;
         loop {
