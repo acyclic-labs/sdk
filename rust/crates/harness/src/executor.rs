@@ -1379,7 +1379,7 @@ impl StockExecution<'_> {
                 "native tool context has no original work"))?;
             let mut tool_context = crate::runtime::ToolContext::new_with_native_work(
                 Arc::clone(native.context), invocation.operation_id, &invocation.call_id, work,
-            )?.with_native_stock_scope(&self.stock.tool_scope, self.stock.limits, work)?;
+            )?.with_native_scope(&self.stock.tool_scope, self.stock.limits, work)?;
             if let Some(interactions) = native.interactions {
                 tool_context = tool_context.with_native_interactions(Arc::clone(interactions), work)?;
             }

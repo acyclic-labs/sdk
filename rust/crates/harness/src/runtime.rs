@@ -1398,20 +1398,7 @@ impl TaskRegistry {
     }
 
     /// Uses the same registered metadata for an erased stock child command.
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn child_admission(
-        &self,
-        operation: OperationId,
-        name: &str,
-        version: &str,
-        input: Value,
-        parent: TaskId,
-        scope: &RuntimeScope,
-    ) -> Result<TaskAdmissionRecord> {
-        self.registered_admission_with_work(operation, name, version, input, Some(parent), None, scope, &mut None)
-    }
-
-    fn registered_admission_with_work(
+    fn registered_admission(
         &self, operation: OperationId, name: &str, version: &str, input: Value,
         parent: Option<TaskId>, expected_digest: Option<[u8; 32]>, scope: &RuntimeScope,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1488,19 +1475,6 @@ impl TaskRegistry {
     }
 
     pub(crate) fn validate_durable_admission(
-        &self,
-        identity: &ComponentIdentity,
-        machine: &MachineIdentity,
-        input_schema: Option<&Value>,
-        output_schema: &Value,
-        input: Option<&Value>,
-    ) -> Result<()> {
-        self.validate_durable_admission_with_work(
-            identity,machine,input_schema,output_schema,input,&mut None,
-        )
-    }
-
-    pub(crate) fn validate_durable_admission_with_work(
         &self, identity: &ComponentIdentity, machine: &MachineIdentity,
         input_schema: Option<&Value>, output_schema: &Value, input: Option<&Value>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -3510,60 +3484,30 @@ impl RuntimeScope {
     }
 
     /// Returns the actor authenticated by the scratch allocation.
-    pub(crate) fn current_created_agent(&self) -> Result<Option<crate::AgentId>> {
-        self.current_created_private_volume()?.map(|volume| match volume.owner() {
-            crate::conversation::VolumeOwner::Agent(agent) => Ok(*agent),
-            _ => Err(Error::Unauthorized("current created scratch is not agent-owned".into())),
-        }).transpose()
-    }
-
-    pub(crate) fn current_created_private_volume(&self) -> Result<Option<&VolumeRef>> {
-        Ok(self.created_access.as_ref().map(|access| access.current_content(&mut None))
-            .transpose()?.flatten().map(|binding| &binding.volume))
-    }
-
-    pub(crate) fn current_created_authority(&self) -> Result<Option<&crate::core::Authority>> {
-        Ok(self.created_access.as_ref().map(|access| access.current_content(&mut None))
-            .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn current_created_private_volume_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&VolumeRef>> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(self.created_access.as_ref().map(|access|
-            access.current_content(&mut Some(&mut io)))
-            .transpose()?.flatten().map(|binding| &binding.volume))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn current_created_authority_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&crate::core::Authority>> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(self.created_access.as_ref().map(|access|
-            access.current_content(&mut Some(&mut io)))
-            .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn current_created_agent_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
+    pub(crate) fn current_created_agent(
+        &self, work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<Option<crate::AgentId>> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.current_created_private_volume_with_native_work(work)?.map(|volume| match volume.owner() {
+        self.current_created_private_volume(work)?.map(|volume| match volume.owner() {
             crate::conversation::VolumeOwner::Agent(agent) => Ok(*agent),
-            _ => Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "current created scratch is not agent-owned" }),
+            _ => Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                "current created scratch is not agent-owned")),
         }).transpose()
+    }
+
+    pub(crate) fn current_created_private_volume(
+        &self, work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<Option<&VolumeRef>> {
+        if let Some(io) = work.as_deref() { io.check_cancellation()?; }
+        Ok(self.created_access.as_ref().map(|access| access.current_content(work))
+            .transpose()?.flatten().map(|binding| &binding.volume))
+    }
+
+    pub(crate) fn current_created_authority(
+        &self, work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<Option<&crate::core::Authority>> {
+        if let Some(io) = work.as_deref() { io.check_cancellation()?; }
+        Ok(self.created_access.as_ref().map(|access| access.current_content(work))
+            .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
     }
 
     pub(crate) fn created_grants(&self) -> Option<&Capabilities> {
@@ -4531,7 +4475,7 @@ impl AgentHarness {
             let mut observer = crate::store::history::native_work_io(work)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
             observed.validate_with_work(&mut Some(&mut observer))?;
-            self.tasks.validate_durable_admission_with_work(
+            self.tasks.validate_durable_admission(
                 &observed.task, &observed.machine, Some(&observed.input_schema),
                 &observed.output_schema, Some(&observed.input), &mut Some(&mut observer),
             )?;
@@ -4581,7 +4525,7 @@ impl AgentHarness {
             Some(&observed.input_schema),
             &observed.output_schema,
             Some(&observed.input),
-        )?;
+         &mut None,)?;
         if observed.resource_proofs.is_empty() {
             self.scope.narrow(observed.grants.clone(), observed.limits)?
                 .with_run_limits(observed.run_limits, &mut None)?;
@@ -5709,9 +5653,7 @@ impl AgentHarness {
             .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
         let retained = state.observe_admission(task_id).await?;
         let context = self.durable_context(task_id, retained.operation_id).await?;
-        context
-            .open_resumable_task(definition, fence, journal)
-            .await
+        definition.open(&context, fence, journal).await
     }
 
     /// Builds the stock child request from the existing registered metadata.
@@ -5726,8 +5668,9 @@ impl AgentHarness {
         scope: &RuntimeScope,
     ) -> Result<TaskAdmissionRecord> {
         self.assert_durable_policy_bindings(None)?;
-        self.tasks
-            .child_admission(operation, name, version, input, parent, scope)
+        self.tasks.registered_admission(
+            operation, name, version, input, Some(parent), None, scope, &mut None,
+        )
     }
 
     /// Builds a registered descendant request using the original guarded input.
@@ -5745,7 +5688,7 @@ impl AgentHarness {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         crate::store::history::HistoryIo::absorb_native_custody(&mut io, input.1)?;
-        let record = self.tasks.registered_admission_with_work(
+        let record = self.tasks.registered_admission(
             operation, name, version, input.0, Some(parent), None, scope, &mut Some(&mut io),
         )?;
         let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
@@ -5779,7 +5722,7 @@ impl AgentHarness {
         let (value, custody) = input;
         io.absorb_native_custody(custody)?;
         let identity = definition.identity();
-        let mut record = self.tasks.registered_admission_with_work(
+        let mut record = self.tasks.registered_admission(
             operation, &identity.name, &identity.version, value, None, Some(identity.digest),
             &self.scope, &mut Some(&mut io),
         )?;
@@ -6232,17 +6175,9 @@ impl AgentHarness {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "resumed scope changes original authority bounds or extensions" });
         }
-        for (ancestor, descendant) in [
-            (self.scope.run_limits.concurrency.map(|value| value as u64),
-                admitted.run_limits.concurrency.map(|value| value as u64)),
-            (self.scope.run_limits.max_steps.map(|value| value as u64),
-                admitted.run_limits.max_steps.map(|value| value as u64)),
-            (self.scope.run_limits.deadline_epoch_ms, admitted.run_limits.deadline_epoch_ms),
-        ] {
-            if ancestor.is_some_and(|bound| descendant.is_none_or(|value| value > bound)) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "resumed scope widens original task run limits" });
-            }
+        if !self.scope.run_limits.allows(&admitted.run_limits) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "resumed scope widens original task run limits" });
         }
         Ok(())
     }
@@ -6411,7 +6346,7 @@ mod native_volume_callback;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_volume_callback::NativeVolumeCallbackGuard;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) use native_volume_callback::{NativeVolumeCallbackPorts, NativeVolumePublicationGuard};
+pub(crate) use native_volume_callback::NativeVolumePublicationGuard;
 /// Capability-scoped context passed to live task code.
 pub struct TaskContext {
     harness: Arc<AgentHarness>,
@@ -7537,16 +7472,6 @@ impl TaskContext {
             .await?;
         validate_value(&tool.definition.output_schema, &result.value, "tool output", None)?;
         serde_json::from_value(result.value).map_err(|error| Error::Invalid(error.to_string()))
-    }
-
-    /// Opens this context's registered task from its retained admission.
-    pub async fn open_resumable_task<I: 'static, O: 'static>(
-        &self,
-        definition: &Arc<TaskDefinition<I, O>>,
-        fence: crate::scheduler::LeaseFence,
-        journal: Arc<dyn WorkflowJournal>,
-    ) -> Result<ResumableTaskSession> {
-        definition.open(self, fence, journal).await
     }
 
     /// Returns any pending approval before dispatching the action.
@@ -10513,7 +10438,7 @@ mod tests {
         let definition = runtime.task::<u64, (OperationId, u64)>("test.local@1")?;
         let mut routed = runtime.as_ref().clone();
         routed.execution = Some(Arc::new(RouteProbe {
-            spawner: Arc::new(SplitSpawner {
+            spawner: Arc::new(SplitState {
                 task_id,
                 record: record.clone(),
             }),
@@ -10534,11 +10459,6 @@ mod tests {
         assert!(matches!(handle.result().await,
             Outcome::Succeeded(Ok((id, value))) if id == operation && value == 7));
         Ok(())
-    }
-
-    struct SplitSpawner {
-        task_id: TaskId,
-        record: TaskAdmissionRecord,
     }
 
     #[test]
@@ -10621,7 +10541,7 @@ mod tests {
         Ok(())
     }
 
-    impl TaskSpawner for SplitSpawner {
+    impl TaskSpawner for SplitState {
         fn policy_identity(&self) -> Option<ComponentIdentity> {
             None
         }
@@ -10694,7 +10614,7 @@ mod tests {
                 task_id,
                 record: record.clone(),
             })),
-            spawner: Some(Arc::new(SplitSpawner {
+            spawner: Some(Arc::new(SplitState {
                 task_id,
                 record: record.clone(),
             })),
@@ -10736,7 +10656,7 @@ mod tests {
         ));
         let mut changed_request = record.clone();
         changed_request.input = serde_json::json!({"value": 4});
-        let mismatched_spawner = harness.bind_spawner(Arc::new(SplitSpawner {
+        let mismatched_spawner = harness.bind_spawner(Arc::new(SplitState {
             task_id,
             record: changed_request,
         }))?;
@@ -10960,7 +10880,7 @@ mod tests {
             group_id,
             batch_id,
             policy: BatchGroupPolicy::CollectAll,
-            spawner: Arc::new(SplitSpawner {
+            spawner: Arc::new(SplitState {
                 task_id: TaskId::from_bytes([23; 16]),
                 record: TaskAdmissionRecord::from_canonical_value(
                     serde_json::from_str(include_str!("../fixtures/v2/task-admission.json"))

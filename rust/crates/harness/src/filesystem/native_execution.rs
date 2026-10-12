@@ -725,7 +725,7 @@ impl NativeExistingLazyVolume {
             {
                 return Err(Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout));
             }
-            let callback = guard.for_volume(owner, binding.volume, binding.writable, work)?.publication;
+            let callback = guard.for_volume(owner, binding.volume, binding.writable, work)?.1;
             let custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
             let mut holder_custody = work.retain_owned(std::mem::size_of::<HeldLazyVolume<P, A, O, D, S>>() as u64)?;
             let (volume, mut volume_custody) = allocate(work, |io| binding.volume.clone_with_io(io))?;
@@ -1622,7 +1622,7 @@ where
                 }
                 let callback_guard = guards[index]
                     .for_volume(owner, binding.volume, binding.writable, &volume_work)?;
-                let crate::runtime::NativeVolumeCallbackPorts { sdk, publication } = callback_guard;
+                let (sdk, publication) = callback_guard;
                 let identity = materializer.backend().mapping_root_identity(binding.path)?;
                 if identities.contains(&identity) {
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason: "native volume directory aliases changed" });

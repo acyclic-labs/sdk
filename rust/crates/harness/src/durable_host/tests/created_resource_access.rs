@@ -910,9 +910,9 @@ async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_wideni
     assert!(matches!(fixture.admit_child(created.request.child.clone()).await?, Admission::Accepted(_)));
     let task = TaskId::from_bytes([84; 16]);
     let context = fixture.harness.durable_context(task, created.request.child.operation_id).await?;
-    assert_eq!(context.scope().current_created_private_volume()?, Some(&created.private));
-    assert_eq!(context.scope().current_created_agent()?, Some(created.seed.child_agent));
-    assert_eq!(context.scope().current_created_authority()?, Some(&created.seed.child));
+    assert_eq!(context.scope().current_created_private_volume(&mut None)?, Some(&created.private));
+    assert_eq!(context.scope().current_created_agent(&mut None)?, Some(created.seed.child_agent));
+    assert_eq!(context.scope().current_created_authority(&mut None)?, Some(&created.seed.child));
     let file = context.stage_file(
         OperationId::from_bytes([93; 16]), "ordinary/result.txt", b"created private bytes",
         "text/plain", "result.txt",
@@ -930,8 +930,8 @@ async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_wideni
     assert_eq!(reopened.read_file(&file).await?.as_ref(), b"created private bytes".as_ref());
     let read_only = reopened.scoped(Capabilities::new([read.clone()]), reopened.scope().limits())?;
     assert_eq!(read_only.read_file(&file).await?.as_ref(), b"created private bytes".as_ref());
-    assert_eq!(read_only.scope().current_created_agent()?, Some(created.seed.child_agent));
-    assert_eq!(read_only.scope().current_created_authority()?, Some(&created.seed.child));
+    assert_eq!(read_only.scope().current_created_agent(&mut None)?, Some(created.seed.child_agent));
+    assert_eq!(read_only.scope().current_created_authority(&mut None)?, Some(&created.seed.child));
     assert!(read_only.stage_file(
         OperationId::from_bytes([94; 16]), "ordinary/denied.txt", b"denied", "text/plain", "denied.txt",
     ).await.is_err());
@@ -1185,7 +1185,7 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     assert_eq!(file.volume(),&created.private);
     assert_eq!(artifact.volume(),result);
     assert_eq!(context.read_file(&artifact).await?.as_ref(), b"result".as_ref());
-    assert_eq!(context.scope().current_created_agent()?,Some(created.seed.child_agent));
+    assert_eq!(context.scope().current_created_agent(&mut None)?,Some(created.seed.child_agent));
     let observation = fixture.host.observe_task(task).await?;
     let reservation = observation.reservation
         .ok_or_else(|| Error::NotFound("created child reservation".into()))?;
@@ -1580,19 +1580,19 @@ async fn native_original_root_child_grandchild_keep_exact_created_source() -> Re
     let root = native_fixture_scope(&fixture, OperationId::from_bytes(fixture.root.into_bytes()), &work).await?;
     assert!(root.0.parent.is_none());
     assert!(root.0.resource_proofs.is_empty());
-    assert!(root.1.current_created_agent_with_native_work(&work)?.is_none());
+    assert!(root.1.current_created_agent(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?.is_none());
     assert!(!root.1.grants().contains(&read));
     assert!(root.2.matches_work(&work));
     let current = native_fixture_scope(&fixture, created.request.child.operation_id, &work).await?;
     assert!(current.0 == created.request.child);
-    assert_eq!(current.1.current_created_agent_with_native_work(&work)?, Some(created.seed.child_agent));
-    assert_eq!(current.1.current_created_authority_with_native_work(&work)?, Some(&created.seed.child));
-    assert_eq!(current.1.current_created_private_volume_with_native_work(&work)?, Some(&created.private));
+    assert_eq!(current.1.current_created_agent(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(created.seed.child_agent));
+    assert_eq!(current.1.current_created_authority(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(&created.seed.child));
+    assert_eq!(current.1.current_created_private_volume(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(&created.private));
     assert!(current.1.grants().contains(&write));
     let inherited = native_fixture_scope(&fixture, descendant.operation_id, &work).await?;
     assert!(inherited.0 == descendant);
-    assert_eq!(inherited.1.current_created_agent_with_native_work(&work)?, Some(created.seed.child_agent));
-    assert_eq!(inherited.1.current_created_authority_with_native_work(&work)?, Some(&created.seed.child));
+    assert_eq!(inherited.1.current_created_agent(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(created.seed.child_agent));
+    assert_eq!(inherited.1.current_created_authority(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(&created.seed.child));
     assert!(inherited.1.grants().contains(&read));
     assert!(!inherited.1.grants().contains(&write));
     let readonly = current.1.narrow_with_native_work(
