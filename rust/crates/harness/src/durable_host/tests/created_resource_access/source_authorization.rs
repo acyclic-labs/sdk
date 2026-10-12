@@ -84,10 +84,10 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let attestation = &handle.authorization().policy_scope;
     assert_eq!(attestation.capabilities(), &Capabilities::new([attestation.id()]));
     assert!(!attestation.capabilities().contains(&project.capability(VolumeOperation::Read, &mut None)?));
-    handle.grant().require(&project, VolumeOperation::Read, &mut None)?;
-    assert!(handle.grant().require(&policy.bootstrap.project, VolumeOperation::Read, &mut None).is_err());
-    assert!(handle.grant().require(&project, VolumeOperation::Write, &mut None).is_err());
-    assert!(handle.grant().require(&policy.bootstrap.project, VolumeOperation::Write, &mut None).is_err());
+    handle.grant().require(&project, VolumeOperation::Read, None)?;
+    assert!(handle.grant().require(&policy.bootstrap.project, VolumeOperation::Read, None).is_err());
+    assert!(handle.grant().require(&project, VolumeOperation::Write, None).is_err());
+    assert!(handle.grant().require(&policy.bootstrap.project, VolumeOperation::Write, None).is_err());
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -108,14 +108,14 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let serialized = crate::contract::canonical_json_bytes(handle.authorization())?;
     let restored_record: crate::source_authorization::ProjectSourceAuthorization =
         serde_json::from_slice(&serialized).map_err(|error|Error::Invalid(error.to_string()))?;
-    restored_record.verify_scope(&fixture.host.verifier)?;
+    restored_record.verify_scope_with_work(&fixture.host.verifier, &mut None)?;
     assert!(crate::conversation::ContentGrant::verify(
-        &fixture.host.verifier, &restored_record.policy_scope, &project, VolumeOperation::Read,
+        &fixture.host.verifier, &restored_record.policy_scope, &project, VolumeOperation::Read, 1_000_000, &mut None,
     ).is_err());
     let mut other_purpose = restored_record.clone();
     other_purpose.policy_scope = issuer.issue("harness.other-purpose.v1", &Capabilities::new(["harness.other-purpose.v1"]), None, None, &mut None).expect("scope proof");
     fixture.host.verifier.verify(&other_purpose.policy_scope, &mut None)?;
-    assert!(other_purpose.verify_scope(&fixture.host.verifier).is_err());
+    assert!(other_purpose.verify_scope_with_work(&fixture.host.verifier, &mut None).is_err());
     let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
     let snapshot = ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:None };
     #[cfg(not(target_arch = "wasm32"))]
@@ -361,7 +361,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
             10 => record.maximum_work += 1,
             _ => record.policy_scope = foreign.issue(&record.policy_scope.id(), record.policy_scope.capabilities(), None, None, &mut None).expect("scope proof"),
         }
-        assert!(record.verify_scope(&fixture.host.verifier).is_err(), "descriptor control {control}");
+        assert!(record.verify_scope_with_work(&fixture.host.verifier, &mut None).is_err(), "descriptor control {control}");
     }
     assert!(owner.authorize_project_source(&context, &issuer, &policy, child, operation,
         ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:Some(serde_json::json!({"raw":true})) },

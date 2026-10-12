@@ -5945,11 +5945,11 @@ pub(crate) mod tests {
             .await?;
         let host = CoordinatorTaskHost::new(coordinator, stream.clone(), payloads.clone(), payloads, &(owner), scope.clone(), issuer.verifier(&mut None).expect("verifier copy"), RuntimeScope::new(scope.capabilities().clone(), Limits::default())?, TaskRegistry::default(), MachineRegistry::default(), Arc::new(SystemUnixMillisClock), None)?;
         let first = host.workflow_wait_page(0, None, 64).await?;
-        assert_eq!(first.events_read, 64);
-        assert_eq!(first.next_revision, 64);
-        assert_eq!(first.through_revision, 91);
+
+        assert_eq!(first.0, 64);
+        assert_eq!(first.1, 91);
         assert_eq!(
-            first.tasks,
+            first.3,
             [5, 7, 9, 11].map(|index| TaskId::from_bytes([index; 16]))
         );
         host.coordinator
@@ -5961,22 +5961,22 @@ pub(crate) mod tests {
             )
             .await?;
         let second = host
-            .workflow_wait_page(first.next_revision, Some(first.through_revision), 64)
+            .workflow_wait_page(first.0, Some(first.1), 64)
             .await?;
-        assert_eq!(second.events_read, 27);
-        assert_eq!(second.next_revision, 91);
-        assert_eq!(second.through_revision, 91);
+
+        assert_eq!(second.0, 91);
+        assert_eq!(second.1, 91);
         assert_eq!(
-            second.tasks,
+            second.3,
             [13, 15].map(|index| TaskId::from_bytes([index; 16]))
         );
         let finished = host.workflow_wait_page(91, Some(91), 64).await?;
-        assert_eq!(finished.events_read, 0);
-        assert!(finished.tasks.is_empty());
+
+        assert!(finished.3.is_empty());
         let retry = host.workflow_wait_page(64, Some(91), 64).await?;
-        assert_eq!(retry.tasks, second.tasks);
+        assert_eq!(retry.3, second.3);
         let new_snapshot = host.workflow_wait_page(0, None, 1).await?;
-        assert_eq!(new_snapshot.through_revision, 92);
+        assert_eq!(new_snapshot.1, 92);
         Ok(())
     }
 
@@ -7518,8 +7518,8 @@ pub(crate) mod tests {
         let (replacement_approval, cancellation_approval_pending) = {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
-                approval_pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                stream.commit(approval_pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
             ));
             assert!(
                 approval_journal
@@ -7591,8 +7591,8 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    original_pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                    (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                    stream.commit(original_pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "lease replacement after preflight must atomically prevent publication"
             );
@@ -7650,8 +7650,8 @@ pub(crate) mod tests {
             {
                 assert!(
                     matches!(
-                        execution_pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                        (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                        stream.commit(execution_pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
                     ),
                     "lease replacement must atomically fence execution publication"
                 );
@@ -7703,8 +7703,8 @@ pub(crate) mod tests {
             use crate::executor::{ExecutionEvent, ExecutionJournal};
             assert!(
                 matches!(
-                    execution_pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                    (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                    stream.commit(execution_pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "cancellation must atomically fence execution publication"
             );
@@ -7938,8 +7938,8 @@ pub(crate) mod tests {
         {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
-                cancellation_approval_pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                stream.commit(cancellation_approval_pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
             ));
             assert!(
                 replacement_approval
