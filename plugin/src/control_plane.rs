@@ -3789,7 +3789,7 @@ impl ControlPlane {
                     .map_err(|_| "physical root watcher state is poisoned".to_owned())?
                     .watch_tree(&RESERVED_ROOT_NAMES)
                     .map_err(display)?;
-                capture_baseline_with_policy(
+                capture_baseline(
                     &mut checkout,
                     &capture,
                     &policy,
@@ -3800,7 +3800,7 @@ impl ControlPlane {
                 .map_err(display)?;
             }
             batch @ WatchBatch::Changes { .. } => {
-                capture_watch_batch_with_policy(
+                capture_watch_batch(
                     &mut checkout,
                     batch,
                     &capture,
@@ -3827,7 +3827,7 @@ impl ControlPlane {
                     .map_err(|_| "physical root watcher state is poisoned".to_owned())?
                     .watch_tree(&RESERVED_ROOT_NAMES)
                     .map_err(display)?;
-                capture_baseline_with_policy(
+                capture_baseline(
                     &mut checkout,
                     &capture,
                     &policy,
@@ -3842,7 +3842,7 @@ impl ControlPlane {
                     .map_err(|_| "physical root watcher state is poisoned".to_owned())?
                     .finish_rescan()
                     .map_err(display)?;
-                capture_watch_batch_with_policy(
+                capture_watch_batch(
                     &mut checkout,
                     trailing,
                     &capture,
@@ -3856,12 +3856,13 @@ impl ControlPlane {
         }
         if unreported {
             let recorded = recorded_paths(&workspace).await?;
-            capture_watch_batch_with_policy(
+            capture_watch_batch(
                 &mut checkout,
                 WatchBatch::Changes {
-                    epoch: WatchEpoch::from_u64(0),
-                    first_sequence: WatchSequence::from_u64(0),
-                    next_sequence: WatchSequence::from_u64(0),
+                    original: Default::default(),
+                    epoch: 0,
+                    first_sequence: 0,
+                    next_sequence: 0,
                     changes: recorded.into_iter().map(WatchChange::Modified).collect(),
                 },
                 &capture,

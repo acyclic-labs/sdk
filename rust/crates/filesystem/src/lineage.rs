@@ -406,7 +406,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                     .map_err(WorkspaceError::from)?;
                 let generation = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let child_id = parent
-                    .fork_workspace_id(destination.as_str())
+                    .volume.fs.workspace_id(destination.as_str())
                     .map_err(WorkspaceError::from)?;
                 let planned = WorkspaceLineageRecord {
                     version: LINEAGE_VERSION,
@@ -482,7 +482,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         parent.generation(fork_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let initial = child.generation(initial_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let expected_child = parent
-            .fork_workspace_id(child.name().as_str())
+            .volume.fs.workspace_id(child.name().as_str())
             .map_err(WorkspaceError::from)?;
         if child.id() != expected_child {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
@@ -917,7 +917,7 @@ mod tests {
         graph.register_root(&parent).await.expect("register root");
         let parent_head = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head");
         let child_id = parent
-            .fork_workspace_id("child")
+            .volume.fs.workspace_id("child")
             .expect("derived child identity");
         let planned = WorkspaceLineageRecord {
             version: LINEAGE_VERSION,

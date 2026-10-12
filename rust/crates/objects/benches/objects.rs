@@ -39,7 +39,7 @@ fn get(key: String) -> wire::GetObjectRequest {
 
 fn open(runtime: &Runtime, root: &Path) -> LocalObjects {
     runtime
-        .block_on(LocalObjects::open(root, LocalObjectsLimits::default()))
+        .block_on(LocalObjects::open(root, LocalObjectsLimits::default(), None))
         .unwrap()
 }
 

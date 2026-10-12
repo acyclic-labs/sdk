@@ -155,7 +155,7 @@ fn decode_schema(reference: &FileRef, bytes: &[u8], io: Option<&crate::executor:
     crate::executor::with_history_io(io, |work| reference.descriptor().verify(bytes, work))?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io {
-        let schema = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
+        let schema = io.decode(std::marker::PhantomData::<Value>, bytes, crate::wire::ErrorCode::Storage)?;
         drop(crate::contract::compile_json_schema(&schema.0, "effect result", Some(io))?);
         return Ok(crate::filesystem::retain_decoded(schema));
     }
@@ -215,7 +215,7 @@ pub(crate) fn validate_result_bytes(
             });
         }
         result.descriptor().verify(bytes, work)?;
-        let value = decode.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
+        let value = decode.decode(std::marker::PhantomData::<Value>, bytes, crate::wire::ErrorCode::Storage)?;
         return crate::contract::validate_json_schema_value(
             &schema, &value.0, "effect result", Some(&decode));
     }

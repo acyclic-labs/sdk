@@ -623,7 +623,7 @@ fn shared_root_observations_publish_monotonic_source_epochs() {
 }
 
 async fn shared_root_observations_case() {
-    use acyclic_fs::{WatchEpoch, WatchInvalidationReason, WatchSequence};
+    use acyclic_fs::WatchInvalidationReason;
     use std::sync::mpsc;
 
     let temporary = tempfile::tempdir().expect("temporary directory");
@@ -643,7 +643,7 @@ async fn shared_root_observations_case() {
                 .expect("first observation entered");
             release_rx.recv().expect("release first observation");
             Ok(WatchBatch::RescanRequired {
-                epoch: WatchEpoch::from_u64(1),
+                epoch: 1,
                 reason: WatchInvalidationReason::NativeRescanRequired,
             })
         })
@@ -661,10 +661,11 @@ async fn shared_root_observations_case() {
                 .send(())
                 .expect("second observation entered");
             Ok(WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(1),
-                next_sequence: WatchSequence::from_u64(1),
+                epoch: 1,
+                first_sequence: 1,
+                next_sequence: 1,
                 changes: Vec::new(),
+                original: Default::default(),
             })
         })
     });

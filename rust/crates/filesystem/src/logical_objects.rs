@@ -145,10 +145,11 @@ fn service_read_error(error: Error) -> ObjectStoreError {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_objects_error(error: acyclic_objects::v1::NativeObjectsError) -> ObjectStoreError {
-    match error {
-        acyclic_objects::v1::NativeObjectsError::Service(error) => service_read_error(error),
-        acyclic_objects::v1::NativeObjectsError::Unsupported => ObjectStoreError::NativeUnavailable,
-        error => ObjectStoreError::NativeObjects(error),
+    use acyclic_objects::v1::NativeObjectsCause;
+    match &error.cause {
+        NativeObjectsCause::Service(service) if !error.has_payload() => service_read_error(*service),
+        NativeObjectsCause::Unsupported if !error.has_payload() => ObjectStoreError::NativeUnavailable,
+        _ => ObjectStoreError::NativeObjects(error),
     }
 }
 
@@ -170,17 +171,18 @@ fn native_request<T>(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_completed_read_bytes(error: &acyclic_objects::v1::NativeObjectsError) -> Result<u64, WorkError> {
-    use acyclic_objects::v1::NativeObjectsError;
-    match error {
-        NativeObjectsError::ReadFailure(failure) => [
-            failure.object.as_ref().map_or(0, |value| value.body().len() as u64),
-            failure.secondary_object.as_ref().map_or(0, |value| value.body().len() as u64),
-            failure.partial.as_ref().map_or(0, |bytes| bytes.len() as u64),
-            failure.transport_chunk.as_ref().map_or(0, |bytes| bytes.len() as u64),
-        ].into_iter().try_fold(0_u64, |total, bytes| total.checked_add(bytes).ok_or(WorkError::Overflow)),
-        NativeObjectsError::SharedFailure(failure) => native_completed_read_bytes(failure.error()),
-        _ => Ok(0),
+    use acyclic_objects::v1::NativeObjectsCause;
+    if !error.has_payload() {
+        return match &error.cause {
+            NativeObjectsCause::SharedFailure(failure) => native_completed_read_bytes(failure.error()),
+            _ => Ok(0),
+        };
     }
+    [
+        error.object.as_ref().map_or(0, |value| value.body().len() as u64),
+        error.secondary_object.as_ref().map_or(0, |value| value.body().len() as u64),
+        error.transport_chunk.as_ref().map_or(0, |bytes| bytes.len() as u64),
+    ].into_iter().try_fold(0_u64, |total, bytes| total.checked_add(bytes).ok_or(WorkError::Overflow))
 }
 
 fn completed_read_bytes(result: &Result<Object, ObjectStoreError>) -> Result<u64, WorkError> {
@@ -252,7 +254,7 @@ impl LogicalReadResults {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(values) => {
-                for value in values.into_results() { if let Err(error) = value { return native_objects_error(error).into(); } }
+                for value in values { if let Err(error) = value { return native_objects_error(error).into(); } }
             }
         }
         fallback
@@ -292,7 +294,7 @@ impl LogicalReadResults {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(values) => {
-                for value in values.into_results() { visit(value.map_err(native_objects_error))?; }
+                for value in values { visit(value.map_err(native_objects_error))?; }
             }
         }
         Ok(())
@@ -301,15 +303,10 @@ impl LogicalReadResults {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_error_code(error: &acyclic_objects::v1::NativeObjectsError) -> Option<wire::ErrorCode> {
-    use acyclic_objects::v1::{NativeObjectsCause, NativeObjectsError};
-    match error {
-        NativeObjectsError::Service(error) => Some(error.code),
-        NativeObjectsError::SharedFailure(error) => native_error_code(error.error()),
-        NativeObjectsError::ReadFailure(failure) => match &failure.cause {
-            NativeObjectsCause::Service(error) => Some(error.code),
-            NativeObjectsCause::SharedFailure(error) => native_error_code(error.error()),
-            _ => None,
-        },
+    use acyclic_objects::v1::NativeObjectsCause;
+    match &error.cause {
+        NativeObjectsCause::Service(error) => Some(error.code),
+        NativeObjectsCause::SharedFailure(error) => native_error_code(error.error()),
         _ => None,
     }
 }
@@ -748,7 +745,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             ).await,
             #[cfg(not(target_arch = "wasm32"))]
             LogicalPutResults::Native(results) => self.finish_put_many_results(
-                results.into_results().map(|result| result.map(|receipt| receipt.info().size).map_err(native_objects_error)),
+                results.map(|result| result.map(|receipt| receipt.info().size).map_err(native_objects_error)),
                 &unique, writes, allow_idempotent, accounting,
             ).await,
         };
@@ -1193,7 +1190,7 @@ mod tests {
         acyclic_stream::PreparedOwnedBytes::new(data, allocation, Arc::clone(meter))
             .map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => error.into(),
-                _ => acyclic_objects::v1::NativeObjectsError::Admission(std::io::ErrorKind::InvalidData.into()),
+                _ => acyclic_objects::v1::NativeObjectsError::from(std::io::Error::from(std::io::ErrorKind::InvalidData)),
             })
     }
 
@@ -1508,7 +1505,7 @@ mod tests {
             });
             let error = store.put_many_with_native_work(&writes, &work, &cancellation).await
                 .err().ok_or("unbounded response was accepted")?;
-            assert!(matches!(error, ObjectStoreError::NativeObjects(acyclic_objects::v1::NativeObjectsError::Admission(_))
+            assert!(matches!(error, ObjectStoreError::NativeObjects(acyclic_objects::v1::NativeObjectsError { cause: acyclic_objects::v1::NativeObjectsCause::Admission(_), .. })
                 | ObjectStoreError::Work(_) | ObjectStoreError::Native(_)));
             assert_eq!(work.receipt().object_bytes_written, 0);
             assert_eq!(store.provider.calls.load(SeqCst), 0);
@@ -1707,7 +1704,7 @@ mod tests {
         let store = LogicalObjectStore::new(Arc::new(provider), bucket);
         let error = store.read_with_native_work(native_test_id(), 100, &work, &cancellation).await
             .err().ok_or("unfunded native controls reached the provider")?;
-        assert!(matches!(error, ObjectStoreError::NativeObjects(acyclic_objects::v1::NativeObjectsError::Admission(_))
+        assert!(matches!(error, ObjectStoreError::NativeObjects(acyclic_objects::v1::NativeObjectsError { cause: acyclic_objects::v1::NativeObjectsCause::Admission(_), .. })
             | ObjectStoreError::Native(_) | ObjectStoreError::Work(_)));
         assert_eq!(store.provider.maximum.load(SeqCst), 0);
         assert_eq!(store.provider.calls.load(SeqCst), 0);

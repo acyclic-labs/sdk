@@ -130,7 +130,7 @@ impl WorkflowContext {
             pipeline = pipeline.with(Arc::new(discovered.clone().stage(ContextPlacement::Prepend)?));
         }
         for attribute in &self.attributes {
-            attribute.validate()?;
+            attribute.validate(&mut None)?;
             let mode = self.attribute_mode.unwrap_or(ContextRenderMode::Prompt);
             let text = serde_json::to_string(attribute).map_err(|error| Error::Invalid(error.to_string()))?;
             pipeline = pipeline.with(Arc::new(SourceStage::new(
