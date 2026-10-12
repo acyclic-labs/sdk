@@ -98,14 +98,14 @@ pub(crate) fn vec_with_capacity<T>(
         }
         io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
-        values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
-        io.retain_owned(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?.checked_sub(bytes)
-            .ok_or_else(model_owned_overflow)?)?;
-        return Ok(values);
     }
-    #[cfg(not(feature = "filesystem"))]
     let _ = (io, bytes);
     values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.retain_owned(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?.checked_sub(bytes)
+            .ok_or_else(model_owned_overflow)?)?;
+    }
     Ok(values)
 }
 
