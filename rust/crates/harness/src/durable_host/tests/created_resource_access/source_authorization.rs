@@ -81,7 +81,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:None },
         1_000_000, 128 * 1_024 * 1_024).await?;
     assert_eq!(context.scope().grants(), &original);
-    handle.require_selection(operation, child, &project, &generation, None)?;
+    handle.require_selection(operation, child, &project, &generation, None, None)?;
     let attestation = &handle.authorization().policy_scope;
     assert_eq!(attestation.capabilities(), &Capabilities::new([attestation.id()]));
     assert!(!attestation.capabilities().contains(&project.capability(VolumeOperation::Read)?));
@@ -92,20 +92,18 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let mut budget = test_budget(16_384, 16 * 1_024 * 1_024);
+        let mut budget = acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024);
         budget.allocation_operations = 1;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .expect("admitted original ledger with no remaining allocator attempt");
-        handle.require_selection_with_native_work(operation, child, &project, &generation, None, &work)?;
+        handle.require_selection(operation, child, &project, &generation, None, Some(&work))?;
         for (selected_operation, selected_task, selected_project, selected_generation) in [
             (OperationId::from_bytes([154;16]), child, &project, &generation),
             (operation, fixture.root, &project, &generation),
             (operation, child, &policy.bootstrap.project, &generation),
             (operation, child, &project, &initial_generation),
         ] {
-            assert!(matches!(handle.require_selection_with_native_work(
-                selected_operation, selected_task, selected_project, selected_generation, None, &work,
-            ), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unauthorized, .. })));
+            assert!(matches!(handle.require_selection(selected_operation, selected_task, selected_project, selected_generation, None, Some(&work)), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unauthorized, .. })));
         }
     }
     let serialized = crate::contract::canonical_json_bytes(handle.authorization())?;
@@ -119,13 +117,13 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     other_purpose.policy_scope = issuer.root("harness.other-purpose.v1", Capabilities::new(["harness.other-purpose.v1"]));
     fixture.host.verifier.verify(&other_purpose.policy_scope)?;
     assert!(other_purpose.verify_scope(&fixture.host.verifier).is_err());
-    let budget = test_budget(1_000_000, 1_000_000);
+    let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
     let snapshot = ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:None };
     #[cfg(not(target_arch = "wasm32"))]
     {
         let native_cancellation = acyclic_fs::CancellationToken::new();
         let native = acyclic_fs::NativeMaterializationWork::new(
-            test_budget(16_384, 16 * 1_024 * 1_024), &native_cancellation,
+            acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &native_cancellation,
         ).expect("finite original source invocation");
         let mut prepared = created.request.clone();
         prepared.read_authorization = Some(handle.authorization().clone());
@@ -141,7 +139,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         let retained = io.owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         let sealed = sealed.expect("authentic retained foreign Project selection");
-        sealed.require_selection(operation, child, &project, &generation, None)?;
+        sealed.require_selection(operation, child, &project, &generation, None, None)?;
         assert!(custody.matches_work(&native));
         assert_eq!(context.scope().grants(), &original);
         drop(sealed);
@@ -187,7 +185,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         }
         let foreign_cancellation = acyclic_fs::CancellationToken::new();
         let foreign = acyclic_fs::NativeMaterializationWork::new(
-            test_budget(16_384, 16 * 1_024 * 1_024), &foreign_cancellation,
+            acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &foreign_cancellation,
         ).expect("independent caller ledger for the hostile selection");
         let before = foreign.receipt();
         assert!(matches!(selected.require_native_project_selection_with_native_work(
@@ -201,7 +199,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         assert_eq!(foreign.receipt().backend_read_operations, before.backend_read_operations);
         drop(selected);
 
-        let mut denied_budget = test_budget(16_384, 16 * 1_024 * 1_024);
+        let mut denied_budget = acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024);
         denied_budget.backend_read_operations = 0;
         let denied = acyclic_fs::NativeMaterializationWork::new(
             denied_budget, &native_cancellation,

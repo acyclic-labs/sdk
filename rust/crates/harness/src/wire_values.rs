@@ -51,7 +51,7 @@ impl TryFrom<wire::VolumeRef> for VolumeRef {
             wire::volume_owner::Owner::AgentId(id) => VolumeOwner::Agent(AgentId::parse(&id)?),
             wire::volume_owner::Owner::Session(id) => VolumeOwner::Session(id),
         };
-        Self::new(provider, value.id, class, owner)
+        Self::new(provider, value.id, class, owner, &mut None)
     }
 }
 
@@ -105,6 +105,7 @@ impl TryFrom<wire::FileRef> for FileRef {
             value.immutable_version,
             required(value.descriptor, "file.descriptor")?.try_into()?,
             value.display_name,
+            &mut None,
         )
     }
 }

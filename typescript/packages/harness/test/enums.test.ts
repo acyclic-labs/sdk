@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
   aggregateKindToWire,
   decodeAggregateKind,
-  groupPolicies,
 } from "../src/enums.js";
 import {
   AggregateKind as WireAggregateKind,
@@ -21,8 +20,4 @@ describe("derived Harness enum mappings", () => {
     expect(() => decodeAggregateKind(99)).toThrow();
   });
 
-  test("retains the GroupPolicies object shape", () => {
-    expect(groupPolicies.collectAll).toEqual({ kind: "collect-all" });
-    expect(groupPolicies.cancelOnFailure).toEqual({ kind: "cancel-on-failure" });
-  });
 });

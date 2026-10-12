@@ -51,6 +51,8 @@ mod tree_mutation;
 pub(crate) mod types;
 mod volume;
 
+pub use persistent_btree::Child;
+
 pub(crate) use attribute_list::list_attributes_async_with_accounting;
 pub(crate) use attribute_mutation::apply_attribute_mutations_with_accounting;
 pub(crate) use blob::{
@@ -88,7 +90,7 @@ pub(crate) use search::binary_search_with_accounting;
 pub(crate) use types::lowercase_unicode_with_accounting;
 
 pub use attribute::{
-    AttributeChild, AttributeClass, AttributeEntry, AttributeError, AttributeName, AttributePage, attribute_page_id, decode_attribute_page, encode_attribute_page};
+    AttributeClass, AttributeEntry, AttributeError, AttributeName, AttributePage, attribute_page_id, decode_attribute_page, encode_attribute_page};
 pub use attribute_access::{
     AttributeBatchLookup, AttributeLookup, AttributeLookupError, AttributeLookupFailure, lookup_attribute, lookup_attribute_async, lookup_attributes, lookup_attributes_async};
 pub(crate) use attribute_access::{
@@ -96,7 +98,7 @@ pub(crate) use attribute_access::{
 pub use attribute_list::{
     AttributeListError, AttributeListFailure, AttributeListing, list_attributes, list_attributes_async};
 pub use attribute_mutation::{
-    AttributeMutation, AttributeMutationError, AttributeMutationFailure, AttributeMutationReceipt, AttributeSemanticError, apply_attribute_mutations, apply_attribute_mutations_async};
+    AttributeMutation, AttributeMutationError, AttributeMutationFailure, AttributeMutationReceipt, AttributeSemanticError, apply_attribute_mutations};
 pub use blob::{
     AsyncBlobSource, OwnedSourceChunk, BlobBuild, BlobBuildError, BlobBuildFailure, BlobBuildOptions, BlobChild, BlobChunkRef, BlobNode, BlobPage, BlobRead, BlobReadError, BlobReadFailure, blob_page_id, build_blob, build_blob_async, decode_blob_page, encode_blob_page, read_blob_range, read_blob_range_async};
 pub use checkpoint::{
@@ -119,7 +121,7 @@ pub use export::{
 pub use extent::{
     decode_extent_page, encode_extent_page, extent_page_id};
 pub use extent_clone::{
-    ExtentCloneError, ExtentCloneFailure, ExtentCloneReceipt, ExtentCloneRequest, clone_extent_range, clone_extent_range_async};
+    ExtentCloneError, ExtentCloneFailure, ExtentCloneReceipt, ExtentCloneRequest, clone_extent_range};
 pub use extent_mutation::{
     ExtentMutation, ExtentMutationError, ExtentMutationFailure, ExtentMutationOptions, ExtentMutationReceipt, apply_extent_mutations, apply_extent_mutations_async};
 pub use file_read::{
@@ -127,13 +129,13 @@ pub use file_read::{
 pub(crate) use file_read::{
     ReadOwned, read_file_range_with_accounting, read_objects_with_accounting, retained_object_reads_bytes};
 pub use file_table::{
-    FilePayload, FilePayloadKind, FileRecord, FileRecordBatchLookup, FileRecordLookup, FileRecordReadError, FileRecordReadFailure, FileTableChild, FileTableError, FileTablePage, InlineFileData, InlineFileDataError, MAXIMUM_INLINE_FILE_BYTES, decode_file_table_page, encode_file_table_page, file_table_page_id, lookup_file_record, lookup_file_record_async, lookup_file_records, lookup_file_records_async};
+    FilePayload, FilePayloadKind, FileRecord, FileRecordBatchLookup, FileRecordLookup, FileRecordReadError, FileRecordReadFailure, FileTableError, FileTablePage, InlineFileData, InlineFileDataError, MAXIMUM_INLINE_FILE_BYTES, decode_file_table_page, encode_file_table_page, file_table_page_id, lookup_file_record, lookup_file_record_async, lookup_file_records, lookup_file_records_async};
 pub(crate) use file_table::{
     decode_file_record, encode_file_record, encode_file_table_leaf_records, lookup_file_record_async_with_custody, lookup_file_records_async_with_custody};
 pub(crate) use file_table::{
     lookup_file_record_async_with_accounting, lookup_file_records_async_with_accounting};
 pub use file_table_mutation::{
-    FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt, FileTableSemanticError, apply_file_table_mutations, apply_file_table_mutations_async};
+    FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt, FileTableSemanticError, apply_file_table_mutations};
 pub(crate) use file_table_mutation::apply_file_table_mutations_with_accounting;
 pub(crate) use generation::{
     read_generation_root_with_accounting, read_generation_root_with_limits_and_accounting};
@@ -219,10 +221,10 @@ pub use transfer::{
 pub use tree::{
     decode_tree_page, encode_tree_page, tree_page_id};
 pub use tree_mutation::{
-    TreeMutation, TreeMutationError, TreeMutationFailure, TreeMutationReceipt, apply_tree_mutations, apply_tree_mutations_async};
+    TreeMutation, TreeMutationError, TreeMutationFailure, TreeMutationReceipt, apply_tree_mutations};
 pub(crate) use tree_mutation::apply_tree_mutations_with_accounting;
 pub use types::{
-    Extent, ExtentChild, ExtentKind, ExtentPage, ExtentPageError, FileKind, LogicalName, NameEncoding, TreeChild, TreeEntry, TreePage, TreePageError};
+    Extent, ExtentChild, ExtentKind, ExtentPage, ExtentPageError, FileKind, LogicalName, NameEncoding, TreeEntry, TreePage, TreePageError};
 pub use volume::{
     VolumeCreated, VolumeCreatedError, decode_volume_created, volume_authority_id};
 pub(crate) use volume::{

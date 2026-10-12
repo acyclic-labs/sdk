@@ -668,16 +668,16 @@ fn clone_reference_with_io(
     reference: &FileRef, io: Option<&crate::filesystem::PreparationIo>,
 ) -> Result<FileRef> {
     let Some(io) = io else { return Ok(reference.clone()); };
-    let volume = reference.volume().copy(io)?;
+    let volume = reference.volume().copy(&mut Some(&mut io.history_io()))?;
     let values = [reference.path(), reference.version(), reference.descriptor().media_type(), reference.display_name()];
     let copied = values.iter().map(|value| value.len() as u64).sum();
     let counters = acyclic_fs::WorkCounters { bytes_copied: copied, ..Default::default() };
     io.preflight(counters)?;
     for value in values { io.claim(value.len() as u64)?; io.allocation_attempt(value.len() as u64)?; }
     let descriptor = crate::conversation::FileDescriptor::new(
-        *reference.descriptor().sha256(), reference.descriptor().byte_length(), reference.descriptor().media_type(),
+        *reference.descriptor().sha256(), reference.descriptor().byte_length(), reference.descriptor().media_type().to_owned(),
     )?;
-    let result = FileRef::new(volume, reference.path(), reference.version(), descriptor, reference.display_name())?;
+    let result = FileRef::new(volume, reference.path(), reference.version(), descriptor, reference.display_name(), &mut Some(&mut io.history_io()))?;
     io.charge(counters)?;
     Ok(result)
 }

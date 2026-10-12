@@ -53,7 +53,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 });
             }
             if !path.is_empty() {
-                crate::conversation::validate_content_path_with_native_work(path, work)?;
+                crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             }
             return handle.grant().require_directory_path_with_native_work(project, path, work);
         }
@@ -81,10 +81,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.io.cancellation().check()
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let selected = self.authorization();
-        self.handle.require_selection_with_native_work(
-            selected.operation_id, source, project, generation,
-            selected.native_snapshot.as_ref(), work,
-        )?;
+        self.handle.require_selection(selected.operation_id, source, project, generation, selected.native_snapshot.as_ref(), Some(work))?;
         self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
         let io = PreparationIo::from_native_work(work)?;
         Self::require_directory_with_io(&self.host, &self.handle, "", &io)?;

@@ -31,7 +31,10 @@ impl Format for TreeFormat {
         limits: DecodeLimits,
         observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
-        super::tree::decode_tree_page(bytes, limits, observe, Page::Leaf, Page::Internal, |first, page| Child { first, page }, |child| &child.first)
+        Ok(match super::tree::decode_tree_page(bytes, limits, observe)? {
+            super::TreePage::Leaf(values) => Page::Leaf(values),
+            super::TreePage::Internal(children) => Page::Internal(children),
+        })
     }
 
     fn decode_shape(
@@ -205,23 +208,8 @@ pub struct TreeMutationReceipt {
 /// Sparse tree mutation failure preserving all work and orphan writes.
 pub type TreeMutationFailure = OperationFailure<TreeMutationError>;
 
-/// Applies one ordered mutation batch by path-copying only intersecting pages.
-pub fn apply_tree_mutations<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    mutations: Vec<TreeMutation>,
-    maximum_mutations: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<TreeMutationReceipt, TreeMutationFailure> {
-    let cancellation = crate::CancellationToken::new();
-    crate::async_storage::poll_immediate(apply_tree_mutations_async(
-        store, root, mutations, maximum_mutations, limits, budget, &cancellation,
-    ))
-}
-
-/// Asynchronously applies one ordered sparse directory mutation batch.
-pub async fn apply_tree_mutations_async<S: crate::AsyncObjectStore>(
+/// Applies one bounded directory mutation batch.
+pub async fn apply_tree_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     mutations: Vec<TreeMutation>,

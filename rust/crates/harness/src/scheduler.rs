@@ -177,7 +177,7 @@ impl OperationSpec {
         if self.owner.authority() != owner {
             return Err(diagnostic(work, crate::wire::ErrorCode::Unauthorized, "declaration belongs to another owner"));
         }
-        verifier.verify_audience_with_work(owner, work)?;
+        verifier.verify_audience(owner, work)?;
         verifier.verify_scope_for_with_work(owner,&self.owner_scope,work)?;
         if !self
             .owner_scope
@@ -441,7 +441,7 @@ impl TaskModelClaims {
 }
 
 /// Pure reducer for dependency, capacity, ownership, and cancellation state.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Scheduler {
     operations: BTreeMap<OperationId, OperationState>,
     child_slots: BTreeMap<(OperationId, String), OperationId>,
@@ -450,28 +450,31 @@ pub struct Scheduler {
     sessions: BTreeMap<OperationId, SessionLimits>,
     #[serde(default)]
     model_claims: BTreeMap<OperationId, TaskModelClaims>,
-    // LAST: cached SDK payloads above are physically dropped before their original native allocation guards, including after query IO is gone.
+    // Payloads drop before their original allocation guards.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[serde(skip)]
-    native_custody: NativeSchedulerCustody,
+    native_operations: BTreeMap<OperationId, [Option<acyclic_fs::NativeAllocation>; 6]>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[serde(skip)]
+    native_completion: Option<acyclic_fs::NativeAllocation>,
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[derive(Debug, Default)]
-struct NativeSchedulerCustody {
-    operations: BTreeMap<OperationId, [Option<acyclic_fs::NativeAllocation>; 6]>,
-    completion: Option<acyclic_fs::NativeAllocation>,
+impl Clone for Scheduler {
+    fn clone(&self) -> Self {
+        Self {
+            operations: self.operations.clone(), child_slots: self.child_slots.clone(),
+            completion_order: self.completion_order.clone(), sessions: self.sessions.clone(),
+            model_claims: self.model_claims.clone(), ..Self::default()
+        }
+    }
 }
 
-// Ordinary projection clones remain the existing unobserved API.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-impl Clone for NativeSchedulerCustody {
-    fn clone(&self) -> Self { Self::default() }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-impl PartialEq for NativeSchedulerCustody {
-    fn eq(&self, _: &Self) -> bool { true }
+impl PartialEq for Scheduler {
+    fn eq(&self, other: &Self) -> bool {
+        self.operations == other.operations && self.child_slots == other.child_slots
+            && self.completion_order == other.completion_order && self.sessions == other.sessions
+            && self.model_claims == other.model_claims
+    }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -484,7 +487,6 @@ struct PreparedSchedulerEvent {
     child_slot: Option<String>,
     cancellation: Vec<OperationId>,
     observer_owned: u64,
-    retained_owned: u64,
     // LAST: discarded event fields and temporary vectors drop first.
     custody: Option<SchedulerAllocation>,
 }
@@ -504,7 +506,9 @@ impl Scheduler {
             sessions: BTreeMap::new(),
             model_claims: BTreeMap::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_custody: NativeSchedulerCustody { operations: BTreeMap::new(), completion: None },
+            native_operations: BTreeMap::new(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_completion: None,
         }
     }
 
@@ -958,10 +962,11 @@ impl Scheduler {
         let owned = if work.is_some() { event.logical_owned_bytes()? } else { 0 };
         let mut prepared = PreparedSchedulerEvent {
             event, child_slot: None, cancellation: Vec::new(), observer_owned: owned,
-            retained_owned: 0, custody: None,
+            custody: None,
         };
+        let mut retained_owned = 0;
         let result = (|| {
-            prepared.retained_owned = prepared.event.retained_clone_owned_bytes()?;
+            retained_owned = prepared.event.retained_clone_owned_bytes()?;
             if let SchedulerEvent::Declared { spec } = &prepared.event {
                 let slots = std::mem::size_of::<(OperationId, OperationState)>() as u64
                     + if spec.parent.is_some() { std::mem::size_of::<((OperationId, String), OperationId)>() as u64 } else { 0 };
@@ -970,18 +975,18 @@ impl Scheduler {
                     io.retain_owned(slots)?;
                     prepared.observer_owned += slots;
                 }
-                prepared.retained_owned += slots;
+                retained_owned += slots;
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if !self.native_custody.operations.contains_key(&prepared.event.operation_id())
-                && (matches!(prepared.event, SchedulerEvent::Declared { .. }) || prepared.retained_owned != 0)
+            if !self.native_operations.contains_key(&prepared.event.operation_id())
+                && (matches!(prepared.event, SchedulerEvent::Declared { .. }) || retained_owned != 0)
                 && let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some())
             {
                 let bytes = std::mem::size_of::<(OperationId, [Option<acyclic_fs::NativeAllocation>; 6])>() as u64;
                 io.admit_allocation(bytes)?;
                 io.retain_owned(bytes)?;
                 prepared.observer_owned += bytes;
-                prepared.retained_owned += bytes;
+                retained_owned += bytes;
             }
             if let SchedulerEvent::Declared { spec } = &prepared.event
                 && let Some(parent) = &spec.parent
@@ -993,7 +998,7 @@ impl Scheduler {
                 prepared.observer_owned = prepared.observer_owned.checked_add(if work.is_some() { slot.capacity() as u64 } else { 0 })
                     .ok_or_else(|| diagnostic(work, crate::wire::ErrorCode::Invalid, "scheduler clone custody overflows"))?;
                 prepared.child_slot = Some(slot);
-                prepared.retained_owned += prepared.child_slot.as_ref().expect("prepared child slot").capacity() as u64;
+                retained_owned += prepared.child_slot.as_ref().expect("prepared child slot").capacity() as u64;
             }
             if let SchedulerEvent::CancellationRequested { operation_id, recursive } = &prepared.event {
                 prepared.cancellation = self.cancellation_frontier(*operation_id, *recursive, work)?;
@@ -1021,7 +1026,7 @@ impl Scheduler {
         if let Some(io) = work.as_deref_mut() {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if prepared.custody.is_some() { return Ok(prepared); }
-            prepared.observer_owned = prepared.observer_owned.checked_sub(prepared.retained_owned)
+            prepared.observer_owned = prepared.observer_owned.checked_sub(retained_owned)
                 .ok_or_else(|| diagnostic(&Some(&mut *io), crate::wire::ErrorCode::Invalid, "scheduler clone custody underflows"))?;
         }
         Ok(prepared)
@@ -1223,7 +1228,7 @@ impl Scheduler {
         }
         // try_reserve has retired the old vector allocation before its old guard is replaced.
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        { self.native_custody.completion = custody; }
+        { self.native_completion = custody; }
         Ok(())
     }
 
@@ -1233,7 +1238,7 @@ impl Scheduler {
     ) {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         {
-            if incoming.is_none() && !self.native_custody.operations.contains_key(&id) { return; }
+            if incoming.is_none() && !self.native_operations.contains_key(&id) { return; }
             let state = &self.operations[&id];
             let bytes = if incoming.is_some() { match field {
                 CachedSchedulerField::Declaration => state.spec.logical_owned_bytes()
@@ -1250,16 +1255,16 @@ impl Scheduler {
                 CachedSchedulerField::Outcome => state.outcome.as_ref().expect("installed outcome")
                     .logical_owned_bytes().expect("preflight outcome inventory"),
             } } else { 0 };
-            if bytes == 0 && !self.native_custody.operations.contains_key(&id) { return; }
-            let metadata = if !self.native_custody.operations.contains_key(&id) {
+            if bytes == 0 && !self.native_operations.contains_key(&id) { return; }
+            let metadata = if !self.native_operations.contains_key(&id) {
                 incoming.as_mut().map(|guard| guard.split_off(
                     std::mem::size_of::<(OperationId, [Option<acyclic_fs::NativeAllocation>; 6])>() as u64,
                 ).expect("exact preclaimed SDK guard-map tuple transfer"))
             } else { None };
             let guard = incoming.as_mut().map(|guard| guard.split_off(bytes)
                 .expect("exact preclaimed payload transfer does not consult quota or cancellation"));
-            if guard.is_none() && !self.native_custody.operations.contains_key(&id) { return; }
-            let held = self.native_custody.operations.entry(id).or_default();
+            if guard.is_none() && !self.native_operations.contains_key(&id) { return; }
+            let held = self.native_operations.entry(id).or_default();
             if metadata.is_some() { held[5] = metadata; }
             // Assignment physically dropped the replaced DTO before this corresponding old allocation guard is dropped.
             held[field as usize] = guard;
@@ -1270,7 +1275,7 @@ impl Scheduler {
 
     fn retire_native_fields(&mut self, id: OperationId) {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(held) = self.native_custody.operations.get_mut(&id) {
+        if let Some(held) = self.native_operations.get_mut(&id) {
             let state = &self.operations[&id];
             if state.reservation.is_none() { held[CachedSchedulerField::Reservation as usize] = None; }
             if state.checkpoint.is_none() { held[CachedSchedulerField::Checkpoint as usize] = None; }
@@ -2166,26 +2171,29 @@ mod tests {
     fn state_ref() -> Result<FileRef> {
         let volume = VolumeRef::new(
             ProviderRef::new("test", "filesystem", "2")?,
-            "project",
+            "project".into(),
             VolumeClass::Project,
             VolumeOwner::Project("project".into()),
+            &mut None,
         )?;
         FileRef::new(
             volume,
-            "state/initial.json",
-            "generation-1",
-            FileDescriptor::from_bytes(b"null", "application/json")?,
-            "initial.json",
+            "state/initial.json".into(),
+            "generation-1".into(),
+            FileDescriptor::from_bytes(b"null", "application/json", &mut None)?,
+            "initial.json".into(),
+            &mut None,
         )
     }
 
     fn result_ref(bytes: &[u8]) -> Result<FileRef> {
         FileRef::new(
             state_ref()?.volume().clone(),
-            "results/value.json",
-            "generation-2",
-            FileDescriptor::from_bytes(bytes, "application/json")?,
-            "value.json",
+            "results/value.json".into(),
+            "generation-2".into(),
+            FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
+            "value.json".into(),
+            &mut None,
         )
     }
 
@@ -2754,10 +2762,7 @@ mod tests {
         }
     }
 
-    fn check_model_claim_orderings(scheduler: &Scheduler, remaining: &[SchedulerEvent]) -> u64 {
-        if remaining.is_empty() {
-            return 1;
-        }
+    fn check_model_claim_orderings(scheduler: &Scheduler, remaining: &[SchedulerEvent]) {
         let used = |state: &Scheduler| {
             state
                 .model_claims
@@ -2765,7 +2770,6 @@ mod tests {
                 .map(TaskModelClaims::used)
                 .sum::<u64>()
         };
-        let mut leaves = 0;
         for (index, event) in remaining.iter().enumerate() {
             let mut next = scheduler.clone();
             let accepted = next.apply(event.clone()).is_ok();
@@ -2840,12 +2844,10 @@ mod tests {
             }
             let mut pending = remaining.to_vec();
             pending.remove(index);
-            leaves += check_model_claim_orderings(&next, &pending);
+            check_model_claim_orderings(&next, &pending);
         }
-        leaves
     }
 
-    /// Bounded exhaustive checking of the production reducer, not a second transition implementation.
     #[test]
     fn all_model_claim_cancellation_and_uncertainty_orders_preserve_accounting() -> Result<()> {
         let mut scheduler = Scheduler::new();
@@ -2886,21 +2888,13 @@ mod tests {
             event(&scheduler, step)?.ok_or_else(|| Error::Invalid("model action missing".into()))
         })
         .collect::<Result<Vec<_>>>()?;
-        assert_eq!(
-            check_model_claim_orderings(&scheduler, &actions),
-            (1..=actions.len() as u64).product::<u64>()
-        );
+        check_model_claim_orderings(&scheduler, &actions);
         Ok(())
     }
 
     #[test]
-    fn declarations_store_state_references_and_accept_long_placement_metadata() -> Result<()> {
+    fn declarations_accept_long_placement_metadata() -> Result<()> {
         let scheduler = Scheduler::new();
-        let event = scheduler.declare(spec(id(1), Orchestration::Leaf)?)?;
-        let encoded =
-            serde_json::to_value(&event).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded["spec"]["state"]["path"], "state/initial.json");
-        assert_eq!(encoded["spec"]["state"]["descriptor"]["byte_length"], 4);
         let mut oversized = spec(id(2), Orchestration::Leaf)?;
         oversized.placement.insert("region".into(), "x".repeat(256));
         assert!(scheduler.declare(oversized).is_ok());

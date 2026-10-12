@@ -33,7 +33,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
     let original = crate::NativeMaterializationWork::new(
         WorkBudget::UNBOUNDED, &cancellation,
     ).map_err(|(cause, _)| cause)?;
-    let mut candidate = checkout.private_candidate_with_native_work(
+    let mut candidate = checkout.private_candidate(
         &original, &cancellation,
     )?;
     let paid = |mutation| -> Result<(Vec<Mutation>, crate::NativeAllocation), FsError> {
@@ -918,12 +918,12 @@ impl ObjectStore for PostPutObjectStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work(&self, object_id: ObjectId, maximum_bytes: u64, original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+    fn read_with_native_work(&self, object_id: ObjectId, maximum_bytes: u64, original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
         ObjectStore::read_with_native_work(&*self.inner, object_id, maximum_bytes, original, cancellation)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn read_many_with_native_work(&self, requests: &[ObjectReadRequest], original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
+    fn read_many_with_native_work(&self, requests: &[ObjectReadRequest], original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
         ObjectStore::read_many_with_native_work(&*self.inner, requests, original, cancellation)
     }
 }
@@ -995,7 +995,6 @@ impl AuthorityStore for PostAppendAuthorityStore {
 }
 
 impl crate::async_storage::ImmediateAuthorityStore for PostAppendAuthorityStore {}
-
 
 #[test]
 fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
@@ -1236,14 +1235,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         b"user.fault-cut".to_vec(),
         config().limits.maximum_component_bytes,
     )?;
-    through_every_object_cut!(checkout.write_named_attribute(
-        large.clone(),
-        attribute.clone(),
-        bytes::Bytes::from_static(b"fault-checked-value"),
-        NamedAttributeWriteMode::Upsert,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    through_every_object_cut!(checkout.change_named_attribute(large.clone(), &attribute, Some((&bytes::Bytes::from_static(b"fault-checked-value"), NamedAttributeWriteMode::Upsert)), WorkBudget::UNBOUNDED, &cancellation));
     let attribute_value = through_every_object_cut!(checkout.read_named_attribute(
         &large,
         &attribute,
@@ -1269,14 +1261,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         b"user.identity-fault-cut".to_vec(),
         config().limits.maximum_component_bytes,
     )?;
-    through_every_object_cut!(checkout.write_named_attribute_by_id(
-        large_id,
-        identity_attribute.clone(),
-        OwnedBytes::from_static(b"identity-fault-checked-value"),
-        NamedAttributeWriteMode::Upsert,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    through_every_object_cut!(checkout.change_named_attribute_by_id(large_id, &identity_attribute, Some((&OwnedBytes::from_static(b"identity-fault-checked-value"), NamedAttributeWriteMode::Upsert)), WorkBudget::UNBOUNDED, &cancellation));
     assert_eq!(
         through_every_object_cut!(checkout.read_named_attribute_by_id(
             large_id,
@@ -1295,18 +1280,8 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         &cancellation,
     ));
     assert_eq!(identity_attributes.value.entries.len(), 2);
-    through_every_object_cut!(checkout.remove_named_attribute_by_id(
-        large_id,
-        identity_attribute.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    through_every_object_cut!(checkout.remove_named_attribute(
-        large.clone(),
-        attribute.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    through_every_object_cut!(checkout.change_named_attribute_by_id(large_id, &identity_attribute, None, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.change_named_attribute(large.clone(), &attribute, None, WorkBudget::UNBOUNDED, &cancellation));
     through_every_object_cut!(checkout.change_content(large_id, crate::ContentChange::Write { offset: 128, bytes: (bytes::Bytes::from_static(b"atomic-retry")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
     through_every_object_cut!(checkout.change_content(inline_id, crate::ContentChange::CloneFrom { source: large_id, source_offset: 0, offset: 0, length: 4 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
     let cloned = through_every_object_cut!(checkout.read_file_range_by_id(
@@ -1340,12 +1315,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         }, keep_size: true }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
     through_every_object_cut!(checkout.change_content(large_id, crate::ContentChange::Resize { logical_bytes: 4_192 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
     changed_metadata.modified_ns = MetadataField::Value(103);
-    through_every_object_cut!(checkout.set_metadata(
-        large.clone(),
-        changed_metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    through_every_object_cut!(checkout.apply_authored_transaction(vec![crate::AuthoredMutation::SetMetadata { path: large.clone(), metadata: changed_metadata }], WorkBudget::UNBOUNDED, &cancellation));
     changed_metadata.modified_ns = MetadataField::Value(104);
     through_every_object_cut!(checkout.set_attributes(
         large.clone(),
@@ -1422,13 +1392,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
             .value;
     detached_metadata.modified_ns = MetadataField::Value(42);
     through_every_detached_cut!(detached.set_attributes(detached_metadata, None, WorkBudget::UNBOUNDED, &cancellation));
-    through_every_detached_cut!(detached.write_named_attribute(
-        attribute.clone(),
-        OwnedBytes::from_static(b"detached fault value"),
-        NamedAttributeWriteMode::Upsert,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    through_every_detached_cut!(detached.change_named_attribute(&attribute, Some((&OwnedBytes::from_static(b"detached fault value"), NamedAttributeWriteMode::Upsert)), WorkBudget::UNBOUNDED, &cancellation));
     let detached_attribute = through_every_detached_cut!(detached.read_named_attribute(
         &attribute,
         WorkBudget::UNBOUNDED,
@@ -1488,11 +1452,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_detached_cut!(detached.remove_named_attribute(
-        attribute.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    through_every_detached_cut!(detached.change_named_attribute(&attribute, None, WorkBudget::UNBOUNDED, &cancellation));
     through_every_detached_cut!(detached.set_attributes(
         detached_metadata,
         Some(1_024),
@@ -2341,18 +2301,11 @@ fn every_object_cut_preserves_authenticated_publication_retry()
     ))?
     .value;
     poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile { path: path("publish-large")?, bytes: (bytes::Bytes::from(vec![b'p'; 16_384])).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?;
-    poll_immediate(checkout.write_named_attribute(
-        path("publish-large")?,
-        AttributeName::new(
+    poll_immediate(checkout.change_named_attribute(path("publish-large")?, &AttributeName::new(
             crate::kernel::AttributeClass::PosixXattr,
             b"user.publication".to_vec(),
             config().limits.maximum_component_bytes,
-        )?,
-        bytes::Bytes::from(vec![b'a'; 4_096]),
-        NamedAttributeWriteMode::Create,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
+        )?, Some((&bytes::Bytes::from(vec![b'a'; 4_096]), NamedAttributeWriteMode::Create)), WorkBudget::UNBOUNDED, &cancellation))?;
 
     let original = checkout_state(&checkout);
     let operation_id = OperationId::from_bytes([229; 16]);
@@ -2547,31 +2500,15 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
             .entries
             .is_empty()
     );
-    let absent_remove = poll_immediate(detached.remove_named_attribute(
-        attribute.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let absent_remove = poll_immediate(detached.change_named_attribute(&attribute, None, WorkBudget::UNBOUNDED, &cancellation))
     .err()
     .ok_or("attribute-free detached removal unexpectedly succeeded")?;
     assert!(matches!(absent_remove.error, FsError::NotFound));
-    let absent_replace = poll_immediate(detached.write_named_attribute(
-        attribute.clone(),
-        bytes::Bytes::from_static(b"replacement"),
-        NamedAttributeWriteMode::Replace,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let absent_replace = poll_immediate(detached.change_named_attribute(&attribute, Some((&bytes::Bytes::from_static(b"replacement"), NamedAttributeWriteMode::Replace)), WorkBudget::UNBOUNDED, &cancellation))
     .err()
     .ok_or("absent detached replacement unexpectedly succeeded")?;
     assert!(matches!(absent_replace.error, FsError::CreationRejected));
-    poll_immediate(detached.write_named_attribute(
-        attribute.clone(),
-        bytes::Bytes::from_static(b"first"),
-        NamedAttributeWriteMode::Create,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
+    poll_immediate(detached.change_named_attribute(&attribute, Some((&bytes::Bytes::from_static(b"first"), NamedAttributeWriteMode::Create)), WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(
         poll_immediate(
             detached.read_named_attribute(&attribute, WorkBudget::UNBOUNDED, &cancellation,)
@@ -2588,22 +2525,10 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
         1
     );
     assert!(
-        poll_immediate(detached.write_named_attribute(
-            attribute.clone(),
-            bytes::Bytes::from_static(b"duplicate"),
-            NamedAttributeWriteMode::Create,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+        poll_immediate(detached.change_named_attribute(&attribute, Some((&bytes::Bytes::from_static(b"duplicate"), NamedAttributeWriteMode::Create)), WorkBudget::UNBOUNDED, &cancellation))
         .is_err()
     );
-    poll_immediate(detached.write_named_attribute(
-        attribute.clone(),
-        bytes::Bytes::from_static(b"second"),
-        NamedAttributeWriteMode::Replace,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
+    poll_immediate(detached.change_named_attribute(&attribute, Some((&bytes::Bytes::from_static(b"second"), NamedAttributeWriteMode::Replace)), WorkBudget::UNBOUNDED, &cancellation))?;
 
     let mut metadata = poll_immediate(detached.read_metadata(WorkBudget::UNBOUNDED, &cancellation))?
         .value;
@@ -2672,17 +2597,9 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
         &cancellation,
     ))?;
     assert_eq!(detached.logical_bytes(), 192);
-    poll_immediate(detached.remove_named_attribute(
-        attribute.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
+    poll_immediate(detached.change_named_attribute(&attribute, None, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(
-        poll_immediate(detached.remove_named_attribute(
-            attribute,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+        poll_immediate(detached.change_named_attribute(&attribute, None, WorkBudget::UNBOUNDED, &cancellation))
         .is_err()
     );
     Ok(())
@@ -2736,12 +2653,7 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
     .value;
     let mut changed_metadata = empty_metadata();
     changed_metadata.modified_ns = MetadataField::Value(7);
-    poll_immediate(metadata_writer.set_metadata(
-        file.clone(),
-        changed_metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
+    poll_immediate(metadata_writer.apply_authored_transaction(vec![crate::AuthoredMutation::SetMetadata { path: file.clone(), metadata: changed_metadata }], WorkBudget::UNBOUNDED, &cancellation))?;
     poll_immediate(metadata_writer.commit(OperationId::from_bytes([83; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))?;
     let content_rebase =
         poll_immediate(content_reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
@@ -4154,7 +4066,7 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
     ).await?.value.ok_or("real source metadata absent")?.metadata;
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
-    let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+    let mut candidate = checkout.private_candidate(&original, &cancellation)?;
     candidate.bind_authored_operation(OperationId::new());
     let first = path("transaction-first")?;
     let second = path("transaction-second")?;
@@ -4269,7 +4181,7 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
     metadata.modified_ns = MetadataField::Value(99);
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
-    let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+    let mut candidate = checkout.private_candidate(&original, &cancellation)?;
     let input = original_borrowed_path_changes(
         &source, &destination, &removed, metadata, &original, &cancellation,
     )?;
@@ -4881,12 +4793,7 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
     poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile { path: destination.clone(), bytes: (bytes::Bytes::from(vec![b'd'; 128])).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?;
     let mut metadata = empty_metadata();
     metadata.modified_ns = MetadataField::Value(99);
-    poll_immediate(checkout.set_metadata(
-        source.clone(),
-        metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
+    poll_immediate(checkout.apply_authored_transaction(vec![crate::AuthoredMutation::SetMetadata { path: source.clone(), metadata: metadata }], WorkBudget::UNBOUNDED, &cancellation))?;
     poll_immediate(checkout.change_content(destination.clone(), crate::ContentChange::Resize { logical_bytes: 160 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))?;
     poll_immediate(checkout.change_content(source.clone(), crate::ContentChange::ZeroRange { range: ByteRange {
             offset: 64,
@@ -5215,42 +5122,16 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         .entries
         .is_empty()
     );
-    let missing_remove = poll_immediate(checkout.remove_named_attribute_by_id(
-        file_id,
-        attribute.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let missing_remove = poll_immediate(checkout.change_named_attribute_by_id(file_id, &attribute, None, WorkBudget::UNBOUNDED, &cancellation))
     .err()
     .ok_or("attribute-free identity removal unexpectedly succeeded")?;
     assert!(matches!(missing_remove.error, FsError::NotFound));
-    let missing_replace = poll_immediate(checkout.write_named_attribute_by_id(
-        file_id,
-        attribute.clone(),
-        bytes::Bytes::from_static(b"first"),
-        NamedAttributeWriteMode::Replace,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let missing_replace = poll_immediate(checkout.change_named_attribute_by_id(file_id, &attribute, Some((&bytes::Bytes::from_static(b"first"), NamedAttributeWriteMode::Replace)), WorkBudget::UNBOUNDED, &cancellation))
     .err()
     .ok_or("missing identity attribute replacement unexpectedly succeeded")?;
     assert!(matches!(missing_replace.error, FsError::CreationRejected));
-    poll_immediate(checkout.write_named_attribute_by_id(
-        file_id,
-        attribute.clone(),
-        bytes::Bytes::from_static(b"first"),
-        NamedAttributeWriteMode::Create,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    let duplicate_create = poll_immediate(checkout.write_named_attribute_by_id(
-        file_id,
-        attribute.clone(),
-        bytes::Bytes::from_static(b"second"),
-        NamedAttributeWriteMode::Create,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_immediate(checkout.change_named_attribute_by_id(file_id, &attribute, Some((&bytes::Bytes::from_static(b"first"), NamedAttributeWriteMode::Create)), WorkBudget::UNBOUNDED, &cancellation))?;
+    let duplicate_create = poll_immediate(checkout.change_named_attribute_by_id(file_id, &attribute, Some((&bytes::Bytes::from_static(b"second"), NamedAttributeWriteMode::Create)), WorkBudget::UNBOUNDED, &cancellation))
     .err()
     .ok_or("duplicate identity attribute creation unexpectedly succeeded")?;
     assert!(matches!(duplicate_create.error, FsError::CreationRejected));
@@ -5265,18 +5146,8 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         .as_deref(),
         Some(b"first".as_slice())
     );
-    poll_immediate(checkout.remove_named_attribute_by_id(
-        file_id,
-        attribute.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    let repeated_remove = poll_immediate(checkout.remove_named_attribute_by_id(
-        file_id,
-        attribute.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_immediate(checkout.change_named_attribute_by_id(file_id, &attribute, None, WorkBudget::UNBOUNDED, &cancellation))?;
+    let repeated_remove = poll_immediate(checkout.change_named_attribute_by_id(file_id, &attribute, None, WorkBudget::UNBOUNDED, &cancellation))
     .err()
     .ok_or("repeated identity attribute removal unexpectedly succeeded")?;
     assert!(matches!(repeated_remove.error, FsError::NotFound));
@@ -5285,12 +5156,10 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     {
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+        let mut candidate = checkout.private_candidate(&original, &cancellation)?;
         let source = OwnedBytes::from_static(b"actual original-accounted attribute source");
-        poll_immediate(candidate.write_named_attribute_by_id_with_native_work(
-            file_id, &attribute, &source, NamedAttributeWriteMode::Create, &original, &cancellation,
-        ))?;
-        let created = poll_immediate(candidate.read_metadata_by_id_with_native_work(
+        poll_immediate(candidate.change_named_attribute_by_id(file_id, &attribute, Some((&source, NamedAttributeWriteMode::Create)), &original, &cancellation))?;
+        let created = poll_immediate(candidate.read_metadata_by_id(
             file_id, &original, &cancellation,
         ))?;
         let MetadataField::Value(root) = created.named_attributes else {
@@ -5305,20 +5174,18 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         assert_eq!(values[0].1, source);
         drop(values);
         drop(allocation);
-        let duplicate = poll_immediate(candidate.write_named_attribute_by_id_with_native_work(
-            file_id, &attribute, &source, NamedAttributeWriteMode::Create, &original, &cancellation,
-        ))
+        let duplicate = poll_immediate(candidate.change_named_attribute_by_id(file_id, &attribute, Some((&source, NamedAttributeWriteMode::Create)), &original, &cancellation))
             .err().ok_or("native duplicate attribute unexpectedly accepted")?;
         assert!(matches!(duplicate, FsError::CreationRejected));
         let mut updated = created;
         updated.modified_ns = MetadataField::Value(913);
-        poll_immediate(candidate.set_attributes_by_id_with_native_work(
+        poll_immediate(candidate.set_attributes_by_id(
             file_id, updated, Some(7), &original, &cancellation,
         ))?;
-        assert_eq!(poll_immediate(candidate.read_metadata_by_id_with_native_work(
+        assert_eq!(poll_immediate(candidate.read_metadata_by_id(
             file_id, &original, &cancellation,
         ))?, updated);
-        let resized = poll_immediate(candidate.read_file_record_by_id_with_native_work(
+        let resized = poll_immediate(candidate.read_file_record_by_id(
             file_id, &original, &cancellation,
         ))?;
         let resized_bytes = match resized.payload {
@@ -5327,9 +5194,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             _ => return Err("native resize changed the regular file kind".into()),
         };
         assert_eq!(resized_bytes, 7);
-        poll_immediate(candidate.remove_named_attribute_by_id_with_native_work(
-            file_id, &attribute, &original, &cancellation,
-        ))?;
+        poll_immediate(candidate.change_named_attribute_by_id(file_id, &attribute, None, &original, &cancellation))?;
         assert!(original.receipt().source_bytes_read >= source.len() as u64);
         assert!(original.receipt().bytes_encoded > 0);
         assert!(original.receipt().allocation_operations > 0);
@@ -5337,11 +5202,9 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         let denied = crate::NativeMaterializationWork::new(
             WorkBudget { source_bytes_read: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
         ).map_err(|(cause, _)| cause)?;
-        let mut denied_candidate = checkout.private_candidate_with_native_work(&denied, &cancellation)?;
+        let mut denied_candidate = checkout.private_candidate(&denied, &cancellation)?;
         let before = denied_candidate.root.file_table;
-        let failure = poll_immediate(denied_candidate.write_named_attribute_by_id_with_native_work(
-            file_id, &attribute, &source, NamedAttributeWriteMode::Upsert, &denied, &cancellation,
-        ))
+        let failure = poll_immediate(denied_candidate.change_named_attribute_by_id(file_id, &attribute, Some((&source, NamedAttributeWriteMode::Upsert)), &denied, &cancellation))
             .err().ok_or("native attribute source denial ignored")?;
         assert!(matches!(failure, FsError::Work(_)));
         assert_eq!(denied_candidate.root.file_table, before);
@@ -5350,9 +5213,9 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         let denied_metadata = crate::NativeMaterializationWork::new(
             WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
         ).map_err(|(cause, _)| cause)?;
-        let mut denied_candidate = checkout.private_candidate_with_native_work(&denied_metadata, &cancellation)?;
+        let mut denied_candidate = checkout.private_candidate(&denied_metadata, &cancellation)?;
         let before = denied_candidate.root.file_table;
-        let failure = poll_immediate(denied_candidate.set_attributes_by_id_with_native_work(
+        let failure = poll_immediate(denied_candidate.set_attributes_by_id(
             file_id, updated, Some(3), &denied_metadata, &cancellation,
         ))
             .err().ok_or("native metadata encoding denial ignored")?;
@@ -5454,12 +5317,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         .is_err()
     );
     assert!(
-        poll_immediate(checkout.remove_named_attribute(
-            missing.clone(),
-            attribute.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+        poll_immediate(checkout.change_named_attribute(missing.clone(), &attribute, None, WorkBudget::UNBOUNDED, &cancellation))
         .is_err()
     );
 
@@ -5546,12 +5404,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         .is_err()
     );
     assert!(
-        poll_immediate(checkout.remove_named_attribute_by_id(
-            unknown_id,
-            attribute,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+        poll_immediate(checkout.change_named_attribute_by_id(unknown_id, &attribute, None, WorkBudget::UNBOUNDED, &cancellation))
         .is_err()
     );
     assert!(checkout.has_pending_mutations());
@@ -6350,7 +6203,6 @@ fn conflicting_creation_config_is_rejected_without_changing_opened_config()
     assert_eq!(opened.value.config(), config());
     Ok(())
 }
-
 
 #[test]
 fn pre_cancelled_facade_operations_perform_zero_work() -> Result<(), Box<dyn std::error::Error>> {
@@ -7467,14 +7319,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
         .entries
         .is_empty()
     );
-    ready!(checkout.value.write_named_attribute_by_id(
-        file_id,
-        attribute.clone(),
-        bytes::Bytes::from_static(b"first"),
-        NamedAttributeWriteMode::Create,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    ready!(checkout.value.change_named_attribute_by_id(file_id, &attribute, Some((&bytes::Bytes::from_static(b"first"), NamedAttributeWriteMode::Create)), WorkBudget::UNBOUNDED, &cancellation));
     assert_eq!(
         ready!(checkout.value.read_named_attribute_by_id(
             file_id,
@@ -7499,14 +7344,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
         .len(),
         1
     );
-    ready!(checkout.value.write_named_attribute_by_id(
-        file_id,
-        attribute.clone(),
-        bytes::Bytes::from_static(b"second"),
-        NamedAttributeWriteMode::Replace,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    ready!(checkout.value.change_named_attribute_by_id(file_id, &attribute, Some((&bytes::Bytes::from_static(b"second"), NamedAttributeWriteMode::Replace)), WorkBudget::UNBOUNDED, &cancellation));
 
     let mut metadata = ready!(checkout.value.read_metadata_by_id(
         file_id,
@@ -7539,12 +7377,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
             .change_content(clone_id, crate::ContentChange::Resize { logical_bytes: 16 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)
     );
     ready!(checkout.value.change_content(clone_id, crate::ContentChange::CloneFrom { source: file_id, source_offset: 0, offset: 4, length: 8 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
-    ready!(checkout.value.remove_named_attribute_by_id(
-        file_id,
-        attribute.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    ready!(checkout.value.change_named_attribute_by_id(file_id, &attribute, None, WorkBudget::UNBOUNDED, &cancellation));
     assert!(
         ready!(checkout.value.read_named_attribute_by_id(
             file_id,
@@ -7862,42 +7695,16 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     ));
     assert!(empty_listing.value.entries.is_empty());
     assert!(!empty_listing.value.has_more);
-    let absent_remove = poll_immediate(checkout.value.remove_named_attribute(
-        path.clone(),
-        name.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let absent_remove = poll_immediate(checkout.value.change_named_attribute(path.clone(), &name, None, WorkBudget::UNBOUNDED, &cancellation))
     .err()
     .ok_or("attribute-free removal unexpectedly succeeded")?;
     assert!(matches!(absent_remove.error, FsError::NotFound));
-    let absent_replace = poll_immediate(checkout.value.write_named_attribute(
-        path.clone(),
-        name.clone(),
-        bytes::Bytes::from_static(b"replacement"),
-        NamedAttributeWriteMode::Replace,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let absent_replace = poll_immediate(checkout.value.change_named_attribute(path.clone(), &name, Some((&bytes::Bytes::from_static(b"replacement"), NamedAttributeWriteMode::Replace)), WorkBudget::UNBOUNDED, &cancellation))
     .err()
     .ok_or("absent attribute replacement unexpectedly succeeded")?;
     assert!(matches!(absent_replace.error, FsError::CreationRejected));
-    ready!(checkout.value.write_named_attribute(
-        path.clone(),
-        name.clone(),
-        bytes::Bytes::from_static(b"first"),
-        NamedAttributeWriteMode::Create,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    let duplicate_create = poll_immediate(checkout.value.write_named_attribute(
-        path.clone(),
-        name.clone(),
-        bytes::Bytes::from_static(b"duplicate"),
-        NamedAttributeWriteMode::Create,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    ready!(checkout.value.change_named_attribute(path.clone(), &name, Some((&bytes::Bytes::from_static(b"first"), NamedAttributeWriteMode::Create)), WorkBudget::UNBOUNDED, &cancellation));
+    let duplicate_create = poll_immediate(checkout.value.change_named_attribute(path.clone(), &name, Some((&bytes::Bytes::from_static(b"duplicate"), NamedAttributeWriteMode::Create)), WorkBudget::UNBOUNDED, &cancellation))
     .err()
     .ok_or("duplicate attribute creation unexpectedly succeeded")?;
     assert!(matches!(duplicate_create.error, FsError::CreationRejected));
@@ -7922,20 +7729,8 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     assert_eq!(listing.value.entries.len(), 1);
     assert_eq!(listing.value.entries[0].name, name);
     assert!(!listing.value.has_more);
-    ready!(checkout.value.write_named_attribute(
-        path.clone(),
-        name.clone(),
-        bytes::Bytes::from_static(b"second"),
-        NamedAttributeWriteMode::Replace,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    ready!(checkout.value.remove_named_attribute(
-        path.clone(),
-        name.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    ready!(checkout.value.change_named_attribute(path.clone(), &name, Some((&bytes::Bytes::from_static(b"second"), NamedAttributeWriteMode::Replace)), WorkBudget::UNBOUNDED, &cancellation));
+    ready!(checkout.value.change_named_attribute(path.clone(), &name, None, WorkBudget::UNBOUNDED, &cancellation));
     assert!(
         ready!(checkout.value.read_named_attribute(
             &path,
@@ -7955,10 +7750,7 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     ));
     assert!(removed_listing.value.entries.is_empty());
     assert!(!removed_listing.value.has_more);
-    ready!(checkout.value.write_named_attribute_by_id(
-        file_id, name.clone(), OwnedBytes::new(), NamedAttributeWriteMode::Upsert,
-        WorkBudget::UNBOUNDED, &cancellation,
-    ));
+    ready!(checkout.value.change_named_attribute_by_id(file_id, &name, Some((&OwnedBytes::new(), NamedAttributeWriteMode::Upsert)), WorkBudget::UNBOUNDED, &cancellation));
     assert!(ready!(checkout.value.read_named_attribute_by_id(
         file_id, &name, WorkBudget::UNBOUNDED, &cancellation,
     )).value.ok_or("empty attribute missing")?.bytes.is_empty());
@@ -8087,9 +7879,7 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
         &root_path()?, WorkBudget::UNBOUNDED, &cancellation,
     )).value.ok_or("root metadata absent")?.metadata;
     metadata.modified_ns = MetadataField::Value(123);
-    ready!(checkout.set_metadata(
-        root_path()?, metadata, WorkBudget::UNBOUNDED, &cancellation,
-    ));
+    ready!(checkout.apply_authored_transaction(vec![crate::AuthoredMutation::SetMetadata { path: root_path()?, metadata: metadata }], WorkBudget::UNBOUNDED, &cancellation));
     let fourth = match ready!(checkout.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).value {
         CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected semantic diff commit: {outcome:?}").into()),
@@ -8471,58 +8261,6 @@ fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
 }
 
 #[test]
-fn memory_facade_exposes_shared_cache_control_without_alternate_storage_truth()
--> Result<(), Box<dyn std::error::Error>> {
-    let objects = crate::CachedObjectStore::new(
-        TestMemoryObjectStore::default(),
-        crate::ObjectCacheOptions::default(),
-    )?;
-    let fs = Fs::new(
-        crate::memory::MemoryAuthorityStore::default(),
-        objects,
-        EmbeddedCapabilities::MEMORY,
-    );
-    let cancellation = CancellationToken::new();
-    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
-        .value;
-    let checkout = poll_immediate(volume.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?
-    .value;
-    let root = ObjectId {
-        kind: ObjectKind::GenerationRoot,
-        digest: checkout.generation_id().digest(),
-    };
-
-    fs.clear_object_cache()?;
-    assert_eq!(fs.object_cache_stats()?.resident_entries, 0);
-    let first = poll_immediate(fs.export_object(
-        root,
-        config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    let warm = poll_immediate(fs.clone().export_object(
-        root,
-        config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    assert_eq!(first.value.bytes, warm.value.bytes);
-    assert_eq!(first.work.backend_read_operations, 1);
-    assert_eq!(warm.work.backend_read_operations, 0);
-    let populated = fs.object_cache_stats()?;
-    assert_eq!(populated.resident_entries, 1);
-    assert!(populated.hits >= 1);
-    fs.clear_object_cache()?;
-    assert_eq!(fs.object_cache_stats()?.resident_entries, 0);
-    Ok(())
-}
-
-#[test]
 fn detached_inline_file_seek_and_attribute_absence_are_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -8560,18 +8298,8 @@ fn detached_inline_file_seek_and_attribute_absence_are_exact()
         b"user.inline".to_vec(),
         config().limits.maximum_component_bytes,
     )?;
-    poll_immediate(detached.write_named_attribute(
-        attribute.clone(),
-        OwnedBytes::from_static(b"value"),
-        NamedAttributeWriteMode::Create,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    poll_immediate(detached.remove_named_attribute(
-        attribute.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
+    poll_immediate(detached.change_named_attribute(&attribute, Some((&OwnedBytes::from_static(b"value"), NamedAttributeWriteMode::Create)), WorkBudget::UNBOUNDED, &cancellation))?;
+    poll_immediate(detached.change_named_attribute(&attribute, None, WorkBudget::UNBOUNDED, &cancellation))?;
     let absent =
         poll_immediate(detached.read_named_attribute(&attribute, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(absent.value.is_none());
@@ -8808,14 +8536,7 @@ fn detached_payload_bounds_and_authority_volume_identity_fail_closed()
         b"user.bounded".to_vec(),
         config().limits.maximum_component_bytes,
     )?;
-    poll_immediate(checkout.write_named_attribute(
-        file.clone(),
-        attribute.clone(),
-        bytes::Bytes::from_static(b"xx"),
-        NamedAttributeWriteMode::Create,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
+    poll_immediate(checkout.change_named_attribute(file.clone(), &attribute, Some((&bytes::Bytes::from_static(b"xx"), NamedAttributeWriteMode::Create)), WorkBudget::UNBOUNDED, &cancellation))?;
     let mut detached =
         poll_immediate(checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &cancellation))?
             .value;
@@ -8845,8 +8566,6 @@ fn nfc_config() -> VolumeConfig {
         ..config()
     }
 }
-
-
 
 #[test]
 fn profile_folded_admission_covers_directories_links_and_renames()
@@ -9865,10 +9584,10 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         source, ByteRange { offset: 0, length: 26 }, &original, &cancellation,
     ).await?.bytes;
     assert_eq!(bytes.as_ref(), b"authenticated source bytes");
-    let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
-    candidate.change_content_with_native_work(destination.file_id, ContentChange::Write { offset: 0, bytes }, ContentTimes::Stamp(40), &original, &cancellation).await?;
-    candidate.change_content_with_native_work(destination.file_id, ContentChange::CloneFrom { source: source.file_id, source_offset: 14, offset: 0, length: 6 }, ContentTimes::Stamp(41), &original, &cancellation).await?;
-    let actual = candidate.read_file_record_by_id_with_native_work(
+    let mut candidate = checkout.private_candidate(&original, &cancellation)?;
+    candidate.change_content(destination.file_id, ContentChange::Write { offset: 0, bytes }, ContentTimes::Stamp(40), &original, &cancellation).await?;
+    candidate.change_content(destination.file_id, ContentChange::CloneFrom { source: source.file_id, source_offset: 14, offset: 0, length: 6 }, ContentTimes::Stamp(41), &original, &cancellation).await?;
+    let actual = candidate.read_file_record_by_id(
         destination.file_id, &original, &cancellation,
     ).await?;
     assert_eq!(actual.file_id, destination.file_id);
@@ -9876,7 +9595,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         actual, ByteRange { offset: 0, length: 26 }, &original, &cancellation,
     ).await?;
     assert_eq!(content.bytes.as_ref(), b"sourceticated source bytes");
-    let stamped = candidate.read_metadata_by_id_with_native_work(
+    let stamped = candidate.read_metadata_by_id(
         destination.file_id, &original, &cancellation,
     ).await?;
     assert_eq!(stamped.modified_ns, MetadataField::Value(41));
@@ -9941,7 +9660,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
         ..FileMetadata::default()
     };
     let mut detached = DetachedFile::from_record(checkout.volume.clone(), destination, WorkBudget::UNBOUNDED, &cancellation)?.value;
-    detached.change_content_with_native_work(
+    detached.change_content(
         ContentChange::Write { offset: 0, bytes: source.bytes }, Some(metadata),
         &original, &cancellation,
     ).await?;
@@ -9953,7 +9672,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
     let denied = crate::NativeMaterializationWork::new(
         WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
     ).map_err(|(cause, _)| cause)?;
-    let failure = detached.change_content_with_native_work(
+    let failure = detached.change_content(
         ContentChange::Write { offset: 0, bytes: OwnedBytes::new() },
         Some(FileMetadata { modified_ns: MetadataField::Value(91), ..metadata }),
         &denied, &cancellation,
