@@ -1,5 +1,6 @@
 use super::*;
 
+contract! {
 /// Nonblocking authority-store contract.
 pub trait AsyncAuthorityStore: ProviderPlatform {
     /// Whether creation can retain a published-generation prefix.
@@ -23,10 +24,11 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         destination: AuthorityId,
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> impl Future<Output = Result<CreateAuthorityOutcome, AuthorityError<G::Error>>> + ProviderTask
     {
         async move {
+            let mut guard = guard;
             if source.lineage == GenerationFork::PublishedPrefix {
                 #[cfg(not(target_arch = "wasm32"))]
                 if work.original.is_some() {
@@ -50,9 +52,10 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         authority: AuthorityId,
         commit: ProposedCommit,
         work: &mut AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> impl Future<Output = Result<bool, AuthorityError<G::Error>>> + ProviderTask {
         async move {
+            let mut guard = guard;
             #[cfg(not(target_arch = "wasm32"))]
             if work.original.is_some() {
                 return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
@@ -67,10 +70,11 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         fork: WorkspaceForkCommit,
         permit: PublicationPermit,
         work: &mut AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> impl Future<Output = Result<WorkspaceForkOutcome, AuthorityError<G::Error>>> + ProviderTask
     {
         async move {
+            let mut guard = guard;
             #[cfg(not(target_arch = "wasm32"))]
             if work.original.is_some() && guard.is_some() {
                 return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
@@ -204,134 +208,4 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     + ProviderTask;
 }
 
-impl<T: AsyncAuthorityStore + ?Sized> AsyncAuthorityStore for Arc<T> {
-    fn supports_generation_lineage_prefix(&self) -> bool {
-        self.as_ref().supports_generation_lineage_prefix()
-    }
-
-    async fn create_authority<G: AuthorityGuard>(
-        &self,
-        authority: AuthorityId,
-        epoch: Epoch,
-        work: &mut AuthorityWork<'_>,
-        guard: Option<&mut G>,
-    ) -> Result<CreateAuthorityOutcome, AuthorityError<G::Error>> {
-        AsyncAuthorityStore::create_authority(self.as_ref(), authority, epoch, work, guard).await
-    }
-    async fn fork_authority<G: AuthorityGuard>(
-        &self,
-        source: GenerationForkSource,
-        destination: AuthorityId,
-        operation: OperationId,
-        work: &mut AuthorityWork<'_>,
-        guard: Option<&mut G>,
-    ) -> Result<CreateAuthorityOutcome, AuthorityError<G::Error>> {
-        AsyncAuthorityStore::fork_authority(
-            self.as_ref(),
-            source,
-            destination,
-            operation,
-            work,
-            guard,
-        )
-        .await
-    }
-    async fn create_first_record<G: AuthorityGuard>(
-        &self,
-        authority: AuthorityId,
-        commit: ProposedCommit,
-        work: &mut AuthorityWork<'_>,
-        guard: Option<&mut G>,
-    ) -> Result<bool, AuthorityError<G::Error>> {
-        AsyncAuthorityStore::create_first_record(self.as_ref(), authority, commit, work, guard)
-            .await
-    }
-    async fn fork_workspace<G: AuthorityGuard>(
-        &self,
-        fork: WorkspaceForkCommit,
-        permit: PublicationPermit,
-        work: &mut AuthorityWork<'_>,
-        guard: Option<&mut G>,
-    ) -> Result<WorkspaceForkOutcome, AuthorityError<G::Error>> {
-        AsyncAuthorityStore::fork_workspace(self.as_ref(), fork, permit, work, guard).await
-    }
-    async fn compare_and_append<G: AuthorityGuard>(
-        &self,
-        request: GuardedAppend,
-        work: &mut AuthorityWork<'_>,
-        guard: Option<&mut G>,
-    ) -> Result<AppendOutcome, AuthorityError<G::Error>> {
-        AsyncAuthorityStore::compare_and_append(self.as_ref(), request, work, guard).await
-    }
-    async fn head(
-        &self,
-        authority: AuthorityId,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<Head, crate::AuthorityStoreError> {
-        AsyncAuthorityStore::head(self.as_ref(), authority, work).await
-    }
-    async fn retire_authority(
-        &self,
-        authority: AuthorityId,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<(), crate::AuthorityStoreError> {
-        AsyncAuthorityStore::retire_authority(self.as_ref(), authority, work).await
-    }
-    async fn replay(
-        &self,
-        authority: AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<(Vec<crate::DurableCommit>, AuthorityAllocation), crate::AuthorityStoreError> {
-        AsyncAuthorityStore::replay(self.as_ref(), authority, after, limit, work).await
-    }
-    async fn fence(
-        &self,
-        authority: AuthorityId,
-        expected: Head,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<FenceOutcome, crate::AuthorityStoreError> {
-        AsyncAuthorityStore::fence(self.as_ref(), authority, expected, work).await
-    }
-    async fn find_operation(
-        &self,
-        authority: AuthorityId,
-        operation: OperationId,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<Option<crate::DurableCommit>, crate::AuthorityStoreError> {
-        AsyncAuthorityStore::find_operation(self.as_ref(), authority, operation, work).await
-    }
-    async fn publication_reservation(
-        &self,
-        authority: AuthorityId,
-        operation: OperationId,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<Option<PublicationReservation>, crate::AuthorityStoreError> {
-        AsyncAuthorityStore::publication_reservation(self.as_ref(), authority, operation, work)
-            .await
-    }
-    async fn reserve_publication(
-        &self,
-        authority: AuthorityId,
-        expected: Head,
-        operation: OperationId,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<ReservationOutcome, crate::AuthorityStoreError> {
-        AsyncAuthorityStore::reserve_publication(
-            self.as_ref(),
-            authority,
-            expected,
-            operation,
-            work,
-        )
-        .await
-    }
-    async fn release_publication(
-        &self,
-        reservation: PublicationReservation,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<(), crate::AuthorityStoreError> {
-        AsyncAuthorityStore::release_publication(self.as_ref(), reservation, work).await
-    }
 }
