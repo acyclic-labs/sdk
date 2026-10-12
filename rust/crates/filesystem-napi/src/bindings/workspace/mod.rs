@@ -579,22 +579,21 @@ pub(in crate::bindings) fn native_workspace_rebase_result(
 pub(in crate::bindings) fn native_workspace_operation_finish(
     outcome: WorkspaceOperationFinish<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeWorkspaceOperationFinish {
-    match outcome {
-        WorkspaceOperationFinish::StillActive { remaining } => NativeWorkspaceOperationFinish {
-            kind: "still-active".to_owned(),
-            remaining: Some(remaining),
-            rebase: None,
-        },
-        WorkspaceOperationFinish::AlreadyClosed => NativeWorkspaceOperationFinish {
-            kind: "already-closed".to_owned(),
-            remaining: None,
-            rebase: None,
-        },
-        WorkspaceOperationFinish::Reconciled(outcome) => NativeWorkspaceOperationFinish {
-            kind: "reconciled".to_owned(),
-            remaining: None,
-            rebase: Some(native_workspace_rebase_result(outcome)),
-        },
+    let (kind, remaining, rebase) = match outcome {
+        WorkspaceOperationFinish::StillActive { remaining } => {
+            ("still-active", Some(remaining), None)
+        }
+        WorkspaceOperationFinish::AlreadyClosed => ("already-closed", None, None),
+        WorkspaceOperationFinish::Reconciled(outcome) => (
+            "reconciled",
+            None,
+            Some(native_workspace_rebase_result(outcome)),
+        ),
+    };
+    NativeWorkspaceOperationFinish {
+        kind: kind.to_owned(),
+        remaining,
+        rebase,
     }
 }
 
