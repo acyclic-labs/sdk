@@ -106,26 +106,22 @@ pub struct BrowserWorkspaceRebaseResult {
 
 #[wasm_bindgen]
 impl BrowserWorkspace {
-    /// Canonical workspace name.
     #[wasm_bindgen(getter)]
     pub fn name(&self) -> String {
         self.engine.name().as_str().to_owned()
     }
 
-    /// Stable opaque workspace identity.
     #[wasm_bindgen(getter)]
     pub fn id(&self) -> Vec<u8> {
         self.engine.id().into_bytes().to_vec()
     }
 
-    /// Current immutable generation identity.
     #[wasm_bindgen]
     pub async fn head(&self) -> Result<Vec<u8>, JsValue> {
         let id = sdk_value!(unbounded_future!(self.engine, head()))?.id();
         Ok(id.digest().into_bytes().to_vec())
     }
 
-    /// Reopens an authenticated exact retained generation without moving the head.
     #[wasm_bindgen]
     pub async fn generation(&self, id: Vec<u8>) -> Result<BrowserGeneration, JsValue> {
         let id = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
@@ -136,7 +132,6 @@ impl BrowserWorkspace {
         Ok(BrowserGeneration { engine })
     }
 
-    /// Synchronizes prior operations and returns the exact immutable head.
     #[wasm_bindgen]
     pub async fn sync(&self) -> Result<BrowserGeneration, JsValue> {
         let engine = Box::pin(unbounded_future!(self.engine, head()))
@@ -146,7 +141,6 @@ impl BrowserWorkspace {
         Ok(BrowserGeneration { engine })
     }
 
-    /// Retains the current generation under one human-readable label.
     #[wasm_bindgen]
     pub async fn checkpoint(&self, label: String) -> Result<BrowserGeneration, JsValue> {
         let engine = Box::pin(self.engine.checkpoint(label))
@@ -156,7 +150,6 @@ impl BrowserWorkspace {
         Ok(BrowserGeneration { engine })
     }
 
-    /// Retains the current generation under one opaque stable identity.
     #[wasm_bindgen]
     pub async fn pin(&self, identity: String) -> Result<BrowserGeneration, JsValue> {
         let engine = Box::pin(self.engine.pin(identity))
@@ -166,7 +159,6 @@ impl BrowserWorkspace {
         Ok(BrowserGeneration { engine })
     }
 
-    /// Terminally removes this mutable workspace head.
     #[wasm_bindgen]
     pub async fn delete(&self, idempotency_key: Option<Vec<u8>>) -> Result<String, JsValue> {
         let key = idempotency_key.map_or_else(
@@ -183,7 +175,6 @@ impl BrowserWorkspace {
         .to_owned())
     }
 
-    /// Reads one complete regular file under a byte bound.
     #[wasm_bindgen]
     pub async fn read(&self, path: String, maximum_bytes: u64) -> Result<Vec<u8>, JsValue> {
         let bytes = sdk_value!(Box::pin(unbounded_future!(
@@ -239,7 +230,6 @@ impl BrowserWorkspace {
         ts(browser_workspace_extent_plan(value))
     }
 
-    /// Atomically creates or replaces one complete file.
     #[wasm_bindgen]
     pub async fn write(
         &self,
@@ -253,7 +243,6 @@ impl BrowserWorkspace {
         ts(outcome)
     }
 
-    /// Removes one existing path atomically.
     #[wasm_bindgen]
     pub async fn remove(&self, path: String) -> Result<Ts<BrowserWorkspaceCommit>, JsValue> {
         let outcome = Box::pin(self.engine.remove(&path))
@@ -263,7 +252,6 @@ impl BrowserWorkspace {
         ts(outcome)
     }
 
-    /// Forks the current generation into an independent named workspace.
     #[wasm_bindgen]
     pub async fn fork(
         &self,
@@ -298,7 +286,6 @@ impl BrowserWorkspace {
         Ok(BrowserWorkspace { engine })
     }
 
-    /// Creates an independent workspace at one caller-selected exact generation.
     #[wasm_bindgen(js_name = forkAt)]
     pub async fn fork_at(
         &self,
@@ -329,7 +316,6 @@ impl BrowserWorkspace {
         Ok(BrowserWorkspace { engine })
     }
 
-    /// Begins one sparse atomic transaction at the current workspace head.
     #[wasm_bindgen(js_name = beginTransaction)]
     pub async fn begin_transaction(
         &self,
@@ -346,7 +332,6 @@ impl BrowserWorkspace {
         Ok(BrowserTransaction { engine })
     }
 
-    /// Advances this fork onto its source workspace's current generation.
     #[wasm_bindgen(js_name = liveRebase)]
     pub async fn live_rebase(
         &self,
@@ -377,7 +362,6 @@ impl BrowserWorkspace {
         ts(outcome)
     }
 
-    /// Computes one immutable bounded semantic delta between exact generations.
     #[wasm_bindgen]
     pub async fn diff(
         &self,
@@ -387,17 +371,13 @@ impl BrowserWorkspace {
     ) -> Result<BrowserChangeSet, JsValue> {
         let maximum_changes = wasm_u32(&maximum_changes)?;
 
-        let engine = {
-            let (workspace, from, to) = (&self.engine, &from.engine, &to.engine);
-            workspace
-                .diff(from, to, maximum_changes)
-                .await
-                .map_err(js_error)?
-        };
+        let engine = sdk_value!(unbounded_future!(
+            self.engine,
+            diff(&from.engine, &to.engine, maximum_changes)
+        ))?;
         Ok(BrowserChangeSet { engine })
     }
 
-    /// Builds one immutable side-effect-free plan for joining this workspace into a target.
     #[wasm_bindgen(js_name = joinInto)]
     pub async fn join_into(
         &self,
@@ -430,9 +410,12 @@ impl BrowserWorkspace {
                         "target generation",
                     )
                     .await?,
-                    acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
                 )
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(js_error)?
         };
         Ok(BrowserJoinPlan { engine })
