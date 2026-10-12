@@ -5,7 +5,7 @@ use crate::cancellation::CancellationToken;
 use crate::memory::MemoryObjectStore;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
-    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStore, ObjectStoreError,
+    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError,
 };
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -83,7 +83,7 @@ impl AsyncObjectStore for OwnedReadObjectStore {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        ObjectStore::put(&self.inner, object_id, bytes, budget)
+        AsyncObjectStore::put(&self.inner, object_id, bytes, budget, cancellation).await
     }
 
     async fn read(
@@ -97,7 +97,7 @@ impl AsyncObjectStore for OwnedReadObjectStore {
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         Self::own_read(
-            &ObjectStore::read(&self.inner, object_id, maximum_bytes, budget)?,
+            &AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, budget, cancellation).await?,
             budget,
         )
     }
@@ -120,6 +120,6 @@ impl AsyncObjectStore for OwnedReadObjectStore {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        ObjectStore::contains(&self.inner, object_id, budget)
+        AsyncObjectStore::contains(&self.inner, object_id, budget, cancellation).await
     }
 }

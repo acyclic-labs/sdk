@@ -28,16 +28,6 @@ pub(crate) mod bounded_io;
 pub(crate) use bounded_io::PreparationIo;
 pub use created_access::{FilesystemResourceCreationProvider, FilesystemRootBootstrapAllocation};
 
-#[cfg(not(target_arch = "wasm32"))]
-fn native_error(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
-    Error::NativeBoundary { code, reason }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn native_workspace_error((source, custody): (acyclic_fs::WorkspaceError, Option<acyclic_fs::NativeAllocation>)) -> Error {
-    Error::NativeWorkspace { source, custody }
-}
-
 const MAX_REQUEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CAPTURE_BYTES: u64 = 4 * 1024 * 1024;
@@ -215,7 +205,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         };
         let reject = |code, reason: &'static str| {
             #[cfg(not(target_arch = "wasm32"))]
-            if this.native.is_some() { return native_error(code, reason); }
+            if this.native.is_some() { return Error::NativeBoundary { code, reason }; }
             match code {
                 crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
                 crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
@@ -266,7 +256,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(mut self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
         if !self.native.as_ref().is_some_and(|(_, guard)| guard.matches_work(work)) {
-            return Err(native_error(crate::wire::ErrorCode::Invalid, "fork preparer belongs to another original resource"));
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "fork preparer belongs to another original resource" });
         }
         let mut header = work.claim(std::mem::size_of::<Self>() as u64)
             .map_err(Error::from)?;
@@ -300,8 +290,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             (_, Some(custody)) => return Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: Some(custody),
             }),
-            _ => return Err(native_error(crate::wire::ErrorCode::Unauthorized,
-                "summary inputs lack their original native custody")),
+            _ => return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "summary inputs lack their original native custody" }),
         }
         selection.validate_with_work(&mut io.as_ref().map(PreparationIo::history_io)
             .as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?;
@@ -416,7 +405,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(work) = native && let Some(task) = &self.task_preparation {
             task.verify_creation_with_native_work(work)?.await?;
         }
-        let controller = self.controller(io.filter(|io| io.uses_native_work()))?;
+        let controller = self.controller(io.filter(|io| io.original_native_work().is_some()))?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = native {
             let (grants, custody) = controller.inherited_reference_grants_with_native_work(
@@ -441,7 +430,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     /// Builds the exact created identities and their allocation journal proofs.
     pub(crate) fn creation_allocations(&self, request: &ForkRequest, preparation: crate::TaskId,
         io: Option<&PreparationIo>) -> Result<(Vec<ResourceRef>, Vec<crate::resource_preparation::ResourceCreationProofRef>)> {
-        if io.is_some_and(PreparationIo::uses_native_work) {
+        if io.is_some_and(|io| io.original_native_work().is_some()) {
             self.check_request(request, io, self.task_preparation.as_deref())?;
         } else {
             let mut history = io.map(PreparationIo::history_io);
@@ -479,7 +468,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     fn require_native_projection_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         work.remaining().map_err(Error::from)?;
         if !self.native.as_ref().is_some_and(|(_, custody)| custody.matches_work(work)) {
-            return Err(native_error(crate::wire::ErrorCode::Unauthorized, "fork projection belongs to another original resource"));
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "fork projection belongs to another original resource" });
         }
         Ok(())
     }
@@ -503,12 +492,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         {
             return Err(bounded_io::failure(io, crate::wire::ErrorCode::Unsupported, "foreign workspace source cannot inherit conversation history"));
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            handle.require_selection(request.operation_id, authorization.source_task, volume, generation, authorization.native_snapshot.as_ref(), Some(work))?;
-            return Ok(handle.grant());
-        }
-        handle.require_selection(request.operation_id, authorization.source_task, volume, generation, authorization.native_snapshot.as_ref(), None)?;
+        handle.require_selection(request.operation_id, authorization.source_task, volume, generation,
+            authorization.native_snapshot.as_ref(), io.and_then(PreparationIo::original_native_work))?;
         Ok(handle.grant())
     }
 
@@ -667,8 +652,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         match (&self.native, io.and_then(PreparationIo::original_native_work)) {
             (Some(_), Some(work)) => self.require_native_projection_work(work)?,
             (None, None) => {}
-            _ => return Err(native_error(crate::wire::ErrorCode::Unauthorized,
-                "summary preparation requires its original native work")),
+            _ => return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "summary preparation requires its original native work" }),
         }
         let bound = self.summary.as_ref().ok_or_else(|| bounded_io::failure(io, crate::wire::ErrorCode::Unsupported,
             "summary fork owner-bound checkpoint provider is not installed"))?;
@@ -810,17 +794,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         crate::executor::with_history_io(self.io.as_ref(), |work|
             ContentGrant::verify(&self.preparer.verifier, &self.preparer.scope, volume,
                 VolumeOperation::Read, MAX_CAPTURE_BYTES, work))
-    }
-
-    fn project_read_grant<'a>(&'a self, request: &ForkRequest, volume: &VolumeRef,
-        generation: &GenerationRef) -> Result<std::borrow::Cow<'a, ContentGrant>> {
-        if request.authorized_source.is_none() { return self.read_grant(volume).map(std::borrow::Cow::Owned); }
-        if self.task_preparation.is_some_and(|task| task.project_source().is_none()) {
-            return Err(bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Unauthorized, "fork source descriptor has no sealed project read"));
-        }
-        let grant = self.preparer.sealed_project_read(request, volume, generation, self.io.as_ref(), self.task_preparation)?;
-        if !self.io.as_ref().is_some_and(PreparationIo::uses_native_work) { grant.require(volume, VolumeOperation::Read, self.io.as_ref())?; }
-        Ok(std::borrow::Cow::Borrowed(grant))
     }
 
     async fn verify_task_lease(&self, settlement: bool) -> Result<()> {
@@ -1062,7 +1035,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             .ok_or_else(|| bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "fork has no parent scratch selection"))?;
         let private_key = IdempotencyKey::new(crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:scratch", request.operation_id), self.io.as_ref())?)?;
         let private_grant = self.read_grant(source_private)?;
-        let project_grant = self.project_read_grant(&request, source_project, source_generation)?;
+        let project_grant = if request.authorized_source.is_some() {
+            std::borrow::Cow::Borrowed(self.preparer.sealed_project_read(
+                &request, source_project, source_generation, self.io.as_ref(), self.task_preparation,
+            )?)
+        } else { std::borrow::Cow::Owned(self.read_grant(source_project)?) };
         self.verify_task_lease(false).await?;
         let private_observation = bounded_io::fork(
             &self.preparer.host, source_private, &private_grant, private_generation, &private,
@@ -1615,7 +1592,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            native_creation_guard.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "native seed binding requires its original issued creation guard"))?.verify_creation_with_native_work(work)?.await?;
+            native_creation_guard.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "native seed binding requires its original issued creation guard" })?.verify_creation_with_native_work(work)?.await?;
         }
         let binding = seed_digest(seed, MAX_REPORT_BYTES, io)?;
         for (volume, role) in seed_creation_volumes(seed)? {
@@ -1665,9 +1642,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            native_creation_guard.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "native allocation claim requires its original issued creation guard"))?.verify_creation_with_native_work(work)?.await?;
+            native_creation_guard.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "native allocation claim requires its original issued creation guard" })?.verify_creation_with_native_work(work)?.await?;
         }
-        crate::executor::with_history_io(io.filter(|io| io.uses_native_work()),
+        crate::executor::with_history_io(io.filter(|io| io.original_native_work().is_some()),
             |work| claim.volume.validate(work))?;
         if claim.volume.provider() != &self.provider {
             return Err(bounded_io::failure(

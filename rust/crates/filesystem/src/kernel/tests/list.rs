@@ -2,7 +2,7 @@ use super::*;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::{FileKind, NameEncoding, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectKind, ObjectStore};
+use crate::storage::{ObjectKind, };
 use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
@@ -22,21 +22,20 @@ fn entry(value: &str, byte: u8) -> Result<TreeEntry, Box<dyn std::error::Error>>
     })
 }
 
-fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn std::error::Error>> {
+async fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = tree_page_id(page, 8)?;
-    ObjectStore::put(
+    AsyncObjectStore::put(
         store,
         id,
         OwnedBytes::from(encode_tree_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(id)
 }
 
-fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let a = put(store, &TreePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]))?;
-    let c = put(store, &TreePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]))?;
-    let e = put(store, &TreePage::Leaf(vec![entry("e", 5)?, entry("f", 6)?]))?;
+async fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    let a = put(store, &TreePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?])).await?;
+    let c = put(store, &TreePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?])).await?;
+    let e = put(store, &TreePage::Leaf(vec![entry("e", 5)?, entry("f", 6)?])).await?;
     put(
         store,
         &TreePage::Internal(vec![
@@ -53,10 +52,10 @@ fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error
                 page: e,
             },
         ]),
-    )
+    ).await
 }
 
-fn four_leaf_tree(
+async fn four_leaf_tree(
     store: &MemoryObjectStore,
 ) -> Result<(ObjectId, ObjectId), Box<dyn std::error::Error>> {
     let mut children = Vec::new();
@@ -68,7 +67,7 @@ fn four_leaf_tree(
                 value,
                 u8::try_from(index + 1).map_err(|_| "fixture index overflow")?,
             )?]),
-        )?;
+        ).await?;
         if index == 2 {
             third = Some(page);
         }
@@ -78,7 +77,7 @@ fn four_leaf_tree(
         });
     }
     Ok((
-        put(store, &TreePage::Internal(children))?,
+        put(store, &TreePage::Internal(children)).await?,
         third.ok_or("missing third fixture leaf")?,
     ))
 }
@@ -87,7 +86,7 @@ fn four_leaf_tree(
 async fn bounded_listing_exposes_one_authenticated_unvisited_successor()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (root, expected) = four_leaf_tree(&store)?;
+    let (root, expected) = four_leaf_tree(&store).await?;
     let limits = DecodeLimits::default();
     let page = list_tree_entries(&store, root, None, 1, limits, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(
@@ -116,7 +115,7 @@ async fn bounded_listing_exposes_one_authenticated_unvisited_successor()
 async fn cursor_page_reads_only_frontier_and_required_successors()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = tree(&store)?;
+    let root = tree(&store).await?;
     let cursor = name("c")?;
     let page = list_tree_entries(
         &store,
@@ -145,7 +144,7 @@ async fn cursor_page_reads_only_frontier_and_required_successors()
 async fn empty_tail_is_proved_without_scanning_earlier_subtrees() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let root = tree(&store)?;
+    let root = tree(&store).await?;
     let page = list_tree_entries(
         &store,
         root,
@@ -164,7 +163,7 @@ async fn empty_tail_is_proved_without_scanning_earlier_subtrees() -> Result<(), 
 #[tokio::test]
 async fn output_bound_is_admitted_before_backend_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = tree(&store)?;
+    let root = tree(&store).await?;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.items_returned = 1;
     let failure = list_tree_entries(&store, root, None, 2, DecodeLimits::default(), budget, &CancellationToken::new())
@@ -186,7 +185,7 @@ async fn output_bound_is_admitted_before_backend_work() -> Result<(), Box<dyn st
 async fn volume_object_ceiling_does_not_size_a_tiny_cursor_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = tree(&store)?;
+    let root = tree(&store).await?;
     let limits = DecodeLimits {
         maximum_visited_pages: u32::MAX,
         maximum_page_height: 64,
@@ -203,7 +202,7 @@ async fn volume_object_ceiling_does_not_size_a_tiny_cursor_allocation()
 async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = tree(&store)?;
+    let root = tree(&store).await?;
     let zero = list_tree_entries(
         &store,
         root,
@@ -298,7 +297,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = crate::async_storage::poll_ready(list_tree_entries(
+    let failure = (list_tree_entries(
         &store,
         root,
         None,
@@ -306,8 +305,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancelled,
-    ))
-    .ok_or("cancelled directory listing blocked")?
+    )).await
     .err()
     .ok_or("cancelled directory listing unexpectedly succeeded")?;
     assert!(matches!(failure.error, DirectoryReadError::Cancelled));
@@ -316,14 +314,14 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     let leaf = put(
         &store,
         &TreePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]),
-    )?;
+    ).await?;
     let forged = put(
         &store,
         &TreePage::Internal(vec![Child {
             first: name("a")?,
             page: leaf,
         }]),
-    )?;
+    ).await?;
     let failure = list_tree_entries(
         &store,
         forged,
@@ -344,8 +342,8 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     Ok(())
 }
 
-#[test]
-fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
+#[tokio::test]
+async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::async_storage::AsyncObjectStore;
     use crate::storage::{ObjectRead, ObjectReadRequest, ObjectResult};
@@ -374,16 +372,16 @@ fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
         }
     }
     let inner = MemoryObjectStore::default();
-    let root = tree(&inner)?;
+    let root = tree(&inner).await?;
     let store = PanickingRead { inner, reached: AtomicUsize::new(0) };
     let cancellation = CancellationToken::new();
     let owner = crate::kernel::ProofDataCustody::default();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::async_storage::poll_ready(list_tree_entries_async_with_custody(
+    let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
+        (list_tree_entries_async_with_custody(
             &store, root, None, 2, DecodeLimits::default(), WorkBudget::UNBOUNDED,
             &cancellation, Some(&owner),
-        ))
-    }));
+        )).await
+    })).await;
     assert!(result.is_err());
     assert_eq!(store.reached.load(Ordering::SeqCst), 1);
     let known = owner.pending_data_work();

@@ -169,7 +169,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             let _provider_custody = provider_custody;
             let _completion = NativeSupervisorCompletion(Arc::clone(&supervisor));
             let work = &original_work;
-            let (execution, mut execution_custody) = execute(&owner, view.as_ref(), &authority,
+            let ((status, diagnostic, published), mut execution_custody) = execute(&owner, view.as_ref(), &authority,
                 &request, &dispatch, &schema, &supervisor, work).await?;
             let mut custody = custody;
             custody.absorb(&mut execution_custody)?;
@@ -177,10 +177,10 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             let observed = ObservedWrite {
                 effect: EffectWrite { provider: &dispatch.provider, effect_id: dispatch.effect_id,
                     attempt_id: dispatch.attempt_id, request_digest: dispatch.request_digest,
-                    guarantee: dispatch.guarantee, status: &execution.status },
-                diagnostic: &execution.diagnostic, publication_failure: &None,
+                    guarantee: dispatch.guarantee, status: &status },
+                diagnostic: &diagnostic, publication_failure: &None,
                 invocation_failure: &None, work: &completed_work,
-                published: &execution.published,
+                published: &published,
             };
             if !append_receipt(&owner, &path, 1,
                 &Receipt::<&LaunchReceipt<'_>, _>::Observed(&observed), JournalWrite::Settlement, work).await? {
@@ -206,8 +206,8 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             drop(effect_kind);
             drop(request);
             let effect = EffectObservation { provider, effect_id, attempt_id, request_digest,
-                guarantee, status: execution.status };
-            drop((execution.diagnostic, execution.published));
+                guarantee, status };
+            drop((diagnostic, published));
             custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
 
             drop(execution_custody);

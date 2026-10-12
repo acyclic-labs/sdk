@@ -12,18 +12,12 @@ pub(crate) type WireMeter<'a> = Option<&'a Arc<dyn NativeReadMeter>>;
 #[cfg(target_arch = "wasm32")]
 pub(crate) type WireMeter<'a> = Option<&'a ()>;
 
-use crate::memory::{Allocation, MemoryOutput};
+use crate::memory::MemoryOutput;
 
-/// Custody of the actual SDK-owned generated DTO fields.
-pub(crate) struct WireFunding<'a> {
-    meter: WireMeter<'a>,
-    allocation: Allocation,
-}
-
-impl<'a> WireFunding<'a> {
-    pub(crate) fn new(meter: WireMeter<'a>) -> Self {
+impl<'a> MemoryOutput<WireMeter<'a>> {
+    pub(crate) fn fund(meter: WireMeter<'a>) -> Self {
         Self {
-            meter,
+            value: meter,
             #[cfg(not(target_arch = "wasm32"))]
             allocation: meter.map(ReadAllocation::empty),
             #[cfg(target_arch = "wasm32")]
@@ -62,7 +56,7 @@ impl<'a> WireFunding<'a> {
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
         let planned = capacity.checked_mul(item)
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-        let before = if self.meter().is_some() {
+        let before = if self.value.is_some() {
             self.capacity().checked_sub(old)
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?
         } else { 0 };
@@ -73,7 +67,7 @@ impl<'a> WireFunding<'a> {
 
     fn reserve_vector<T>(&self, values: &mut Vec<T>, additional: usize) -> std::io::Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.meter {
+        if let Some(meter) = self.value {
             return values.try_reserve_exact(additional)
                 .map_err(|error| meter.allocation_failed(error));
         }
@@ -89,15 +83,11 @@ impl<'a> WireFunding<'a> {
         Ok(())
     }
 
-    pub(crate) fn meter(&self) -> WireMeter<'a> {
-        self.meter
-    }
-
     pub(crate) fn examine(&self, items: u64) -> std::io::Result<()> {
         #[cfg(target_arch = "wasm32")]
         let _ = items;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.meter {
+        if let Some(meter) = self.value {
             meter.examine(items, 0)?;
         }
         Ok(())
@@ -138,7 +128,7 @@ impl<'a> WireFunding<'a> {
         #[cfg(target_arch = "wasm32")]
         let _ = bytes;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.meter {
+        if let Some(meter) = self.value {
             meter.admit_codec(0, bytes as u64, 0)?;
         }
         Ok(())
@@ -148,16 +138,13 @@ impl<'a> WireFunding<'a> {
         #[cfg(target_arch = "wasm32")]
         let _ = bytes;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.meter {
+        if let Some(meter) = self.value {
             meter.record_codec(0, bytes as u64, 0)?;
             meter.check()?;
         }
         Ok(())
     }
 
-    pub(crate) fn finish<T>(self, value: T) -> MemoryOutput<T> {
-        MemoryOutput { value, allocation: self.allocation }
-    }
 }
 
 use crate::{

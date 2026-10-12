@@ -6638,9 +6638,9 @@ pub fn native_capabilities() -> NativeCapabilities {
         native_watch_root_identity_fencing: watch.root_identity_fencing,
         platform: std::env::consts::OS.to_owned(),
         architecture: std::env::consts::ARCH.to_owned(),
-        native_mount: mount.available,
-        writable_mount: mount.writable,
-        provider_process_io_observable: mount.provider_process_io_observable,
+        native_mount: mount.available(),
+        writable_mount: mount.available(),
+        provider_process_io_observable: mount.provider_process_io_observable(),
     }
 }
 
