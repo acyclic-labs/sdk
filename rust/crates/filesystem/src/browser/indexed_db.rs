@@ -107,11 +107,6 @@ impl From<IndexedDbOpenError> for JsValue {
 }
 
 /// Transactional `IndexedDB` immutable-object backend.
-///
-/// Canonical bytes and their exact length live in separate object stores but
-/// are always created in one transaction. Reads admit the metadata-reported
-/// allocation before requesting the body, preventing an oversized body from
-/// being materialized before the caller's hard bounds are checked.
 pub struct IndexedDbObjectStore {
     database: Database,
     maximum_object_bytes: u64,
@@ -119,11 +114,6 @@ pub struct IndexedDbObjectStore {
 
 impl IndexedDbObjectStore {
     /// Opens or creates the canonical version-1 browser-local filesystem database.
-    ///
-    /// # Errors
-    ///
-    /// Rejects empty options, obsolete database versions without deletion or
-    /// implicit migration, and any blocked or failed `IndexedDB` initialization.
     pub async fn open(
         database_name: &str,
         maximum_object_bytes: u64,
@@ -408,10 +398,6 @@ impl IndexedDbObjectStore {
     }
 
     /// Fetches the stored object under `key` for [`Self::verify_existing`].
-    ///
-    /// Only `IndexedDB` requests may be awaited while a transaction is open:
-    /// awaiting anything else lets the browser commit it. Reading the blob's
-    /// bytes therefore waits until the transaction has finished.
     async fn existing_blob(
         transaction: &Transaction<'_>,
         key: &str,
@@ -527,11 +513,6 @@ impl IndexedDbObjectStore {
 }
 
 /// Transactional `IndexedDB` authority backend.
-///
-/// One read-write transaction owns head comparison, writer fencing,
-/// idempotency resolution, commit insertion, and head publication. Commit
-/// payloads are stored as `Blob` handles so replay can inspect exact sizes
-/// before allocating their bodies.
 #[derive(Clone)]
 pub struct IndexedDbAuthorityStore {
     database: Database,
@@ -684,12 +665,6 @@ impl IndexedDbAuthorityStore {
     }
 
     /// Opens or creates the canonical version-1 browser-local authority database.
-    ///
-    /// # Errors
-    ///
-    /// Rejects empty options, payload bounds that cannot be represented by
-    /// browser buffers, obsolete versions without deletion or implicit migration,
-    /// and blocked or failed schema initialization.
     pub async fn open(
         database_name: &str,
         maximum_payload_bytes: u64,
@@ -905,8 +880,7 @@ impl IndexedDbAuthorityStore {
         decode_head(&encoded).map_err(|error| Self::corrupt(error, work))
     }
 
-    /// Reads the authority's publication gate, which every authority is
-    /// created with.
+    /// Reads the authority's publication gate, which every authority is created with.
     async fn read_gate(
         transaction: &Transaction<'_>,
         key: &str,
@@ -1122,8 +1096,7 @@ impl IndexedDbAuthorityStore {
         })
     }
 
-    /// Writes one prepared append into `transaction`, which the caller
-    /// commits.
+    /// Writes one prepared append into `transaction`, which the caller commits.
     async fn write_prepared(
         transaction: &Transaction<'_>,
         authority_id: AuthorityId,
@@ -1173,8 +1146,7 @@ impl IndexedDbAuthorityStore {
         Ok(())
     }
 
-    /// Opens the one transaction that creates authorities with their first
-    /// records.
+    /// Opens the one transaction that creates authorities with their first records.
     fn first_record_transaction(
         &self,
         work: WorkCounters,
@@ -1213,8 +1185,7 @@ impl IndexedDbAuthorityStore {
         .is_some())
     }
 
-    /// Writes, in `transaction`, a new authority whose first record is
-    /// `commit`. The caller has read that the authority does not exist.
+    /// Writes, in `transaction`, a new authority whose first record is `commit`.
     async fn write_first_record(
         &self,
         transaction: &Transaction<'_>,
@@ -1629,7 +1600,6 @@ async fn open_database(database_name: &str) -> Result<Database, IndexedDbOpenErr
 
 impl AsyncAuthorityStore for IndexedDbAuthorityStore {
     /// One strict transaction creates the authority with its first record.
-    /// An existing authority resolves through the ordinary idempotent append.
     async fn create_authority_with_first_record(
         &self,
         authority: AuthorityId,
@@ -1660,10 +1630,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         Ok(AuthorityReceipt { value: true, work })
     }
 
-    /// One strict transaction creates the retention and destination
-    /// authorities with their first records. `IndexedDB` keeps no lineage, so
-    /// every fork is independent. An authority that already exists resolves
-    /// through the idempotent single-authority steps.
+    /// One strict transaction creates the retention and destination authorities with their first records.
     async fn commit_workspace_fork(
         &self,
         fork: WorkspaceForkCommit,
@@ -2282,8 +2249,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             .await
     }
 
-    /// Admits every write in one read-write transaction, so the batch
-    /// commits, and becomes durable, all at once or not at all.
+    /// Admits every write in one read-write transaction, so the batch commits, and becomes durable, all at once or not at all.
     async fn put_many(
         &self,
         writes: &[ObjectWrite],

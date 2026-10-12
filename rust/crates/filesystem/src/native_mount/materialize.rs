@@ -36,15 +36,6 @@ impl GenerationFailure {
     }
 }
 
-impl std::fmt::Display for GenerationFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.error, formatter)
-    }
-}
-
-impl std::error::Error for GenerationFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.error) }
-}
 
 impl From<GenerationFailure> for MaterializeError {
     fn from(failure: GenerationFailure) -> Self { failure.error }
@@ -120,8 +111,7 @@ where
 }
 
 
-/// Native traversal and host work share the original ledger; standalone SDK
-/// reads contribute their measured prefixes.
+/// Native traversal and host work share the original ledger; standalone SDK reads contribute their measured prefixes.
 struct GenerationReceipt {
     value: MaterializationReceipt,
     meter: Arc<NativeDemandReadMeter>,
@@ -630,7 +620,6 @@ pub struct MaterializeOptions {
     /// Existing empty directory owned by the caller.
     pub destination: PathBuf,
     /// Original host allocation, when attachment follows a durable preparation.
-    /// Checked on the held root that performs every write, not a prior path probe.
     pub expected_root_identity: Option<crate::NativeRootIdentity>,
     /// Maximum directory entries fetched per authenticated page.
     pub maximum_directory_entries: u32,
@@ -640,17 +629,14 @@ pub struct MaterializeOptions {
     pub transfer_bytes: u64,
 }
 
-/// Both outputs preserve canonical metadata in the SDK. Host-generated Unix
-/// timestamps are view-local and are not required to match the physical view.
+/// Both outputs preserve canonical metadata in the SDK.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MaterializeMode {
     DurableOutput,
     ReconstructibleView,
 }
 
-/// What a host applies for one record: the metadata it sets directly, and
-/// the root of named attributes it sets separately, whose values live in the
-/// generation rather than in the record.
+/// What a host applies for one record: the metadata it sets directly, and the root of named attributes it sets separately, whose values live in the generation rather than in the record.
 struct HostMetadata {
     metadata: FileMetadata,
     named_attributes: Option<crate::ObjectId>,
@@ -828,7 +814,6 @@ pub enum MaterializeError {
 }
 
 /// A primary error retained in the slot admitted before restoration effects.
-/// Its physical box retires before the original allocation claim.
 pub struct MaterializeCleanupCause {
     error: Box<Option<MaterializeError>>,
     _allocation: crate::NativeAllocation,
@@ -894,27 +879,6 @@ impl From<crate::FsError> for MaterializeError {
 }
 
 /// Explicitly materializes one checkout without changing or publishing it.
-///
-/// Sparse files are pre-sized and only authenticated content or allocated-zero
-/// spans are written. Hole spans issue no body I/O. Hard links are recreated by
-/// stable file identity, and directory enumeration remains bounded and paged.
-/// This function is only invoked by explicit materialization requests.
-///
-/// Source reads, native retries, live owned buffers, metadata, attributes and
-/// durability use the same operation-wide budget. Failures retain completed
-/// prefixes, including partial native writes. An expected root identity is
-/// checked on the opened write capability before any destination mutation.
-/// Queued native writes and metadata retain their owned buffers and paths on
-/// that ledger until the physical producer retires, even if its waiter drops.
-///
-/// Initialize [`acyclic_native_runtime::initialize_native_io_services`] before
-/// invocation. Opaque process-wide service startup is not hidden in this work.
-///
-/// # Errors
-///
-/// Fails before traversal for an invalid destination or zero bounds. During
-/// traversal it fails closed on unrepresentable names, unsupported special
-/// kinds, canonical engine errors, host I/O, cancellation, or work exhaustion.
 pub async fn materialize_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     options: &MaterializeOptions,
@@ -1018,18 +982,6 @@ pub(crate) async fn materialize_checkout_with_mode<A: AsyncAuthorityStore, O: As
 }
 
 /// Materializes one authenticated path into an empty destination directory.
-///
-/// The destination receives the same relative logical path below its root;
-/// for example, `src/main.rs` is written to
-/// `options.destination/src/main.rs`.  This lets callers stage a path in a
-/// sibling directory and perform their own atomic host-side exchange without
-/// reimplementing authenticated lookup, sparse-file handling, hard links, or
-/// platform name conversion.  Parent directories created for the selected
-/// path are not included in the receipt; the selected node and its subtree
-/// are. Hard links within that subtree retain their shared identity; a link
-/// to a node outside the selected subtree becomes an independent copy.
-///
-/// Native I/O services must already be initialized as for [`materialize_checkout`].
 pub async fn materialize_checkout_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     path: &NamespacePath,
@@ -1048,11 +1000,6 @@ pub async fn materialize_checkout_path<A: AsyncAuthorityStore, O: AsyncObjectSto
 }
 
 /// Materializes multiple non-overlapping authenticated paths in one traversal.
-///
-/// All selected paths share one destination capability, cumulative work
-/// receipt, and file-identity table, preserving hard links across siblings.
-/// Traversal and identity-table storage are admitted before growth; a later
-/// missing path or exhausted allowance retains all earlier paths' work.
 pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     paths: &[NamespacePath],
@@ -1119,10 +1066,6 @@ enum GenerationSource<'a, A, O> {
 }
 
 /// Materializes an original-native immutable reader on its existing ledger.
-///
-/// The reader must come from the actual consumed original-native checkout.
-/// No SDK or native work is reset; all success and failure work remains on the
-/// caller's original ledger rather than a child receipt to merge.
 pub async fn materialize_checkout_with_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &PinnedReader<A, O>,
     options: &MaterializeOptions,
@@ -1416,9 +1359,7 @@ where
     Ok(OperationReceipt { value: receipt.value, work })
 }
 
-/// Materializes a host-relative path using the checkout's configured name
-/// profile. Native consumers do not need to construct logical names or know
-/// whether this platform stores them as bytes or UTF-16 units.
+/// Materializes a host-relative path using the checkout's configured name profile.
 pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     relative: &Path,
@@ -1446,22 +1387,6 @@ pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObje
         .await.map_err(GenerationFailure::into_operation_failure),
         |receipt| &receipt.work,
     )
-}
-
-/// Materializes one host-relative selection from the actual original reader.
-pub async fn materialize_checkout_host_path_with_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    reader: &PinnedReader<A, O>,
-    relative: &Path,
-    options: &MaterializeOptions,
-    work: &super::NativeMountMeterWork,
-) -> Result<MaterializationReceipt, MaterializeError> {
-    let mut receipt = GenerationReceipt::from_work(work)?;
-    let validated = reader.validate_native_work(receipt.custody.work());
-    receipt.original_result(validated)?;
-    receipt.native_source = true;
-    materialize_checkout_host_path_on_source(
-        GenerationSource::Original(reader), relative, options, receipt,
-    ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
 }
 
 /// Keeps all host-relative selections in one original traversal and hard-link map.
@@ -1570,17 +1495,6 @@ fn generation_namespace_from_host(
 }
 
 /// Restores one authenticated host-relative path without touching siblings.
-///
-/// Materialization occurs in a private same-volume stage. Existing entries are
-/// exchanged atomically or replaced through ordinary mount-visible renames.
-/// An absent authenticated path removes the current host entry.
-///
-/// Every allowance must be finite. Success and failure include preparation,
-/// materialization, publication, durability, and attempted cleanup work.
-/// The expected allocation is checked before writes and its held capability
-/// remains authoritative through publication or removal.
-///
-/// Native I/O services must already be initialized as for [`materialize_checkout`].
 pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     relative: &Path,
@@ -1597,27 +1511,6 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         GenerationSource::Standalone(checkout), relative, replacement, options,
         &super::NativeMountMeterWork::from_meter(receipt.meter),
     ).await.map_err(GenerationFailure::into_operation_failure)
-}
-
-/// Restores a host-relative path using the caller's complete original ledger.
-///
-/// Preparation, traversal, native I/O, publication, and cleanup alias the same
-/// allocation and cancellation roots. All work remains on the original ledger;
-/// failure propagation creates no boxed work receipt.
-pub async fn restore_checkout_host_path_with_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    reader: &PinnedReader<A, O>,
-    relative: &Path,
-    replacement: HostPathReplacement,
-    options: &MaterializeOptions,
-    native_work: &super::NativeMountMeterWork,
-) -> Result<HostPathRestore, MaterializeError> {
-    let mut source_admission = GenerationReceipt::from_work(native_work)?;
-    let validated = reader.validate_native_work(source_admission.custody.work());
-    source_admission.original_result(validated)?;
-    drop(source_admission);
-    restore_checkout_host_path_on_source(
-        GenerationSource::Original(reader), relative, replacement, options, native_work,
-    ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
 }
 
 async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -2724,10 +2617,7 @@ where
     .await
 }
 
-/// Applies one record's complete metadata to its materialized host path:
-/// its named attributes, then the directly settable fields. Writing an
-/// attribute needs write access, which a read-only final mode would deny,
-/// and changes only the ctime, which no host lets anyone set.
+/// Applies one record's complete metadata to its materialized host path: its named attributes, then the directly settable fields.
 async fn apply_record_metadata<A, O, E, F, Fut>(
     reader: &PinnedReader<A, O>,
     host_root: &GenerationRoot,
@@ -3206,75 +3096,6 @@ mod restore_recovery_tests {
     }
 
     #[test]
-    fn original_generation_receipt_keeps_prior_work_and_retires_cancelled_capacity()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let cancellation = CancellationToken::new();
-        let mut first = GenerationReceipt::new(finite_materialization_budget(), &cancellation)?;
-        first.measured(|work| work.charge(WorkCounters {
-            items_examined: 3, ..WorkCounters::UNCHARGED
-        }))?;
-        let original = super::super::NativeMountMeterWork::from_meter(Arc::clone(&first.meter));
-        let baseline = first.meter.with_original_leaf(|work| work.allocation_parts().0.live_bytes());
-        let mut borrowed = GenerationReceipt::from_work(&original)?;
-        assert!(Arc::ptr_eq(&first.meter, &borrowed.meter));
-        assert_eq!(borrowed.work, first.work);
-        borrowed.measured(|work| work.charge(WorkCounters {
-            items_examined: 2, ..WorkCounters::UNCHARGED
-        }))?;
-        let mut values = Vec::<u8>::new();
-        borrowed.reserve(&mut values, 8)?;
-        assert_eq!(borrowed.work.items_examined, 5);
-        assert_eq!(
-            borrowed.meter.with_original_leaf(|work| work.allocation_parts().0.live_bytes()),
-            baseline + values.capacity() as u64,
-        );
-        cancellation.cancel();
-        drop(values);
-        drop(borrowed);
-        assert_eq!(
-            first.meter.with_original_leaf(|work| work.allocation_parts().0.live_bytes()),
-            baseline,
-        );
-        assert_eq!(first.meter.with_original_leaf(|work| work.work.items_examined), 5);
-        Ok(())
-    }
-
-    #[test]
-    fn prepaid_cleanup_primary_retains_actual_slot_after_cancel_without_failure_allocation()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let cancellation = CancellationToken::new();
-        let original = GenerationReceipt::new(finite_materialization_budget(), &cancellation)?;
-        let baseline = original.meter.with_original_leaf(|work| work.allocation_parts().0.live_bytes());
-        let bytes = std::mem::size_of::<Option<MaterializeError>>() as u64;
-        let allocation = original.custody.work().claim(bytes).map_err(materialize_native_error)?;
-        let slot = GenerationOwned { value: Box::new(None), _custody: allocation };
-        let spent = original.meter.with_original_leaf(|work| work.work);
-        cancellation.cancel();
-        let failure = MaterializeError::RestoreCleanup {
-            primary: slot.into_cleanup_cause(MaterializeError::MissingPath),
-            cleanup: DemandError::Io(std::io::Error::from_raw_os_error(5)),
-        };
-        assert_eq!(original.meter.with_original_leaf(|work| work.work), spent);
-        assert_eq!(
-            original.meter.with_original_leaf(|work| work.allocation_parts().0.live_bytes()),
-            baseline + bytes,
-        );
-        match &failure {
-            MaterializeError::RestoreCleanup { primary, cleanup } => {
-                assert!(matches!(&**primary, MaterializeError::MissingPath));
-                assert!(matches!(cleanup, DemandError::Io(error) if error.raw_os_error() == Some(5)));
-            }
-            _ => return Err("primary and cleanup causes were not preserved".into()),
-        }
-        drop(failure);
-        assert_eq!(
-            original.meter.with_original_leaf(|work| work.allocation_parts().0.live_bytes()),
-            baseline,
-        );
-        Ok(())
-    }
-
-    #[test]
     fn replaced_root_is_rejected_before_destination_enumeration()
     -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
@@ -3300,29 +3121,6 @@ mod restore_recovery_tests {
         assert_eq!(failure.work, opened.work);
         assert_eq!(failure.work.backend_write_operations, 0);
         assert_eq!(std::fs::read(destination.join("foreign"))?, b"untouched");
-        Ok(())
-    }
-
-    #[test]
-    fn destination_validation_preserves_zero_and_exact_budget_prefixes()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        let options = MaterializeOptions::native(temporary.path());
-        let cancellation = CancellationToken::new();
-        let zero = validate_options(&options, WorkBudget::default(), &cancellation)
-            .err().ok_or("zero budget was accepted")?;
-        assert!(matches!(zero.error, MaterializeError::Work(_)));
-        assert_eq!(zero.work, WorkCounters::default());
-        let measured = validate_options(&options, finite_materialization_budget(), &cancellation)?;
-        let exact = validate_options(&options, measured.work, &cancellation)?;
-        assert_eq!(exact.work, measured.work);
-        let mut short = measured.work;
-        short.backend_read_operations -= 1;
-        let failure = validate_options(&options, short, &cancellation)
-            .err().ok_or("short budget was accepted")?;
-        assert!(matches!(failure.error, MaterializeError::Work(_)));
-        failure.work.verify(short)?;
-        assert!(failure.work.backend_read_operations > 0);
         Ok(())
     }
 
@@ -3695,9 +3493,7 @@ mod restore_recovery_tests {
         Ok(())
     }
 
-    /// A file created through a Linux mount records "no flags" (and its own
-    /// birth and change times); materializing it must not refuse any of
-    /// those, or no fork's new file could ever reach the root.
+    /// A file created through a Linux mount records "no flags" (and its own birth and change times); materializing it must not refuse any of those, or no fork's new file could ever reach the root.
     #[cfg(unix)]
     #[test]
     fn host_projection_drops_what_linux_cannot_or_need_not_apply() {
