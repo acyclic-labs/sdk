@@ -1,4 +1,3 @@
-//! reducer application semantics.
 use super::*;
 impl Reducer {
     #[allow(clippy::too_many_lines, reason = "one arm per event")]
@@ -38,7 +37,7 @@ impl Reducer {
                         "extension state version change lacks migration".into(),
                     ));
                 }
-                self.replace_extension_state_with_work(record, revision, work)?;
+                self.replace_extension_state(record, revision);
             }
             EventPayload::ExtensionStateMigrated { migration } => {
                 migration.validate()?;
@@ -66,7 +65,7 @@ impl Reducer {
                         "extension migration does not match retained state".into(),
                     ));
                 }
-                self.replace_extension_state_with_work(record, revision, work)?;
+                self.replace_extension_state(record, revision);
             }
             EventPayload::ExtensionsSelected {
                 previous,
@@ -95,22 +94,9 @@ impl Reducer {
                         "extension activation does not match pinned agent state".into(),
                     ));
                 }
-                let (next, _retired) =
-                    self.produce(&NativeComponentKey::ActiveSelection, work, |_, quota| {
-                        let selected =
-                            copying::copy_vector(selected, quota, copying::copy_dependency)?;
-                        let configurations = copying::copy_vector(
-                            configurations,
-                            quota,
-                            copying::copy_configuration,
-                        )?;
-                        Ok((selected, configurations))
-                    })?;
                 self.projection.active_extension_revision = Some(revision);
-                (
-                    self.projection.active_extensions,
-                    self.projection.active_configurations,
-                ) = next;
+                self.projection.active_extensions = selected.clone();
+                self.projection.active_configurations = configurations.clone();
             }
             EventPayload::ExtensionConfigured { previous, record } => {
                 if self.authority.kind != AggregateKind::Agent
@@ -137,28 +123,9 @@ impl Reducer {
                         "extension configuration does not match pinned agent state".into(),
                     ));
                 }
-                let (entry, _retired) = self.produce(
-                    &NativeComponentKey::ExtensionConfiguration(Cow::Borrowed(&record.extension)),
-                    work,
-                    |_, quota| {
-                        copying::retain_entry::<(ExtensionDependency, ExtensionConfiguration)>(
-                            quota,
-                        )?;
-                        let key = copying::copy_dependency(&record.extension, quota)?;
-                        let record = copying::copy_configuration(record, quota)?;
-                        Ok((key, record))
-                    },
-                )?;
-                if work.as_deref().is_some_and(copying::is_native) {
-                    drop(
-                        self.projection
-                            .configured_extensions
-                            .remove_entry(&record.extension),
-                    );
-                }
                 self.projection
                     .configured_extensions
-                    .insert(entry.0, entry.1);
+                    .insert(record.extension.clone(), record.clone());
             }
             EventPayload::EffectPlanned {
                 effect_id,
@@ -201,24 +168,17 @@ impl Reducer {
                         "effect result schema digest mismatch".into(),
                     ));
                 }
-                let (effect, _retired) = self.produce(
-                    &NativeComponentKey::EffectAction(*effect_id),
-                    work,
-                    |_, quota| {
-                        copying::retain_entry::<(EffectId, EffectState)>(quota)?;
-                        Ok(EffectState {
-                            provider: copying::copy_text(provider, quota)?,
-                            guarantee: *guarantee,
-                            effect_kind: copying::copy_text(effect_kind, quota)?,
-                            request: copying::copy_file(request, quota)?,
-                            request_digest: *request_digest,
-                            result_schema: copying::copy_file(result_schema, quota)?,
-                            result_schema_digest: *result_schema_digest,
-                            status: EffectStatus::Planned,
-                            attempts: Vec::new(),
-                        })
-                    },
-                )?;
+                let effect = EffectState {
+                    provider: provider.clone(),
+                    guarantee: *guarantee,
+                    effect_kind: effect_kind.clone(),
+                    request: request.clone(),
+                    request_digest: *request_digest,
+                    result_schema: result_schema.clone(),
+                    result_schema_digest: *result_schema_digest,
+                    status: EffectStatus::Planned,
+                    attempts: Vec::new(),
+                };
                 self.projection.effects.insert(*effect_id, effect);
             }
             EventPayload::EffectDispatched {
@@ -228,47 +188,21 @@ impl Reducer {
                 let effect = self
                     .projection
                     .effects
-                    .get(effect_id)
+                    .get_mut(effect_id)
                     .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
                 validate_effect_dispatch(effect, attempt_id)?;
-                let replacement = self.grow_buffer(
-                    NativeComponentKey::EffectAttempts(*effect_id),
-                    effect.attempts.len(),
-                    effect.attempts.capacity(),
-                    work,
-                )?;
-                let effect = self
-                    .projection
-                    .effects
-                    .get_mut(effect_id)
-                    .expect("validated effect");
-                if let Some((mut buffer, retired)) = replacement {
-                    buffer.append(&mut effect.attempts);
-                    effect.attempts = buffer;
-                    drop(retired);
-                }
                 effect.attempts.push(*attempt_id);
                 effect.status = EffectStatus::Dispatched;
-                self.remove_component(&NativeComponentKey::EffectStatus(*effect_id));
             }
             EventPayload::EffectResolved { observation } => {
                 let effect = self
                     .projection
                     .effects
-                    .get(&observation.effect_id)
+                    .get_mut(&observation.effect_id)
                     .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
                 self.authority_verifier.verify_effect(observation, work)?;
                 validate_effect_observation(effect, observation)?;
-                let (status, _retired) = self.produce(
-                    &NativeComponentKey::EffectStatus(observation.effect_id),
-                    work,
-                    |_, quota| copying::copy_status(&observation.status, quota),
-                )?;
-                self.projection
-                    .effects
-                    .get_mut(&observation.effect_id)
-                    .expect("validated effect")
-                    .status = status;
+                effect.status = observation.status.clone();
             }
             EventPayload::ForkPublished { seed } => {
                 self.validate_extension_fork_with_work(seed, work)?;
@@ -284,75 +218,19 @@ impl Reducer {
                     observer.admit_owned(reservation)?;
                     observer.retain_owned(reservation)?;
                 }
-                let (entry, _retired) = self.produce(
-                    &NativeComponentKey::Fork(Cow::Borrowed(&seed.child)),
-                    work,
-                    |_, quota| {
-                        copying::retain_entry::<(Authority, ForkSeed)>(quota)?;
-                        let child = copying::copy_authority(&seed.child, quota)?;
-                        let seed = copy_seed(seed, quota)?;
-                        Ok((child, seed))
-                    },
-                )?;
-                self.projection.forks.insert(entry.0, entry.1);
+                self.projection
+                    .forks
+                    .insert(seed.child.clone(), seed.as_ref().clone());
             }
             EventPayload::ProjectMergePublished { receipt } => {
                 self.require_conversation()?;
                 receipt.validate_shape(work)?;
-                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-                let (key, key_owned) = Self::merge_key_with_work(receipt, quota.work())?;
-                quota.adopt(key_owned)?;
+                let key = Self::merge_key(receipt, work)?;
                 if self.projection.published_merges.contains(&key) {
                     return Err(Error::Conflict("project join was already published".into()));
                 }
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if quota.work().as_deref().is_some_and(copying::is_native) {
-                    copying::retain_entry::<(String, Vec<u8>)>(&mut quota)?;
-                }
-                let retired = self.install_component(
-                    Self::claim_component(
-                        &NativeComponentKey::Merge(Cow::Borrowed(&key.0), Cow::Borrowed(&key.1)),
-                        quota.work(),
-                    )?,
-                    quota.work(),
-                )?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if quota.work().as_deref().is_some_and(copying::is_native) {
-                    let produced = quota.retained();
-                    quota.transfer();
-                    if let Err(error) = self.absorb_produced(
-                        &NativeComponentKey::Merge(Cow::Borrowed(&key.0), Cow::Borrowed(&key.1)),
-                        produced,
-                        quota
-                            .work()
-                            .as_deref_mut()
-                            .expect("merge producing observer"),
-                    ) {
-                        let incoming = self.rollback_component(
-                            &NativeComponentKey::Merge(
-                                Cow::Borrowed(&key.0),
-                                Cow::Borrowed(&key.1),
-                            ),
-                            retired,
-                        );
-                        drop(key);
-                        drop(incoming);
-                        return Err(error);
-                    }
-                }
-                if let Err(error) =
-                    self.append_conversation_message_with_work(&receipt.notice, quota.work())
-                {
-                    let incoming = self.rollback_component(
-                        &NativeComponentKey::Merge(Cow::Borrowed(&key.0), Cow::Borrowed(&key.1)),
-                        retired,
-                    );
-                    drop(key);
-                    drop(incoming);
-                    return Err(error);
-                }
+                self.append_conversation_message_with_work(&receipt.notice, work)?;
                 self.projection.published_merges.insert(key);
-                drop(retired);
             }
             EventPayload::ConversationBound { agent } => {
                 self.require_conversation()?;
@@ -366,11 +244,7 @@ impl Reducer {
                 self.require_conversation()?;
                 selection.validate(&self.projection.conversation)?;
                 if let Some(checkpoint) = &selection.checkpoint {
-                    let (checkpoint, _retired) =
-                        self.produce(&NativeComponentKey::ContextCheckpoint, work, |_, quota| {
-                            copying::copy_file(checkpoint, quota)
-                        })?;
-                    self.projection.latest_context_checkpoint = Some(checkpoint);
+                    self.projection.latest_context_checkpoint = Some(checkpoint.clone());
                 }
             }
             EventPayload::InteractionOpened { ticket } => {
@@ -381,39 +255,18 @@ impl Reducer {
                         "interaction identity already exists".into(),
                     ));
                 }
-                let (ticket, _retired) = self.produce(
-                    &NativeComponentKey::InteractionTicket(ticket.id),
-                    work,
-                    |_, quota| {
-                        copying::retain_entry::<(
-                            uuid::Uuid,
-                            (InteractionTicket, Option<InteractionResolution>),
-                        )>(quota)?;
-                        copying::copy_ticket(ticket, quota)
-                    },
-                )?;
                 self.projection
                     .interactions
-                    .insert(ticket.id, (ticket, None));
+                    .insert(ticket.id, (ticket.clone(), None));
             }
             EventPayload::InteractionResolved { resolution } => {
-                let id = resolution.id;
                 let (ticket, prior) = self
                     .projection
                     .interactions
-                    .get(&resolution.id)
+                    .get_mut(&resolution.id)
                     .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
                 validate_interaction_transition(ticket, prior.as_ref(), resolution)?;
-                let (resolution, _retired) = self.produce(
-                    &NativeComponentKey::InteractionResolution(resolution.id),
-                    work,
-                    |_, quota| copying::copy_resolution(resolution, quota),
-                )?;
-                self.projection
-                    .interactions
-                    .get_mut(&id)
-                    .expect("validated interaction")
-                    .1 = Some(resolution);
+                *prior = Some(resolution.clone());
             }
         }
         Ok(())

@@ -9,8 +9,6 @@ use acyclic_fs::{
     NativeWorkReservation, WorkCounters,
 };
 
-use std::mem::size_of;
-
 /// Moves an actual SDK output claim into this observer without another claim or a cancellation check.
 pub(crate) fn adopt_native_sdk_output<T>(
     original: &NativeMaterializationWork,

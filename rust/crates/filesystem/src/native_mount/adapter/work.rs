@@ -51,10 +51,10 @@ impl NativeDemandCarrier<'_> {
 
     pub(super) fn new_custody(
         &mut self,
-    ) -> Result<super::NativeMountAllocationCustody, MountSourceError> {
+    ) -> Result<std::sync::Arc<super::NativeMountAllocationCustody>, MountSourceError> {
         match self.original_native_work() {
             Some(work) => super::NativeMountAllocationCustody::new(
-                &mut crate::demand::NativeSourceWork::from_native_materialization_work(&work),
+                &mut crate::NativeMaterializationWork::clone(&work),
             ),
             None => self.with_work(super::NativeMountAllocationCustody::new),
         }
@@ -71,7 +71,7 @@ impl NativeDemandCarrier<'_> {
             Ok(receipt) => (Ok(receipt.value), receipt.work),
             Err(failure) => (Err(map(failure.error)), *failure.work),
         };
-        self.with_work(|work| work.merge_with_prior_live(completed, prior_live))
+        self.with_work(|work| work.merge(completed, prior_live))
             .map_err(super::lazy::mount_demand_error)?;
         result
     }
@@ -90,7 +90,7 @@ impl NativeDemandCarrier<'_> {
         let result = if bytes == 0 {
             Ok(())
         } else {
-            self.with_work(|work| work.record_adoption(bytes, &None))
+            self.with_work(|work| work.record_native_owned_completed(bytes, &None).1)
                 .map_err(super::lazy::mount_demand_error)
         }
         .and_then(|()| self.check(cancellation, lifetime));

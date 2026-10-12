@@ -11,7 +11,8 @@ pub fn validate_mcp_stdio_request(
     #[wasm_bindgen(unchecked_param_type = "McpStdioRequest")] request: JsValue,
 ) -> Result<(), JsValue> {
     from_js::<crate::mcp::stdio::McpStdioRequest>(request)?
-        .validate()
+        .exchange(None)
+        .map(drop)
         .map_err(js_error)
 }
 

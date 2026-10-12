@@ -3,15 +3,13 @@ use super::*;
 pub(super) async fn host_io<T: Send + 'static, E: Send + 'static>(
     lock: Option<File>,
     work: crate::NativeMaterializationWork,
-    operation: impl FnOnce(&mut NativeSourceWork<'_>) -> Result<T, E> + Send + 'static,
+    operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, E> + Send + 'static,
 ) -> Result<Result<T, E>, std::io::Error> {
     let observer = work.runtime_meter();
     let operation = move || {
         // A cancelled waiter must not release the fence while host I/O continues.
         let _restore_lock = lock;
-        operation(&mut NativeSourceWork::from_native_materialization_work(
-            &work,
-        ))
+        operation(&mut work.clone())
     };
     let task = acyclic_native_runtime::run_blocking_io(operation, Some((observer, false)))?;
     task.await
@@ -266,7 +264,7 @@ pub(super) fn restore_artifact_name(
     {
         use std::os::unix::ffi::OsStrExt as _;
         let bytes = relative.as_os_str().as_bytes();
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             bytes_hashed: bytes.len() as u64,
             ..WorkCounters::UNCHARGED
         })
@@ -277,7 +275,7 @@ pub(super) fn restore_artifact_name(
     {
         use std::os::windows::ffi::OsStrExt as _;
         for unit in relative.as_os_str().encode_wide() {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 bytes_hashed: 2,
                 bytes_encoded: 2,
                 ..WorkCounters::UNCHARGED
@@ -292,7 +290,7 @@ pub(super) fn restore_artifact_name(
         ..WorkCounters::UNCHARGED
     };
     work.admit(delta).map_err(restore_demand_error)?;
-    work.allocate(bytes as u64).map_err(restore_demand_error)?;
+    work.claim_allocation(bytes as u64, u64::from(bytes != 0), WorkCounters::UNCHARGED).map_err(restore_demand_error)?;
     let mut name = String::with_capacity(bytes);
     write!(name, "{prefix}{}", hasher.finalize().to_hex()).expect("String formatting cannot fail");
     if let Err(error) = work.record(delta) {
@@ -332,7 +330,7 @@ pub(super) fn acquire_restore_lock(
         )
         .map_err(restore_demand_error)?;
         loop {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 backend_write_operations: 1,
                 ..WorkCounters::UNCHARGED
             })
@@ -373,7 +371,7 @@ pub(super) fn create_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(restore_demand_error)?;
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             backend_write_operations: 1,
             ..WorkCounters::UNCHARGED
         })
@@ -398,7 +396,7 @@ pub(super) fn create_restore_witness(
             Err(error) => return Err(error.into()),
         }
     }
-    work.charge(WorkCounters {
+    work.started_io(WorkCounters {
         durability_operations: 1,
         ..WorkCounters::UNCHARGED
     })
@@ -442,7 +440,7 @@ pub(super) fn validate_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(restore_demand_error)?;
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             backend_read_operations: 1,
             ..WorkCounters::UNCHARGED
         })

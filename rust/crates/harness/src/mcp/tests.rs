@@ -27,25 +27,22 @@ impl McpToolTransport for Transport {
         _: &'a str,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
+    ) -> BoxProviderFuture<'a, Result<Value>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             if let Some(context) = context {
                 return Ok(context_result(&context, arguments));
             }
-            Ok(McpToolResult {
-                content: vec![json!({"type":"text","text":"ok"})],
-                structured_content: Some(json!({"value":1})),
-                is_error: false,
-                meta: None,
-            })
+            Ok(
+                json!({"content":[{"type":"text","text":"ok"}], "structuredContent":{"value":1}, "isError":false}),
+            )
         })
     }
     fn reconcile<'a>(
         &'a self,
         _: OperationId,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
         Box::pin(
             async move { Ok(context.map(|context| context_result(&context, json!({"value":1})))) },
         )
@@ -141,22 +138,18 @@ async fn catalog_installation_requires_signed_namespace_and_exact_complete_appro
     let mut registry = ToolRegistry::default();
     for control in 0..=13 {
         let mut input = original.clone();
-        let mut installation = McpCatalogInstallation {
-            operation: approval.operation,
-            interaction: approval.interaction,
-            scope: &scope,
-            verifier: &verifier,
-            approval: &approval,
-            maximum_tools: 8,
-            maximum_bytes: 8192,
-        };
+        let mut operation = approval.operation;
+        let mut interaction = approval.interaction;
+        let mut selected_scope = &scope;
+        let mut maximum_tools = 8;
+        let mut maximum_bytes = 8192;
         match control {
-            0 => installation.scope = &missing,
-            1 => installation.scope = &forged,
-            2 => installation.operation = OperationId::from_bytes([48; 16]),
-            3 => installation.interaction = InteractionId::from_bytes([48; 16]),
-            4 => installation.maximum_tools = 9,
-            5 => installation.maximum_bytes = 8193,
+            0 => selected_scope = &missing,
+            1 => selected_scope = &forged,
+            2 => operation = OperationId::from_bytes([48; 16]),
+            3 => interaction = InteractionId::from_bytes([48; 16]),
+            4 => maximum_tools = 9,
+            5 => maximum_bytes = 8193,
             6 => input.revision = "different".into(),
             7 => input.schema_exposure = McpSchemaExposure::Selected { names: vec![] },
             8 => input.discovery = McpDiscoveryPolicy::Disabled,
@@ -182,7 +175,19 @@ async fn catalog_installation_requires_signed_namespace_and_exact_complete_appro
         }
         let reads = approval.reads.load(Ordering::SeqCst);
         let result = input
-            .install_scoped(&mut registry, None, &bound, &projection, installation)
+            .install_scoped(
+                &mut registry,
+                None,
+                &bound,
+                &projection,
+                operation,
+                interaction,
+                selected_scope,
+                &verifier,
+                &approval,
+                maximum_tools,
+                maximum_bytes,
+            )
             .await;
         if control == 13 {
             result?;
@@ -256,15 +261,13 @@ async fn scoped_replacement_approval_pins_the_exact_previous_catalog() -> Result
                 previous,
                 &bound,
                 &projection,
-                McpCatalogInstallation {
-                    operation: approval.operation,
-                    interaction: approval.interaction,
-                    scope: &scope,
-                    verifier: &verifier,
-                    approval: &approval,
-                    maximum_tools: 8,
-                    maximum_bytes: 8192,
-                },
+                approval.operation,
+                approval.interaction,
+                &scope,
+                &verifier,
+                &approval,
+                8,
+                8192,
             )
             .await;
         if previous == Some(&original) {
@@ -285,19 +288,11 @@ async fn scoped_replacement_approval_pins_the_exact_previous_catalog() -> Result
     Ok(())
 }
 
-fn context_result(context: &ToolContext, structured_content: Value) -> McpToolResult {
-    McpToolResult {
-        content: vec![],
-        structured_content: Some(structured_content),
-        is_error: false,
-        meta: Some(json!({
-            "task": context.task().id(),
-            "operation": context.operation_id(),
-            "call": context.call_id(),
-            "serverGrant": context.task().scope().grants().contains("mcp:call:fixture"),
-            "durableTask": context.task().durable_task_id(),
-        })),
-    }
+fn context_result(context: &ToolContext, structured_content: Value) -> Value {
+    json!({"content":[], "structuredContent":structured_content, "isError":false,
+        "_meta":{"task":context.task().id(), "operation":context.operation_id(),
+            "call":context.call_id(), "serverGrant":context.task().scope().grants().contains("mcp:call:fixture"),
+            "durableTask":context.task().durable_task_id()}})
 }
 
 async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
@@ -454,39 +449,18 @@ fn schema_bounds_namespace_and_result_negative_controls() {
         output_schema: catalog("1", &["a"]).tools.remove(0).output_schema,
         transport: Arc::new(Transport::default()),
     };
+    assert!(tool.result(json!({"content":[], "isError":false})).is_err());
     assert!(
-        tool.result(McpToolResult {
-            content: vec![],
-            structured_content: None,
-            is_error: false,
-            meta: None
-        })
-        .is_err()
+        tool.result(json!({"content":[], "structuredContent":{"value":"wrong"}, "isError":false}))
+            .is_err()
     );
-    assert!(
-        tool.result(McpToolResult {
-            content: vec![],
-            structured_content: Some(json!({"value":"wrong"})),
-            is_error: false,
-            meta: None
-        })
-        .is_err()
-    );
-    assert!(
-        tool.result(McpToolResult {
-            content: vec![],
-            structured_content: None,
-            is_error: true,
-            meta: None
-        })
-        .is_ok()
-    );
+    assert!(tool.result(json!({"content":[], "isError":true})).is_ok());
 }
 
 #[tokio::test]
 async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
     struct PendingTransport {
-        response: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<McpToolResult>>>,
+        response: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<Value>>>,
     }
     impl McpToolTransport for PendingTransport {
         fn call<'a>(
@@ -495,7 +469,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
             _: &'a str,
             _: Value,
             _: Option<ToolContext>,
-        ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
+        ) -> BoxProviderFuture<'a, Result<Value>> {
             Box::pin(async move {
                 let response = self
                     .response
@@ -512,7 +486,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
             &'a self,
             _: OperationId,
             _: Option<ToolContext>,
-        ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
+        ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
             Box::pin(async { Ok(None) })
         }
     }
@@ -548,12 +522,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
         8192,
     )?;
     sender
-        .send(McpToolResult {
-            content: vec![],
-            structured_content: Some(json!({"value":11})),
-            is_error: false,
-            meta: None,
-        })
+        .send(json!({"content":[], "structuredContent":{"value":11}, "isError":false}))
         .map_err(|_| Error::Invalid("fixture dropped".into()))?;
     assert_eq!(call.await?.value["structuredContent"]["value"], 11);
     let next = registry

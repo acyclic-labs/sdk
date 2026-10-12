@@ -1,4 +1,3 @@
-//! reducer effects semantics.
 use super::*;
 impl Reducer {
     pub(crate) fn set_resident_terminal_effect_limit(&mut self, maximum: usize) -> Result<()> {
@@ -33,12 +32,8 @@ impl Reducer {
     pub(crate) fn mark_indexed_terminal_effect_with_work(
         &mut self,
         event: &Event,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        _work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.require_native_work(
-            work,
-            "native terminal indexing requires explicit native work",
-        )?;
         let EventPayload::EffectResolved { observation } = &event.payload else {
             return Ok(());
         };
@@ -56,17 +51,6 @@ impl Reducer {
             ));
         }
         if self.projection.indexed_terminal_effects.back() != Some(&observation.effect_id) {
-            if let Some((buffer, retired)) = self.grow_buffer(
-                NativeComponentKey::TerminalEffectBuffer,
-                self.projection.indexed_terminal_effects.len(),
-                self.projection.indexed_terminal_effects.capacity(),
-                work,
-            )? {
-                let mut buffer = VecDeque::from(buffer);
-                buffer.append(&mut self.projection.indexed_terminal_effects);
-                self.projection.indexed_terminal_effects = buffer;
-                drop(retired);
-            }
             self.projection
                 .indexed_terminal_effects
                 .push_back(observation.effect_id);
@@ -91,9 +75,6 @@ impl Reducer {
         while self.projection.indexed_terminal_effects.len() > budget {
             if let Some(effect) = self.projection.indexed_terminal_effects.pop_front() {
                 self.projection.effects.remove(&effect);
-                self.remove_component(&NativeComponentKey::EffectAction(effect));
-                self.remove_component(&NativeComponentKey::EffectStatus(effect));
-                self.remove_component(&NativeComponentKey::EffectAttempts(effect));
                 self.projection.effects_archived = true;
             }
         }
@@ -176,15 +157,6 @@ impl Reducer {
             .effects
             .remove(&effect_id)
             .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = quota
-            .work()
-            .as_deref_mut()
-            .filter(|io| io.original_native_work().is_some())
-        {
-            let retained = projection.transfer_effect(effect_id, io)?;
-            quota.adopt(retained)?;
-        }
         drop(projection);
         quota.relinquish(metadata_owned)?;
         let retained = quota.retained();

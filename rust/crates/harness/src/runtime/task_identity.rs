@@ -77,7 +77,6 @@ pub(crate) fn scope_metadata_boundary(
 }
 
 /// Builds the two identities that durable hosts retain for one resumable task.
-
 pub fn task_admission_identities(
     name: &str,
     version: &str,
@@ -181,7 +180,6 @@ pub(super) fn validate_identity(
 }
 
 /// Runs closed physical field producers against the original preparation ledger.
-
 pub(super) fn task_copy_with_io<T>(
     io: Option<&crate::executor::PreparationIo>,
     copy: impl FnOnce(&mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,

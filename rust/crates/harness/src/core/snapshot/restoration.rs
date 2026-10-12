@@ -1,63 +1,23 @@
-//! Restoring authenticated fields and retiring conversation prefixes.
 use super::*;
 impl Reducer {
     /// Restores authenticated state without replaying transitions.
     pub fn restore(
-        mut snapshot: Snapshot,
+        snapshot: Snapshot,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
-        snapshot.require_work(work)?;
         snapshot.verify(&authority_verifier, &schemas, work)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let native = work.as_deref().is_some_and(copying::is_native);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if native && snapshot.native_allocation.is_none() {
-            let bytes = snapshot.predecoded_native_owned_bytes()?;
-            let io = work.as_deref_mut().expect("native restoration observer");
-            io.admit_owned(bytes)?;
-            io.retain_owned(bytes)?;
-            let allocation = io.take_native_custody(bytes)?;
-            snapshot.install_native_custody(allocation, work)?;
-        }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let base = if native {
-            snapshot.adopt_unclaimed_native_conversation_custody(work)?;
-            let io = work.as_deref_mut().expect("native verifier observer");
-            Some((
-                NativeComponentKey::Base,
-                io.take_native_custody(authority_verifier.logical_owned_bytes()?)?,
-                io.take_native_custody(0)?,
-            ))
-        } else {
-            None
-        };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut allocation = snapshot.native_allocation.take();
-        let projection = snapshot.projection;
-        let mut reducer = Self {
+        Ok(Self {
             authority: snapshot.authority,
             authority_verifier,
             schemas,
             revision: snapshot.revision,
-            projection: projection.with_bindings(()),
+            projection: snapshot.projection.with_bindings(()),
             events: snapshot.events.into(),
             resident_event_limit: usize::MAX,
             resident_terminal_effect_limit: usize::MAX,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_components: Vec::new(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_component_buffer: None,
-        };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            drop(reducer.install_component(base, work)?);
-            if let Some(allocation) = allocation.as_mut() {
-                reducer.adopt_projection(allocation, work)?;
-            }
-        }
-        Ok(reducer)
+        })
     }
     pub(crate) fn compact_conversation_projection(
         &mut self,
@@ -71,56 +31,132 @@ impl Reducer {
         {
             return Ok(());
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().is_some_and(copying::is_native) {
-            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let mut copied = copying::reserve_copy_vector::<(u64, Option<reducer::Component>)>(
-                self.projection.conversation.messages().len(),
-                &mut quota,
-            )?;
-            for message in self.projection.conversation.messages() {
-                copied.push((message.sequence, None));
-            }
-            let mut position = 0;
-            let (replacement, _) = self.projection.conversation.checkpointed_suffix(
-                selection,
-                quota.work(),
-                Some(&mut |sequence, produced, work| {
-                    while position < copied.len() && copied[position].0 < sequence {
-                        position += 1;
-                    }
-                    if position == copied.len() || copied[position].0 != sequence {
-                        return Err(crate::fork::boundary_error(
-                            work,
-                            crate::wire::ErrorCode::Invalid,
-                            "conversation component identity is invalid",
-                        ));
-                    }
-                    let io = work.as_deref_mut().expect("native retirement observer");
-                    copied[position].1 = Some((
-                        NativeComponentKey::ConversationMessage(sequence),
-                        io.take_native_custody(produced)?,
-                        io.take_native_custody(0)?,
-                    ));
-                    position += 1;
-                    Ok(())
-                }),
-            )?;
-            self.projection.conversation = replacement;
-            for (sequence, claim) in copied {
-                if let Some(claim) = claim {
-                    drop(self.install_component(Some(claim), quota.work())?);
-                } else {
-                    self.remove_component(&NativeComponentKey::ConversationMessage(sequence));
-                }
-            }
-            return Ok(());
-        }
         self.projection.conversation = self
             .projection
             .conversation
             .checkpointed_suffix(selection, work, None)?
             .0;
         Ok(())
+    }
+}
+
+impl Snapshot {
+    /// Decodes one admitted checkpoint and its existing conversation cache.
+    pub fn decode(
+        bytes: &[u8],
+        maximum_bytes: u64,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Self> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut admitted = 0;
+        let admission = crate::contract::snapshot_json_admission(
+            bytes,
+            crate::contract::JsonBounds {
+                maximum_bytes,
+                maximum_items: maximum_bytes,
+                maximum_depth: 256,
+            },
+            &mut |charge| {
+                if let crate::contract::JsonCodecCharge::Admission {
+                    maximum_owned_bytes,
+                    ..
+                } = charge
+                {
+                    admitted = maximum_owned_bytes;
+                }
+                match quota.work().as_deref_mut() {
+                    Some(io) => io.codec_charge(charge),
+                    None => Ok(()),
+                }
+            },
+        );
+        quota.adopt(admitted)?;
+        let (_, conversation_allowance) = admission?;
+        let mut decoder = serde_json::Deserializer::from_slice(bytes);
+        decoder.disable_recursion_limit();
+        let decoded =
+            Snapshot::<crate::conversation::ConversationStateWire>::deserialize(&mut decoder)
+                .and_then(|value| decoder.end().map(|()| value));
+        let wire = match decoded {
+            Ok(snapshot) => snapshot,
+            Err(source) => {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if quota.work().as_deref().is_some_and(copying::is_native) {
+                    let bytes = quota.retained();
+                    let custody = quota
+                        .work()
+                        .as_deref_mut()
+                        .expect("native decoder observer")
+                        .take_native_custody(bytes)?;
+                    quota.transfer();
+                    return Err(Error::NativeJson {
+                        code: crate::wire::ErrorCode::Storage,
+                        source,
+                        custody: Some(custody),
+                    });
+                }
+                return Err(Error::Storage(source.to_string()));
+            }
+        };
+        quota.relinquish(conversation_allowance)?;
+        let Snapshot {
+            format_version,
+            authority,
+            revision,
+            events,
+            projection,
+            state_digest,
+            attestation,
+        } = wire;
+        let Projection {
+            conversation,
+            lifecycle,
+            active_extensions,
+            active_extension_revision,
+            extension_states,
+            configured_extensions,
+            active_configurations,
+            effects,
+            indexed_terminal_effects,
+            effects_archived,
+            forks,
+            published_merges,
+            latest_context_checkpoint,
+            interactions,
+            bindings,
+        } = projection;
+        let (conversation, retained) =
+            ConversationState::from_wire(conversation, maximum_bytes, quota.work())?;
+        quota.adopt(retained)?;
+        let snapshot = Snapshot {
+            format_version,
+            authority,
+            revision,
+            events,
+            state_digest,
+            attestation,
+            projection: Projection {
+                conversation,
+                lifecycle,
+                active_extensions,
+                active_extension_revision,
+                extension_states,
+                configured_extensions,
+                active_configurations,
+                effects,
+                indexed_terminal_effects,
+                effects_archived,
+                forks,
+                published_merges,
+                latest_context_checkpoint,
+                interactions,
+                bindings,
+            },
+        };
+        if let Some(io) = quota.work().as_deref() {
+            io.check_cancellation()?;
+        }
+        quota.transfer();
+        Ok(snapshot)
     }
 }

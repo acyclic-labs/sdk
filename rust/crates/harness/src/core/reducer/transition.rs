@@ -1,4 +1,3 @@
-//! reducer transition semantics.
 use super::*;
 impl Reducer {
     #[allow(clippy::too_many_lines, reason = "one arm per action")]
@@ -238,13 +237,9 @@ impl Reducer {
                 self.require_conversation()?;
                 self.require_bound_conversation_if_applicable()?;
                 receipt.validate_shape(quota.work())?;
-                let (key, key_owned) = Self::merge_key_with_work(receipt, quota.work())?;
+                let key = Self::merge_key(receipt, quota.work())?;
                 if self.projection.published_merges.contains(&key) {
                     return Err(Error::Conflict("project join was already published".into()));
-                }
-                drop(key);
-                if let Some(io) = quota.work().as_deref_mut() {
-                    io.release_owned(key_owned)?;
                 }
                 self.projection
                     .conversation

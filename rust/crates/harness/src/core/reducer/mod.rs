@@ -1,15 +1,12 @@
-//! reducer mod semantics.
 use super::*;
 mod admission;
 mod application;
 mod copy;
-mod native;
-pub(in crate::core) use native::Component;
 mod effects;
 mod fork;
 mod transition;
 /// Restorable deterministic reducer state for one authority.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Reducer {
     pub(in crate::core) authority: Authority,
     pub(in crate::core) authority_verifier: AuthorityVerifier,
@@ -19,10 +16,6 @@ pub struct Reducer {
     pub(in crate::core) events: VecDeque<Event>,
     pub(in crate::core) resident_event_limit: usize,
     pub(in crate::core) resident_terminal_effect_limit: usize,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(in crate::core) native_components: Vec<Component>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(in crate::core) native_component_buffer: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl Reducer {
@@ -42,132 +35,42 @@ impl Reducer {
             events: VecDeque::new(),
             resident_event_limit: usize::MAX,
             resident_terminal_effect_limit: usize::MAX,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_components: Vec::new(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_component_buffer: None,
         }
     }
 
-    pub(in crate::core) fn replace_extension_state_with_work(
+    pub(in crate::core) fn replace_extension_state(
         &mut self,
         record: &ExtensionRecord,
         revision: u64,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        let (entry, _retired) = self.produce(
-            &NativeComponentKey::ExtensionState(Cow::Borrowed(&record.name)),
-            work,
-            |state, quota| {
-                copying::retain_entry::<(String, (EventReference, ExtensionRecord))>(quota)?;
-                let key = copying::copy_text(&record.name, quota)?;
-                let authority = copying::copy_authority(&state.authority, quota)?;
-                let record = copying::copy_extension_record(record, quota)?;
-                Ok((
-                    key,
-                    (
-                        EventReference {
-                            authority,
-                            revision,
-                        },
-                        record,
-                    ),
-                ))
-            },
-        )?;
-        if work.as_deref().is_some_and(copying::is_native) {
-            drop(self.projection.extension_states.remove_entry(&record.name));
-        }
-        self.projection.extension_states.insert(entry.0, entry.1);
-        Ok(())
-    }
-
-    pub(in crate::core) fn grow_buffer<T>(
-        &mut self,
-        key: NativeComponentKey<'_>,
-        length: usize,
-        capacity: usize,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<Option<(Vec<T>, Option<reducer::Component>)>> {
-        if !work.as_deref().is_some_and(copying::is_native) || length < capacity {
-            return Ok(None);
-        }
-        let capacity = capacity
-            .max(1)
-            .checked_mul(2)
-            .ok_or_else(|| Error::Invalid("component buffer capacity overflows".into()))?;
-        let copied = owned_buffer::<T>(length)?;
-        work.as_deref()
-            .expect("native buffer observer")
-            .admit_copy(copied)?;
-        let (replacement, retired) = self.produce(&key, work, |_, quota| {
-            copying::reserve_copy_vector::<T>(capacity, quota)
-        })?;
-        if let Err(error) = work
-            .as_deref_mut()
-            .expect("native buffer observer")
-            .copy_bytes(copied)
-        {
-            drop(replacement);
-            drop(self.rollback_component(&key, retired));
-            return Err(error);
-        }
-        Ok(Some((replacement, retired)))
+    ) {
+        let reference = EventReference {
+            authority: self.authority.clone(),
+            revision,
+        };
+        self.projection
+            .extension_states
+            .insert(record.name.clone(), (reference, record.clone()));
     }
 
     pub(in crate::core) fn append_conversation_message_with_work(
         &mut self,
         message: &ConversationMessage,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         self.projection
             .conversation
             .validate_append(message, work)?;
-        let (message, retired) = self.produce(
-            &NativeComponentKey::ConversationMessage(message.sequence),
-            work,
-            |_, quota| copying::copy_message(message, quota),
-        )?;
-        let sequence = message.sequence;
-        if let Err(error) = self.projection.conversation.append(message, work) {
-            drop(
-                self.rollback_component(
-                    &NativeComponentKey::ConversationMessage(sequence),
-                    retired,
-                ),
-            );
-            return Err(error);
-        }
-        drop(retired);
-        Ok(())
+        self.projection.conversation.append(message.clone(), work)
     }
 
-    pub(in crate::core) fn merge_key_with_work(
+    pub(in crate::core) fn merge_key(
         receipt: &ProjectMergeReceipt,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<((String, Vec<u8>), u64)> {
-        if !work.as_deref().is_some_and(copying::is_native) {
-            return Ok((
-                (
-                    receipt.target_project.storage_name(work)?,
-                    receipt.provider_operation_id.clone(),
-                ),
-                0,
-            ));
-        }
-        crate::contract::json_byte_length(
-            &receipt.target_project,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            work,
-        )
-        .map(|_| ())?;
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let name = receipt.target_project.storage_name(quota.work())?;
-        quota.adopt(name.capacity() as u64)?;
-        let operation = copying::copy_copy_vector(&receipt.provider_operation_id, &mut quota)?;
-        let owned = quota.retained();
-        quota.transfer();
-        Ok(((name, operation), owned))
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<(String, Vec<u8>)> {
+        Ok((
+            receipt.target_project.storage_name(work)?,
+            receipt.provider_operation_id.clone(),
+        ))
     }
 
     /// Returns this reducer's authority.
@@ -436,11 +339,7 @@ impl Reducer {
 
     pub(in crate::core) fn trim_resident_events(&mut self) {
         while self.events.len() > self.resident_event_limit {
-            if let Some(event) = self.events.pop_front() {
-                let revision = event.revision;
-                drop(event);
-                self.remove_component(&NativeComponentKey::Event(revision));
-            }
+            self.events.pop_front();
         }
     }
 
@@ -495,18 +394,5 @@ impl Reducer {
             ));
         }
         Ok(())
-    }
-}
-
-impl PartialEq for Reducer {
-    fn eq(&self, other: &Self) -> bool {
-        self.authority == other.authority
-            && self.authority_verifier == other.authority_verifier
-            && self.schemas == other.schemas
-            && self.revision == other.revision
-            && self.projection == other.projection
-            && self.events == other.events
-            && self.resident_event_limit == other.resident_event_limit
-            && self.resident_terminal_effect_limit == other.resident_terminal_effect_limit
     }
 }

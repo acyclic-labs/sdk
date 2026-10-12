@@ -143,5 +143,3 @@ mod effects;
 mod extensions;
 mod fork;
 mod model;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-mod native;

@@ -1,7 +1,7 @@
 //! Real loopback discovery/authorization/token endpoints and private disk stores.
 use super::{journal, services_cases::{Participant, admitted_context}};
 use acyclic_harness::{Capabilities, Error, OperationId, Result, conversation::Limits, runtime::RuntimeScope,
-    mcp::oauth::{self, AuthError, CredentialRefreshGuard, CredentialStore, StateStore, StoredCredentials, StoredAuthorizationState, AuthorizationRequest, OAuthClientConfig, McpOAuthAuthorization, McpOAuthInteraction, McpOAuthRecovery, default_oauth_http_client}};
+    mcp::oauth::{self, AuthError, CredentialRefreshGuard, CredentialStore, StateStore, StoredCredentials, StoredAuthorizationState, AuthorizationRequest, OAuthClientConfig, McpOAuthInteraction, default_oauth_http_client}};
 use acyclic_stream::BoxProviderFuture;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -146,8 +146,10 @@ async fn oauth_discovery_pkce_host_interaction_refresh_and_private_restart() -> 
         let server = tokio::spawn(serve(listener, base.clone(), states.clone(), mode == "lost-token", Arc::clone(&tokens), Arc::clone(&refreshes), stop));
         let endpoint = format!("{base}/mcp"); let operation = OperationId::from_bytes([101;16]);
         let request = AuthorizationRequest::new("http://127.0.0.1/callback").with_preregistered_client("fixed-client").with_scopes(["mcp"]);
-        let authorization = McpOAuthAuthorization { endpoint: endpoint.clone(), http: Arc::new(default_oauth_http_client().map_err(|error| Error::Storage(error.to_string()))?), credentials: credentials.clone(), states: states.clone(), request, interaction: Arc::new(Browser { private_receipt: receipt.clone(), interrupt: mode == "before-token" }) };
-        let first = oauth::authorize(&context, operation, authorization).await;
+        let browser = Browser { private_receipt: receipt.clone(), interrupt: mode == "before-token" };
+        let first = oauth::authorize(&context, operation, &endpoint,
+            Arc::new(default_oauth_http_client().map_err(|error| Error::Storage(error.to_string()))?),
+            credentials.clone(), states.clone(), request, &browser).await;
         if mode == "normal" {
             let manager = first?;
             assert_eq!(manager.get_access_token().await.map_err(|error| Error::Storage(error.to_string()))?, "private-access");
@@ -164,19 +166,31 @@ async fn oauth_discovery_pkce_host_interaction_refresh_and_private_restart() -> 
         let context = admitted_context(scope, Arc::new(Participant { journal: disk, issuer }), None).await?;
         let callback = private.get("callback").and_then(Value::as_str).ok_or_else(|| Error::Invalid("callback absent".into()))?;
         let authorization_url = private.get("authorizationUrl").and_then(Value::as_str).ok_or_else(|| Error::Invalid("authorization URL absent".into()))?;
-        let recovery = |callback: String| -> Result<_> { Ok(McpOAuthRecovery { endpoint: endpoint.clone(), http: Arc::new(default_oauth_http_client().map_err(|error| Error::Storage(error.to_string()))?), credentials: DiskCredentials { path: credentials.path.clone(), lock: Arc::clone(&credentials.lock) }, states: DiskStates(states.0.clone()), client: OAuthClientConfig::new("fixed-client", "http://127.0.0.1/callback").with_scopes(vec!["mcp".into()]), callback, authorization_url: authorization_url.into() }) };
+        let recovery = |callback: String| {
+            let context = &context;
+            let endpoint = &endpoint;
+            let credentials = credentials.clone();
+            let states = states.clone();
+            async move {
+                oauth::recover(context, operation, endpoint,
+                    Arc::new(default_oauth_http_client().map_err(|error| Error::Storage(error.to_string()))?),
+                    credentials, states,
+                    OAuthClientConfig::new("fixed-client", "http://127.0.0.1/callback").with_scopes(vec!["mcp".into()]),
+                    &callback, authorization_url).await
+            }
+        };
         if mode == "before-token" {
             for (key, value) in [("iss", Some("http://127.0.0.1/forged")), ("iss", None), ("state", Some("forged"))] {
                 let mut rejected = reqwest::Url::parse(callback).map_err(|error| Error::Invalid(error.to_string()))?;
                 let retained = rejected.query_pairs().into_owned().filter(|(name, _)| name != key).collect::<Vec<_>>();
                 rejected.query_pairs_mut().clear().extend_pairs(retained);
                 if let Some(value) = value { rejected.query_pairs_mut().append_pair(key, value); }
-                let error = oauth::recover(&context, operation, recovery(rejected.to_string())?).await.err().ok_or_else(|| Error::Invalid("forged OAuth response was accepted".into()))?;
+                let error = recovery(rejected.to_string()).await.err().ok_or_else(|| Error::Invalid("forged OAuth response was accepted".into()))?;
                 assert!(!error.to_string().contains("authorized"));
                 assert_eq!(tokens.load(Ordering::SeqCst), 0);
             }
         }
-        let recovered = oauth::recover(&context, operation, recovery(callback.into())?).await;
+        let recovered = recovery(callback.into()).await;
         if mode == "lost-token" { assert!(recovered.is_err()); }
         else { assert!(recovered.is_ok()); }
         assert_eq!(tokens.load(Ordering::SeqCst), 1);

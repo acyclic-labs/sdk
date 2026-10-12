@@ -1,4 +1,3 @@
-//! Command admission and committed-event application.
 use super::*;
 use crate::contract::canonical_json_digest as digest;
 use crate::store::default_projection_read_limits;
@@ -117,10 +116,6 @@ impl Reducer {
         archived_effect: Option<(EffectId, &EffectState)>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(ApplyResult, u64)> {
-        self.require_native_work(
-            work,
-            "native reducer planning requires explicit native work",
-        )?;
         self.verify_command_scope_with_work(command, work)?;
         let intent = digest(
             command,
@@ -381,10 +376,6 @@ impl Reducer {
         event: Event,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<ApplyResult> {
-        self.require_native_work(
-            work,
-            "native reducer mutation requires explicit native work",
-        )?;
         self.authority_verifier
             .verify_audience(&self.authority, work)?;
         if let Some(existing) = self.event_for_operation(event.operation_id) {
@@ -427,40 +418,9 @@ impl Reducer {
             io.admit_owned(bytes)?;
             io.retain_owned(bytes)?;
         }
-        let key = NativeComponentKey::Event(event.revision);
-        let (cached, retired) =
-            self.produce(&key, work, |_, quota| copying::copy_event(&event, quota))?;
-        let replacement = match self.grow_buffer(
-            NativeComponentKey::EventBuffer,
-            self.events.len(),
-            self.events.capacity(),
-            work,
-        ) {
-            Ok(replacement) => replacement,
-            Err(error) => {
-                drop(cached);
-                drop(self.rollback_component(&key, retired));
-                return Err(error);
-            }
-        };
-        if let Err(error) = self.apply_payload_with_work(&event.payload, event.revision, work) {
-            if let Some((buffer, retired)) = replacement {
-                drop(buffer);
-                drop(self.rollback_component(&NativeComponentKey::EventBuffer, retired));
-            }
-            drop(cached);
-            drop(self.rollback_component(&key, retired));
-            return Err(error);
-        }
-        if let Some((buffer, retired)) = replacement {
-            let mut buffer = VecDeque::from(buffer);
-            buffer.append(&mut self.events);
-            self.events = buffer;
-            drop(retired);
-        }
+        self.apply_payload_with_work(&event.payload, event.revision, work)?;
         self.revision = event.revision;
-        self.events.push_back(cached);
-        drop(retired);
+        self.events.push_back(event.clone());
         self.trim_resident_events();
         Ok(ApplyResult::Applied { event })
     }
