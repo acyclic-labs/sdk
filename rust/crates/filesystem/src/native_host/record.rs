@@ -249,51 +249,68 @@ pub(super) fn prepared_materialization_rename_packet(
     work: &crate::materializer::NativeMaterializationWork,
 ) -> Result<(NativeOwned<Vec<u64>>, u32), crate::materializer::NativeTreeMaterializationError> {
     use std::os::windows::ffi::OsStrExt as _;
-    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
-    use windows::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION;
     let units = wide_units(leaf.as_os_str(), &mut &*work)?;
-    let name_bytes = units.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
-    let header = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
-    let length = header
-        .checked_add(name_bytes)
-        .ok_or(crate::WorkError::Overflow)?;
-    let words = length
-        .max(std::mem::size_of::<FILE_RENAME_INFORMATION>())
-        .div_ceil(8);
     let encoded = WorkCounters {
-        bytes_encoded: name_bytes as u64,
+        bytes_encoded: (units as u64)
+            .checked_mul(2)
+            .ok_or(crate::WorkError::Overflow)?,
         ..WorkCounters::UNCHARGED
     };
     work.admit(encoded)?;
-    let mut buffer = native_buffer::<u64>(words, work)?;
-    buffer.data.resize(words, 0);
-    let information = buffer.data.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
-    // SAFETY: pre-funded aligned storage contains the full header/name tail.
-    unsafe {
-        information.cast::<u8>().write(1);
-        std::ptr::addr_of_mut!((*information).RootDirectory).write(
-            windows::Win32::Foundation::HANDLE(parent.as_handle().as_raw_handle()),
-        );
-        std::ptr::addr_of_mut!((*information).FileNameLength)
-            .write(u32::try_from(name_bytes).map_err(|_| crate::WorkError::Overflow)?);
-        let tail = buffer
-            .data
-            .as_mut_ptr()
-            .cast::<u8>()
-            .add(header)
-            .cast::<u16>();
-        for (index, unit) in leaf.as_os_str().encode_wide().enumerate() {
-            if unit == 0 {
-                return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout);
-            }
-            tail.add(index).write(unit);
-        }
-    }
+    let (data, allocation, length) = windows_name_packet(
+        parent,
+        leaf.as_os_str().encode_wide(),
+        units,
+        true,
+        &mut &*work,
+    )?;
+    let packet = NativeOwned {
+        data,
+        _allocation: allocation,
+    };
     work.record_admitted(encoded)?;
-    Ok((
-        buffer,
-        u32::try_from(length).map_err(|_| crate::WorkError::Overflow)?,
-    ))
+    Ok((packet, length))
+}
+
+#[cfg(windows)]
+pub(super) fn windows_name_packet<W: NativeHostWork>(
+    parent: &Dir,
+    name: impl Iterator<Item = u16>,
+    units: usize,
+    replace: bool,
+    work: &mut W,
+) -> Result<(Vec<u64>, W::Allocation, u32), W::Error> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION;
+    let name_bytes = units.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
+    let offset = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
+    let length = offset
+        .checked_add(name_bytes)
+        .ok_or(crate::WorkError::Overflow)?;
+    let length_u32 = u32::try_from(length).map_err(|_| crate::WorkError::Overflow)?;
+    let words = length
+        .max(std::mem::size_of::<FILE_RENAME_INFORMATION>())
+        .div_ceil(8);
+    let (mut data, allocation) = buffer::<u64, _>(words, work)?;
+    data.resize(words, 0);
+    let information = data.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: aligned owned storage covers the native header and the bounded UTF-16 tail.
+    let tail = unsafe {
+        (*information).Anonymous.ReplaceIfExists = replace;
+        (*information).RootDirectory = windows::Win32::Foundation::HANDLE(parent.as_raw_handle());
+        (*information).FileNameLength =
+            u32::try_from(name_bytes).map_err(|_| crate::WorkError::Overflow)?;
+        std::slice::from_raw_parts_mut(information.cast::<u8>().add(offset).cast::<u16>(), units)
+    };
+    for (destination, unit) in tail.iter_mut().zip(name) {
+        if unit == 0 {
+            drop(data);
+            work.release(allocation)?;
+            return Err(W::invalid_request());
+        }
+        *destination = unit;
+    }
+    Ok((data, allocation, length_u32))
 }
 
 #[cfg(unix)]

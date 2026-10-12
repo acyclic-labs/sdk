@@ -22,20 +22,10 @@ pub(super) fn held_root_identity(directory: &Dir) -> io::Result<NativeRootIdenti
     }
     #[cfg(windows)]
     {
-        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
-        use windows::Win32::Foundation::HANDLE;
         use windows::Win32::Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-            GetFileInformationByHandle,
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
         };
-        let mut information = BY_HANDLE_FILE_INFORMATION::default();
-        unsafe {
-            GetFileInformationByHandle(
-                HANDLE(directory.as_handle().as_raw_handle()),
-                &raw mut information,
-            )
-        }
-        .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
+        let information = windows_file_information(directory)?;
         if information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0
             || information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
         {
@@ -317,4 +307,23 @@ pub(crate) fn root_path_identity_wide<W: NativeHostWork>(
     })?;
     let directory = Dir::from_std_file(file);
     directory_identity(&directory, work)
+}
+
+#[cfg(windows)]
+pub(super) fn windows_file_information(
+    file: &impl std::os::windows::io::AsRawHandle,
+) -> io::Result<windows::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
+    use windows::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the held handle and complete fixed-size output remain live until the query returns.
+    unsafe {
+        GetFileInformationByHandle(
+            windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
+            &raw mut information,
+        )
+    }
+    .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
+    Ok(information)
 }
