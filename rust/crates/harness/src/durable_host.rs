@@ -2527,7 +2527,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             let prior_index = latest.prior.revision.checked_sub(1).ok_or_else(|| admission_boundary(&work,
                 crate::wire::ErrorCode::Unauthorized, "parcel receive outbox is absent"))?;
-            prior = self.read_mail_workflow_record(owner, &workflow.stream, prior_index, io).await?;
+            prior = self.read_mail_workflow_record(owner, &workflow.0, prior_index, io).await?;
             let [command] = prior.transition.commands.as_slice() else {
                 return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
                     "parcel requires a sole receive outbox"));
