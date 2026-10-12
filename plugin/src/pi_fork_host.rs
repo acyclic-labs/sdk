@@ -1059,22 +1059,23 @@ where
         .await?;
     let observed = physical.observe_with_native_work(work, &mut guard).await?;
     guard().await?;
-    let accounting =
-        acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, work.cancellation())
-            .map_err(native_lazy_error)?;
+    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+        work,
+        cancellation: work.cancellation(),
+    };
     let rebound = source
-        .rebind_source(&accounting)
+        .rebind_source(&mut accounting)
         .await
         .map_err(native_lazy_error)?;
     guard().await?;
-    if rebound.as_state().source != observed.0.source {
+    if rebound.source != observed.0.source {
         return Err(Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Conflict,
             reason: "Root source rebind changed its guarded watcher observation",
         });
     }
     let frozen = source
-        .snapshot(&accounting)
+        .snapshot(&mut accounting)
         .await
         .map_err(native_lazy_error)?;
     guard().await?;
