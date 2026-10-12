@@ -906,8 +906,8 @@ fn with_lazy_mount<T>(
             let state = LocalCoreStateStore::open_owned(work.join("core-state"))
                 .map_err(engine_err("open core state"))?;
             let distributed = DistributedFs::new(engine, state);
-            let demand = NativeDemandSource::open(source, profile, VolumeLimits::default(), None, None)
-                .await
+            let demand = NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(source).to_path_buf()), profile, VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(engine_err("open source"))?;
             let workspace = distributed
                 .attach_lazy_with_config(
