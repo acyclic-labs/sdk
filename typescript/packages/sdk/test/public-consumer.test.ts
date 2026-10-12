@@ -58,16 +58,16 @@ test("one consumer can use the public stream, objects, filesystem, and WASM APIs
   });
   try {
     const scope = harness.issueScope("root", ["event:append"]);
-    const content = harness.validateFileRef({
+    const content = harness.contracts.validate("file_ref", {
       volume: { provider: { namespace: "consumer", family: "filesystem", version: "2" },
         id: "extension", class: "project", owner: { kind: "project", id: "consumer" } },
       path: "extension/event.json", version: "generation-1",
-      descriptor: harness.fileDescriptor(new TextEncoder().encode('{"text":"hello"}'), "application/json"),
+      descriptor: harness.contracts.fileDescriptor(new TextEncoder().encode('{"text":"hello"}'), "application/json"),
       display_name: "event.json",
     });
     const applied = harness.apply({
       authority,
-      operation_id: harness.identity("operation", "01010101-0101-0101-0101-010101010101"),
+      operation_id: harness.contracts.validateIdentity("operation", "01010101-0101-0101-0101-010101010101"),
       idempotency_key: "consumer-1",
       expected_revision: 0n,
       scope,

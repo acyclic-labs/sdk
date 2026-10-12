@@ -3608,15 +3608,15 @@ pub enum NativeWatchError {
     /// Original Linux metadata cause.
     #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
     #[error(transparent)]
-    LinuxMetadata(crate::native_host::LinuxMetadataError),
+    LinuxMetadata(crate::native_host::NativeMetadataError),
     /// Original macOS metadata cause.
     #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
     #[error(transparent)]
-    MacMetadata(crate::native_host::MacMetadataError),
+    MacMetadata(crate::native_host::NativeMetadataError),
     /// Original Windows metadata cause.
     #[cfg(all(windows, any(feature = "native-mount", test)))]
     #[error(transparent)]
-    WindowsMetadata(crate::native_host::WindowsMetadataError),
+    WindowsMetadata(crate::native_host::NativeMetadataError),
     /// Watcher state synchronization was poisoned.
     #[error("native watcher state is poisoned")]
     StatePoisoned,

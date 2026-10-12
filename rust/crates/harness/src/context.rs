@@ -341,7 +341,7 @@ impl DurableContextProvider {
         }
         let operation = crate::OperationId::from_bytes(identity);
         let path = format!("context/projections/{operation}.json");
-        let (content, _hold) = publisher
+        let (content, _content_hold) = publisher
             .stage(
                 operation,
                 &path,
@@ -360,7 +360,7 @@ impl DurableContextProvider {
             ));
         }
         content.descriptor().verify(&bytes, &mut None)?;
-        self.content_verifier.verify(&content, self.limits.file_bytes, None)?.await?;
+        verify_file(&content, self.content_verifier.as_ref(), None).await?;
         let stored = StoredContextRevision {
             format_version: 5,
             revision,
@@ -2006,7 +2006,6 @@ mod tests {
     }
 
     use acyclic_stream::MemoryStream;
-    use std::{future::Future, pin::Pin};
 
     fn native_retention_policy() -> FileProjectionPolicy {
         FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
@@ -2690,9 +2689,10 @@ mod tests {
             Ok(Self {
                 volume: VolumeRef::new(
                     ProviderRef::new("test", "filesystem", "2")?,
-                    "context",
+                    "context".into(),
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+                    &mut None,
                 )?,
                 files: std::sync::Mutex::new(BTreeMap::new()),
                 reads: std::sync::atomic::AtomicUsize::new(0),
@@ -2711,15 +2711,15 @@ mod tests {
             path: &'a str,
             bytes: &'a [u8],
             media_type: &'a str,
-            display_name: &'a str,
-        ) -> BoxFuture<'a, Result<FileRef>> {
-            Box::pin(async move {
+            display_name: &'a str, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, Option<crate::conversation::ContentHold<'a>>)>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 let reference = FileRef::new(
                     self.volume.clone(),
-                    path,
+                    path.into(),
                     operation.to_string(),
-                    FileDescriptor::from_bytes(bytes, media_type)?,
-                    display_name,
+                    FileDescriptor::from_bytes(bytes, media_type, &mut None)?,
+                    display_name.into(),
+                    &mut None,
                 )?;
                 let mut files = self
                     .files
@@ -2729,21 +2729,21 @@ mod tests {
                     if retained != &reference || body != bytes {
                         return Err(crate::Error::Conflict("payload identity changed".into()));
                     }
-                    return Ok(retained.clone());
+                    return Ok((retained.clone(), None));
                 }
                 files.insert(path.to_owned(), (reference.clone(), bytes.to_vec()));
-                Ok(reference)
+                Ok((reference, None))
             })
         }
     }
 
     impl ContentResidencyVerifier for TestPayloadStore {
-        fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async move { file.validate(&mut None) })
+        fn verify<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move { file.validate(&mut None) })
         }
 
-        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-            Box::pin(async move {
+        fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let files = self
                     .files
@@ -3098,14 +3098,15 @@ mod tests {
             current_input_index: None,
         };
         let payloads = Arc::new(TestPayloadStore::new()?);
-        let payload = payloads
+        let (payload, _payload_hold) = payloads
             .stage(
                 crate::OperationId::new(),
                 "context/projections/pinned.json",
                 &crate::contract::canonical_json_bytes(&context)?,
                 "application/json",
                 "context.json",
-            )
+                None,
+            )?
             .await?;
         let record = StoredContextRevision {
             format_version: 5,
@@ -3179,15 +3180,15 @@ mod tests {
         payloads: Arc<TestPayloadStore>,
     }
     impl ContentResidencyVerifier for CountingVerifier {
-        fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async move {
+        fn verify<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 file.validate(&mut None)
             })
         }
 
-        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-            self.payloads.read(file)
+        fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            self.payloads.read(file, _maximum_bytes, io)
         }
     }
 
@@ -3363,25 +3364,26 @@ mod tests {
     impl ContentResidencyVerifier for RefVerifier {
         fn verify<'a>(
             &'a self,
-            reference: &'a FileRef,
-        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { reference.validate(&mut None) })
+            reference: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move { reference.validate(&mut None) })
         }
     }
 
     fn message(role: ModelRole, text: &str) -> Result<ModelMessage> {
         let volume = VolumeRef::new(
             ProviderRef::new("test", "filesystem", "2")?,
-            "context",
+            "context".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+            &mut None,
         )?;
         let file = FileRef::new(
             volume,
             format!("context/{text}.txt"),
-            "pinned",
-            FileDescriptor::from_bytes(text.as_bytes(), "text/plain")?,
+            "pinned".into(),
+            FileDescriptor::from_bytes(text.as_bytes(), "text/plain", &mut None)?,
             format!("{text}.txt"),
+            &mut None,
         )?;
         Ok(ModelMessage {
             role,

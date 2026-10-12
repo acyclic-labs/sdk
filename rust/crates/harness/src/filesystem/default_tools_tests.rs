@@ -7,7 +7,7 @@ use crate::{
     resources::ProviderRef,
 };
 use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 type Host = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
@@ -40,7 +40,7 @@ async fn fixture() -> Result<Fixture> {
         grants.push(volume.capability(VolumeOperation::Write)?);
     }
     let scope = issuer.root_for_agent(agent, "parent-owner", Capabilities::new(grants));
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let mut parent = StreamAggregate::open(&stream, authority, issuer.verifier(), SchemaRegistry::new()).await?;
     parent.execute(Command { operation_id: OperationId::from_bytes([2; 16]), idempotency_key: IdempotencyKey::new("bind-parent")?,
         expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }).await?;
@@ -254,7 +254,7 @@ async fn dropped_invocation_guard_rejects_the_next_real_filesystem_request_befor
         "text/plain", "original.txt", 64, &IdempotencyKey::new("cancel-original")?).await?;
     let cancellation = CancellationToken::new();
     let guard = InvocationCancellation(cancellation.clone());
-    let budget = finite_budget(4096, 1 << 20);
+    let budget = acyclic_fs::performance::work_budget(4096, 1 << 20);
     let live = fixture.host.read_content_measured(&file, &read, 64, budget, &cancellation).await
         .map_err(|failure| failure.error)?;
     assert_eq!(live.value, b"original");

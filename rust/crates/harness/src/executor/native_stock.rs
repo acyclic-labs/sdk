@@ -7,8 +7,7 @@ pub(super) struct StockExecution<'a> {
     pub(super) stock: &'a StockExecutor,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native: Option<NativeStockExecution<'a>>,
-    pub(super) summary_pipeline: Option<ContextPipeline>,
-    pub(super) summary_output_tokens: Option<u32>,
+    pub(super) summary: Option<(ContextPipeline, Option<u32>)>,
     pub(super) reconciliation_only: bool,
 }
 
@@ -25,8 +24,7 @@ impl<'a> StockExecution<'a> {
     pub(super) fn ordinary(stock: &'a StockExecutor) -> Self {
         Self { stock,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native: None, summary_pipeline: None,
-            summary_output_tokens: None, reconciliation_only: stock.reconciliation_only }
+            native: None, summary: None, reconciliation_only: stock.reconciliation_only }
     }
     pub(super) fn io(&self) -> Option<&PreparationIo> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -48,16 +46,16 @@ impl<'a> StockExecution<'a> {
         self.stock.task_context.as_ref().map(|(context, _)| context)
     }
     pub(super) fn context_pipeline(&self) -> &ContextPipeline {
-        self.summary_pipeline.as_ref().unwrap_or(&self.stock.context)
+        self.summary.as_ref().map_or(&self.stock.context, |(pipeline, _)| pipeline)
     }
     pub(super) fn compaction_policy(&self) -> &crate::context::CompactionPolicy {
-        if self.summary_pipeline.is_some() { &crate::context::CompactionPolicy::Disabled } else { &self.stock.compaction }
+        if self.summary.is_some() { &crate::context::CompactionPolicy::Disabled } else { &self.stock.compaction }
     }
     pub(super) fn output_tokens(&self) -> Option<u32> {
-        if self.summary_pipeline.is_some() { self.summary_output_tokens } else { self.stock.max_output_tokens }
+        self.summary.as_ref().map_or(self.stock.max_output_tokens, |(_, tokens)| *tokens)
     }
     pub(super) fn inherited_prefix(&self) -> Option<&(FileRef, Arc<dyn crate::conversation::ContentResidencyVerifier>)> {
-        if self.summary_pipeline.is_some() { None } else { self.stock.inherited_prefix.as_ref() }
+        if self.summary.is_some() { None } else { self.stock.inherited_prefix.as_ref() }
     }
 }
 
@@ -84,14 +82,6 @@ pub(crate) fn stock_string_copy(value: &str, io: Option<&PreparationIo>) -> Resu
     let mut copied = String::new();
     stock_string_push(&mut copied, value, io)?;
     Ok(copied)
-}
-
-pub(super) fn stock_count_copy(value: &crate::context::ModelTokenCount, io: Option<&PreparationIo>) -> Result<crate::context::ModelTokenCount> {
-    let mut counts = Vec::new();
-    for count in &value.message_tokens { stock_vec_push(&mut counts, *count, io)?; }
-    Ok(crate::context::ModelTokenCount {
-        request_digest: value.request_digest, fixed_tokens: value.fixed_tokens, message_tokens: counts,
-    })
 }
 
 pub(super) fn stock_selection_copy(value: &ModelContextSelection, io: Option<&PreparationIo>) -> Result<ModelContextSelection> {
@@ -330,31 +320,23 @@ pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeSco
 
 #[cfg(feature = "filesystem")]
 pub(super) const fn stock_serde_diagnostic_label_bytes() -> u64 {
-    const LABEL_BYTES: u64 = {
-        let labels = [
-            "ExecutionEvent", "kind", "started", "context_prepared", "context_compacted",
-            "model_started", "model", "tool_started", "tool_completed", "tool_failed",
-            "request_digest", "step", "projection", "accounting", "compaction", "purpose",
-            "request", "event", "call_id", "invocation", "result", "reason",
-            "ModelPurpose", "response", "summary", "ToolFailureKind", "executor_rejected",
-            "invalid_output", "projection_rejected", "publication_rejected",
-            "TurnInput", "operation_id", "input", "selected_context", "max_steps",
-            "SelectedModelContext", "selection", "messages",
-            "ModelContextSelection", "conversation_revision", "message_ids", "checkpoint",
-            "LeaseFence", "reservation_id", "placement",
-            "CompactionRetention", "roles", "native_media", "CompactionPolicy", "kind",
-            "config", "disabled", "threshold", "ThresholdCompaction", "response_reserve_tokens",
-            "recent_tokens", "retention", "ModelTokenCount", "request_digest", "fixed_tokens",
-            "message_tokens", "ComponentIdentity", "name", "version", "digest",
-            "ContextAccounting", "capacity", "count", "ModelContextCapacity", "context_tokens",
-            "output_tokens",
-        ];
-        let mut bytes = crate::model::model_serde_diagnostic_label_bytes();
-        let mut index = 0;
-        while index < labels.len() { bytes += labels[index].len() as u64 + 4; index += 1; }
-        bytes
-    };
-    LABEL_BYTES
+    crate::model::model_serde_diagnostic_label_bytes() + concat!(
+        "ExecutionEvent", "kind", "started", "context_prepared", "context_compacted",
+        "model_started", "model", "tool_started", "tool_completed", "tool_failed",
+        "request_digest", "step", "projection", "accounting", "compaction",
+        "purpose", "request", "event", "call_id", "invocation",
+        "result", "reason", "ModelPurpose", "response", "summary",
+        "ToolFailureKind", "executor_rejected", "invalid_output", "projection_rejected", "publication_rejected",
+        "TurnInput", "operation_id", "input", "selected_context", "max_steps",
+        "SelectedModelContext", "selection", "messages", "ModelContextSelection", "conversation_revision",
+        "message_ids", "checkpoint", "LeaseFence", "reservation_id", "placement",
+        "CompactionRetention", "roles", "native_media", "CompactionPolicy", "kind",
+        "config", "disabled", "threshold", "ThresholdCompaction", "response_reserve_tokens",
+        "recent_tokens", "retention", "ModelTokenCount", "request_digest", "fixed_tokens",
+        "message_tokens", "ComponentIdentity", "name", "version", "digest",
+        "ContextAccounting", "capacity", "count", "ModelContextCapacity", "context_tokens",
+        "output_tokens",
+    ).len() as u64 + 71 * 4
 }
 
 #[cfg(feature = "filesystem")]
@@ -690,7 +672,7 @@ pub(super) fn native_session<'a>(
     interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
 ) -> StockExecution<'a> {
     StockExecution { stock, native: Some(NativeStockExecution { context, io, operation, interactions }),
-        summary_pipeline: None, summary_output_tokens: None,
+        summary: None,
         reconciliation_only: reconcile }
 }
 

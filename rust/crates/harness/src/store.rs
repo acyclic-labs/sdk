@@ -29,7 +29,7 @@ use crate::{
 };
 use acyclic_stream::{
     CommitOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, Stream,
-    StreamClient, StreamError, StreamProvider,
+    StreamError, StreamProvider,
 };
 use acyclic_stream::OwnedBytes;
 use futures::TryStreamExt as _;
@@ -246,7 +246,7 @@ impl VerifiedRootBinding {
 
 /// One authoritative reducer whose canonical history is stored directly in Stream.
 pub struct StreamAggregate<P> {
-    client: StreamClient<P>,
+    client: std::sync::Arc<P>,
     stream: Stream<P>,
     reducer: Reducer,
     content_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
@@ -674,7 +674,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         )
     )]
     pub async fn open(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
@@ -694,7 +694,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     /// Opens from an authenticated checkpoint and bounded suffix.
     #[cfg(feature = "filesystem")]
     pub async fn open_measured(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
@@ -718,7 +718,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     /// Restores the same authenticated checkpoint and suffix on the original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn open_with_native_work(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
@@ -740,7 +740,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     pub(crate) async fn open_at_revision_with_work(
-        client: &StreamClient<P>, authority: Authority,
+        client: &std::sync::Arc<P>, authority: Authority,
         authority_verifier: AuthorityVerifier, schemas: SchemaRegistry,
         original_revision: u64, limits: HistoryReadLimits,
         work: &mut Option<&mut dyn history::HistoryIo>,
@@ -750,7 +750,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     pub(crate) async fn open_with_read_limits_with_work(
-        client: &StreamClient<P>, authority: Authority,
+        client: &std::sync::Arc<P>, authority: Authority,
         authority_verifier: AuthorityVerifier, schemas: SchemaRegistry,
         limits: HistoryReadLimits, work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<Self> {
@@ -764,7 +764,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
     /// Restores a bounded suffix through an exact committed revision.
     pub async fn open_at_revision_with_read_limits(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
@@ -788,7 +788,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     #[cfg(feature = "filesystem")]
     #[allow(clippy::too_many_arguments, reason = "original exact-cut open arguments plus the cumulative work receipt")]
     pub async fn open_at_revision_measured(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
@@ -819,7 +819,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     /// Opens the latest authenticated durable projection and a finite canonical suffix.
     pub async fn open_with_read_limits(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
@@ -838,7 +838,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     /// Opens with finite cold input bounds and a configurable terminal-effect cache.
     pub async fn open_with_projection_limits(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
@@ -870,7 +870,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         )
     )]
     pub async fn open_from_snapshot(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
@@ -891,7 +891,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     /// Restores authenticated state within a cumulative input allowance.
     pub async fn open_from_snapshot_with_read_limits(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
@@ -914,7 +914,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     #[allow(clippy::too_many_arguments, reason = "one original restore engine with optional exact cut and observer")]
     pub(crate) async fn open_inner(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
@@ -944,7 +944,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let stream = match work.as_deref_mut() {
             None => {
                 let path = authority.stream_path()?;
-                client.stream(path)?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&client), path)?
             },
             Some(observer) => {
                 let path = authority.stream_path_with_work(&mut Some(&mut *observer))?;
@@ -953,7 +953,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 let stream: Result<_> = (|| {
                     observer.admit_allocation(path_bytes)?;
                     observer.copy_bytes(path_bytes)?;
-                    Ok(client.stream(&path)?)
+                    Ok(acyclic_stream::Stream::new(std::sync::Arc::clone(&client), &path)?)
                 })();
                 drop(path);
                 let released = observer.release_owned(temporary_bytes);
@@ -1024,7 +1024,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     async fn restore_suffix(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         reader: &HistoryReader<P>,
         reducer: &mut Reducer,
         through: u64,
@@ -1575,7 +1575,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             } else {
                 None
             };
-            let append = self.client.provider.commit(request).await;
+            let append = self.client.commit(request).await;
             let outcome = match append {
                 Ok(outcome) => outcome,
                 Err(StreamError::Unavailable) => {
@@ -2031,7 +2031,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Ok(Some(result));
         }
         let key = stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
-        let Some(observation) = self.client.provider.inspect_idempotency(key).await? else {
+        let Some(observation) = self.client.inspect_idempotency(key).await? else {
             return Ok(None);
         };
         match observation.outcome {
@@ -2360,7 +2360,7 @@ mod tests {
     async fn empty_history_cursor_stays_terminal_after_first_publication() -> Result<()> {
         use std::sync::atomic::Ordering;
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         provider.forbid_writes.store(true, Ordering::SeqCst);
         let reader = HistoryReader::new(&client, &authority(), issuer().verifier())?;
         let cursor = reader.pin(0).await?;
@@ -2399,7 +2399,7 @@ mod tests {
     async fn operation_lookup_counts_atomic_records_under_one_byte_budget() -> Result<()> {
         use std::sync::atomic::Ordering;
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas())
                 .await?
@@ -2419,14 +2419,12 @@ mod tests {
                 .operation_revision(original.operation_id)
                 .is_none()
         );
-        let index = client
-            .stream(operations::operation_path(&authority(), original.operation_id)?.as_str())?
+        let index = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), operations::operation_path(&authority(), original.operation_id)?.as_str())?
             .read(0, 1)
             .await?
             .try_collect::<Vec<_>>()
             .await?;
-        let canonical = client
-            .stream(authority().stream_path()?)?
+        let canonical = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path()?)?
             .read(0, 1)
             .await?
             .try_collect::<Vec<_>>()
@@ -2493,7 +2491,7 @@ mod tests {
     async fn conversation_head_pins_racing_append_and_rejects_corrupt_atomic_proof() -> Result<()> {
         use std::sync::atomic::Ordering;
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
         );
@@ -2573,7 +2571,7 @@ mod tests {
             provider.history_read_fault.store(fault, Ordering::SeqCst);
             assert!(reader.latest_conversation_message(65_536).await.is_err());
         }
-        let head = client.stream("harness/v2/conversation-heads/conversations/conversation-1")?;
+        let head = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), "harness/v2/conversation-heads/conversations/conversation-1")?;
         let records = head.read(1, 1).await?.try_collect::<Vec<_>>().await?;
         let mut forged: Value = crate::executor::decode_json(
             &records
@@ -2587,12 +2585,11 @@ mod tests {
         assert!(matches!(reader.latest_conversation_message(65_536).await,
             Err(Error::Storage(detail)) if detail.contains("atomic canonical event")));
 
-        let incomplete = StreamClient::new(Arc::new(MemoryStream::default()));
+        let incomplete = Arc::new(MemoryStream::default());
         let reducer = Reducer::new(authority(), issuer().verifier(), schemas());
         let (ApplyResult::Applied { event } | ApplyResult::Replayed { event }) =
             reducer.plan(&bind)?;
-        incomplete
-            .stream(authority().stream_path()?)?
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&incomplete), authority().stream_path()?)?
             .append(encode_event(&authority(), &event)?)
             .await?;
         let incomplete_reader = HistoryReader::new(&incomplete, &authority(), issuer().verifier())?;
@@ -2608,7 +2605,7 @@ mod tests {
     {
         use std::sync::atomic::Ordering;
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas())
                 .await?
@@ -2759,8 +2756,7 @@ mod tests {
             "harness/v2/conversation-messages/conversations/conversation-1/{}",
             message(1).id
         );
-        let records = client
-            .stream(&first_path)?
+        let records = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), &first_path)?
             .read(0, 1)
             .await?
             .try_collect::<Vec<_>>()
@@ -2773,8 +2769,7 @@ mod tests {
         )?;
         let forged_id = uuid::Uuid::from_u128(50_000);
         forged["message_id"] = json!(forged_id);
-        client
-            .stream(format!(
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), format!(
                 "harness/v2/conversation-messages/conversations/conversation-1/{forged_id}"
             ))?
             .append(crate::contract::canonical_json_bytes(&forged)?)
@@ -2786,8 +2781,7 @@ mod tests {
                 .value,
         )?;
         forged_sequence["sequence"] = json!(20_001);
-        client
-            .stream("harness/v2/conversation-sequences/conversations/conversation-1/20001")?
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), "harness/v2/conversation-sequences/conversations/conversation-1/20001")?
             .append(crate::contract::canonical_json_bytes(&forged_sequence)?)
             .await?;
         provider.forbid_writes.store(true, Ordering::SeqCst);
@@ -2872,16 +2866,14 @@ mod tests {
         ));
         let mut two_record_bytes = 0u64;
         for sequence in [9_998u64, 9_999] {
-            let index = client
-                .stream(format!(
+            let index = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), format!(
                     "harness/v2/conversation-sequences/conversations/conversation-1/{sequence}"
                 ))?
                 .read(0, 1)
                 .await?
                 .try_collect::<Vec<_>>()
                 .await?;
-            let event = client
-                .stream(authority().stream_path()?)?
+            let event = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path()?)?
                 .read(sequence, 1)
                 .await?
                 .try_collect::<Vec<_>>()
@@ -3086,7 +3078,7 @@ mod tests {
 
     #[tokio::test]
     async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas())
                 .await?
@@ -3163,7 +3155,7 @@ mod tests {
     {
         use std::sync::atomic::Ordering;
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
         );
@@ -3333,7 +3325,7 @@ mod tests {
         use std::sync::atomic::Ordering;
         for fault in 1..=5 {
             let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-            let client = StreamClient::new(provider.clone());
+            let client = provider.clone();
             let mut aggregate = with_content(
                 StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
             );
@@ -3352,7 +3344,7 @@ mod tests {
             assert_eq!(provider.aggregate_commits.load(Ordering::SeqCst), 1);
             let indexed = aggregate.operation_event(submitted.operation_id).await?;
             assert_eq!(indexed.is_some(), fault != 1);
-            let canonical = match client.stream(authority().stream_path()?)?.read(0, 1).await {
+            let canonical = match acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path()?)?.read(0, 1).await {
                 Ok(records) => records.try_collect::<Vec<_>>().await?,
                 Err(StreamError::NotFound) => Vec::new(),
                 Err(error) => return Err(error.into()),
@@ -3401,13 +3393,12 @@ mod tests {
 
     #[tokio::test]
     async fn operation_location_must_share_the_canonical_events_atomic_commit() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut reducer = Reducer::new(authority(), issuer().verifier(), schemas());
         let ApplyResult::Applied { event } = reducer.apply(command(1)?)? else {
             return Err(Error::Invalid("fixture needs admitted event".into()));
         };
-        client
-            .stream(authority().stream_path()?)?
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path()?)?
             .append_batch(
                 vec![OwnedBytes::from(encode_event(&authority(), &event)?)],
                 Some(0),
@@ -3416,8 +3407,7 @@ mod tests {
             .await?;
         let location = json!({"authority": authority(), "operation_id": event.operation_id,
             "revision": event.revision, "intent_digest": event.intent_digest});
-        client
-            .stream(operations::operation_path(&authority(), event.operation_id)?.as_str())?
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), operations::operation_path(&authority(), event.operation_id)?.as_str())?
             .append_batch(
                 vec![OwnedBytes::from(crate::contract::canonical_json_bytes(
                     &location,
@@ -3435,7 +3425,7 @@ mod tests {
     #[tokio::test]
     async fn history_reader_rejects_unattested_events_and_wrong_authority() -> Result<()> {
         for wrong_authority in [false, true] {
-            let client = StreamClient::new(Arc::new(MemoryStream::default()));
+            let client = Arc::new(MemoryStream::default());
             let mut reducer = Reducer::new(authority(), issuer().verifier(), schemas());
             let ApplyResult::Applied { mut event } = reducer.apply(command(1)?)? else {
                 return Err(Error::Invalid("fixture needs fresh event".into()));
@@ -3446,8 +3436,7 @@ mod tests {
             } else {
                 event.intent_digest = [0; 32];
             }
-            client
-                .stream(authority().stream_path()?)?
+            acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path()?)?
                 .append_batch(
                     vec![OwnedBytes::from(encode_event(&wire_authority, &event)?)],
                     Some(0),
@@ -3474,7 +3463,7 @@ mod tests {
 
     #[tokio::test]
     async fn incremental_refresh_pins_tail_and_advances_only_bounded_pages() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut reader =
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
         let mut writer = with_content(
@@ -3514,7 +3503,7 @@ mod tests {
     #[tokio::test]
     async fn extension_bytes_are_validated_before_ref_only_publication() -> Result<()> {
         let provider = Arc::new(MemoryStream::default());
-        let client = StreamClient::new(provider);
+        let client = provider;
         let mut unbound =
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
         assert!(matches!(
@@ -3543,8 +3532,7 @@ mod tests {
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
         );
         valid.execute(command(1)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
-        let records = client
-            .stream(authority().stream_path()?)?
+        let records = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path()?)?
             .read(0, 1)
             .await?
             .try_collect::<Vec<_>>()
@@ -3565,7 +3553,7 @@ mod tests {
 
     #[tokio::test]
     async fn migrated_extension_state_is_validated_before_stream_publication() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut valid_schemas = schemas();
         valid_schemas.register(
             "example.message",
@@ -3712,7 +3700,7 @@ mod tests {
 
     #[tokio::test]
     async fn extension_migration_retries_without_republishing_content() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut schemas = schemas();
         schemas.register(
             "example.message",
@@ -3849,7 +3837,7 @@ mod tests {
 
     #[tokio::test]
     async fn configured_extension_cannot_publish_a_dangling_or_invalid_reference() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let authority = Authority {
             kind: AggregateKind::Agent,
             id: "configured-agent".into(),
@@ -3977,7 +3965,7 @@ mod tests {
         native.admit_retained(available)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
 
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let aggregate = StreamAggregate::open(&client, authority(), issuer.verifier(),
             SchemaRegistry::new()).await?.with_content_verifier(reader.clone());
         aggregate.validate_task_admission_content_with_work(
@@ -4009,7 +3997,7 @@ mod tests {
     #[tokio::test]
     async fn interaction_request_and_answer_commit_only_after_exact_content_validation()
     -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let request =
             Interaction::question("secret prompt", json!({"type": "string", "minLength": 2}))?;
         let request_bytes =
@@ -4075,8 +4063,7 @@ mod tests {
             },
         };
         aggregate.execute(resolve, #[cfg(feature = "filesystem")] None, &mut None).await?;
-        let records = client
-            .stream(authority().stream_path()?)?
+        let records = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path()?)?
             .read(0, 3)
             .await?
             .try_collect::<Vec<_>>()
@@ -4148,7 +4135,7 @@ mod tests {
 
     #[tokio::test]
     async fn verifier_must_match_the_exact_aggregate_audience() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let foreign = AuthorityIssuer::new(
             "test",
             [7; 32],
@@ -4167,7 +4154,7 @@ mod tests {
     #[tokio::test]
     async fn stale_writer_does_not_advance_its_projection() -> Result<()> {
         let provider = Arc::new(MemoryStream::default());
-        let client = StreamClient::new(provider);
+        let client = provider;
         let mut first = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
         );
@@ -4194,7 +4181,7 @@ mod tests {
     #[tokio::test]
     async fn reconciliation_observes_a_commit_without_redispatch() -> Result<()> {
         let provider = Arc::new(MemoryStream::default());
-        let client = StreamClient::new(provider);
+        let client = provider;
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
         );
@@ -4243,7 +4230,7 @@ mod tests {
     #[tokio::test]
     async fn snapshot_reopens_with_full_stream_history() -> Result<()> {
         let provider = Arc::new(MemoryStream::default());
-        let client = StreamClient::new(provider);
+        let client = provider;
         let mut aggregate = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
         );
@@ -4255,7 +4242,7 @@ mod tests {
         let mut third = command(3)?;
         third.expected_revision = 2;
         aggregate.execute(third, #[cfg(feature = "filesystem")] None, &mut None).await?;
-        let history = client.stream(authority().stream_path()?)?;
+        let history = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path()?)?;
         assert_eq!(history.bounds().await?.tail, 3);
         assert_eq!(
             history
@@ -4291,7 +4278,7 @@ mod tests {
     async fn checkpoint_open_pins_canonical_cut_before_selecting_checkpoint() -> Result<()> {
         use std::sync::atomic::Ordering;
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
         );
@@ -4325,7 +4312,7 @@ mod tests {
     {
         use std::sync::atomic::Ordering;
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
         );
@@ -4429,7 +4416,7 @@ mod tests {
         use std::sync::atomic::Ordering;
         for fault in [1, 2, 3, 4, 5] {
             let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-            let client = StreamClient::new(provider.clone());
+            let client = provider.clone();
             let mut writer = with_content(
                 StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
             );
@@ -4454,8 +4441,7 @@ mod tests {
                 ApplyResult::Replayed { .. }
             ));
             assert_eq!(
-                client
-                    .stream("harness/v3/projection-checkpoints/conversations/conversation-1")?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&client), "harness/v3/projection-checkpoints/conversations/conversation-1")?
                     .tail()
                     .await?,
                 1
@@ -4502,14 +4488,14 @@ mod tests {
     }
 
     async fn publish_copied_projection(
-        client: &StreamClient<MemoryStream>,
+        client: &std::sync::Arc<MemoryStream>,
         canonical: &[acyclic_stream::Record],
         head_path: acyclic_stream::StreamPath,
         head_bytes: OwnedBytes,
         non_atomic: bool,
     ) -> Result<()> {
         use acyclic_stream::{CommitCondition, CommitMutation, CommitRequest};
-        let stream = client.stream(authority().stream_path()?)?;
+        let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path()?)?;
         stream
             .append_batch(
                 canonical[..63]
@@ -4522,13 +4508,11 @@ mod tests {
             .await?;
         if non_atomic {
             stream.append(canonical[63].value.clone()).await?;
-            client
-                .stream(head_path.as_str())?
+            acyclic_stream::Stream::new(std::sync::Arc::clone(&client), head_path.as_str())?
                 .append(head_bytes)
                 .await?;
         } else {
-            let outcome = client
-                .provider.commit(CommitRequest {
+            let outcome = client.commit(CommitRequest {
                     conditions: vec![
                         CommitCondition::Tail {
                             path: stream.path().clone(),
@@ -4557,14 +4541,13 @@ mod tests {
     }
 
     async fn copied_projection_client(
-        source: &StreamClient<crate::test_stream::LostSessionAck<MemoryStream>>,
+        source: &std::sync::Arc<crate::test_stream::LostSessionAck<MemoryStream>>,
         mode: u8,
-    ) -> Result<StreamClient<MemoryStream>> {
+    ) -> Result<std::sync::Arc<MemoryStream>> {
         use acyclic_stream::StreamPath;
         let head_path =
             StreamPath::new("harness/v3/projection-checkpoints/conversations/conversation-1")?;
-        let index = source
-            .stream(head_path.as_str())?
+        let index = acyclic_stream::Stream::new(std::sync::Arc::clone(&source), head_path.as_str())?
             .read(0, 1)
             .await?
             .try_collect::<Vec<_>>()
@@ -4577,21 +4560,19 @@ mod tests {
             "harness/v3/projection-chunks/conversations/conversation-1/{}",
             blake3::Hash::from_bytes(digest).to_hex()
         );
-        let chunk = source
-            .stream(&chunk_path)?
+        let chunk = acyclic_stream::Stream::new(std::sync::Arc::clone(&source), &chunk_path)?
             .read(0, 1)
             .await?
             .try_collect::<Vec<_>>()
             .await?;
         let mut payload = chunk[0].value.to_vec();
         forge_projection_payload(&mut location, &mut payload, mode)?;
-        let canonical = source
-            .stream(authority().stream_path()?)?
+        let canonical = acyclic_stream::Stream::new(std::sync::Arc::clone(&source), authority().stream_path()?)?
             .read(0, 64)
             .await?
             .try_collect::<Vec<_>>()
             .await?;
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         if mode != 0 {
             let digest: [u8; 32] = serde_json::from_value(if mode == 6 {
                 json!(*blake3::hash(&payload).as_bytes())
@@ -4599,8 +4580,7 @@ mod tests {
                 location["chunks"][0]["digest"].clone()
             })
             .map_err(|error| Error::Invalid(error.to_string()))?;
-            client
-                .stream(format!(
+            acyclic_stream::Stream::new(std::sync::Arc::clone(&client), format!(
                     "harness/v3/projection-chunks/conversations/conversation-1/{}",
                     blake3::Hash::from_bytes(digest).to_hex()
                 ))?
@@ -4621,7 +4601,7 @@ mod tests {
     #[tokio::test]
     async fn cold_projection_rejects_forged_state_and_non_atomic_heads() -> Result<()> {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let source = StreamClient::new(provider);
+        let source = provider;
         let mut writer = with_content(
             StreamAggregate::open(&source, authority(), issuer().verifier(), schemas()).await?,
         );
@@ -4646,7 +4626,7 @@ mod tests {
     async fn supplied_projection_charges_snapshot_and_suffix_before_io() -> Result<()> {
         use std::sync::atomic::Ordering;
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
         );
@@ -4662,8 +4642,7 @@ mod tests {
                 .execute(projection_command(u128::from(revision + 1), revision)?, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
         }
-        let suffix = client
-            .stream(authority().stream_path()?)?
+        let suffix = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path()?)?
             .read(64, 5)
             .await?
             .try_collect::<Vec<_>>()

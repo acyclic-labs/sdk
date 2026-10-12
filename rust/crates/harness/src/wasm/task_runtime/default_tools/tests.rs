@@ -17,17 +17,7 @@ fn describe(value: &JsValue) -> String {
     Function::new_with_args("value", "return JSON.stringify(value,(_,item)=>typeof item==='bigint'?`${item}n`:item);")
         .call1(&JsValue::UNDEFINED,value).unwrap().as_string().unwrap()
 }
-fn budget() -> WorkBudget {
-    WorkBudget { authority_records_read: 32768, authority_records_appended: 32768,
-        authority_bytes_read: 67108864, authority_bytes_written: 67108864,
-        object_probes: 32768, backend_read_operations: 32768, backend_write_operations: 32768,
-        durability_operations: 32768, page_reads: 32768, page_writes: 32768,
-        object_bytes_read: 67108864, object_bytes_written: 67108864,
-        bytes_hashed: 67108864, bytes_copied: 67108864, bytes_encoded: 67108864,
-        source_bytes_read: 67108864, source_path_components: 32768, source_entries_visited: 32768,
-        output_bytes: 67108864, items_examined: 32768, items_returned: 32768,
-        allocation_operations: 32768, peak_allocation_bytes: 67108864, materializations: 32768 }
-}
+const BUDGET: WorkBudget = acyclic_fs::performance::work_budget(32768, 67108864);
 fn binding(authority: &Authority, agent: AgentId, grants: &Capabilities) -> Value {
     let issuer = AuthorityIssuer::new("browser-recursive-owner", [77; 32], authority.clone());
     serde_json::json!({"authority":authority,"issuer":"browser-recursive-owner","key":vec![77;32],
@@ -169,7 +159,7 @@ async fn browser_defaults_root_two_children_grandchild_and_foreign_project_use_a
         "admission":root_allocation.canonical_value(),"child_message_pointer":"/msg","child_message_file_pointer":null,"input_files":[],
         "limits":{"resources":64,"work":16777216,"bytes":16777216}}));
     options["recursive_tools"] = serde_json::json!({"callers":callers,"forks":forks,"merges":[],"stream_provider":stream_provider,"project_policy_graph_root":bootstrap_task,
-        "history_limits":{"maximum_events":256,"maximum_bytes":4194304},"inherited_messages":64,"inherited_references":64,"content_budget":budget()});
+        "history_limits":{"maximum_events":256,"maximum_bytes":4194304},"inherited_messages":64,"inherited_references":64,"content_budget":BUDGET});
     drop(runtime);
     let mut runtime = WasmTaskRuntime::open(wire(&options)?, &owner, &registry, to_js(&runtime_scope)?).await?;
     let worker = Worker { id:"browser-recursive-worker".into(),available:Default::default(),labels:Default::default() };
