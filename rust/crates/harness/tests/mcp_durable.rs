@@ -156,8 +156,10 @@ impl TaskStateProvider for AdmittedTask {
 }
 struct Projection;
 impl ToolProjection for Projection {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(json!({"kind":"json","value":result.value}))
+    fn project(&self, _: &ToolInvocation, result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+        self.supports_native_projection(work)?;
+        Ok((json!({"kind":"json","value":result.value}), None))
     }
 }
 
@@ -480,7 +482,7 @@ async fn phase(
     let context = runtime
         .durable_context(task, OperationId::from_bytes([44; 16]))
         .await?;
-    let runner = DurableToolRunner::new(tools, journal);
+    let runner = DurableToolRunner::new(&tools, journal, None)?;
     runner
         .run_with_context(
             task,

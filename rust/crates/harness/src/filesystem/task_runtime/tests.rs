@@ -97,18 +97,20 @@ impl ToolExecutor for PendingTool {
     }
 }
 impl ToolProjection for PendingTool {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(json!({"kind":"json","value":result.value}))
+    fn project(&self, _: &ToolInvocation, result: &ToolResult,
+        work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+        if let Some(work) = work {
+            #[derive(serde::Serialize)]
+            struct Projection<'a> { kind: &'static str, value: &'a Value }
+            return crate::tool::value(&Projection { kind: "json", value: &result.value },
+                work.remaining()?.bytes_encoded, work)
+                .map(|(value, custody)| (value, Some(custody)));
+        }
+        Ok((json!({"kind":"json","value":result.value}), None))
     }
-    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        self.supports_native_execution(work)
-    }
-    fn project_with_native_work(
-        &self, _: &ToolInvocation, result: &ToolResult, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        #[derive(serde::Serialize)]
-        struct Projection<'a> { kind: &'static str, value: &'a Value }
-        crate::tool::value(&Projection { kind: "json", value: &result.value }, work.remaining()?.bytes_encoded, work)
+    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        if let Some(work) = work { self.supports_native_execution(work)?; }
+        Ok(())
     }
 }
 

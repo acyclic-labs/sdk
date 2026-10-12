@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
 use acyclic_native_runtime::{NativeReadMeter, NativeOperationKind};
-use crate::memory::TestClock;
 
 #[derive(Debug)]
 pub(crate) struct NativeDenial(pub(crate) &'static str);
@@ -16,7 +15,7 @@ pub(crate) struct Meter {
     pub(crate) cancel_on_write: AtomicBool,
     pub(crate) cancel_on_copy: AtomicBool,
     pub(crate) cancel_on_durability: AtomicBool,
-    pub(crate) expire_after_hash: Mutex<Option<(Arc<TestClock>, u64)>>,
+    pub(crate) expire_after_hash: Mutex<Option<(Arc<AtomicU64>, u64)>>,
     pub(crate) read_operations: AtomicU64,
     pub(crate) write_operations: AtomicU64,
     pub(crate) durability_operations: AtomicU64,
@@ -182,7 +181,7 @@ impl NativeReadMeter for Meter {
         self.hashed.fetch_add(hashed, Ordering::SeqCst);
         if copied != 0 && self.cancel_on_copy.swap(false, Ordering::SeqCst) { self.cancelled.store(true, Ordering::SeqCst); }
         if hashed != 0 && let Some((clock, now)) = self.expire_after_hash.lock().expect("test clock is not poisoned").take() {
-            clock.0.store(now, Ordering::SeqCst);
+            clock.store(now, Ordering::SeqCst);
         }
         self.recorded()
     }
