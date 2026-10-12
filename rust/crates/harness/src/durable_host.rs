@@ -2207,9 +2207,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let payload_digest = blake3::hash(bytes);
         if let Some(io) = work.as_deref_mut() { io.hashed_bytes(32)?; }
         hash.update(payload_digest.as_bytes());
-        let mut request = crate::distributed::PreparedCommitRequest::new_with_digest(
-            *hash.finalize().as_bytes(), work,
-        )?;
+        let (key, held) = crate::distributed::digest_key(hash.finalize().as_bytes(), work)?;
+        let mut request = crate::distributed::PreparedCommitRequest::new(key, held, work);
         request.push_condition(owner)?;
         request.push_condition(target)?;
         request.append(path.clone(), bytes.clone())?;
