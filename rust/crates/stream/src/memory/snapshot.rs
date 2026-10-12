@@ -615,11 +615,10 @@ fn read_bytes<'a>(input: &mut &'a [u8]) -> Option<&'a [u8]> {
 mod tests {
     use super::*;
     use crate::{AppendRequest, IdempotencyObservation, MemoryLimits, ReadRequest, StreamProvider};
-    use crate::memory::TestClock;
     use crate::wire_codec::observation_wire;
     use futures::StreamExt as _;
     use prost::Message as _;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[tokio::test]
     async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError> {
@@ -1170,8 +1169,8 @@ mod tests {
 
     #[tokio::test]
     async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
-        let clock = Arc::new(TestClock::default());
-        clock.0.store(100, Ordering::SeqCst);
+        let clock = Arc::new(AtomicU64::default());
+        clock.store(100, Ordering::SeqCst);
         let stream = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
         let path = StreamPath::new("snapshot/timed")?;
         stream
@@ -1183,7 +1182,7 @@ mod tests {
             })
             .await?;
         let timed = stream.encode_state(None).await.expect("unmetered snapshot encoding").value;
-        clock.0.store(90, Ordering::SeqCst);
+        clock.store(90, Ordering::SeqCst);
         let restored = MemoryStream::new_with_clock(MemoryLimits::default(), clock);
         restored.install_state(&timed).await?;
         let timed_record = restored

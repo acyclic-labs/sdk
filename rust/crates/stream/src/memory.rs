@@ -13,11 +13,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{RwLock, watch};
 
 #[cfg(test)]
-#[derive(Default)]
-pub(crate) struct TestClock(pub(crate) AtomicU64);
-#[cfg(test)]
-impl crate::UnixMillisClock for TestClock {
-    fn now_unix_millis(&self) -> u64 { self.0.load(Ordering::SeqCst) }
+impl crate::UnixMillisClock for AtomicU64 {
+    fn now_unix_millis(&self) -> u64 { self.load(Ordering::SeqCst) }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2634,7 +2631,7 @@ mod tests {
 
         #[tokio::test]
         async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay_time() -> MemoryResult<()> {
-            let clock = Arc::new(TestClock(AtomicU64::new(100)));
+            let clock = Arc::new(AtomicU64::new(100));
             let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
             for name in ["completion/owner", "completion/target"] {
                 provider.append(AppendRequest {
@@ -2663,7 +2660,7 @@ mod tests {
                 async move {
                     let tail = provider.native_tail(path("completion/target")?, meter.original()).await??;
                     assert_eq!(*tail.value(), 1);
-                    clock.0.store(125, Ordering::SeqCst);
+                    clock.store(125, Ordering::SeqCst);
                     Ok::<(), MemoryFailure>(())
                 }
             };
@@ -2679,7 +2676,7 @@ mod tests {
             assert_eq!(rows.next().await.ok_or(StreamError::Unavailable)??.committed_at_micros, 125_000);
             let replay_clock = Arc::clone(&clock);
             let replay = provider.native_commit_guarded(request, None, meter.original(), move || {
-                replay_clock.0.store(999, Ordering::SeqCst);
+                replay_clock.store(999, Ordering::SeqCst);
                 std::future::ready(Ok::<(), MemoryFailure>(()))
             }).await??;
             assert_eq!(replay.value(), output.value(), "guarded replay preserves original record time");
@@ -3007,13 +3004,13 @@ mod tests {
 
     #[tokio::test]
     async fn committed_record_times_never_regress_with_the_clock() -> Result<(), StreamError> {
-        let clock = Arc::new(TestClock::default());
+        let clock = Arc::new(AtomicU64::default());
         let stream = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
         let path = StreamPath::new("accounting/authority")?;
         for (time, body) in [(100, b"first".as_slice()), (105, b"recovered")] {
-            clock.0.store(time, Ordering::SeqCst);
+            clock.store(time, Ordering::SeqCst);
             if time == 105 {
-                clock.0.store(90, Ordering::SeqCst);
+                clock.store(90, Ordering::SeqCst);
                 let outcome = stream
                     .commit(CommitRequest {
                         conditions: vec![CommitCondition::Tail {
@@ -3028,7 +3025,7 @@ mod tests {
                     })
                     .await?;
                 assert!(matches!(outcome, CommitOutcome::Committed(_)));
-                clock.0.store(time, Ordering::SeqCst);
+                clock.store(time, Ordering::SeqCst);
             }
             stream
                 .append(AppendRequest {
@@ -3204,8 +3201,8 @@ mod tests {
 
     #[tokio::test]
     async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(), StreamError> {
-        let clock = Arc::new(TestClock::default());
-        clock.0.store(100, Ordering::SeqCst);
+        let clock = Arc::new(AtomicU64::default());
+        clock.store(100, Ordering::SeqCst);
         let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
         let request = CommitRequest {
             conditions: vec![CommitCondition::Absent {
@@ -3227,7 +3224,7 @@ mod tests {
         );
         let committed = provider.commit_before(request.clone(), 101).await?;
         assert!(matches!(committed, CommitOutcome::Committed(_)));
-        clock.0.store(1_000, Ordering::SeqCst);
+        clock.store(1_000, Ordering::SeqCst);
         assert_eq!(provider.commit_before(request, 101).await?, committed);
 
         let retryable = CommitRequest {
@@ -3504,7 +3501,7 @@ mod tests {
 
     #[tokio::test]
     async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), StreamError> {
-        let clock = Arc::new(TestClock::default());
+        let clock = Arc::new(AtomicU64::default());
         let limits = MemoryLimits {
             idempotency_results: 1,
             commits: 1,
@@ -3523,7 +3520,7 @@ mod tests {
         let AppendOutcome::Committed(first) = provider.append(append(b"first")).await? else {
             return Err(StreamError::Unavailable);
         };
-        clock.0.store(1, Ordering::SeqCst);
+        clock.store(1, Ordering::SeqCst);
         assert_eq!(
             provider.append(append(b"second")).await,
             Err(StreamError::Capacity),
@@ -3538,7 +3535,7 @@ mod tests {
         assert!(provider.read_commit(first.commit_id).await.is_ok());
 
         for now in [0, 1, 24 * 60 * 60 * 1_000, u64::MAX] {
-            clock.0.store(now, Ordering::SeqCst);
+            clock.store(now, Ordering::SeqCst);
             assert_eq!(
                 provider.append(append(b"second")).await,
                 Err(StreamError::Capacity)

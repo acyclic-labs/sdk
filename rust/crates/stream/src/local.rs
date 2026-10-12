@@ -201,7 +201,8 @@ pub struct LocalStream {
 
 struct LocalInner {
     provider: MemoryStream,
-    journal: Arc<Mutex<Journal>>,
+    journal: Mutex<Journal>,
+    sync: File,
     _ownership_anchor: Option<OwnershipAnchor>,
     /// Held exclusively while a mutation applies and writes its frame, and shared while a read observes state; never across a device flush.
     visibility: Arc<RwLock<()>>,
@@ -232,17 +233,16 @@ impl LocalInner {
     fn flush_through(
         &self,
         target: u64,
-        file: &File,
         durability: LocalDurability,
         mut admission: Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>,
     ) -> MemoryResult<()> {
         #[cfg(test)]
         {
-            let journal_identity = Arc::as_ptr(&self.journal) as usize;
+            let inner_identity = self as *const Self as usize;
             if let Ok(mut hook) = JOURNAL_PERSIST_BLOCKER.lock()
                 && hook
                     .as_ref()
-                    .is_some_and(|(expected_journal, _, _)| *expected_journal == journal_identity)
+                    .is_some_and(|(expected_inner, _, _)| *expected_inner == inner_identity)
                 && let Some((_, started, release)) = hook.take()
             {
                 let _ = started.send(());
@@ -250,8 +250,8 @@ impl LocalInner {
             }
         }
         let (flushed, observed) = match &mut admission {
-            Some(admission) => admission.attempt(|| sync_file_data(file, durability)),
-            None => (sync_file_data(file, durability), Ok(())),
+            Some(admission) => admission.attempt(|| sync_file_data(&self.sync, durability)),
+            None => (sync_file_data(&self.sync, durability), Ok(())),
         };
         let Ok(mut journal) = self.journal.lock() else {
             self.poison();
@@ -270,19 +270,9 @@ impl LocalInner {
     }
 }
 
-/// The one canonical flush worker's owned inputs and original native credit.
-struct JournalFlushPlan {
-    inner: Arc<LocalInner>,
-    file: Arc<File>,
-    durability: LocalDurability,
-    admission: Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>,
-    _allocation: Option<ReadAllocation>,
-}
-
-impl JournalFlushPlan {
-    fn run(self, target: u64) -> MemoryResult<()> {
-        self.inner.flush_through(target, &self.file, self.durability, self.admission)
-    }
+fn flush(plan: MemoryOutput<(Arc<LocalInner>, LocalDurability, Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>)>, target: u64) -> MemoryResult<()> {
+    let (inner, durability, admission) = plan.value;
+    inner.flush_through(target, durability, admission)
 }
 
 struct CommitCompletion<T> {
@@ -326,7 +316,7 @@ struct PreparedLocalWork {
     runtime: tokio::runtime::Handle,
     stream: LocalStream,
     meter: Arc<dyn NativeReadMeter>,
-    flush: JournalFlushPlan,
+    flush: MemoryOutput<(Arc<LocalInner>, LocalDurability, Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>)>,
 }
 
 impl PreparedLocalWork {
@@ -377,7 +367,7 @@ impl PreparedLocalWork {
             Ok(crate::memory::native(Ok(outcome), &self.meter)?.expect("completed publication"))
         })();
         let required = self.stream.inner.required().unwrap_or(0);
-        let flushed = self.flush.run(required);
+        let flushed = flush(self.flush, required);
         native_result(match result {
             Err(error) => Err(error),
             Ok(value) => flushed.map(|()| value),
@@ -515,7 +505,7 @@ impl LocalStream {
                             replay_error = Some(error);
                         }
                     }
-                    let journal = open.await.map_err(|_| LocalStreamError::Executor)??;
+                    let (journal, sync) = open.await.map_err(|_| LocalStreamError::Executor)??;
                     if let Some(error) = replay_error {
                         return Err(error);
                     }
@@ -523,7 +513,8 @@ impl LocalStream {
                     Ok(Self {
                         inner: Arc::new(LocalInner {
                             provider,
-                            journal: Arc::new(Mutex::new(journal)),
+                            journal: Mutex::new(journal),
+                            sync,
                             _ownership_anchor: ownership_anchor,
                             visibility: Arc::new(RwLock::new(())),
                             synced: watch::channel(0_u64).0,
@@ -585,7 +576,7 @@ impl LocalStream {
     }
 
     fn flush_all(&self, span: &tracing::Span) -> Result<(), StreamError> {
-        let (target, file, durability) = {
+        let (target, durability) = {
             let journal = self
                 .inner
                 .journal
@@ -597,11 +588,10 @@ impl LocalStream {
             span.record("batch_len", journal.appended - journal.synced);
             (
                 journal.appended,
-                Arc::clone(&journal.sync),
                 journal.limits.durability,
             )
         };
-        sync_file_data(&file, durability).map_err(|_| self.inner.poison())?;
+        sync_file_data(&self.inner.sync, durability).map_err(|_| self.inner.poison())?;
         let mut journal = self
             .inner
             .journal
@@ -691,21 +681,18 @@ impl LocalStream {
     fn plan_flush(
         &self,
         meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> MemoryResult<JournalFlushPlan> {
+    ) -> MemoryResult<MemoryOutput<(Arc<LocalInner>, LocalDurability, Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>)>> {
         let journal = self.inner.journal.lock()
             .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?;
         let admission = meter.map(|meter| NativeOperationReservation::new(
             Arc::clone(meter), NativeOperationKind::Durability, 1,
         )).transpose()?;
         let allocation = meter.map(|meter| ReadAllocation::new(
-            meter, std::mem::size_of::<(JournalFlushPlan, u64)>(),
+            meter, std::mem::size_of::<(MemoryOutput<(Arc<LocalInner>, LocalDurability, Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>)>, u64)>(),
         )).transpose()?;
-        Ok(JournalFlushPlan {
-            inner: Arc::clone(&self.inner),
-            file: Arc::clone(&journal.sync),
-            durability: journal.limits.durability,
-            admission,
-            _allocation: allocation,
+        Ok(MemoryOutput {
+            value: (Arc::clone(&self.inner), journal.limits.durability, admission),
+            allocation,
         })
     }
 
@@ -713,7 +700,7 @@ impl LocalStream {
         &self,
         sequence: u64,
         meter: Option<&Arc<dyn NativeReadMeter>>,
-        mut planned: Option<JournalFlushPlan>,
+        mut planned: Option<MemoryOutput<(Arc<LocalInner>, LocalDurability, Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>)>>,
     ) -> MemoryResult<()> {
         let mut synced = self.inner.synced.subscribe();
         loop {
@@ -753,7 +740,7 @@ impl LocalStream {
             };
             match lead {
                 Some((plan, target, synced_before, journal_bytes)) => {
-                    tokio::task::spawn_blocking(move || plan.run(target)).await
+                    tokio::task::spawn_blocking(move || flush(plan, target)).await
                         .map_err(|_| MemoryFailure::Provider(self.inner.poison()))??;
                     tracing::debug!(
                         fsyncs = 1_u64,
@@ -888,7 +875,7 @@ impl LocalStream {
                     Ok(required) => stream.await_durable(required, observer.as_ref(), accepted_flush).await,
                     Err(error) => {
                         if let Some(plan) = accepted_flush {
-                            let _ = tokio::task::spawn_blocking(move || plan.run(0)).await;
+                            let _ = tokio::task::spawn_blocking(move || flush(plan, 0)).await;
                         }
                         Err(MemoryFailure::Provider(error))
                     }
@@ -1423,8 +1410,6 @@ struct Journal {
     operations: u64,
     bytes: u64,
     limits: LocalStreamLimits,
-    /// A second handle on `file`, synchronized without holding the journal, so frames keep being written while earlier ones flush.
-    sync: Arc<File>,
     /// How many frames were ever written, across every epoch: the sequence of the latest one.
     appended: u64,
     /// The latest frame written by a mutation that waits for the device.
@@ -1713,7 +1698,7 @@ impl Journal {
         limits: LocalStreamLimits,
         recovered: &mpsc::Sender<Recovered>,
         span: &tracing::Span,
-    ) -> Result<Self, LocalStreamError> {
+    ) -> Result<(Self, File), LocalStreamError> {
         let lock = lock_root(root, limits)?;
         let epoch = match read_snapshot(root, limits)? {
             Some(snapshot) => {
@@ -1733,9 +1718,9 @@ impl Journal {
             .read(true)
             .write(true)
             .open(&path)?;
+        let sync = file.try_clone()?;
         let mut journal = Self {
             lock,
-            sync: Arc::new(file.try_clone()?),
             file,
             epoch,
             operations: 0,
@@ -1771,25 +1756,25 @@ impl Journal {
                     return Err(LocalStreamError::Corrupt);
                 }
                 if !validate_recovery(recovered)? {
-                    return Ok(journal);
+                    return Ok((journal, sync));
                 }
                 journal.restart(epoch)?;
                 sync_directory(&path, limits.durability)?;
-                return Ok(journal);
+                return Ok((journal, sync));
             }
             Some(Some(found)) if found == epoch => {}
             Some(Some(found)) if found.checked_add(1) == Some(epoch) => {
                 if !validate_recovery(recovered)? {
-                    return Ok(journal);
+                    return Ok((journal, sync));
                 }
                 journal.restart(epoch)?;
-                return Ok(journal);
+                return Ok((journal, sync));
             }
             _ => return Err(LocalStreamError::Corrupt),
         }
         journal.replay(length, recovered, span)?;
         if !validate_recovery(recovered)? {
-            return Ok(journal);
+            return Ok((journal, sync));
         }
         if let Some(frame_start) = journal.torn_tail {
             match acyclic_native_runtime::recover_log_tail(
@@ -1804,7 +1789,7 @@ impl Journal {
             }
         }
         sync_file_data(&journal.file, limits.durability)?;
-        Ok(journal)
+        Ok((journal, sync))
     }
 
     /// Hands every whole frame of a journal `length` long to `recovered`, cutting a torn one off the end.
@@ -2303,7 +2288,7 @@ mod tests {
     use super::*;
 
     use crate::test_meter::{Meter, NativeDenial};
-    use crate::memory::TestClock;
+    use std::sync::atomic::AtomicU64;
 
     #[derive(Debug)]
     enum NativeGuardFailure {
@@ -2710,7 +2695,7 @@ mod tests {
         let (started_send, started_receive) = std::sync::mpsc::sync_channel(1);
         let (release_send, release_receive) = std::sync::mpsc::sync_channel(1);
         *JOURNAL_PERSIST_BLOCKER.lock().map_err(|_| "poisoned fixture seam")? = Some((
-            Arc::as_ptr(&provider.inner.journal) as usize, started_send, release_receive,
+            Arc::as_ptr(&provider.inner) as usize, started_send, release_receive,
         ));
         let future = packet.finish(OwnedBytes::from_static(b"accepted-without-reply"));
         drop(future);
@@ -2797,8 +2782,8 @@ mod tests {
     async fn native_commit_before_checks_actual_cas_and_preserves_replay()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let clock = Arc::new(TestClock::default());
-        clock.0.store(99, Ordering::SeqCst);
+        let clock = Arc::new(AtomicU64::default());
+        clock.store(99, Ordering::SeqCst);
         let provider = LocalStream::open_with_clock(
             directory.path(), LocalStreamLimits::default(), clock.clone(),
         ).await?;
@@ -2809,7 +2794,7 @@ mod tests {
             Some((clock.clone(), 100));
         let expired = provider.native_commit_before(request.clone(), 100, meter.original()).await?;
         assert!(matches!(expired.as_ref(), Err(StreamError::DeadlineElapsed)));
-        assert_eq!(clock.0.load(Ordering::SeqCst), 100);
+        assert_eq!(clock.load(Ordering::SeqCst), 100);
         assert_eq!(std::fs::read(directory.path().join(JOURNAL_FILE))?, journal_before);
         assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
         drop(expired);
@@ -2930,14 +2915,14 @@ mod tests {
             )
             .await?;
 
-            let journal_identity = Arc::as_ptr(&provider.inner.journal) as usize;
+            let inner_identity = Arc::as_ptr(&provider.inner) as usize;
             let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
             let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
             {
                 let mut hook = JOURNAL_PERSIST_BLOCKER
                     .lock()
                     .map_err(|_| "journal-persist test hook was poisoned")?;
-                *hook = Some((journal_identity, started_tx, release_rx));
+                *hook = Some((inner_identity, started_tx, release_rx));
             }
             let appending = tokio::spawn(
                 {
@@ -2999,11 +2984,11 @@ mod tests {
             let meter = Arc::new(Meter::local());
             let original = meter.original();
             let caller_controls = ReadAllocation::adopt(&original, input_bytes)?;
-            let journal_identity = Arc::as_ptr(&provider.inner.journal) as usize;
+            let inner_identity = Arc::as_ptr(&provider.inner) as usize;
             let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
             let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
             *JOURNAL_PERSIST_BLOCKER.lock().map_err(|_| "journal-persist hook was poisoned")? =
-                Some((journal_identity, started_tx, release_rx));
+                Some((inner_identity, started_tx, release_rx));
             let caller = tokio::spawn({
                 let provider = provider.clone();
                 async move {
@@ -3051,13 +3036,13 @@ mod tests {
             let directory = tempfile::tempdir()?;
             let provider =
                 LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-            let journal_identity = Arc::as_ptr(&provider.inner.journal) as usize;
+            let inner_identity = Arc::as_ptr(&provider.inner) as usize;
             let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
             let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
             *JOURNAL_PERSIST_BLOCKER
                 .lock()
                 .map_err(|_| "journal-persist test hook was poisoned")? =
-                Some((journal_identity, started_tx, release_rx));
+                Some((inner_identity, started_tx, release_rx));
             let path = StreamPath::new("cancelled-visibility")?;
             let appending = tokio::spawn({
                 let (provider, path) = (provider.clone(), path.clone());
@@ -3121,13 +3106,13 @@ mod tests {
             let directory = tempfile::tempdir()?;
             let provider =
                 LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-            let journal_identity = Arc::as_ptr(&provider.inner.journal) as usize;
+            let inner_identity = Arc::as_ptr(&provider.inner) as usize;
             let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
             let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
             *JOURNAL_PERSIST_BLOCKER
                 .lock()
                 .map_err(|_| "journal-persist test hook was poisoned")? =
-                Some((journal_identity, started_tx, release_rx));
+                Some((inner_identity, started_tx, release_rx));
             let commit = |path: &'static str| {
                 let provider = provider.clone();
                 tokio::spawn(async move { provider.commit(keyed_commit(path, 0)?).await })
@@ -3453,7 +3438,7 @@ mod tests {
     async fn retry_outcomes_survive_clock_exhaustion_and_reopen()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let clock = Arc::new(TestClock::default());
+        let clock = Arc::new(AtomicU64::default());
         let provider = LocalStream::open_with_clock(
             directory.path(),
             LocalStreamLimits::default(),
@@ -3467,7 +3452,7 @@ mod tests {
             idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"local-once"))?),
         };
         let first = provider.append(request.clone()).await?;
-        clock.0.store(u64::MAX, Ordering::SeqCst);
+        clock.store(u64::MAX, Ordering::SeqCst);
         assert_eq!(provider.append(request.clone()).await?, first);
         drop(provider);
         let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
@@ -3486,7 +3471,7 @@ mod tests {
     async fn journal_replay_preserves_monotonic_commit_times()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let clock = Arc::new(TestClock::default());
+        let clock = Arc::new(AtomicU64::default());
         let path = StreamPath::new("accounting/local")?;
         let provider = LocalStream::open_with_clock(
             directory.path(),
@@ -3495,7 +3480,7 @@ mod tests {
         )
         .await?;
         for (time, body) in [(100, b"first".as_slice()), (90, b"rollback")] {
-            clock.0.store(time, Ordering::SeqCst);
+            clock.store(time, Ordering::SeqCst);
             provider
                 .append(AppendRequest {
                     path: path.clone(),
@@ -3506,7 +3491,7 @@ mod tests {
                 .await?;
         }
         drop(provider);
-        clock.0.store(80, Ordering::SeqCst);
+        clock.store(80, Ordering::SeqCst);
         let reopened =
             LocalStream::open_with_clock(directory.path(), LocalStreamLimits::default(), clock)
                 .await?;
@@ -3818,8 +3803,8 @@ mod tests {
     async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let clock = Arc::new(TestClock::default());
-        clock.0.store(10, Ordering::SeqCst);
+        let clock = Arc::new(AtomicU64::default());
+        clock.store(10, Ordering::SeqCst);
         let provider = LocalStream::open_with_clock(
             directory.path(),
             LocalStreamLimits::default(),
@@ -3856,7 +3841,7 @@ mod tests {
         );
         drop(provider);
 
-        clock.0.store(100, Ordering::SeqCst);
+        clock.store(100, Ordering::SeqCst);
         let reopened =
             LocalStream::open_with_clock(directory.path(), LocalStreamLimits::default(), clock)
                 .await?;
@@ -4337,7 +4322,7 @@ mod tests {
             let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
             let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
             *JOURNAL_PERSIST_BLOCKER.lock().map_err(|_| "journal-persist hook was poisoned")? =
-                Some((Arc::as_ptr(&provider.inner.journal) as usize, started_tx, release_rx));
+                Some((Arc::as_ptr(&provider.inner) as usize, started_tx, release_rx));
             let caller = tokio::spawn({
                 let provider = provider.clone();
                 let meter = Arc::clone(&meter);
