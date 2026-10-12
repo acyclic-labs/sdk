@@ -91,7 +91,7 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
     fixture.scope = RuntimeScope::new(fixture.signed.capabilities().clone(), Limits::default())?;
     let runtime = runtime(&fixture).await?;
     let lease = fixture.admit(&runtime).await?;
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     let parent = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
     for id in [121, 122, 123] {
@@ -168,7 +168,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     fixture.scope = RuntimeScope::new(fixture.signed.capabilities().clone(), Limits::default())?;
     let runtime = runtime(&fixture).await?;
     let lease = fixture.admit(&runtime).await?;
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let provider = Arc::new(ModelFixture(AtomicUsize::new(0)));
     let execution = runtime.stock_execution(task, LeaseFence::from(&lease.reservation), OperationId::from_bytes([130; 16]),
@@ -258,7 +258,9 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let child_project = VolumeRef::new(project.provider().clone(), "restore-child", VolumeClass::Project, project.owner().clone())?;
     let child_private = VolumeRef::new(project.provider().clone(), "restore-child", VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent))?;
     let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), history.reducer().clone(), issuer.verifier(), signed.clone(),
-        project.clone(), stream_provider.clone(), reader)?;
+        project.clone(), stream_provider.clone(), reader,
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
+    )?;
     let request = ForkRequest { authorized_source: None, operation_id: OperationId::from_bytes([140; 16]), parent: authority.clone(),
         parent_revision: original_revision, child: child_authority.clone(), child_agent, attached_agents: Vec::new(), boundary: None,
         preparation: ForkPreparation { child_result_volume: None, summary: None, child_project_volume: child_project.clone(),

@@ -711,7 +711,7 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
     Ok(())
 }
 fn validate_merge_receipt(plan: &RecursiveMergeToolPlan, receipt: &ProjectMergeReceipt, io: Option<&super::PreparationIo>) -> Result<()> {
-    recursive_observe(io, |work| receipt.validate_shape_with_work(work))?;
+    recursive_observe(io, |work| receipt.validate_shape(work))?;
     if receipt.operation_id != plan.operation_id || receipt.child != plan.source || receipt.source_project != plan.source_project
         || receipt.source_generation != plan.source_generation || receipt.target_project != plan.target_project
         || receipt.expected_target_generation != plan.expected_target_generation || receipt.notice != plan.notice {
@@ -967,17 +967,16 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     fn check_authority(&self, context: &ToolContext, invocation: &ToolInvocation,
         io: Option<&super::PreparationIo>) -> Result<()> {
         self.source()?;
+        crate::executor::with_history_io(io, |work|
+            ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(|io| io.original_native_work()) {
             work.remaining()?;
-            invocation.validate_with_native_work(work)?;
             if !context.native_metadata_matches(work) {
                 return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
                     "recursive tool metadata differs from its original native context"));
             }
-        } else { invocation.validate()?; }
-        #[cfg(target_arch = "wasm32")]
-        invocation.validate()?;
+        }
         let scope = recursive_effective_scope(context, io);
         let call_grant = match self.kind { Kind::Fork => "tool:call:acyclic.fork", Kind::Merge => "tool:call:acyclic.merge" };
         if context.operation_id() != invocation.operation_id || context.call_id() != invocation.call_id
@@ -2030,13 +2029,11 @@ where P: StreamProvider {
                     "merge source handle belongs to another caller, operation or selected task"));
             }
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(|io| io.original_native_work()) {
-                source.require_selection(context.operation_id(), source_task, &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref(), Some(work))?;
-            } else {
-                source.require_selection(context.operation_id(), source_task, &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref(), None)?;
-            }
+            let work = io.and_then(super::PreparationIo::original_native_work);
             #[cfg(target_arch = "wasm32")]
-            source.require_selection(context.operation_id(), source_task, &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref(), None)?;
+            let work = None;
+            source.require_selection(context.operation_id(), source_task,
+                &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref(), work)?;
             source.grant().require(&binding.source_project, VolumeOperation::Read, io)?;
         }
         None => {
@@ -2066,10 +2063,8 @@ fn recursive_volume_granted(grants: &Capabilities, volume: &VolumeRef, operation
 
 fn recursive_verify_volume(verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
     operation: VolumeOperation, io: Option<&super::PreparationIo>) -> Result<()> {
-    match io {
-        Some(io) => ContentGrant::authorize_volume(verifier, scope, volume, operation, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io())),
-        None => ContentGrant::verify(verifier, scope, volume, operation, u64::MAX, &mut None).map(drop),
-    }
+    let maximum = io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded)).transpose()?.unwrap_or(u64::MAX);
+    recursive_observe(io, |work| ContentGrant::authorize_volume(verifier, scope, volume, operation, maximum, work))
 }
 fn check_merge_binding<P: StreamProvider, A, O>(plan: &RecursiveMergeToolPlan,
     binding: &RecursiveMergeToolBinding<P, A, O>, io: Option<&super::PreparationIo>) -> Result<()> {

@@ -919,7 +919,7 @@ impl PiNativeRootSeed {
         owner.verify_with_native_work(false, meter).await?;
         if owner.task_id() != self.task || binding.task_id != self.task
             || shared.context().durable_task_id() != Some(self.task) || binding.scratch.volume != self.scratch
-            || options.root != self.view_root || self.operation != NativePreparationRoot::operation(owner)
+            || options.root != self.view_root || self.operation != NativePreparationRoot::operation(owner.task_id(), meter)?
             || self.packet.operation_id() != self.operation || !self._metadata_custody.matches_work(meter)
             || bindings.len() != 1 || bindings[0].volume != &self.scratch
             || bindings[0].path != "scratch" || !bindings[0].writable
@@ -1166,7 +1166,7 @@ impl PiNativeRootSeed {
           D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
     {
         if owner.task_id() != self.task || proof.original_task() != self.task || proof.volume() != &self.scratch
-            || self.operation != NativePreparationRoot::operation(owner) || self.packet.operation_id() != self.operation
+            || self.operation != NativePreparationRoot::operation(owner.task_id(), meter)? || self.packet.operation_id() != self.operation
             || !self._metadata_custody.matches_work(meter)
         {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -1199,7 +1199,7 @@ impl<A, O> PiPreparedScratch<A, O> {
     {
         if owner.task_id() != self.task || context.durable_task_id() != Some(self.task)
             || proof.original_task() != self.task || proof.volume() != &self.scratch
-            || self.operation != NativePreparationRoot::operation(owner)
+            || self.operation != NativePreparationRoot::operation(owner.task_id(), meter)?
             || self._creator_packet.operation_id() != self.operation || !self._metadata_custody.matches_work(meter)
         {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -1228,7 +1228,7 @@ impl<A, O> PiPreparedScratch<A, O> {
     {
         if owner.task_id() != self.task || context.durable_task_id() != Some(self.task)
             || proof.original_task() != self.task || proof.volume() != &self.scratch
-            || self.operation != NativePreparationRoot::operation(owner)
+            || self.operation != NativePreparationRoot::operation(owner.task_id(), meter)?
             || self._creator_packet.operation_id() != self.operation
             || !self._metadata_custody.matches_work(original)
         {
@@ -1339,7 +1339,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
             reason: "Pi seed session selection differs from its immutable native cut" });
     }
     let service = native_service_root(&resources.data, root_session, owner.task_id(), &options.root, meter)?;
-    let operation = NativePreparationRoot::operation(owner);
+    let operation = NativePreparationRoot::operation(owner.task_id(), meter)?;
     let task_directory = options.root.parent().ok_or(Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi native view has no original task namespace",
     })?;

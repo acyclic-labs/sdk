@@ -194,7 +194,7 @@ impl ExecutionSummary {
                         "model observation is missing"))?,
                     limits, io,
                 )?;
-                if admission.completed() {
+                if admission.completed {
                     *state = None;
                 }
             }
@@ -887,7 +887,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
             }
             if prepared.as_ref().and_then(|projection| projection.canonical.as_ref())
-                != Some(&envelope.source) || !admission.completed() || output.is_empty() {
+                != Some(&envelope.source) || !admission.completed || output.is_empty() {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                     "canonical summary lacks its prepared source or settled output"));
             }
@@ -1012,7 +1012,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             match io {
-                Some(io) => ContentGrant::authorize_volume(verifier, scope, volume, operation, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?,
+                Some(io) => ContentGrant::authorize_volume(
+                    verifier, scope, volume, operation, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()),
+                )?,
                 None => { ContentGrant::verify(verifier, scope, volume, operation, u64::MAX, &mut None)?; }
             }
         }
@@ -1280,7 +1282,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 "execution.json", self.maximum_payload_bytes, &key, InternalContentClass::Execution, io,
             ).await,
             None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?;
+                let grant = ContentGrant::verify(
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?;
                 self.host.put_internal_content(
                     &self.volume, &grant, &path, bytes, media_type, "execution.json",
                     self.maximum_payload_bytes, &key, InternalContentClass::Execution,
@@ -1297,7 +1300,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         match io {
             Some(io) => {
-                ContentGrant::authorize_volume(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
+                ContentGrant::authorize_volume(
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
                 self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await
             }
             None => {
@@ -1506,7 +1510,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let ordinary_bytes;
             let bytes = if let Some(io) = io {
                 super::fork_preparer_io::item(Some(io), 0)?;
-                ContentGrant::authorize_volume(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
+                ContentGrant::authorize_volume(
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
                 native_bytes = self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await?;
                 _bytes_hold = io.guard_bytes(&native_bytes)?;
                 native_bytes.as_ref()
@@ -1595,7 +1600,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         "exact file read is not granted"));
                 }
             } else {
-                ContentGrant::authorize_volume(&self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
+                ContentGrant::authorize_volume(
+                    &self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
             }
             let before = io.owned_bytes()?;
             let _bytes_hold;

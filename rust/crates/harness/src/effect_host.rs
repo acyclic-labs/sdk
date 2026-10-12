@@ -812,7 +812,7 @@ mod native_metadata_controls {
         )?);
         ConversationEffectHost::new(
             Arc::new(MemoryStream::default()),
-            authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(),
+            authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(None)?,
         )
     }
 
@@ -849,14 +849,14 @@ mod native_metadata_controls {
         let work = NativeMaterializationWork::new(denied, &cancellation)
             .expect("only meter backing is admitted");
         let before = work.receipt().allocation_operations;
-        assert!(matches!(EffectRegistry::new_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert!(matches!(EffectRegistry::new(Some(&work)), Err(Error::NativeWork { .. })));
         assert_eq!(work.receipt().allocation_operations, before);
 
         let work = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original cancellable ledger");
         cancellation.cancel();
         let before = work.receipt().allocation_operations;
-        assert!(matches!(EffectRegistry::new_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert!(matches!(EffectRegistry::new(Some(&work)), Err(Error::NativeWork { .. })));
         assert_eq!(work.receipt().allocation_operations, before);
     }
 

@@ -2305,7 +2305,16 @@ async fn apply_host_attributes_offloaded(
             let target = root.0.open_linux_metadata_target(path.0.path(), work)?;
             #[cfg(target_os = "macos")]
             let target = root.0.open_macos_metadata_target(path.0.path(), work)?;
-            let result = target.set_extended_attributes(&attributes.0, work);
+            #[cfg(target_os = "linux")]
+            let result = crate::native_host::set_extended_attributes(&target, &attributes.0, work);
+            #[cfg(target_os = "macos")]
+            let result = match &target {
+                crate::native_host::MacMetadataTarget::Held(file) =>
+                    crate::native_host::set_extended_attributes(file, &attributes.0, work),
+                crate::native_host::MacMetadataTarget::Noop { .. } => work.check().and(Err(
+                    crate::native_host::NativeMetadataError("named_attributes on a non-ordinary file kind").into(),
+                )),
+            };
             #[cfg(target_os = "macos")]
             {
                 let target_bytes = target.logical_owned_bytes();
@@ -2342,7 +2351,9 @@ async fn apply_host_metadata_offloaded(
         let target = root.0.open_macos_metadata_target(path.0.path(), work)?;
         #[cfg(windows)]
         let target = root.0.open_windows_metadata_target_wide(&path.0.units, work)?;
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
+        { crate::native_host::apply_linux_metadata(&target, metadata, work) }
+        #[cfg(target_os = "macos")]
         { target.apply(metadata, work) }
         #[cfg(windows)]
         { crate::native_host::apply_windows_metadata(target, metadata, work) }

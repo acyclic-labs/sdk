@@ -516,7 +516,7 @@ impl CreationFixture {
             tasks.clone(), machines, Arc::new(SystemUnixMillisClock),
         )?.with_session_limits(crate::scheduler::SessionLimits {
             active_tasks: 16, total_tasks: 32, depth: 4, model_steps: 4,
-        })?.with_resource_creation_providers(vec![creator.clone(), fs_creator.clone()])?);
+        }, None)?.with_resource_creation_providers(&[creator.clone(), fs_creator.clone()], None)?);
         let mut bindings = Bindings::local();
         bindings.tasks = tasks;
         bindings.scope = root_scope.clone();
@@ -538,7 +538,7 @@ impl CreationFixture {
         let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await? else {
             return Err(Error::NotFound("created root lease".into()));
         };
-        host.start_task(&root_lease).await?;
+        host.start_task(&root_lease, None).await?;
         let stream = host.stream.clone();
         Ok(Self { host, harness, filesystem, stream, filesystem_provider, creator,
             root_scope, task, machine, schema, root, root_lease, worker, original_root_births,
@@ -579,7 +579,7 @@ impl CreationFixture {
         let crate::distributed::WorkPull::Claimed(lease) = self.host.pull_work(&self.worker).await? else {
             return Err(Error::NotFound("created preparation lease".into()));
         };
-        self.host.start_task(&lease).await?;
+        self.host.start_task(&lease, None).await?;
         let owner = Arc::new(self.host.journal_owner(
             TaskId::from_bytes(lease.operation.operation_id.into_bytes()),
             (&lease.reservation).into(),
@@ -607,7 +607,7 @@ impl CreationFixture {
             return Err(Error::NotFound("created child publication lease".into()));
         };
         assert_eq!(lease.operation.operation_id.into_bytes(), expected.into_bytes());
-        self.host.start_task(&lease).await
+        self.host.start_task(&lease, None).await
     }
 }
 
@@ -712,7 +712,7 @@ async fn original_creation_fence_survives_current_preparation_and_parent_recover
     let crate::distributed::WorkPull::Claimed(recovered_prep) = fixture.host.pull_work(&fixture.worker).await? else {
         return Err(Error::NotFound("recovered preparation lease".into()));
     };
-    fixture.host.start_task(&recovered_prep).await?;
+    fixture.host.start_task(&recovered_prep, None).await?;
     assert_ne!(recovered_prep.reservation, original_prep.reservation);
     assert!(preparation.verify_creation().await.is_err());
     fixture.host.coordinator.lock().await.release_lease(
@@ -722,7 +722,7 @@ async fn original_creation_fence_survives_current_preparation_and_parent_recover
     let crate::distributed::WorkPull::Claimed(recovered_parent) = fixture.host.pull_work(&fixture.worker).await? else {
         return Err(Error::NotFound("recovered parent lease".into()));
     };
-    fixture.host.start_task(&recovered_parent).await?;
+    fixture.host.start_task(&recovered_parent, None).await?;
     assert_ne!(recovered_parent.reservation, fixture.root_lease.reservation);
     fixture.root_lease = recovered_parent;
     let receipt = fixture.creator.verify(&request, &request.child.resource_proofs[0]).await?;
@@ -869,7 +869,8 @@ impl CreationFixture {
                 ResourceRevision::Project { volume, .. } => Some(volume.clone()), _ => None,
             }).ok_or_else(|| Error::Invalid("fork fixture project missing".into()))?,
             stream_provider, resolver,
-        )?.with_history_context(history)?;
+            Some(history), None, #[cfg(not(target_arch = "wasm32"))] None,
+        )?;
         let mut child = self.admission(84, serde_json::json!({"action":"filesystem-io"}));
         child.grants = Capabilities::new([
             "task:spawn:test.created@1".into(),
@@ -1461,8 +1462,8 @@ async fn authenticated_root_scope_uses_original_quota_without_created_resource_f
     let work = test_work(
         acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
     )?;
-    let (admission, admission_custody) = fixture.host.admission_with_native_work(
-        fixture.root_lease.operation.operation_id, &work,
+    let (admission, admission_custody) = fixture.host.observe_admission_with_native_work(
+        fixture.root, &work,
     ).await?;
     assert!(admission.resource_proofs.is_empty());
     let mut io = crate::store::history::native_work_io(&work)?;
@@ -1748,7 +1749,7 @@ async fn native_declared_original_scope_mac_denial_precedes_admission_io() -> Re
     assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
     drop(denial);
     drop(io);
-    let (root, custody) = fixture.host.admission_with_native_work(operation, &work).await?;
+    let (root, custody) = fixture.host.observe_admission_with_native_work(TaskId::from_bytes(operation.into_bytes()), &work).await?;
     assert!(custody.matches_work(&work));
     assert_eq!(root.parent, None);
     assert!(root.resource_proofs.is_empty());

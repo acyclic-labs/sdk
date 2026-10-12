@@ -332,7 +332,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let crate::distributed::WorkPull::Claimed(helper_lease) = fixture.host.pull_work(&fixture.worker).await? else {
         return Err(Error::NotFound("authorized source preparation lease".into()));
     };
-    fixture.host.start_task(&helper_lease).await?;
+    fixture.host.start_task(&helper_lease, None).await?;
     let helper_guard = acyclic_fs::CancellationToken::new();
     let helper_owner = Arc::new(fixture.host.journal_owner(TaskId::from_bytes([130;16]), (&helper_lease.reservation).into()).await?
         .with_invocation_cancellation(&helper_guard));
@@ -378,7 +378,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let crate::distributed::WorkPull::Claimed(recovered_root) = fixture.host.recover_work(fixture.root).await? else {
         return Err(Error::NotFound("recovered original source caller".into()));
     };
-    fixture.host.start_task(&recovered_root).await?;
+    fixture.host.start_task(&recovered_root, None).await?;
     let recovered_context = runtime.task_context(fixture.root, (&recovered_root.reservation).into()).await?;
     let recovered_guard = acyclic_fs::CancellationToken::new();
     let recovered_owner = Arc::new(fixture.host.journal_owner(fixture.root, recovered_context.owned_task_fence()?).await?
