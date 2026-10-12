@@ -9169,6 +9169,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<crate::DetachedFile<A, O>, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
+        use super::lazy::{mount_accept, mount_demand_error, mount_engine_error};
         let observation = self.checkout.observe_with_carrier(
             owner, carrier, cancellation, Some(&self.cancellation),
         ).await?;
@@ -9176,45 +9177,29 @@ impl<A, O> CheckoutMountSource<A, O> {
             observation.detached_from_record_with_native_work(record, &original, cancellation)
                 .map_err(super::lazy::mount_engine_error)
         } else {
-            self.detached_identity_create_with_carrier(carrier, cancellation, |budget| {
-                observation.detached_from_record(record, budget, cancellation)
-            })
-        }
-    }
-
-    fn detached_identity_create_with_carrier(
-        &self,
-        carrier: &mut NativeDemandCarrier<'_>,
-        cancellation: &CancellationToken,
-        create: impl FnOnce(WorkBudget) -> Result<
-            crate::OperationReceipt<crate::DetachedFile<A, O>>,
-            crate::OperationFailure<FsError>,
-        >,
-    ) -> Result<crate::DetachedFile<A, O>, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        use super::lazy::{mount_accept, mount_demand_error, mount_engine_error};
-        let file = carrier.with_work(|work| {
-            work.check().map_err(mount_demand_error)?;
-            cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-            self.cancellation.check().map_err(|_| MountSourceError::Stale)?;
-            let budget = work.remaining().map_err(mount_demand_error)?;
-            let file = mount_accept(work, create(budget), mount_engine_error)?;
-            if let Err(error) = work.adopt(file.logical_owned_bytes()) {
-                drop(file);
-                return Err(mount_demand_error(error));
-            }
+            let file = carrier.with_work(|work| {
+                work.check().map_err(mount_demand_error)?;
+                cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
+                self.cancellation.check().map_err(|_| MountSourceError::Stale)?;
+                let budget = work.remaining().map_err(mount_demand_error)?;
+                let file = mount_accept(work, observation.detached_from_record(record, budget, cancellation), mount_engine_error)?;
+                if let Err(error) = work.adopt(file.logical_owned_bytes()) {
+                    drop(file);
+                    return Err(mount_demand_error(error));
+                }
+                Ok(file)
+            })?;
+            let bytes = file.logical_owned_bytes();
+            let mut owned = NativeCarrierOwned { value: Some(file), carrier, bytes };
+            owned.carrier.with_work(|work| {
+                work.check().map_err(mount_demand_error)?;
+                cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
+                self.cancellation.check().map_err(|_| MountSourceError::Stale)
+            })?;
+            let file = owned.value.take().expect("detached native identity is live");
+            owned.bytes = 0;
             Ok(file)
-        })?;
-        let bytes = file.logical_owned_bytes();
-        let mut owned = NativeCarrierOwned { value: Some(file), carrier, bytes };
-        owned.carrier.with_work(|work| {
-            work.check().map_err(mount_demand_error)?;
-            cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-            self.cancellation.check().map_err(|_| MountSourceError::Stale)
-        })?;
-        let file = owned.value.take().expect("detached native identity is live");
-        owned.bytes = 0;
-        Ok(file)
+        }
     }
 
     /// Creates an independently cancellable adapter using the shared callback runtime.
