@@ -40,7 +40,6 @@ use crate::{
     tool::{ToolDefinition, validate_value},
     turn::prepare_turn,
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};

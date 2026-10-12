@@ -131,10 +131,10 @@ impl MemoryStore {
         ))?;
         let reference = FileRef::new(
             self.volume.clone(),
-            path,
+            path.to_owned(),
             blake3::Hash::from_bytes(digest).to_hex().to_string(),
             descriptor,
-            display_name, &mut None,
+            display_name.to_owned(), &mut None,
         )?;
         self.retain_reference(&reference, bytes, update_path, None)?;
         Ok(reference)

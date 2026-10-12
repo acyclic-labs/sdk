@@ -107,9 +107,9 @@ fn finish_decode<'a, T>(io: &'a PreparationIo, result: Result<T>, admission: Opt
     Ok((value, reservation))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn finish_encoding<T>(mut diagnostics: DecodeReservation<'_>, result: Result<T>) -> Result<T> {
     match result {
+        #[cfg(not(target_arch = "wasm32"))]
         Err(Error::NativeEncode { code, source, custody: None }) => {
             let custody = diagnostics.io.take_native_custody(diagnostics.bytes)?;
             diagnostics.bytes = 0;

@@ -2378,7 +2378,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
             child_private.validate(&mut None)?;
         }
         #[cfg(target_arch = "wasm32")]
-        child_private.validate()?;
+        child_private.validate(&mut None)?;
         let history = self.selected_inherited_history(
             parent, through_sequence, maximum_messages, archived_history, io,
         )?;
@@ -3300,7 +3300,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             volume.validate(&mut None)?;
         }
         #[cfg(target_arch = "wasm32")]
-        volume.validate()?;
+        volume.validate(&mut None)?;
         if volume.provider() != &self.provider {
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "resource belongs to another Filesystem provider"));
         }
@@ -3336,7 +3336,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             recorded.validate(&mut None)?;
         }
         #[cfg(target_arch = "wasm32")]
-        recorded.validate()?;
+        recorded.validate(&mut None)?;
         if recorded.volume() != volume || recorded.version() != "pending"
             || expected_path.is_some_and(|path| path != recorded.path()) {
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Conflict, "original upload metadata differs from requested identity"));

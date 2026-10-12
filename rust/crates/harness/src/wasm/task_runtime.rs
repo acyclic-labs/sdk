@@ -701,7 +701,7 @@ impl WasmTaskRuntime {
             if tools.get(&definition.name, None).map_err(js_error)?.is_none() {
                 tools.register(defaults.tools.get(&definition.name, None).map_err(js_error)?.expect("registered default").clone())
                     .map_err(js_error)?;
-                if let Some(tool) = defaults.resumable_tools.get(&definition.name, &definition.revision, None).map_err(js_error)? {
+                if let Some(tool) = defaults.resumable_tools.get(&definition.name, &definition.revision, &mut None).map_err(js_error)? {
                     resumable_tools.register(tool.clone()).map_err(js_error)?;
                 }
             }
@@ -1101,7 +1101,7 @@ impl WasmTaskRuntime {
             .task_host()
             .send_mail(sender, &crate::scheduler::LeaseFence::from(&lease.reservation), recipient, message, from_js(payload)?, None)
             .await
-            .map_err(js_error)
+            .map(|_| ()).map_err(js_error)
     }
 
     /// A page observation is not a retained model-consumption acknowledgment.
