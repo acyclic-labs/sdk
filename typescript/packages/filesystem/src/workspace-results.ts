@@ -3,9 +3,10 @@ import type {
   WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseResult, WorkspaceRebaseStatus,
   WasmRawMergeConflict,
 } from "./contracts.js";
+import { copyFixedBytes, copyName } from "./binding-values.js";
 
-export function decodeMergeConflict(raw: unknown, origin = "merge preparation"): MergeConflict {
-  if (typeof raw !== "object" || raw === null) throw new Error(`${origin} returned a malformed conflict`);
+export function decodeMergeConflict(raw: unknown): MergeConflict {
+  if (typeof raw !== "object" || raw === null) throw new TypeError("binding returned a malformed conflict");
   const conflict = raw as Partial<WasmRawMergeConflict>;
   const { fileId, directoryId, name } = conflict;
   if (conflict.kind === "file" && fileId instanceof Uint8Array && fileId.byteLength === 16 &&
@@ -18,30 +19,21 @@ export function decodeMergeConflict(raw: unknown, origin = "merge preparation"):
       (name.encoding === "utf8" || name.encoding === "posix-bytes" || name.encoding === "windows-utf16le") &&
       name.bytes instanceof Uint8Array) {
     return { kind: "binding", directoryId: Uint8Array.from(directoryId),
-      name: { encoding: name.encoding, bytes: Uint8Array.from(name.bytes) } };
+      name: copyName(name) };
   }
-  throw new Error(`${origin} returned a malformed conflict`);
+  throw new TypeError("binding returned a malformed conflict");
 }
 
-function copyGenerationId(value: unknown, label: string): Uint8Array | undefined {
-  if (value === undefined) return undefined;
-  if (!(value instanceof Uint8Array) || value.byteLength !== 32) {
-    throw new TypeError(`${label} has an invalid generation identity`);
-  }
-  return Uint8Array.from(value);
-}
-
-export function parseMergePreparation<Conflict>(
+export function parseMergePreparation(
   value: {
     readonly status: string;
     readonly generationId: Uint8Array | undefined;
-    readonly conflicts: readonly Conflict[];
+    readonly conflicts: readonly unknown[];
     readonly truncated: boolean;
     readonly work: WorkCounters;
   },
-  decodeConflict: (value: Conflict) => MergeConflict,
 ): MergePreparationResult {
-  const generationId = copyGenerationId(value.generationId, "merge preparation");
+  const generationId = copyFixedBytes(value.generationId, 32, "generation identity");
   if (value.status === "prepared" && generationId !== undefined &&
       value.conflicts.length === 0 && !value.truncated) {
     return { status: "prepared", generationId,
@@ -49,15 +41,15 @@ export function parseMergePreparation<Conflict>(
   }
   if (value.status === "conflicted" && generationId === undefined) {
     return { status: "conflicted", generationId: undefined,
-      conflicts: value.conflicts.map(conflict => decodeConflict(conflict)), truncated: value.truncated, work: value.work };
+      conflicts: value.conflicts.map(decodeMergeConflict), truncated: value.truncated, work: value.work };
   }
   throw new TypeError("binding returned a malformed merge preparation");
 }
 
-interface RawResult<Conflict> {
+interface RawResult {
   readonly status: string;
   readonly generationId: Uint8Array | undefined;
-  readonly conflicts: readonly Conflict[];
+  readonly conflicts: readonly unknown[];
   readonly truncated: boolean;
 }
 
@@ -70,7 +62,7 @@ const rebaseStatuses: ReadonlySet<WorkspaceRebaseStatus> = new Set<WorkspaceReba
 const deleteStatuses: ReadonlySet<WorkspaceDeleteStatus> = new Set<WorkspaceDeleteStatus>([
   "deleted", "already-deleted", "conflict", "idempotency-conflict",
 ]);
-const commitStatuses: ReadonlySet<WorkspaceCommit["status"]> = new Set<WorkspaceCommit["status"]>([
+export const commitStatuses: ReadonlySet<WorkspaceCommit["status"]> = new Set<WorkspaceCommit["status"]>([
   "committed", "already-committed", "conflict", "fenced", "idempotency-conflict",
 ]);
 
@@ -78,25 +70,24 @@ function isStatus<Status extends string>(statuses: ReadonlySet<Status>, value: s
   return statuses.has(value as Status);
 }
 
-function parseResult<Status extends string, Conflict>(
-  value: RawResult<Conflict>, statuses: ReadonlySet<Status>, label: string,
-  decodeConflict: (value: Conflict) => MergeConflict,
+function parseResult<Status extends string>(
+  value: RawResult, statuses: ReadonlySet<Status>,
 ): { readonly status: Status; readonly generationId: Uint8Array | undefined; readonly conflicts: readonly MergeConflict[]; readonly truncated: boolean } {
-  if (!isStatus(statuses, value.status)) throw new TypeError(`${label} result has an invalid status`);
+  if (!isStatus(statuses, value.status)) throw new TypeError("binding result has an invalid status");
   return {
     status: value.status,
-    generationId: copyGenerationId(value.generationId, `${label} result`),
-    conflicts: value.conflicts.map(conflict => decodeConflict(conflict)),
+    generationId: copyFixedBytes(value.generationId, 32, "generation identity"),
+    conflicts: value.conflicts.map(decodeMergeConflict),
     truncated: value.truncated,
   };
 }
 
-export function parseJoinResult<Conflict>(value: RawResult<Conflict>, decodeConflict: (value: Conflict) => MergeConflict): JoinResult {
-  return parseResult(value, joinStatuses, "join", decodeConflict);
+export function parseJoinResult(value: RawResult): JoinResult {
+  return parseResult(value, joinStatuses);
 }
 
-export function parseWorkspaceRebaseResult<Conflict>(value: RawResult<Conflict>, decodeConflict: (value: Conflict) => MergeConflict): WorkspaceRebaseResult {
-  return parseResult(value, rebaseStatuses, "workspace rebase", decodeConflict);
+export function parseWorkspaceRebaseResult(value: RawResult): WorkspaceRebaseResult {
+  return parseResult(value, rebaseStatuses);
 }
 
 export function parseWorkspaceDelete(status: string): WorkspaceDeleteStatus {
@@ -110,5 +101,5 @@ export function parseWorkspaceCommit(value: unknown): WorkspaceCommit {
   if (typeof candidate.status !== "string" || !isStatus(commitStatuses, candidate.status)) {
     throw new TypeError("workspace commit has an invalid status");
   }
-  return { status: candidate.status, generationId: copyGenerationId(candidate.generationId, "workspace commit") };
+  return { status: candidate.status, generationId: copyFixedBytes(candidate.generationId, 32, "generation identity") };
 }

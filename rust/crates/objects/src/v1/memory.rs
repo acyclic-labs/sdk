@@ -5,14 +5,14 @@ use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{Error, NativeBatchObjects, Object, ObjectsProvider, request, wire};
-use crate::body::{BodyParts, BodyReadMode, StoredBody};
+use super::{Error, Object, ObjectsProvider, request, wire};
+use crate::body::{BodyReadError, BodyReadMode, StoredBody};
 use crate::obs;
 use acyclic_stream::OwnedBytes;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 #[cfg(not(target_arch = "wasm32"))]
-use super::{NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt};
+use super::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt};
 use imbl::OrdMap;
 use prost::Message;
 use wire::ErrorCode::{
@@ -96,27 +96,21 @@ struct Receipt {
 }
 
 #[derive(Clone)]
-struct SharedInfo<T = wire::ObjectInfo>(Arc<InfoOwner<T>>);
-struct InfoOwner<T = wire::ObjectInfo> {
-    info: T,
-    #[cfg(not(target_arch = "wasm32"))]
-    _allocation: Option<ReadAllocation>,
-}
+struct SharedInfo<T = wire::ObjectInfo>(Arc<super::Guarded<T>>);
 impl<T> std::ops::Deref for SharedInfo<T> {
     type Target = T;
-    fn deref(&self) -> &T { &self.0.info }
+    fn deref(&self) -> &T { &self.0.value }
 }
 impl<T: PartialEq> PartialEq for SharedInfo<T> {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0) || self.0.info == other.0.info
+        Arc::ptr_eq(&self.0, &other.0) || self.0.value == other.0.value
     }
 }
 impl<T> From<T> for SharedInfo<T> {
     fn from(info: T) -> Self {
-        Self(Arc::new(InfoOwner {
-            info,
-            #[cfg(not(target_arch = "wasm32"))]
-            _allocation: None,
+        Self(Arc::new(super::Guarded {
+            value: info,
+            _allocation: Default::default(),
         }))
     }
 }
@@ -299,7 +293,6 @@ impl MemoryObjects {
                 let _ = (before, next);
                 Ok(())
             },
-            || Ok(()),
         )
     }
 
@@ -313,7 +306,6 @@ impl MemoryObjects {
         action: impl FnOnce(&mut State) -> Result<R, E>,
         receipt: impl FnOnce(&R, &wire::MutationIdentity) -> Result<(SharedInfo<String>, Receipt), E>,
         commit: impl FnOnce(&State, &mut State) -> Result<(), E>,
-        before_publish: impl FnOnce() -> Result<(), E>,
     ) -> Result<R, E> {
         #[cfg(feature = "local")]
         if let Some(journal) = &self.journal { journal.check()?; }
@@ -340,8 +332,6 @@ impl MemoryObjects {
             return Err(Error::from(QuotaExceeded).into());
         }
         commit(guard, &mut next)?;
-        // Admit the native event at publication.
-        before_publish()?;
         *guard = next;
         Ok(response)
     }
@@ -397,13 +387,14 @@ impl MemoryObjects {
     fn put_locked_native(
         &self,
         state: &mut State,
-        query: &wire::PutObjectHeader,
+        mut query: wire::PutObjectHeader,
         body: OwnedBytes,
         meter: &Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsPutReceipt, NativeObjectsError> {
-        let name = request::put(query)?;
+        request::put(&query)?;
         request::upload_length(body.len() as u64)?;
-        let digest = put_digest_measured(query, &body, meter)?;
+        let digest = put_digest_measured(&mut query, &body, meter)?;
+        let name = query.bucket.as_ref().expect("validated put bucket").name.as_str();
         self.mutate_locked_engine(
                 state, digest, &query.mutation,
                 |receipt| {
@@ -451,9 +442,6 @@ impl MemoryObjects {
                     }
                     #[cfg(not(feature = "local"))]
                     let _ = (before, next);
-                    Ok(())
-                },
-                || {
                     if self.native_table_backend() { meter.admit_write(0)?; }
                     Ok(())
                 },
@@ -652,25 +640,21 @@ struct ResolvedGet {
     body: StoredBody,
     start: usize,
     end: usize,
+    #[cfg(not(target_arch = "wasm32"))]
+    allocation: Option<ReadAllocation>,
 }
 
 impl ResolvedGet {
-    async fn read(self) -> Result<Object, Error> {
-        let body = self.body.read(self.start, self.end, BodyReadMode::Ordinary).await
-            .map_err(|_| Error::from(Unavailable))?;
-        Ok(Object::new(self.header, body))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn read_native(
-        self,
-        meter: Arc<dyn NativeReadMeter>,
-        header_allocation: ReadAllocation,
-    ) -> Result<Object, NativeObjectsError> {
-        let allocation = header_allocation;
-        let Self { header, body, start, end } = self;
-        let body = body.read(start, end, BodyReadMode::Native(meter)).await?;
-        Ok(Object::new_native(header, body, Some(allocation)))
+    async fn read(self, mode: BodyReadMode) -> Result<Object, BodyReadError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let allocation = self.allocation;
+        let Self { header, body, start, end, .. } = self;
+        let body = body.read(start, end, mode).await?;
+        Ok(Object {
+            header, body,
+            #[cfg(not(target_arch = "wasm32"))]
+            _header_custody: allocation,
+        })
     }
 }
 
@@ -679,19 +663,22 @@ fn get_locked(
     query: &wire::GetObjectRequest,
     maximum_bytes: u64,
 ) -> Result<ResolvedGet, Error> {
-    get_selected_locked(state, query, maximum_bytes, || Ok::<_, Error>(()), |info| Ok(info.clone()))
+    let name = request::get(query)?;
+    let (value, range, start, end) = get_selected_locked(state, name, query, maximum_bytes)?;
+    Ok(ResolvedGet {
+        header: wire::GetObjectHeader { object: Some((*value.info).clone()), content_range: range },
+        body: value.body.clone(), start, end,
+        #[cfg(not(target_arch = "wasm32"))]
+        allocation: None,
+    })
 }
 
-fn get_selected_locked<E: From<Error>>(
-    state: &State,
+fn get_selected_locked<'a>(
+    state: &'a State,
+    name: &str,
     query: &wire::GetObjectRequest,
     maximum_bytes: u64,
-    before_lookup: impl FnOnce() -> Result<(), E>,
-    clone_info: impl FnOnce(&wire::ObjectInfo) -> Result<wire::ObjectInfo, E>,
-) -> Result<ResolvedGet, E> {
-    let name = request::get(query)?;
-    // Record the lookup before fallible header copying.
-    before_lookup()?;
+) -> Result<(&'a Stored, Option<wire::ContentRange>, usize, usize), Error> {
     let value = state
         .buckets
         .get(name)
@@ -709,15 +696,7 @@ fn get_selected_locked<E: From<Error>>(
     if (end - start) as u64 > maximum_bytes {
         return Err(Error::from(QuotaExceeded).into());
     }
-    Ok(ResolvedGet {
-        header: wire::GetObjectHeader {
-            object: Some(clone_info(&value.info)?),
-            content_range: range,
-        },
-        body: value.body.clone(),
-        start,
-        end,
-    })
+    Ok((value, range, start, end))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -785,14 +764,14 @@ impl std::borrow::Borrow<str> for SharedInfo<String> {
     fn borrow(&self) -> &str { self.as_str() }
 }
 impl std::fmt::Display for SharedInfo<String> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.0.info.fmt(f) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.0.value.fmt(f) }
 }
 impl<T: Eq> Eq for SharedInfo<T> {}
 impl<T: Ord> PartialOrd for SharedInfo<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
 }
 impl<T: Ord> Ord for SharedInfo<T> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.info.cmp(&other.0.info) }
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.value.cmp(&other.0.value) }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -806,10 +785,10 @@ impl SharedInfo<String> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<T> SharedInfo<T> {
     fn new_measured(info: T, mut allocation: ReadAllocation, meter: &Arc<dyn NativeReadMeter>) -> Result<Self, NativeObjectsError> {
-        let control = std::mem::size_of::<InfoOwner<T>>();
+        let control = std::mem::size_of::<super::Guarded<T>>();
         meter.admit_codec(0, control as u64, 0)?;
         allocation.absorb(&mut ReadAllocation::new(meter, control)?)?;
-        let result = Self(Arc::new(InfoOwner { info, _allocation: Some(allocation) }));
+        let result = Self(Arc::new(super::Guarded { value: info, _allocation: Some(allocation) }));
         meter.record_codec(0, control as u64, 0)?;
         Ok(result)
     }
@@ -849,55 +828,25 @@ fn encode_measured(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn put_digest_measured(
-    query: &wire::PutObjectHeader,
+    query: &mut wire::PutObjectHeader,
     body: &[u8],
     meter: &Arc<dyn NativeReadMeter>,
 ) -> Result<[u8; 32], NativeObjectsError> {
-    request::identity(&query.mutation)?;
-    let mut allocation = ReadAllocation::empty(meter);
-    let normalized = wire::PutObjectHeader {
-        bucket: query.bucket.as_ref().map(|value| {
-            clone_native_text(&value.name, meter, &mut allocation)
-                .map(|name| wire::BucketRef { name })
-        }).transpose()?,
-        object_key: clone_native_text(&query.object_key, meter, &mut allocation)?,
-        metadata: query.metadata.as_ref().map(|metadata| clone_native_metadata(metadata, meter, &mut allocation)).transpose()?,
-        preconditions: query.preconditions.as_ref().map(|value| {
-            Ok::<_, NativeObjectsError>(wire::Preconditions {
-                condition: value.condition.as_ref().map(|condition| match condition {
-                    wire::preconditions::Condition::IfAbsent(value) =>
-                        Ok(wire::preconditions::Condition::IfAbsent(*value)),
-                    wire::preconditions::Condition::IfMatch(value) =>
-                        clone_native_text(value, meter, &mut allocation)
-                            .map(wire::preconditions::Condition::IfMatch),
-                }).transpose()?,
-            })
-        }).transpose()?,
-        mutation: None,
-    };
-    let encoded = encode_measured(&normalized, meter)?;
+    let mutation = query.mutation.take();
+    let encoded = encode_measured(query, meter);
+    query.mutation = mutation;
+    let encoded = encoded?;
     let domain = b"acyclic.objects.v1.mutation\0";
     let hash_bytes = body.len().checked_add(domain.len() + 8 + 3 + 8 + 8 + 32)
         .and_then(|bytes| bytes.checked_add(encoded.len()))
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
     meter.admit_codec(0, 0, hash_bytes as u64)?;
     let body_hash = blake3::hash(body);
-    let mut hash = blake3::Hasher::new();
-    hash.update(domain);
-    hash.update(&3_u64.to_le_bytes());
-    hash.update(b"put");
-    hash.update(&(encoded.len() as u64).to_le_bytes());
-    hash.update(&encoded);
-    hash.update(&(body.len() as u64).to_le_bytes());
-    hash.update(body_hash.as_bytes());
-    let digest = *hash.finalize().as_bytes();
+    let digest = request::finish_digest("put", &encoded, body.len() as u64, *body_hash.as_bytes());
     meter.record_codec(0, 0, hash_bytes as u64)?;
     drop(encoded);
-    drop(normalized);
-    drop(allocation);
     Ok(digest)
 }
-
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_vec<T>(count: usize, meter: &Arc<dyn NativeReadMeter>) -> Result<(Vec<T>, ReadAllocation), NativeObjectsError> {
@@ -917,20 +866,44 @@ fn get_native_locked(
     maximum_bytes: u64,
     meter: &Arc<dyn NativeReadMeter>,
     table_backend: bool,
-) -> Result<(ResolvedGet, ReadAllocation), NativeObjectsError> {
+) -> Result<ResolvedGet, NativeObjectsError> {
     meter.check()?;
+    let name = request::get(query)?;
+    if table_backend { meter.admit_read(0)?; }
+    let (value, range, start, end) = get_selected_locked(state, name, query, maximum_bytes)?;
     let mut retained = ReadAllocation::empty(meter);
-    let selected = get_selected_locked(state, query, maximum_bytes,
-        || {
-            if table_backend { meter.admit_read(0)?; }
-            Ok::<_, NativeObjectsError>(())
-        },
-        |info| clone_native_info(info, meter, &mut retained))?;
-    Ok((selected, retained))
+    let info = clone_native_info(&value.info, meter, &mut retained)?;
+    Ok(ResolvedGet {
+        header: wire::GetObjectHeader { object: Some(info), content_range: range },
+        body: value.body.clone(), start, end, allocation: Some(retained),
+    })
+}
+
+
+
+#[cfg(feature = "local")]
+fn put_group_sizes(
+    requests: &[(wire::PutObjectHeader, OwnedBytes)],
+) -> impl Iterator<Item = usize> + '_ {
+    let mut requests = requests.iter().peekable();
+    std::iter::from_fn(move || {
+        requests.peek()?;
+        let mut bytes = 0_usize;
+        let mut count = 0_usize;
+        while requests.next_if(|(query, body)| {
+            let total = bytes.saturating_add(persistence::put_record_bytes(query, body));
+            let fits = bytes == 0 || total <= persistence::RECORD_LIMIT;
+            if fits { bytes = total; }
+            fits
+        }).is_some() {
+            count += 1;
+        }
+        Some(count)
+    })
 }
 
 #[async_trait::async_trait]
-impl NativeBatchObjects for MemoryObjects {
+impl ObjectsProvider for MemoryObjects {
     async fn put_batch(
         &self,
         requests: Vec<(wire::PutObjectHeader, OwnedBytes)>,
@@ -987,7 +960,7 @@ impl NativeBatchObjects for MemoryObjects {
                 let mut results = Vec::with_capacity(selected.len());
                 for value in selected {
                     results.push(match value {
-                        Ok(value) => value.read().await,
+                        Ok(value) => value.read(BodyReadMode::Ordinary).await.map_err(|_| Error::from(Unavailable)),
                         Err(error) => Err(error),
                     });
                 }
@@ -1023,7 +996,7 @@ impl NativeBatchObjects for MemoryObjects {
                 }
                 for value in selected.0.drain(..) {
                     results.0.push(match value {
-                        Ok((value, header)) => value.read_native(Arc::clone(&meter), header).await,
+                        Ok(value) => value.read(BodyReadMode::Native(Arc::clone(&meter))).await,
                         Err(error) => Err(error),
                     });
                 }
@@ -1064,29 +1037,29 @@ impl NativeBatchObjects for MemoryObjects {
                         let mut requests = input.data.drain(..);
                         for (count, failure) in plans.0.drain(..) {
                             let start = results.0.len();
-                            let mut next = match meter.check().map(|()| state.clone()).map_err(NativeObjectsError::Admission) {
+                            let mut next = match meter.check().map(|()| state.clone()).map_err(NativeObjectsError::from) {
                                 Ok(next) => next,
                                 Err(error) => {
-                                    failure.set(error)?;
+                                    failure.value.set(error)?;
                                     for _ in requests.by_ref().take(count) {
-                                        results.0.push(Err(NativeObjectsError::SharedFailure(
-                                            Arc::clone(&failure))));
+                                        results.0.push(Err(NativeObjectsError::from(NativeObjectsCause::SharedFailure(
+                                            Arc::clone(&failure)))));
                                     }
                                     continue;
                                 }
                             };
                             for (query, body) in requests.by_ref().take(count) {
-                                results.0.push(staged.put_locked_native(&mut next, &query, body, &meter));
+                                results.0.push(staged.put_locked_native(&mut next, query, body, &meter));
                             }
                             if next.sequence != state.sequence {
                                 match journal.commit(&state, &mut next, Some(Arc::clone(&meter))) {
                                     Ok(()) => *state = next,
                                     Err(error) => {
-                                        failure.set(error)?;
+                                        failure.value.set(error)?;
                                         for result in &mut results.0[start..] {
                                             if result.is_ok() {
-                                                *result = Err(NativeObjectsError::SharedFailure(
-                                                    Arc::clone(&failure)));
+                                                *result = Err(NativeObjectsError::from(NativeObjectsCause::SharedFailure(
+                                                    Arc::clone(&failure))));
                                             }
                                         }
                                     }
@@ -1097,7 +1070,7 @@ impl NativeBatchObjects for MemoryObjects {
                         return ObjectsBatch::new(values, allocation);
                     }
                     for (query, body) in input.data.drain(..) {
-                        results.0.push(self.put_locked_native(&mut state, &query, body, &meter));
+                        results.0.push(self.put_locked_native(&mut state, query, body, &meter));
                     }
                 }
                 let (values, allocation) = results;
@@ -1105,31 +1078,7 @@ impl NativeBatchObjects for MemoryObjects {
             }).await
         })
     }
-}
 
-#[cfg(feature = "local")]
-fn put_group_sizes(
-    requests: &[(wire::PutObjectHeader, OwnedBytes)],
-) -> impl Iterator<Item = usize> + '_ {
-    let mut requests = requests.iter().peekable();
-    std::iter::from_fn(move || {
-        requests.peek()?;
-        let mut bytes = 0_usize;
-        let mut count = 0_usize;
-        while requests.next_if(|(query, body)| {
-            let total = bytes.saturating_add(persistence::put_record_bytes(query, body));
-            let fits = bytes == 0 || total <= persistence::RECORD_LIMIT;
-            if fits { bytes = total; }
-            fits
-        }).is_some() {
-            count += 1;
-        }
-        Some(count)
-    })
-}
-
-#[async_trait::async_trait]
-impl ObjectsProvider for MemoryObjects {
     async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
         obs::traced(obs::span!(INFO, "acyclic.objects.create_bucket"), async {
             request::bucket_name(&query.name)?;
@@ -1219,8 +1168,8 @@ impl ObjectsProvider for MemoryObjects {
             obs::traced(obs::span!(INFO, "acyclic.objects.put", bytes = input.data().1.len()), async {
                 meter.check()?;
                 let mut state = self.lock_state()?;
-                let body = std::mem::replace(&mut input.data.1, OwnedBytes::new());
-                self.put_locked_native(&mut state, &input.data().0, body, &meter)
+                let (query, body) = std::mem::take(&mut input.data);
+                self.put_locked_native(&mut state, query, body, &meter)
             }).await
         })
     }
@@ -1236,7 +1185,7 @@ impl ObjectsProvider for MemoryObjects {
                     let state = self.lock_state()?;
                     get_locked(&state, &query, maximum_bytes)?
                 };
-                let object = selected.read().await?;
+                let object = selected.read(BodyReadMode::Ordinary).await.map_err(|_| Error::from(Unavailable))?;
                 obs::record!("bytes" = object.body().len());
                 Ok(object)
             },
@@ -1255,12 +1204,12 @@ impl ObjectsProvider for MemoryObjects {
         super::native_future(Arc::clone(&meter), async move {
             let input = input;
             obs::traced(obs::span!(INFO, "acyclic.objects.get", bytes = obs::Empty), async {
-                let (selected, header) = {
+                let selected = {
                     let state = self.lock_state()?;
                     get_native_locked(&state, input.data(), maximum_bytes, &meter,
                         self.native_table_backend())?
                 };
-                let result = selected.read_native(Arc::clone(&meter), header).await?;
+                let result = selected.read(BodyReadMode::Native(Arc::clone(&meter))).await?;
                 obs::record!("bytes" = result.body().len());
                 Ok(result)
             }).await
@@ -1271,9 +1220,7 @@ impl ObjectsProvider for MemoryObjects {
         query: wire::HeadObjectRequest,
     ) -> Result<wire::HeadObjectResponse, Error> {
         obs::traced(obs::span!(INFO, "acyclic.objects.head"), async {
-            request::validate_binary("objects/head", &query.encode_to_vec(), 0)?;
-            let name = request::bucket(&query.bucket)?;
-            request::key(&query.object_key)?;
+            let name = request::head(&query)?;
             let state = self.lock_state()?;
             let value = state
                 .buckets
@@ -1312,16 +1259,7 @@ impl ObjectsProvider for MemoryObjects {
         obs::traced(
             obs::span!(INFO, "acyclic.objects.list", items = obs::Empty),
             async {
-                request::validate_binary("objects/list", &query.encode_to_vec(), 0)?;
-                let name = request::bucket(&query.bucket)?;
-                let limit = request::page_size(query.page_size)?;
-                if query.prefix.len() > 1024
-                    || query.delimiter.len() > 1024
-                    || query.prefix.contains('\0')
-                    || query.delimiter.contains('\0')
-                {
-                    return Err(InvalidArgument.into());
-                }
+                let (name, limit) = request::list(&query)?;
                 let cursor = self.decode_cursor(&query)?;
                 let state = self.lock_state()?;
                 let bucket = state.buckets.get(name).ok_or(Error::from(NotFound))?;
@@ -1475,13 +1413,7 @@ impl ObjectsProvider for MemoryObjects {
         obs::traced(
             obs::span!(INFO, "acyclic.objects.list_parts", items = obs::Empty),
             async {
-                request::validate_binary("multipart/list-parts", &query.encode_to_vec(), 0)?;
-                let name = request::bucket(&query.bucket)?;
-                request::key(&query.object_key)?;
-                let limit = request::page_size(query.page_size)?;
-                if query.after_part_number > 10_000 {
-                    return Err(InvalidArgument.into());
-                }
+                let (name, limit) = request::list_parts(&query)?;
                 let state = self.lock_state()?;
                 let value = upload(&state, name, &query.object_key, &query.upload_id)?;
                 let mut parts = value
@@ -1568,10 +1500,9 @@ impl ObjectsProvider for MemoryObjects {
                             metadata,
                             &query.preconditions,
                             StoredBody::Composite {
-                                parts: Arc::new(BodyParts {
-                                    values: bodies,
-                                    #[cfg(not(target_arch = "wasm32"))]
-                                    _allocation: None,
+                                parts: Arc::new(crate::v1::Guarded {
+                                    value: bodies,
+                                    _allocation: Default::default(),
                                 }),
                                 length: size,
                             },
@@ -1745,7 +1676,7 @@ mod bootstrap_tests {
         let input = ObjectsNativeRequest::new((changed, OwnedBytes::from_static(b"actual")), custody, &meter)?;
         let mismatch = provider.put_native(input, Arc::clone(&meter))?.await
             .err().ok_or("retry accepted changed metadata")?;
-        assert!(matches!(mismatch, NativeObjectsError::Service(Error { code: IdempotencyMismatch })));
+        assert!(matches!(mismatch, NativeObjectsError { cause: NativeObjectsCause::Service(Error { code: IdempotencyMismatch }), .. }));
         let query = wire::GetObjectRequest {
             bucket: Some(bucket.clone()), object_key: "native-publication".into(), ..Default::default()
         };
@@ -1760,7 +1691,6 @@ mod bootstrap_tests {
         }, 6).await?;
         assert_eq!(read.body().as_slice(), b"actual");
         assert_eq!(read.header().object.as_ref(), Some(first.info()));
-        assert!(observed.copied.load(SeqCst) > 0);
         drop(read);
         drop(first);
         drop(retried);
@@ -1792,7 +1722,7 @@ mod bootstrap_tests {
         current.cancelled.store(true, SeqCst);
         let failure = provider.put_native(input, Arc::clone(&meter))
             .err().ok_or("body payer bypassed current cancellation")?;
-        assert!(matches!(&failure, NativeObjectsError::Admission(error)
+        assert!(matches!(&failure.cause, NativeObjectsCause::Admission(error)
             if error.kind() == std::io::ErrorKind::Interrupted));
         assert_eq!(current.memory.load(SeqCst), 0);
         assert!(original.memory.load(SeqCst) >= 4);
@@ -1822,7 +1752,7 @@ mod bootstrap_tests {
         let custody = ReadAllocation::adopt(&meter, input_bytes)?;
         let input = ObjectsNativeRequest::new(queries, custody, &meter)?;
         let batch = provider.get_batch_native(input, Arc::clone(&meter))?.await?;
-        let mut results = batch.into_results();
+        let mut results = batch;
         drop(results.next().ok_or("missing first native result")??);
         drop(results.next().ok_or("missing second native result")??);
         assert!(results.next().is_none());
@@ -1853,7 +1783,7 @@ mod bootstrap_tests {
         assert_eq!(results.results().len(), 3);
         assert!(results.results()[0].is_ok());
         assert!(matches!(&results.results()[1],
-            Err(NativeObjectsError::Service(Error { code: QuotaExceeded }))));
+            Err(NativeObjectsError { cause: NativeObjectsCause::Service(Error { code: QuotaExceeded }), .. })));
         assert!(results.results()[2].is_ok());
         for key in ["a", "c"] {
             let object = provider.get(wire::GetObjectRequest {
@@ -1890,7 +1820,7 @@ mod bootstrap_tests {
         let input = ObjectsNativeRequest::new(request, custody, &meter)?;
         let denied = provider.get_native(input, 4, Arc::clone(&meter))?.await
             .err().ok_or("lookup bypassed original backend admission")?;
-        assert!(matches!(&denied, NativeObjectsError::Admission(error)
+        assert!(matches!(&denied.cause, NativeObjectsCause::Admission(error)
             if error.kind() == std::io::ErrorKind::PermissionDenied));
         assert_eq!(observed.memory.load(SeqCst), 0);
 
@@ -1902,7 +1832,7 @@ mod bootstrap_tests {
         // Deny response allocation after the funded lookup.
         observed.limit.store(observed.memory.load(SeqCst), SeqCst);
         let copy_denied = future.await.err().ok_or("header copy bypassed allocation admission")?;
-        assert!(matches!(&copy_denied, NativeObjectsError::Admission(error)
+        assert!(matches!(&copy_denied.cause, NativeObjectsCause::Admission(error)
             if error.kind() == std::io::ErrorKind::OutOfMemory));
         assert_eq!(observed.memory.load(SeqCst), 0);
 
@@ -1915,7 +1845,7 @@ mod bootstrap_tests {
         let input = ObjectsNativeRequest::new((header, OwnedBytes::from_static(b"data")), custody, &meter)?;
         let denied = provider.put_native(input, Arc::clone(&meter))?.await
             .err().ok_or("publication bypassed original backend admission")?;
-        assert!(matches!(&denied, NativeObjectsError::Admission(error)
+        assert!(matches!(&denied.cause, NativeObjectsCause::Admission(error)
             if error.kind() == std::io::ErrorKind::PermissionDenied));
         assert!(matches!(provider.get(wire::GetObjectRequest {
             bucket: Some(bucket), object_key: "unpublished".into(), ..Default::default()

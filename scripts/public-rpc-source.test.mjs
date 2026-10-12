@@ -23,7 +23,7 @@ function missing(label, service, rpc, path, replace, flag) {
 }
 missing("missing Rust HTTP operation", WorkersService, "InvokeVersion", "rust/crates/workers/src/http.rs", s => s.replace("async fn invoke_version(", "async fn removed_invoke("), "rustHttp");
 missing("missing Rust-owned Actors gRPC operation", ActorsService, ActorsService.methods[0].name, "rust/crates/actors/src/client.rs", s => s.replace(`operation!(\n    ${ActorsService.methods[0].localName.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`)},`, "operation!(\n    removed,"), "rustGrpc");
-missing("missing TypeScript gRPC factory", WorkersService, "InvokeVersion", "typescript/packages/workers/src/client.ts", s => s.replace("export const createWorkersGrpcClient =", "export const removed ="), "typescriptGrpcNodeBun");
+missing("missing TypeScript Workers client", WorkersService, "InvokeVersion", "typescript/packages/workers/src/client.ts", s => s.replace("export class WorkersClient", "export class RemovedClient"), "typescriptGrpcNodeBun");
 missing("missing Workers WASM loader", WorkersService, "InvokeVersion", "typescript/packages/workers/src/binding.ts", s => s.replace("function loadWasm()", "function removed()"), "typescriptGrpcWeb");
 missing("missing Workers native bridge", WorkersService, "InvokeVersion", "typescript/packages/workers/src/binding.ts", s => s.replace("function loadNative()", "function removed()"), "typescriptGrpcNodeBun");
 missing("missing Workers Rust operation", WorkersService, "InvokeVersion", "rust/crates/workers/src/client_binding.rs", s => s.replace('( "InvokeVersion",', '( "Removed",').replace('("InvokeVersion",', '("Removed",'), "rustGrpc");

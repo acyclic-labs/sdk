@@ -8,55 +8,7 @@ use reqwest::{
 };
 
 /// HTTP configuration, encoding, or remote service failure.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// Invalid endpoint, credential, bound, or request path.
-    #[error("invalid HTTP client configuration or request")]
-    InvalidArgument,
-    /// Network failure.
-    #[error(transparent)]
-    Transport(#[from] reqwest::Error),
-    /// Response exceeded the configured bound.
-    #[error("HTTP response exceeds configured bound")]
-    ResponseTooLarge,
-    /// Malformed canonical response.
-    #[error("malformed Protobuf JSON response")]
-    MalformedResponse,
-    /// Service rejected the request, with canonical detail when available.
-    #[error("HTTP service returned status {status}")]
-    Service {
-        /// HTTP response status.
-        status: u16,
-        /// Canonical semantic error detail.
-        detail: Option<wire::Error>,
-    },
-}
-
-impl Error {
-    /// Stable classification for tracing's `error.kind`.
-    #[must_use]
-    pub const fn kind(&self) -> &'static str {
-        match self {
-            Self::InvalidArgument => "invalid_argument",
-            Self::Transport(_) => "transport",
-            Self::ResponseTooLarge => "response_too_large",
-            Self::MalformedResponse => "malformed_response",
-            Self::Service { .. } => "service",
-        }
-    }
-}
-
-/// Plain HTTP is admitted only for `localhost` and loopback IP literals.
-fn loopback(endpoint: &Url) -> bool {
-    endpoint.host_str().is_some_and(|host| {
-        host == "localhost"
-            || host
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback())
-    })
-}
+pub type Error = acyclic_workers::http::Error<wire::Error>;
 
 /// Typed HTTP operations with bearer authentication and bounded responses.
 #[derive(Clone)]
@@ -72,7 +24,7 @@ impl Client {
     /// Create a client. HTTPS or loopback HTTP is required.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
         let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
-        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback(&endpoint))
+        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && acyclic_workers::http::loopback(&endpoint))
             || !endpoint.username().is_empty()
             || endpoint.password().is_some()
             || endpoint.query().is_some()
@@ -121,7 +73,47 @@ impl Client {
         output: &str,
         request: &I,
     ) -> Result<O, Error> {
-        let result = self.exchange(route, input, output, request).await;
+        let result = async {
+            let descriptor = self
+                .descriptors
+                .get_message_by_name(input)
+                .ok_or(Error::MalformedResponse)?;
+            let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
+                .map_err(|_| Error::InvalidArgument)?;
+            let body = serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)?;
+            let mut response = self
+                .transport
+                .post(
+                    self.endpoint
+                        .join(route)
+                        .map_err(|_| Error::InvalidArgument)?,
+                )
+                .header(AUTHORIZATION, self.authorization.clone())
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await?;
+            let status = response.status();
+            #[cfg(not(target_arch = "wasm32"))]
+            tracing::Span::current().record("http.status", status.as_u16());
+            let bytes = acyclic_workers::http::response_body(&mut response, self.maximum)
+                .await?.ok_or(Error::ResponseTooLarge)?;
+            if !status.is_success() {
+                let detail = self
+                    .decode::<wire::Error>("acyclic.actors.v1.Error", &bytes)
+                    .ok()
+                    .filter(|detail| {
+                        wire::ErrorCode::try_from(detail.code)
+                            .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
+                    });
+                return Err(Error::Service {
+                    status: status.as_u16(),
+                    detail,
+                    raw_details: bytes,
+                });
+            }
+            self.decode(output, &bytes)
+        }.await;
         #[cfg(not(target_arch = "wasm32"))]
         {
             let span = tracing::Span::current();
@@ -133,53 +125,6 @@ impl Client {
             };
         }
         result
-    }
-
-    async fn exchange<I: Message, O: Message + Default>(
-        &self,
-        route: &str,
-        input: &str,
-        output: &str,
-        request: &I,
-    ) -> Result<O, Error> {
-        let descriptor = self
-            .descriptors
-            .get_message_by_name(input)
-            .ok_or(Error::MalformedResponse)?;
-        let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
-            .map_err(|_| Error::InvalidArgument)?;
-        let body = serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)?;
-        let mut response = self
-            .transport
-            .post(
-                self.endpoint
-                    .join(route)
-                    .map_err(|_| Error::InvalidArgument)?,
-            )
-            .header(AUTHORIZATION, self.authorization.clone())
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await?;
-        let status = response.status();
-        #[cfg(not(target_arch = "wasm32"))]
-        tracing::Span::current().record("http.status", status.as_u16());
-        let bytes = acyclic_workers::http::response_body(&mut response, self.maximum)
-            .await?.ok_or(Error::ResponseTooLarge)?;
-        if !status.is_success() {
-            let detail = self
-                .decode::<wire::Error>("acyclic.actors.v1.Error", &bytes)
-                .ok()
-                .filter(|detail| {
-                    wire::ErrorCode::try_from(detail.code)
-                        .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
-                });
-            return Err(Error::Service {
-                status: status.as_u16(),
-                detail,
-            });
-        }
-        self.decode(output, &bytes)
     }
 
     fn decode<O: Message + Default>(&self, name: &str, bytes: &[u8]) -> Result<O, Error> {

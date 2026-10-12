@@ -13,7 +13,7 @@ impl PiSession {
         let work = if caller == owner.policy().root_task { query_work.clone() }
             else { native.invocation_work(caller).await? };
         let request_bytes = bounded_input_size(arguments)?;
-        let _request_custody = work.retain_owned(request_bytes).map_err(native_error)?;
+        let _request_custody = work.claim(request_bytes, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         let request = builtin_request(caller, event, arguments)?;
         request.validate()?;
         let (value, custody) = if caller == owner.policy().root_task {

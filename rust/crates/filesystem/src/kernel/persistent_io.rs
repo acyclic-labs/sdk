@@ -47,10 +47,10 @@ impl<F: Format> OwnedPage<F> {
                 #[cfg(not(target_arch = "wasm32"))]
                 if accounting.native_work().is_some() {
                     let cloned = super::file_read::decode_owned(accounting, |steps| {
-                        clone_page::<F, super::file_read::ReadDecodeError>(
+                        clone_page::<F, crate::FsError>(
                             &page, &mut |step| steps(step),
                         )
-                    }).map_err(super::file_read::ReadDecodeError::into_original_fs_error)?;
+                    })?;
                     let bytes = match &cloned.1 {
                         super::allocation::KernelOwnedAllocation::NativeOriginal(owned) => owned.bytes(),
                         super::allocation::KernelOwnedAllocation::Standalone => 0,
@@ -231,7 +231,7 @@ async fn read_cold_object<S: AsyncObjectStore>(
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             &mut frame,
             |frame, bytes| {
-                **frame = Some(original.claim(bytes)?);
+                **frame = Some(original.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?);
                 Ok::<_, crate::NativeTreeMaterializationError>(())
             },
             |_| store.read_with_native_work(page, maximum, original, cancellation),
@@ -269,9 +269,8 @@ async fn read_cold_standalone<S: AsyncObjectStore>(
         move |budget| async move {
             AsyncObjectStore::read_with_custody(
                 store, page, maximum_bytes, budget, cancellation,
-                data_custody.map(crate::async_storage::ObjectReadObservation::new),
+                data_custody,
             ).await
-                .map(|receipt| crate::OperationReceipt { value: receipt.value, work: receipt.work })
                 .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, Error::Storage))
         },
         remaining, cancellation, Error::Storage(ObjectStoreError::Cancelled),
@@ -1082,7 +1081,7 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
         return super::file_read::decode_owned(accounting, |steps| {
             let page = F::decode(read, limits, &mut |step| steps(step))?;
             Ok(page)
-        }).map_err(super::file_read::ReadDecodeError::into_original_fs_error).map(|(page, allocation)| {
+        }).map(|(page, allocation)| {
             let logical_bytes = match &allocation {
                 super::allocation::KernelOwnedAllocation::NativeOriginal(owned) => owned.bytes(),
                 super::allocation::KernelOwnedAllocation::Standalone => 0,
@@ -1122,7 +1121,7 @@ pub(crate) fn clone_key_with_accounting_and_custody<F: Format>(
 ) -> Result<(F::Key, super::allocation::KernelOwnedAllocation), crate::FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     if accounting.native_work().is_some() {
-        return super::file_read::decode_owned(accounting, |steps| F::try_clone_key(key, maximum_bytes, &mut |step| steps(step))).map_err(super::file_read::ReadDecodeError::into_original_fs_error);
+        return super::file_read::decode_owned(accounting, |steps| F::try_clone_key(key, maximum_bytes, &mut |step| steps(step)));
     }
     let (allocations, work, budget, _) = accounting.standalone_parts()
         .expect("native key cloning uses the original step engine");
@@ -1140,7 +1139,7 @@ pub(crate) fn clone_value_with_accounting_and_custody<F: Format>(
 ) -> Result<(F::Value, super::allocation::KernelOwnedAllocation), crate::FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     if accounting.native_work().is_some() {
-        return super::file_read::decode_owned(accounting, |steps| F::try_clone_value(value, maximum_bytes, &mut |step| steps(step))).map_err(super::file_read::ReadDecodeError::into_original_fs_error);
+        return super::file_read::decode_owned(accounting, |steps| F::try_clone_value(value, maximum_bytes, &mut |step| steps(step)));
     }
     let (allocations, work, budget, _) = accounting.standalone_parts()
         .expect("native value cloning uses the original step engine");

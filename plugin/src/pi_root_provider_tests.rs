@@ -1,5 +1,6 @@
 
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::{PiScratchAllocation, PiScratchBinding, PiTaskBinding, pi_owner::PiOwnerPolicy,
     pi_root_inputs::stage_root_command, pi_runtime::PiTaskRuntime, pi_mail::{PiMailEnvelope, PiMailKind}};
 use acyclic_harness::{AgentId, Capabilities,
@@ -13,7 +14,7 @@ use acyclic_harness::{AgentId, Capabilities,
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::{path::PathBuf, sync::atomic::Ordering};
 
-type Runtime = PiTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
+type Runtime = PiTaskRuntime<LocalStream>;
 
 struct Fixture {
     directory: tempfile::TempDir,
@@ -50,7 +51,7 @@ impl Fixture {
         let agent = AgentId::from_bytes([111; 16]);
         let task = TaskId::from_bytes([112; 16]);
         let root = [113; 16];
-        let provider = ProviderRef::new("pi-provider-tests", "filesystem", "1").unwrap();
+        let provider = ProviderRef::new("pi-provider-tests".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
         let journal = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project(hex::encode(root))).unwrap();
@@ -67,7 +68,7 @@ impl Fixture {
             run_limits: TaskRunLimits { concurrency: Some(4), max_steps: Some(128), deadline_epoch_ms: None },
             session_limits: SessionLimits { active_tasks: 4, total_tasks: 16, depth: 4, model_steps: 128 },
             concurrency: 4, maximum_payload_bytes: 1_048_576 }, None, &startup).unwrap();
-        owner.save_new(&session).unwrap();
+        crate::pi_owner::tests::publish_owner(&(owner), &session, &crate::pi_fork::tests::work()).unwrap();
         let filesystem = Arc::new(Host::new(resources.fs.clone(), provider).unwrap());
         filesystem.create_volume(&journal).await.unwrap();
         let binding = PiTaskBinding { native_session_id: "root-provider".to_owned(), task_id: task, agent_id: agent,
@@ -86,8 +87,8 @@ impl Fixture {
         let runtime = PiTaskRuntime::open_with_native_work(stream.clone(), filesystem.clone(),
             &journal, authority, &startup).await.unwrap();
         let (admitted_request, request_custody) = request.clone_with_native_work(&startup).unwrap();
-        let (admission, admission_custody) = runtime.admit_root_with_native_work(
-            admitted_request.binding, admitted_request.root, command, &startup).await.unwrap();
+        let (admission, admission_custody) = runtime.admit_root(
+            &admitted_request.binding, &admitted_request.root, &command, &startup).await.unwrap();
         drop(admission);
         drop(admission_custody);
         drop(request_custody);
@@ -103,24 +104,26 @@ impl Fixture {
         };
         let fence = LeaseFence::from(&lease.reservation);
         let context = runtime.runtime.task_context_with_native_work(task, &fence, &startup).await.unwrap();
-        let (preparation, journal_owner) = PiRootPreparation::load_for_dispatch(&resources.private_state_root,
-            session.strip_prefix(&resources.data).unwrap(), &runtime, &filesystem,
-            &request, &fence, Arc::clone(&context), &startup).await.unwrap();
+        let (preparation, journal_owner) = async {
+        let preparation = PiRootPreparation::load(&resources.private_state_root, session.strip_prefix(&resources.data).unwrap(), &runtime, &filesystem, &(request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(request).root), Some(Arc::clone(&context)), &startup).await?;
+        let owner = (&runtime).runtime.task_host().journal_owner_with_native_work((request).binding.task_id, &fence, &startup).await?;
+        owner.verify_with_native_work(false, &startup).await?;
+        Ok::<_, acyclic_harness::Error>((preparation, owner))
+    }.await.unwrap();
         let journal_owner = journal_owner.into_native_shared(&startup).unwrap();
-        let provider = root_provider(owner.clone(), &resources, filesystem.clone(), stream.clone(), preparation,
-            Some(journal_owner), context, startup.clone()).unwrap();
+        let provider = root_provider(owner.clone(), &resources, filesystem.clone(), stream.clone(), preparation, Some(journal_owner), startup.clone()).unwrap();
         Self { directory, session, native, resources, filesystem, stream, owner, runtime,
             request, lease, provider, startup, _lease_custody: lease_custody, _service_lock: service_lock }
     }
 
     async fn execute(&self) -> Result<(EffectStatus, NativeAllocation)> {
         let current = Arc::clone(self.provider.journal_owner.as_ref().unwrap());
-        let content = self.provider.context.content_residency_verifier_with_native_work(current, &self.startup)?;
+        let content = self.provider.preparation.context.content_residency_verifier_with_native_work(current, &self.startup)?;
         let (authority, custody) = self.owner.effect_authority_with_native_work(&self.startup)?;
         let effects = crate::pi_owner::root_effects_with_native_work(self.stream.clone(), authority, custody,
             content, self.provider.clone(), &self.startup)?;
         effects.run_task_effect_with_native_work(self.provider.execution_owner()?,
-            self.provider.preparation.command().operation_id, self.provider.preparation.plan(), &self.startup).await
+            self.provider.preparation.command.operation_id, &self.provider.preparation.plan, &self.startup).await
     }
 
     async fn dispatch_identity(&self) -> EffectDispatch {
@@ -139,14 +142,16 @@ impl Fixture {
         let fence = LeaseFence::from(&self.lease.reservation);
         let context = self.runtime.runtime.task_context_with_native_work(self.request.binding.task_id,
             &fence, &self.startup).await.unwrap();
-        let (preparation, journal_owner) = PiRootPreparation::load_for_dispatch(&self.resources.private_state_root,
-            self.session.strip_prefix(&self.resources.data).unwrap(), &self.runtime,
-            &self.filesystem, &self.request, &fence, Arc::clone(&context), &self.startup).await.unwrap();
+        let (preparation, journal_owner) = async {
+        let preparation = PiRootPreparation::load(&self.resources.private_state_root, self.session.strip_prefix(&self.resources.data).unwrap(), &self.runtime, &self.filesystem, &(self.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(self.request).root), Some(Arc::clone(&context)), &self.startup).await?;
+        let owner = (&self.runtime).runtime.task_host().journal_owner_with_native_work((self.request).binding.task_id, &fence, &self.startup).await?;
+        owner.verify_with_native_work(false, &self.startup).await?;
+        Ok::<_, acyclic_harness::Error>((preparation, owner))
+    }.await.unwrap();
         let journal_owner = journal_owner.into_native_shared(&self.startup).unwrap();
         let (mut resources, _custody) = service_resources_with_native_work(&self.resources, &self.startup).unwrap();
         resources.shared_roots = crate::SharedRootRegistry::default();
-        root_provider(owner, &resources, self.filesystem.clone(), self.stream.clone(), preparation,
-            Some(journal_owner), context, self.startup.clone()).unwrap()
+        root_provider(owner, &resources, self.filesystem.clone(), self.stream.clone(), preparation, Some(journal_owner), self.startup.clone()).unwrap()
     }
 
     async fn assert_no_selected_resources(&self) {
@@ -204,9 +209,7 @@ async fn pi_root_provider_allocates_actual_lazy_roots_and_original_scratch_gener
             assert!(state.as_state().parent_workspace_id.is_none());
             assert_eq!(handle.workspace.read("/untouched.txt", 64).await.unwrap().as_ref(), b"original native bytes");
         }
-        let preparation = PiRootPreparation::load(&fixture.resources.private_state_root,
-            fixture.session.strip_prefix(&fixture.resources.data).unwrap(), &fixture.runtime,
-            &fixture.filesystem, &fixture.request, &fixture.startup).await.unwrap();
+        let preparation = PiRootPreparation::load(&fixture.resources.private_state_root, fixture.session.strip_prefix(&fixture.resources.data).unwrap(), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), None, &fixture.startup).await.unwrap();
         let observed = observe_root_allocation(fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), preparation, &fixture.startup).await.unwrap().unwrap();
 
         assert_eq!(observed.0.0, original.0);
@@ -229,8 +232,7 @@ async fn pi_created_root_guard_uses_actual_readonly_owner_without_snapshot_or_fr
         fixture.request.binding.task_id, &fixture.startup).await.unwrap();
     assert!(readonly_owner.verify_with_native_work(false, &fixture.startup).await.is_err());
     let key = fixture.request.binding.project_volumes.keys().next().unwrap();
-    let preparation = load_original_preparation_with_native_work(&fixture.owner, &fixture.filesystem,
-        &fixture.request, Arc::clone(&readonly_context), &fixture.startup).await.unwrap();
+    let preparation = load_original_preparation_with_native_work(&fixture.owner, &fixture.filesystem, &(fixture.request).binding, &(fixture.request).root, Arc::clone(&readonly_context), &fixture.startup).await.unwrap();
     let before = fixture.startup.receipt();
     let identity = guard_created_root_source_with_native_work(fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), preparation,
     &readonly_owner, key, &allocation.0, &fixture.startup).await.unwrap();
@@ -240,16 +242,14 @@ async fn pi_created_root_guard_uses_actual_readonly_owner_without_snapshot_or_fr
     let mut substituted = fixture.provider.read_with_native_work::<PiRootAllocation>(
         &result.0, &fixture.startup).await.unwrap();
     substituted.0.roots.get_mut(key).unwrap().repository_workspace_id = [201; 16];
-    let preparation = load_original_preparation_with_native_work(&fixture.owner, &fixture.filesystem,
-        &fixture.request, Arc::clone(&readonly_context), &fixture.startup).await.unwrap();
+    let preparation = load_original_preparation_with_native_work(&fixture.owner, &fixture.filesystem, &(fixture.request).binding, &(fixture.request).root, Arc::clone(&readonly_context), &fixture.startup).await.unwrap();
     assert!(guard_created_root_source_with_native_work(fixture.owner.clone(), &fixture.resources,
         fixture.filesystem.clone(), fixture.stream.clone(), preparation, &readonly_owner,
         key, &substituted.0, &fixture.startup).await.is_err());
     let original_native = fixture.directory.path().join("created-original-native-root");
     std::fs::rename(&fixture.native, &original_native).unwrap();
     std::fs::create_dir(&fixture.native).unwrap();
-    let preparation = load_original_preparation_with_native_work(&fixture.owner, &fixture.filesystem,
-        &fixture.request, readonly_context, &fixture.startup).await.unwrap();
+    let preparation = load_original_preparation_with_native_work(&fixture.owner, &fixture.filesystem, &(fixture.request).binding, &(fixture.request).root, readonly_context, &fixture.startup).await.unwrap();
     assert!(guard_created_root_source_with_native_work(fixture.owner.clone(), &fixture.resources,
         fixture.filesystem.clone(), fixture.stream.clone(), preparation, &readonly_owner,
         key, &allocation.0, &fixture.startup).await.is_err());
@@ -277,7 +277,7 @@ async fn pi_root_original_span_exhaustion_denies_before_creation_and_releases_re
     let fixture = Fixture::new(false).await;
     let baseline = fixture.startup.live_allocation_bytes();
     let bytes = fixture.startup.budget().peak_allocation_bytes - baseline;
-    let payload_custody = fixture.startup.claim(bytes).unwrap();
+    let payload_custody = fixture.startup.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED).unwrap();
     let mut payload = Vec::<u8>::new();
     payload.try_reserve_exact(usize::try_from(bytes).unwrap()).unwrap();
     payload.resize(usize::try_from(bytes).unwrap(), 0);
@@ -314,7 +314,7 @@ async fn pi_root_provider_all_lost_ack_boundaries_resume_original_operations_wit
             }
             let reopened = fixture.reopen_provider().await;
             if cancelled {
-                fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id).await.unwrap();
+                fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id, None).await.unwrap();
                 reopened.cancel();
             }
             let observed = reopened.reconcile_native(dispatch.attempt_id, &fixture.startup).await.unwrap();
@@ -383,7 +383,7 @@ async fn pi_root_provider_rejects_foreign_attempt_digest_provider_and_substitute
             "provider" => forged.provider = "foreign".into(),
             "effect" => forged.effect_id = EffectId::from_bytes([119; 16]),
             "kind" => forged.effect_kind = "foreign@1".into(),
-            "request" => forged.request = fixture.provider.preparation.plan().result_schema.clone(),
+            "request" => forged.request = fixture.provider.preparation.plan.result_schema.clone(),
             _ => unreachable!(),
         }
         assert!(fixture.provider.dispatch_native(forged, &fixture.startup).await.is_err());
@@ -521,13 +521,17 @@ async fn pi_root_private_scratch_proof_is_original_readonly_and_never_probes_use
     let before = fixture.startup.receipt();
     let proof = fixture.provider.prove_scratch_allocation_with_native_work(dispatch.attempt_id,
         &fixture.startup).await.unwrap().unwrap();
-    assert_eq!(proof.task(), fixture.request.binding.task_id);
-    assert_eq!(proof.agent(), fixture.request.binding.agent_id);
-    assert_eq!(proof.volume(), &fixture.request.binding.scratch.volume);
-    assert_eq!(proof.workspace_id(), observed.0.1.scratch.workspace_id);
-    assert_eq!(proof.generation(), &observed.0.1.scratch.generation);
-    assert_eq!(proof.output(), &observed.0.0);
-    assert_eq!(proof.operation(), fixture.provider.creation_operation_with_native_work(
+    let binding = &fixture.provider.preparation.request.binding;
+    assert_eq!(binding.task_id, fixture.request.binding.task_id);
+    assert_eq!(binding.agent_id, fixture.request.binding.agent_id);
+    assert_eq!(binding.scratch.volume, fixture.request.binding.scratch.volume);
+    assert_eq!(proof.0.workspace_id, observed.0.1.scratch.workspace_id);
+    assert_eq!(proof.0.generation, observed.0.1.scratch.generation);
+    let output = fixture.provider.original_artifact_with_native_work(
+        dispatch.effect_id, dispatch.attempt_id, "result", &fixture.startup,
+    ).await.unwrap().unwrap();
+    assert_eq!(output.0, observed.0.0);
+    assert_eq!(proof.1, fixture.provider.creation_operation_with_native_work(
         dispatch.effect_id, dispatch.attempt_id, "scratch", &fixture.startup).unwrap());
     assert_eq!(fixture.startup.receipt().backend_write_operations, before.backend_write_operations);
     assert_eq!(fixture.startup.receipt().source_path_components, before.source_path_components);
@@ -535,13 +539,16 @@ async fn pi_root_private_scratch_proof_is_original_readonly_and_never_probes_use
     std::fs::rename(&fixture.native, &retained).unwrap();
     std::fs::create_dir(&fixture.native).unwrap();
     assert!(fixture.provider.observe_allocation_with_native_work(dispatch.attempt_id, &fixture.startup).await.is_err());
-    let preparation = PiRootPreparation::load(&fixture.resources.private_state_root,
-        fixture.session.strip_prefix(&fixture.resources.data).unwrap(), &fixture.runtime,
-        &fixture.filesystem, &fixture.request, &fixture.startup).await.unwrap();
+    let preparation = PiRootPreparation::load(&fixture.resources.private_state_root, fixture.session.strip_prefix(&fixture.resources.data).unwrap(), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), None, &fixture.startup).await.unwrap();
     let before = fixture.startup.receipt();
-    let second = prove_root_scratch_allocation_with_native_work(fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), preparation, &fixture.startup).await.unwrap().unwrap();
-    assert_eq!(second.workspace_id(), proof.workspace_id());
-    assert_eq!(second.generation(), proof.generation());
+    let observer = root_provider(fixture.owner.clone(), &fixture.resources,
+        fixture.filesystem.clone(), fixture.stream.clone(), preparation, None, fixture.startup.clone()).unwrap();
+    let effect = observer.effect_id_with_native_work(&fixture.startup).unwrap();
+    let second = observer.prove_scratch_allocation_with_native_work(
+        EffectAttemptId::from_bytes(effect.into_bytes()), &fixture.startup,
+    ).await.unwrap().unwrap();
+    assert_eq!(second.0.workspace_id, proof.0.workspace_id);
+    assert_eq!(second.0.generation, proof.0.generation);
     assert_eq!(fixture.startup.receipt().source_path_components, before.source_path_components);
     assert_eq!(fixture.startup.receipt().backend_write_operations, before.backend_write_operations);
     assert_eq!(std::fs::read(retained.join("untouched.txt")).unwrap(), b"original native bytes");
@@ -563,48 +570,48 @@ async fn pi_root_project_source_proof_uses_original_operations_and_callers_cumul
     assert!(matches!(fixture.execute().await.unwrap().0, EffectStatus::Succeeded { .. }));
     let handles = fixture.provider.take_created_handles().await;
     let (key, handle) = handles.iter().next().unwrap();
-    let snapshot = handle.workspace.snapshot_with_native_work(&fixture.startup).await.unwrap();
+    let snapshot = handle.workspace.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(&fixture.startup, fixture.startup.cancellation()).unwrap()).await.unwrap();
     let project = &fixture.request.binding.project_volumes[key];
     let before = fixture.startup.receipt();
-    prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request, project, snapshot.0,
-    Arc::clone(&fixture.provider.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.unwrap();
+    prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, snapshot,
+    Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.unwrap();
     let after = fixture.startup.receipt();
     assert!(after.authority_records_read > before.authority_records_read);
     assert_eq!(after.backend_write_operations, before.backend_write_operations);
     assert_eq!(after.materializations, before.materializations);
-    let mut foreign = snapshot.0;
+    let mut foreign = snapshot;
     foreign.workspace_id = acyclic_fs::WorkspaceId::from_bytes([130; 16]);
     assert!(prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources,
-        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request, project, foreign,
-        Arc::clone(&fixture.provider.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
-    foreign = snapshot.0;
+        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, foreign,
+        Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
+    foreign = snapshot;
     foreign.source.identity = [131; 16];
     assert!(prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources,
-        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request, project, foreign,
-        Arc::clone(&fixture.provider.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
+        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, foreign,
+        Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
     assert!(prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources,
-        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request, &fixture.request.binding.scratch.volume,
-        snapshot.0, Arc::clone(&fixture.provider.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
+        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, &fixture.request.binding.scratch.volume,
+        snapshot, Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
     let cancellation = CancellationToken::new();
     let cancelled = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
     cancellation.cancel();
     let before = cancelled.receipt();
     assert!(prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources,
-        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request, project, snapshot.0,
-        Arc::clone(&fixture.provider.context), fixture.provider.execution_owner().unwrap(), &cancelled).await.is_err());
+        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, snapshot,
+        Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &cancelled).await.is_err());
     assert_eq!(cancelled.receipt(), before);
     let limited = NativeMaterializationWork::new(WorkBudget { backend_read_operations: 1, ..allocation_budget() },
         &CancellationToken::new()).unwrap();
     assert!(prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources,
-        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request, project, snapshot.0,
-        Arc::clone(&fixture.provider.context), fixture.provider.execution_owner().unwrap(), &limited).await.is_err());
+        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, snapshot,
+        Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &limited).await.is_err());
     assert!(limited.receipt().backend_read_operations <= 1);
     let retained = fixture.directory.path().join("source-proof-retained");
     std::fs::rename(&fixture.native, &retained).unwrap();
     std::fs::create_dir(&fixture.native).unwrap();
     assert!(prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources,
-        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request, project, snapshot.0,
-        Arc::clone(&fixture.provider.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
+        fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request.binding, &fixture.request.root, project, snapshot,
+        Arc::clone(&fixture.provider.preparation.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.is_err());
     assert_eq!(std::fs::read(retained.join("untouched.txt")).unwrap(), b"original native bytes");
 }
 
@@ -637,8 +644,7 @@ async fn pi_root_output_context_preserves_actual_task_and_stages_only_original_s
     assert!(matches!(fixture.execute().await.unwrap().0, EffectStatus::Succeeded { .. }));
     let current_owner = fixture.provider.journal_owner.as_ref().unwrap();
     let context = Arc::clone(&fixture.provider.context);
-    let output = bind_root_output_context_with_native_work(Arc::clone(&context), current_owner, fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(),
-    &fixture.request, &fixture.startup).await.unwrap();
+    let output = bind_root_output_context_with_native_work(Arc::clone(&context), current_owner, fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), &(fixture.request).binding, &(fixture.request).root, &fixture.startup).await.unwrap();
     assert_eq!(output.context().durable_task_id(), Some(fixture.request.binding.task_id));
     assert_eq!(output.context().scope().grants(), context.context().scope().grants());
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
@@ -660,24 +666,24 @@ async fn pi_root_output_context_preserves_actual_task_and_stages_only_original_s
         fixture.request.binding.task_id, fixture.request.binding.agent_id, &fixture.owner.policy().grants,
         &fixture.startup).unwrap();
     let verifier = authority.0.1.verifier_with_native_work(&fixture.startup).unwrap();
-    assert!(fixture.filesystem.native_root_output_source_with_native_work(current_owner,
+    assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, operation, &generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_ok());
-    assert!(fixture.filesystem.native_root_output_source_with_native_work(current_owner,
+    assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.owner.policy().journal, operation, &generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_err());
-    assert!(fixture.filesystem.native_root_output_source_with_native_work(current_owner,
+    assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, acyclic_fs::OperationId::from_bytes([199; 16]),
         &generation, &verifier.0, &authority.0.2, &fixture.startup).await.is_err());
     let foreign_generation = fixture.resources.fs.create_workspace_with_operation_with_native_work(
         "pi-root-output-foreign-generation", VolumeConfig::portable(Lifecycle::Durable),
         acyclic_fs::OperationId::from_bytes([198; 16]), &fixture.startup,
         fixture.startup.cancellation()).await.unwrap();
-    assert!(fixture.filesystem.native_root_output_source_with_native_work(current_owner,
+    assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, operation, &foreign_generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_err());
-    fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id).await.unwrap();
-    assert!(fixture.filesystem.native_root_output_source_with_native_work(current_owner,
+    fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id, None).await.unwrap();
+    assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, operation, &generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_err());
     assert!(output.context().stage_file_once_with_native_work(OperationId::from_bytes([197; 16]),
@@ -687,9 +693,7 @@ async fn pi_root_output_context_preserves_actual_task_and_stages_only_original_s
     let cancelled = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
     cancellation.cancel();
     let before = cancelled.receipt();
-    assert!(bind_root_output_context_with_native_work(context, current_owner,
-        fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(),
-        &fixture.request, &cancelled).await.is_err());
+    assert!(bind_root_output_context_with_native_work(context, current_owner, fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), &(fixture.request).binding, &(fixture.request).root, &cancelled).await.is_err());
     assert_eq!(cancelled.receipt(), before);
 }
 
@@ -714,7 +718,7 @@ async fn pi_operator_input_original_upload_is_root_only_even_for_actual_created_
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let coordinator = fixture.coordinator(&crate::pi_fork::tests::work()).unwrap();
     let child = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal,
-        &fixture.fence, &plan, fixture.source.clone(), allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
+        &fixture.fence, &plan, fixture.root_handle.workspace.clone(), allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
     let attempt = fixture.runtime.runtime.run_operation_with_native_work(&Worker { id: "operator-child-read-denial".into(),
         available: Default::default(), labels: Default::default() }, child.binding.task_id,
         &fixture.runtime.runtime.commands(), 1, &native).await.unwrap();
@@ -748,7 +752,7 @@ fn guarded_pi_decode_rejects_original_quota_and_cancel_without_retaining_partial
         ..allocation_budget()
     }, &cancellation).unwrap();
     let baseline = work.live_allocation_bytes();
-    let failure = guarded_pi_decode::<PiMailEnvelope>(bytes, 8192, owned, JsonValueSchema::None, pi_serde_diagnostic_labels_bytes(&["PiMailEnvelope", "PiMailKind", "kind", "message", "steer"]), &work).err().unwrap();
+    let failure = guarded_pi_decode::<PiMailEnvelope>(bytes, 8192, owned, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None, pi_serde_diagnostic_labels_bytes(&["PiMailEnvelope", "PiMailKind", "kind", "message", "steer"]), &work).err().unwrap();
     assert!(matches!(&failure, Error::NativeWork {
         cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { .. }), ..
     }));
@@ -756,13 +760,11 @@ fn guarded_pi_decode_rejects_original_quota_and_cancel_without_retaining_partial
     drop(failure);
     let work = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
     let baseline = work.live_allocation_bytes();
-    assert!(guarded_pi_decode::<PiMailEnvelope>(br#"{"kind":"message","message":[]}"#, 8192, owned, JsonValueSchema::None,
-        pi_serde_diagnostic_labels_bytes(&["PiMailEnvelope", "PiMailKind", "kind", "message", "steer"]), &work).is_err());
+    assert!(guarded_pi_decode::<PiMailEnvelope>(br#"{"kind":"message","message":[]}"#, 8192, owned, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None, pi_serde_diagnostic_labels_bytes(&["PiMailEnvelope", "PiMailKind", "kind", "message", "steer"]), &work).is_err());
     assert_eq!(work.live_allocation_bytes(), baseline);
     let before = work.receipt();
     cancellation.cancel();
-    assert!(matches!(guarded_pi_decode::<PiMailEnvelope>(bytes, 8192, owned, JsonValueSchema::None,
-        pi_serde_diagnostic_labels_bytes(&["PiMailEnvelope", "PiMailKind", "kind", "message", "steer"]), &work),
+    assert!(matches!(guarded_pi_decode::<PiMailEnvelope>(bytes, 8192, owned, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None, pi_serde_diagnostic_labels_bytes(&["PiMailEnvelope", "PiMailKind", "kind", "message", "steer"]), &work),
         Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(work.receipt(), before);
     assert_eq!(work.live_allocation_bytes(), baseline);
@@ -800,7 +802,7 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
         fixture.owner.policy().maximum_payload_bytes, &work).unwrap();
     let bytes = verifier.read_with_native_work(&original,
         fixture.owner.policy().maximum_payload_bytes, &work).await.unwrap();
-    let (decoded, decoded_custody) = guarded_pi_decode::<PiMailEnvelope>(bytes.as_ref(), fixture.owner.policy().maximum_payload_bytes, std::mem::size_of::<PiMailEnvelope>() as u64, JsonValueSchema::None, pi_serde_diagnostic_labels_bytes(&["PiMailEnvelope", "PiMailKind", "kind", "message", "steer"]), &work).unwrap();
+    let (decoded, decoded_custody) = guarded_pi_decode::<PiMailEnvelope>(bytes.as_ref(), fixture.owner.policy().maximum_payload_bytes, std::mem::size_of::<PiMailEnvelope>() as u64, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None, pi_serde_diagnostic_labels_bytes(&["PiMailEnvelope", "PiMailKind", "kind", "message", "steer"]), &work).unwrap();
     assert_eq!(decoded, payload);
     drop(bytes);
     drop(original);

@@ -194,10 +194,10 @@ async fn fixture() -> Result<Fixture> {
     covered.messages.truncate(2);
     covered.current_input_index = None;
     let summary = StockExecutor::new(
-        Model::new("synthetic", "summary", "1", serde_json::json!({}))?,
+        Model::new("synthetic".into(), "summary".into(), "1".into(), serde_json::json!({}))?,
         Arc::new(SummaryModel::default()),
         ContextPipeline::default(),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     )
     .with_compaction_policy(CompactionPolicy::Disabled)
     .with_max_output_tokens(32)?
@@ -320,7 +320,7 @@ async fn retained_summary_composes_into_later_admissions_and_exact_recovery() ->
     let provider = Arc::new(provider);
     let model = Arc::new(SummaryModel::default());
     let executor = StockExecutor::new(
-        Model::new("synthetic", "continuing", "1", serde_json::json!({}))?,
+        Model::new("synthetic".into(), "continuing".into(), "1".into(), serde_json::json!({}))?,
         model.clone(),
         ContextPipeline::new([Arc::new(SourceStage::new(
             "memory",
@@ -329,7 +329,7 @@ async fn retained_summary_composes_into_later_admissions_and_exact_recovery() ->
             ContextPlacement::Prepend,
         ))
             as Arc<dyn acyclic_harness::context::ContextStage>]),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     );
     let input = TurnInput {
         operation_id: OperationId::new(),
@@ -496,7 +496,7 @@ async fn large_context_payload_preserves_instruction_and_typed_tool_exchange() -
     assert_eq!(reader.revision(1).await?.context, source);
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new("synthetic", "typed-payload", "1", serde_json::json!({}))?,
+            model: Model::new("synthetic".into(), "typed-payload".into(), "1".into(), serde_json::json!({}))?,
             messages: reader.latest().await?.messages,
             tools: vec![ToolDefinition {
                 name: "echo".into(),
@@ -689,7 +689,7 @@ async fn default_canonical_continuation_keeps_stages_fresh_beyond_history_bound(
         context_messages: 8,
         ..Limits::default()
     };
-    let model = Model::new("synthetic", "byte-counter", "1", serde_json::json!({}))?;
+    let model = Model::new("synthetic".into(), "byte-counter".into(), "1".into(), serde_json::json!({}))?;
     let mut pipeline = ContextPipeline::new([Arc::new(InputDependentStage {
         revision: 1,
         calls: calls.clone(),
@@ -821,7 +821,7 @@ async fn assert_checkpoint_history_cut(
     use acyclic_harness::store::HistoryReader;
     use acyclic_harness::{executor::load_canonical_checkpoint_at, runtime::RuntimeScope};
 
-    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier(&mut None).expect("verifier copy"))?;
+    let history = HistoryReader::new(storage.stream(), storage.conversation(), &(storage.verifier(&mut None).expect("verifier copy")), &mut None)?;
     let cursor = history.pin(0, None).await?;
     let scope = RuntimeScope::new(storage.owner_scope().capabilities().clone(), limits)?;
     let bytes = MAX_RECORD_BYTES as u64 * 2;
@@ -1081,7 +1081,7 @@ async fn assert_checkpoint_tail_source(
         store::{HistoryReadLimits, HistoryReader},
     };
 
-    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier(&mut None).expect("verifier copy"))?;
+    let history = HistoryReader::new(storage.stream(), storage.conversation(), &(storage.verifier(&mut None).expect("verifier copy")), &mut None)?;
     let cursor = history.pin(0, None).await?;
     let content = StoredContent(storage.clone());
     let budget = HistoryReadLimits {
@@ -1133,9 +1133,9 @@ async fn assert_checkpoint_tail_source(
     let model = Arc::new(SummaryModel::default());
     let executor = StockExecutor::new(
         Model::new(
-            "synthetic",
-            "checkpoint-and-tail",
-            "1",
+            "synthetic".into(),
+            "checkpoint-and-tail".into(),
+            "1".into(),
             serde_json::json!({}),
         )?,
         model.clone(),
@@ -1146,7 +1146,7 @@ async fn assert_checkpoint_tail_source(
             ContextPlacement::Prepend,
         ))
             as Arc<dyn acyclic_harness::context::ContextStage>]),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     )
     .with_limits(limits);
     let input = TurnInput {
@@ -1180,8 +1180,7 @@ async fn assert_checkpoint_tail_source(
         storage.stream(),
         storage.conversation().clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        acyclic_harness::core::SchemaRegistry::new(),
-    )
+        acyclic_harness::core::SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(Arc::new(StoredContent(storage.clone())));
     let prepared_summary = acyclic_harness::fork::prepare_summary_fork_context(
@@ -1289,7 +1288,7 @@ async fn assert_scoped_checkpoint_source(
 
     let model = Arc::new(SummaryModel::default());
     let executor = StockExecutor::new(
-        Model::new("synthetic", "checkpoint-import", "1", serde_json::json!({}))?,
+        Model::new("synthetic".into(), "checkpoint-import".into(), "1".into(), serde_json::json!({}))?,
         model.clone(),
         ContextPipeline::new([Arc::new(SourceStage::new(
             "published-summary",
@@ -1298,7 +1297,7 @@ async fn assert_scoped_checkpoint_source(
             ContextPlacement::Prepend,
         ))
             as Arc<dyn acyclic_harness::context::ContextStage>]),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     )
     .with_limits(limits);
     let input = TurnInput {
@@ -1574,9 +1573,9 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
 
     let model = Arc::new(SummaryModel::default());
     let snapshot_model = Model::new(
-        "synthetic",
-        "snapshot-admission",
-        "1",
+        "synthetic".into(),
+        "snapshot-admission".into(),
+        "1".into(),
         serde_json::json!({}),
     )?;
     let build = |pipeline| {
@@ -1584,7 +1583,7 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
             snapshot_model.clone(),
             model.clone(),
             pipeline,
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_limits(limits)
         .with_compaction_policy(CompactionPolicy::Disabled)
@@ -1825,7 +1824,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
         .journal(journal.clone())
         .grant("model:generate")
         .model(
-            Model::new("synthetic", "byte-counter", "1", serde_json::json!({}))?,
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into(), serde_json::json!({}))?,
             provider.clone(),
         )
         .context(ContextPipeline::new([Arc::new(InputDependentStage {
@@ -1834,7 +1833,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
         })
             as Arc<dyn acyclic_harness::context::ContextStage>]))
         .build()?;
-    storage.run_prompt(&bundle, &"q".repeat(60_000)).await?;
+    storage.run_prompt(&bundle, &"q".repeat(60_000), Vec::new()).await?;
     let operation = OperationId::new();
     let file = storage
         .stage(
@@ -1865,7 +1864,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
         .len();
     let counted = provider.counts.load(Ordering::SeqCst);
     let transformed = calls.load(Ordering::SeqCst);
-    assert!(storage.run_prompt(&bundle, "another turn").await.is_err());
+    assert!(storage.run_prompt(&bundle, "another turn", Vec::new()).await.is_err());
     let output = storage
         .run_conversation(&bundle, operation, file, Vec::new(), 1)
         .await?;
@@ -1904,7 +1903,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
             .count(),
         1
     );
-    storage.run_prompt(&bundle, "after recovery").await?;
+    storage.run_prompt(&bundle, "after recovery", Vec::new()).await?;
     assert_checkpoint_read_admission(&storage, &journal, operation).await?;
     Ok(())
 }
@@ -2002,7 +2001,7 @@ async fn local_journal_admits_compaction_only_after_one_settled_summary() -> Res
     );
     let request = PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new("synthetic", "journal-test", "1", serde_json::json!({}))?,
+            model: Model::new("synthetic".into(), "journal-test".into(), "1".into(), serde_json::json!({}))?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("source".into()),
@@ -2235,11 +2234,11 @@ async fn canonical_publication_rejects_fabricated_source_and_summary_then_recove
             .journal(journal)
             .grant("model:generate")
             .model(
-                Model::new("synthetic", "byte-counter", "1", serde_json::json!({}))?,
+                Model::new("synthetic".into(), "byte-counter".into(), "1".into(), serde_json::json!({}))?,
                 provider.clone(),
             )
             .build()?;
-        storage.run_prompt(&bundle, &"q".repeat(60_000)).await?;
+        storage.run_prompt(&bundle, &"q".repeat(60_000), Vec::new()).await?;
         let operation = OperationId::new();
         let file = storage
             .stage(
@@ -2334,8 +2333,7 @@ async fn append_private_checkpoint_metadata(
         storage.stream(),
         storage.conversation().clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        acyclic_harness::core::SchemaRegistry::new(),
-    )
+        acyclic_harness::core::SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(Arc::new(StoredContent(storage.clone())));
     let mut metadata_ids = Vec::new();

@@ -15,7 +15,6 @@ use std::{
     },
 };
 
-
 pub(super) struct State {
     length: AtomicU64,
     complete: AtomicBool,
@@ -48,7 +47,7 @@ impl Drop for SourceState {
 }
 pub(super) fn chunks(
     body: UploadBody,
-    controls: Option<super::response::NativeGetControls>,
+    controls: Option<Arc<super::NativeTransportErrors>>,
 ) -> Result<(UploadBody, Arc<State>), Error> {
     let allocation = match &controls {
         Some(controls) => {
@@ -69,8 +68,8 @@ pub(super) fn chunks(
         _allocation: allocation,
     });
     let chunks = stream::try_unfold(
-        (body, OwnedBytes::new(), 0_u64, SourceState(state.clone()), controls.clone()),
-        |(mut body, mut pending, mut length, state, controls)| async move {
+        (body, OwnedBytes::new(), SourceState(state.clone()), controls.clone()),
+        |(mut body, mut pending, state, controls)| async move {
             if let Some(controls) = &controls {
                 if let Err(failure) = controls.check() {
                     state.0.fail(failure);
@@ -86,7 +85,7 @@ pub(super) fn chunks(
                 }
                 match body.next().await {
                     Some(Ok(bytes)) => {
-                        let size = length
+                        let size = state.0.length.load(Ordering::Acquire)
                             .checked_add(bytes.len() as u64)
                             .ok_or(Error::from(wire::ErrorCode::QuotaExceeded));
                         match size.and_then(|size| {
@@ -94,7 +93,6 @@ pub(super) fn chunks(
                             Ok(size)
                         }) {
                             Ok(size) => {
-                                length = size;
                                 state.0.length.store(size, Ordering::Release);
                                 pending = bytes;
                             }
@@ -117,7 +115,7 @@ pub(super) fn chunks(
             let size = pending.len().min(65_536);
             let chunk = pending.slice(..size);
             pending = pending.slice(size..);
-            Ok(Some((chunk, (body, pending, length, state, controls))))
+            Ok(Some((chunk, (body, pending, state, controls))))
         },
     );
     let chunks = match &controls {
@@ -137,7 +135,7 @@ where
     let allocation = acyclic_native_runtime::ReadAllocation::new(
         meter, std::mem::size_of::<S>(),
     )?;
-    Ok(UploadBody { stream: stream.boxed(), _allocation: Some(allocation) })
+    Ok(UploadBody { value: stream.boxed(), _allocation: Some(allocation) })
 }
 
 pub(super) fn chunks_native(

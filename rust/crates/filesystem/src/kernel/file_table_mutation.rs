@@ -3,12 +3,12 @@
 use super::allocation::AllocationError;
 use super::codec::DecodedPageShape;
 use super::file_table::{file_record_encoded_length, file_table_page_decode_shape};
-use super::persistent_btree::{self, Child, Format, Page, PageRef};
+use super::persistent_btree::{self, Format, Page, PageRef};
 use super::{
     CanonicalDecodeError, DecodeLimits, FileRecord,
 };
 use crate::foundation::FileId;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 use thiserror::Error;
 
@@ -225,15 +225,6 @@ impl persistent_btree::Mutation<FileTableFormat> for FileTableMutation {
     fn map_error(error: persistent_btree::Error<Self::Error>) -> crate::FsError { map_error(error).into() }
 }
 
-/// Candidate file-table root and exact sparse path-copy work.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FileTableMutationReceipt {
-    /// Candidate immutable file-table root.
-    pub root: ObjectId,
-    /// Exact work; no authority publication is included.
-    pub work: WorkCounters,
-}
-
 /// File-table mutation failure retaining all work and possible orphan writes.
 pub type FileTableMutationFailure = OperationFailure<FileTableMutationError>;
 
@@ -246,7 +237,7 @@ pub async fn apply_file_table_mutations<S: crate::AsyncObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &crate::CancellationToken,
-) -> Result<FileTableMutationReceipt, FileTableMutationFailure> {
+) -> Result<OperationReceipt<ObjectId>, FileTableMutationFailure> {
     let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
     apply_file_table_mutations_with_accounting(store, root, &mutations, maximum_mutations, limits, &mut accounting, cancellation)
         .await.map_err(|error| OperationFailure::new(project_file_table_error(error), accounting.spent()))
@@ -256,13 +247,12 @@ pub(crate) async fn apply_file_table_mutations_with_accounting<S: crate::AsyncOb
     store: &S, root: ObjectId, mutations: &[FileTableMutation], maximum_mutations: u32,
     limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
-) -> Result<FileTableMutationReceipt, crate::FsError> {
+) -> Result<OperationReceipt<ObjectId>, crate::FsError> {
     accounting.check()?;
     for mutation in mutations { mutation.validate().map_err(crate::FsError::from)?; }
-    let receipt = persistent_btree::apply_with_accounting::<S, FileTableFormat, FileTableMutation>(
+    persistent_btree::apply_with_accounting::<S, FileTableFormat, FileTableMutation>(
         store, root, mutations, maximum_mutations, limits, accounting, cancellation,
-    ).await?;
-    Ok(FileTableMutationReceipt { root: receipt.value, work: receipt.work })
+    ).await
 }
 
 pub(super) fn project_file_table_error(error: crate::FsError) -> FileTableMutationError {

@@ -1,3 +1,4 @@
+use crate::async_storage::AsyncObjectStore;
 use super::*;
 use crate::foundation::FileId;
 use crate::kernel::tree_mutation::TreeFormat;
@@ -5,12 +6,12 @@ use crate::kernel::{
     FileKind, LogicalName, NameEncoding, TreeEntry, TreePage, encode_tree_page, tree_page_id,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectKind, ObjectStore, object_digest};
+use crate::storage::{ObjectKind, object_digest};
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions, ObjectCacheStats};
 use acyclic_stream::OwnedBytes;
 
-fn put_tree_page(
+async fn put_tree_page(
     store: &MemoryObjectStore,
     name: &[u8],
     file_byte: u8,
@@ -21,12 +22,11 @@ fn put_tree_page(
         kind: FileKind::Regular,
     }]);
     let object = tree_page_id(&page, 8)?;
-    ObjectStore::put(
+    AsyncObjectStore::put(
         store,
         object,
         OwnedBytes::from(encode_tree_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(object)
 }
 
@@ -55,11 +55,11 @@ fn assert_resident_cache_shape(stats: ObjectCacheStats, decoded_hits: u64) {
     );
 }
 
-#[test]
-fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write()
+#[tokio::test]
+async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write()
 -> Result<(), Box<dyn std::error::Error>> {
     let backend = MemoryObjectStore::new(1024 * 1024)?;
-    let page = put_tree_page(&backend, b"cached", 9)?;
+    let page = put_tree_page(&backend, b"cached", 9).await?;
     let store = CachedObjectStore::new(
         backend,
         ObjectCacheOptions {
@@ -73,7 +73,7 @@ fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write()
 
     let mut first_allocations = AllocationLedger::default();
     let mut first_work = WorkCounters::default();
-    let first = crate::async_storage::poll_ready(read_page::<_, TreeFormat>(
+    let first = (read_page::<_, TreeFormat>(
         &store,
         page,
         DecodeLimits::default(),
@@ -81,8 +81,7 @@ fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write()
         &cancellation,
         &mut first_allocations,
         &mut first_work,
-    ))
-    .ok_or("immediate read suspended")??;
+    )).await?;
     assert!(matches!(first.page, PageLease::Shared { .. }));
     assert_eq!(first.logical_bytes, 0);
     assert_eq!(first_allocations.live_bytes(), 0);
@@ -90,7 +89,7 @@ fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write()
 
     let mut warm_allocations = AllocationLedger::default();
     let mut warm_work = WorkCounters::default();
-    let warm = crate::async_storage::poll_ready(read_page::<_, TreeFormat>(
+    let warm = (read_page::<_, TreeFormat>(
         &store,
         page,
         DecodeLimits::default(),
@@ -98,8 +97,7 @@ fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write()
         &cancellation,
         &mut warm_allocations,
         &mut warm_work,
-    ))
-    .ok_or("immediate warm read suspended")??;
+    )).await?;
     assert!(matches!(warm.page, PageLease::Shared { .. }));
     assert_eq!(warm_work.page_reads, 1);
     assert_eq!(warm_work.backend_read_operations, 0);
@@ -115,9 +113,9 @@ fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write()
     let mut accounting = super::super::allocation::KernelAccounting::borrowed_standalone(
         &mut mutation_allocations, &mut mutation_work, WorkBudget::UNBOUNDED, &cancellation,
     );
-    let (shared, allocation) = crate::async_storage::poll_ready(read_page_with_accounting::<_, TreeFormat>(
+    let (shared, allocation) = (read_page_with_accounting::<_, TreeFormat>(
         &store, page, DecodeLimits::default(), &mut accounting, &cancellation, None,
-    )).ok_or("immediate cached read suspended")??;
+    )).await?;
     let ((mut mutable, bytes), mut allocation) = shared.into_owned_with_accounting(allocation, &mut accounting)?;
     assert!(bytes > 0);
     if let Page::Leaf(entries) = &mut mutable {
@@ -136,9 +134,9 @@ fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write()
         &mut denied_allocations, &mut denied_work,
         WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
     );
-    let (shared, allocation) = crate::async_storage::poll_ready(read_page_with_accounting::<_, TreeFormat>(
+    let (shared, allocation) = (read_page_with_accounting::<_, TreeFormat>(
         &store, page, DecodeLimits::default(), &mut accounting, &cancellation, None,
-    )).ok_or("immediate cached read suspended")??;
+    )).await?;
     let denied = shared.into_owned_with_accounting(allocation, &mut accounting)
         .err().ok_or("cached mutable page bypassed its allocation budget")?;
     assert!(matches!(denied, crate::FsError::Work(_)));
@@ -146,17 +144,17 @@ fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write()
     Ok(())
 }
 
-#[test]
-fn decoded_cache_rejection_releases_owned_page_allocation() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn decoded_cache_rejection_releases_owned_page_allocation() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = OwnedReadObjectStore::default();
-    let page = put_tree_page(&store.inner, b"rejected", 41)?;
+    let page = put_tree_page(&store.inner, b"rejected", 41).await?;
     store
         .reject_decoded_admission
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let failure = crate::async_storage::poll_ready(read_page::<_, TreeFormat>(
+    let failure = (read_page::<_, TreeFormat>(
         &store,
         page,
         DecodeLimits::default(),
@@ -164,8 +162,7 @@ fn decoded_cache_rejection_releases_owned_page_allocation() -> Result<(), Box<dy
         &CancellationToken::new(),
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("owned page read suspended")?
+    )).await
     .err()
     .ok_or("decoded-cache rejection unexpectedly succeeded")?;
     assert!(matches!(failure, Error::Storage(ObjectStoreError::Corrupt)));
@@ -174,12 +171,12 @@ fn decoded_cache_rejection_releases_owned_page_allocation() -> Result<(), Box<dy
     Ok(())
 }
 
-#[test]
-fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
+#[tokio::test]
+async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
 -> Result<(), Box<dyn std::error::Error>> {
     let backend = MemoryObjectStore::new(1024 * 1024)?;
-    let first = put_tree_page(&backend, b"first", 1)?;
-    let second = put_tree_page(&backend, b"second", 2)?;
+    let first = put_tree_page(&backend, b"first", 1).await?;
+    let second = put_tree_page(&backend, b"second", 2).await?;
     let store = CachedObjectStore::new(
         backend,
         ObjectCacheOptions {
@@ -194,7 +191,7 @@ fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
 
     let mut seed_allocations = AllocationLedger::default();
     let mut seed_work = WorkCounters::default();
-    let seed = crate::async_storage::poll_ready(read_page::<_, TreeFormat>(
+    let seed = (read_page::<_, TreeFormat>(
         &store,
         first,
         limits,
@@ -202,14 +199,13 @@ fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
         &cancellation,
         &mut seed_allocations,
         &mut seed_work,
-    ))
-    .ok_or("seed read suspended")??;
+    )).await?;
     assert!(matches!(seed.page, PageLease::Shared { .. }));
     assert_eq!(seed_allocations.live_bytes(), 0);
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut batch = crate::async_storage::poll_ready(read_pages::<_, TreeFormat, _>(
+    let mut batch = (read_pages::<_, TreeFormat, _>(
         &store,
         [first, second, first].into_iter(),
         limits,
@@ -217,8 +213,7 @@ fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
         &cancellation,
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("mixed batch suspended")??;
+    )).await?;
     assert_eq!(work.page_reads, 3);
     assert_eq!(work.backend_read_operations, 1);
     let mut names = Vec::new();
@@ -244,7 +239,7 @@ fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
 
     let mut warm_allocations = AllocationLedger::default();
     let mut warm_work = WorkCounters::default();
-    let mut warm = crate::async_storage::poll_ready(read_pages::<_, TreeFormat, _>(
+    let mut warm = (read_pages::<_, TreeFormat, _>(
         &store,
         [first, second, first].into_iter(),
         limits,
@@ -252,8 +247,7 @@ fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
         &cancellation,
         &mut warm_allocations,
         &mut warm_work,
-    ))
-    .ok_or("warm batch suspended")??;
+    )).await?;
     assert_eq!(warm_work.backend_read_operations, 0);
     assert_eq!(warm_work.object_bytes_read, 0);
     for _ in 0..3 {
@@ -275,8 +269,8 @@ fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
     Ok(())
 }
 
-#[test]
-fn post_read_budget_failure_releases_every_decoded_allocation()
+#[tokio::test]
+async fn post_read_budget_failure_releases_every_decoded_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let page = TreePage::Leaf(vec![TreeEntry {
@@ -285,18 +279,17 @@ fn post_read_budget_failure_releases_every_decoded_allocation()
         kind: FileKind::Regular,
     }]);
     let object = tree_page_id(&page, 8)?;
-    ObjectStore::put(
+    AsyncObjectStore::put(
         &store,
         object,
         OwnedBytes::from(encode_tree_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.bytes_copied = 0;
     let cancellation = CancellationToken::new();
-    let result = crate::async_storage::poll_ready(read_page::<_, TreeFormat>(
+    let result = (read_page::<_, TreeFormat>(
         &store,
         object,
         DecodeLimits::default(),
@@ -304,8 +297,7 @@ fn post_read_budget_failure_releases_every_decoded_allocation()
         &cancellation,
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("memory-backed page read remained pending")?;
+    )).await;
     assert!(matches!(
         result,
         Err(Error::Work(WorkError::BudgetExceeded {
@@ -317,15 +309,15 @@ fn post_read_budget_failure_releases_every_decoded_allocation()
     Ok(())
 }
 
-#[test]
-fn single_page_read_authenticates_decode_and_releases_backend_ownership()
+#[tokio::test]
+async fn single_page_read_authenticates_decode_and_releases_backend_ownership()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let object = put_tree_page(&store, b"entry", 9)?;
+    let object = put_tree_page(&store, b"entry", 9).await?;
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
     let cancellation = CancellationToken::new();
-    let owned = crate::async_storage::poll_ready(read_page::<_, TreeFormat>(
+    let owned = (read_page::<_, TreeFormat>(
         &store,
         object,
         DecodeLimits::default(),
@@ -333,8 +325,7 @@ fn single_page_read_authenticates_decode_and_releases_backend_ownership()
         &cancellation,
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("memory-backed page read remained pending")??;
+    )).await?;
     assert!(matches!(owned.page, PageLease::Owned(Page::Leaf(_))));
     assert!(owned.logical_bytes > 0);
     assert_eq!(allocations.live_bytes(), owned.logical_bytes);
@@ -348,10 +339,10 @@ fn single_page_read_authenticates_decode_and_releases_backend_ownership()
         kind: ObjectKind::TreePage,
         digest: object_digest(ObjectKind::TreePage, &malformed),
     };
-    ObjectStore::put(&store, malformed_id, malformed, WorkBudget::UNBOUNDED)?;
+    AsyncObjectStore::put(&store, malformed_id, malformed, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let mut allocations = AllocationLedger::default();
     let mut malformed_work = WorkCounters::default();
-    let failure = crate::async_storage::poll_ready(read_page::<_, TreeFormat>(
+    let failure = (read_page::<_, TreeFormat>(
         &store,
         malformed_id,
         DecodeLimits::default(),
@@ -359,8 +350,7 @@ fn single_page_read_authenticates_decode_and_releases_backend_ownership()
         &cancellation,
         &mut allocations,
         &mut malformed_work,
-    ))
-    .ok_or("malformed page read remained pending")?
+    )).await
     .err()
     .ok_or("malformed page decoded")?;
     assert!(matches!(failure, Error::Decode(_)));
@@ -370,8 +360,8 @@ fn single_page_read_authenticates_decode_and_releases_backend_ownership()
     Ok(())
 }
 
-#[test]
-fn shape_valid_malformed_tree_page_releases_decoded_allocation()
+#[tokio::test]
+async fn shape_valid_malformed_tree_page_releases_decoded_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let page = TreePage::Leaf(vec![TreeEntry {
@@ -385,15 +375,14 @@ fn shape_valid_malformed_tree_page_releases_decoded_allocation()
         kind: ObjectKind::TreePage,
         digest: object_digest(ObjectKind::TreePage, &malformed),
     };
-    ObjectStore::put(
+    AsyncObjectStore::put(
         &store,
         object,
         OwnedBytes::from(malformed),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let failure = crate::async_storage::poll_ready(read_page::<_, TreeFormat>(
+    let failure = (read_page::<_, TreeFormat>(
         &store,
         object,
         DecodeLimits::default(),
@@ -401,8 +390,7 @@ fn shape_valid_malformed_tree_page_releases_decoded_allocation()
         &CancellationToken::new(),
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("shape-valid malformed page read suspended")?
+    )).await
     .err()
     .ok_or("shape-valid malformed tree page unexpectedly decoded")?;
     assert!(matches!(failure, Error::Decode(_)));
@@ -411,18 +399,18 @@ fn shape_valid_malformed_tree_page_releases_decoded_allocation()
     Ok(())
 }
 
-#[test]
-fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
+#[tokio::test]
+async fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = put_tree_page(&store, b"first", 1)?;
-    let second = put_tree_page(&store, b"second", 2)?;
+    let first = put_tree_page(&store, b"first", 1).await?;
+    let second = put_tree_page(&store, b"second", 2).await?;
     let limits = DecodeLimits::default();
     let cancellation = CancellationToken::new();
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut batch = crate::async_storage::poll_ready(read_pages::<_, TreeFormat, _>(
+    let mut batch = (read_pages::<_, TreeFormat, _>(
         &store,
         [first, second].into_iter(),
         limits,
@@ -430,8 +418,7 @@ fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
         &cancellation,
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("memory-backed batch read remained pending")??;
+    )).await?;
     assert!(allocations.live_bytes() > 0);
     assert_eq!(work.page_reads, 2);
     let page = batch.next(
@@ -463,7 +450,7 @@ fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
     let cancellation = CancellationToken::new();
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let batch = crate::async_storage::poll_ready(read_pages::<_, TreeFormat, _>(
+    let batch = (read_pages::<_, TreeFormat, _>(
         &store,
         [first, second].into_iter(),
         limits,
@@ -471,8 +458,7 @@ fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
         &cancellation,
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("second batch read remained pending")??;
+    )).await?;
     let failure = batch
         .finish(&mut allocations)
         .err()
@@ -485,7 +471,7 @@ fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let batch = crate::async_storage::poll_ready(read_pages::<_, TreeFormat, _>(
+    let batch = (read_pages::<_, TreeFormat, _>(
         &store,
         [first, second].into_iter(),
         limits,
@@ -493,21 +479,20 @@ fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
         &cancellation,
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("discard batch read remained pending")??;
+    )).await?;
     batch.discard(&mut allocations)?;
     assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }
 
-#[test]
-fn invalid_and_precancelled_batches_do_no_backend_work() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn invalid_and_precancelled_batches_do_no_backend_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let object = put_tree_page(&store, b"entry", 4)?;
+    let object = put_tree_page(&store, b"entry", 4).await?;
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
     let cancellation = CancellationToken::new();
-    let empty = crate::async_storage::poll_ready(read_pages::<_, TreeFormat, _>(
+    let empty = (read_pages::<_, TreeFormat, _>(
         &store,
         std::iter::empty(),
         DecodeLimits::default(),
@@ -515,8 +500,7 @@ fn invalid_and_precancelled_batches_do_no_backend_work() -> Result<(), Box<dyn s
         &cancellation,
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("empty batch remained pending")?
+    )).await
     .err()
     .ok_or("empty batch succeeded")?;
     assert!(matches!(
@@ -528,7 +512,7 @@ fn invalid_and_precancelled_batches_do_no_backend_work() -> Result<(), Box<dyn s
 
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let cancelled = crate::async_storage::poll_ready(read_pages::<_, TreeFormat, _>(
+    let cancelled = (read_pages::<_, TreeFormat, _>(
         &store,
         [object].into_iter(),
         DecodeLimits::default(),
@@ -536,8 +520,7 @@ fn invalid_and_precancelled_batches_do_no_backend_work() -> Result<(), Box<dyn s
         &cancellation,
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("cancelled batch remained pending")?
+    )).await
     .err()
     .ok_or("cancelled batch succeeded")?;
     assert!(matches!(
@@ -549,18 +532,18 @@ fn invalid_and_precancelled_batches_do_no_backend_work() -> Result<(), Box<dyn s
     Ok(())
 }
 
-#[test]
-fn fully_consumed_batches_finish_and_reject_reads_past_the_exact_result()
+#[tokio::test]
+async fn fully_consumed_batches_finish_and_reject_reads_past_the_exact_result()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = put_tree_page(&store, b"first", 1)?;
-    let second = put_tree_page(&store, b"second", 2)?;
+    let first = put_tree_page(&store, b"first", 1).await?;
+    let second = put_tree_page(&store, b"second", 2).await?;
     let limits = DecodeLimits::default();
     let cancellation = CancellationToken::new();
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut batch = crate::async_storage::poll_ready(read_pages::<_, TreeFormat, _>(
+    let mut batch = (read_pages::<_, TreeFormat, _>(
         &store,
         [first, second].into_iter(),
         limits,
@@ -568,8 +551,7 @@ fn fully_consumed_batches_finish_and_reject_reads_past_the_exact_result()
         &cancellation,
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("complete batch remained pending")??;
+    )).await?;
     for _ in 0..2 {
         let page = batch.next(
             limits,
@@ -583,7 +565,7 @@ fn fully_consumed_batches_finish_and_reject_reads_past_the_exact_result()
     batch.finish(&mut allocations)?;
     assert_eq!(allocations.live_bytes(), 0);
 
-    let mut batch = crate::async_storage::poll_ready(read_pages::<_, TreeFormat, _>(
+    let mut batch = (read_pages::<_, TreeFormat, _>(
         &store,
         [first].into_iter(),
         limits,
@@ -591,8 +573,7 @@ fn fully_consumed_batches_finish_and_reject_reads_past_the_exact_result()
         &cancellation,
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("single batch remained pending")??;
+    )).await?;
     let page = batch.next(
         limits,
         WorkBudget::UNBOUNDED,
@@ -615,22 +596,22 @@ fn fully_consumed_batches_finish_and_reject_reads_past_the_exact_result()
     Ok(())
 }
 
-#[test]
-fn late_batch_decode_failure_releases_every_pending_allocation()
+#[tokio::test]
+async fn late_batch_decode_failure_releases_every_pending_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = put_tree_page(&store, b"first", 1)?;
+    let first = put_tree_page(&store, b"first", 1).await?;
     let malformed = OwnedBytes::from_static(b"not a canonical tree page");
     let second = ObjectId {
         kind: ObjectKind::TreePage,
         digest: object_digest(ObjectKind::TreePage, &malformed),
     };
-    ObjectStore::put(&store, second, malformed, WorkBudget::UNBOUNDED)?;
+    AsyncObjectStore::put(&store, second, malformed, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let limits = DecodeLimits::default();
     let cancellation = CancellationToken::new();
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut batch = crate::async_storage::poll_ready(read_pages::<_, TreeFormat, _>(
+    let mut batch = (read_pages::<_, TreeFormat, _>(
         &store,
         [first, second].into_iter(),
         limits,
@@ -638,8 +619,7 @@ fn late_batch_decode_failure_releases_every_pending_allocation()
         &cancellation,
         &mut allocations,
         &mut work,
-    ))
-    .ok_or("malformed batch remained pending")??;
+    )).await?;
     let page = batch.next(
         limits,
         WorkBudget::UNBOUNDED,

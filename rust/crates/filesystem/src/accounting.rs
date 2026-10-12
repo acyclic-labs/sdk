@@ -13,7 +13,7 @@ use crate::foundation::{
 use crate::kernel::{
     ClosureLimits, DecodeLimits, RetentionKind, decode_published_generation,
     decode_retention_created, decode_volume_created, decode_workspace_deleted,
-    prove_generation_closure_async, retention_authority_id, volume_authority_id,
+    prove_generation_closure, retention_authority_id, volume_authority_id,
 };
 use crate::model::VolumeConfig;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
@@ -77,8 +77,7 @@ pub enum AccountingTransition {
     },
 }
 
-/// Whether a durable fact can represent one customer operation after regional
-/// top-level product attribution.
+/// Whether a durable fact can represent one customer operation after regional top-level product attribution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccountingOperationClass {
     /// One successful durable FS mutation candidate.
@@ -158,10 +157,7 @@ enum AuthorityKind {
     },
 }
 
-/// Reads and proves at most `maximum_records` records after `cursor`. The
-/// authority head is pinned before replay; a later append belongs to the next
-/// page. Every record must be dense, hash-chained, canonically decoded and
-/// stamped by the replicated Stream authority.
+/// Reads and proves at most `maximum_records` records after `cursor`.
 #[allow(clippy::too_many_lines)] // The pinned read, anchor checks, and page verification form one fail-closed operation.
 pub async fn accounting_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     authority: &A,
@@ -598,7 +594,7 @@ async fn prove_bytes<O: AsyncObjectStore>(
     // Without a provider archive, authenticate only the root named by this
     // historical record. Missing collected bodies fail closed; a current head
     // is never a substitute for the original generation.
-    let proof = prove_generation_closure_async(
+    let proof = prove_generation_closure(
         objects, root, limits, measured.remaining()?, cancellation,
     ).await.map_err(|failure| AccountingError::Proof(failure.error.to_string()))?;
     measured.backend(proof.work)?;

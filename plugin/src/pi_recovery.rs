@@ -1,6 +1,7 @@
 //! Service recovery over original task admissions and retained reservations.
 
 use super::pi_root::PiRootIntent;
+use acyclic_harness::runtime::TaskStateProvider;
 use super::pi_task::{PiTaskExecution, PiTaskInput, PiTaskMachine};
 use super::{AdapterState, PiTaskBinding, PluginTaskBinding};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
@@ -48,7 +49,7 @@ fn session_tasks<'a>(
 ) -> Result<(Vec<PiTaskSelection<'a>>, NativeAllocation)> {
     let mut custody = {
         work.cancellation().check().map_err(|_| native_error(NativeTreeMaterializationError::Cancelled))?;
-        work.retain_owned(recovery_metadata_quota(state)?).map_err(native_error)
+        work.claim(recovery_metadata_quota(state)?, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)
     }?;
     super::validate_state_version(state).map_err(Error::Invalid)?;
     super::validate_state_bounds(state).map_err(Error::Invalid)?;
@@ -119,26 +120,39 @@ fn session_tasks<'a>(
 }
 
 /// Read-only service observations.
+#[derive(serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub(crate) enum PiTaskObservation {
     Pending {
+        #[serde(rename = "task")]
         task_id: TaskId,
     },
     Reserved {
+        #[serde(rename = "task", serialize_with = "serialize_lease_task")]
         lease: WorkLease,
     },
     Unresolved {
+        #[serde(rename = "task", serialize_with = "serialize_lease_task")]
         lease: WorkLease,
+        #[serde(serialize_with = "crate::service::serialize_control_error")]
         error: Error,
     },
+    #[serde(rename = "preparing")]
     Preparation {
+        #[serde(rename = "task")]
         task_id: TaskId,
         preparation: TaskId,
         phase: PiPreparationPhase,
     },
     Outcome {
+        #[serde(rename = "task")]
         task_id: TaskId,
         outcome: Outcome<FileRef>,
     },
+}
+
+fn serialize_lease_task<S: serde::Serializer>(lease: &WorkLease, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(&TaskId::from_bytes(lease.operation.operation_id.into_bytes()), serializer)
 }
 
 #[derive(serde::Serialize)]
@@ -155,20 +169,7 @@ where
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
-    let observed = observe_pi_session_inner(runtime, state, work).await?;
-    Ok((observed.0, observed.1))
-}
-
-async fn observe_pi_session_inner<P, A, O>(
-    runtime: &FilesystemTaskRuntime<P, A, O>, state: &AdapterState,
-    work: &NativeMaterializationWork,
-) -> Result<(Vec<PiTaskObservation>, NativeAllocation)>
-where
-    P: acyclic_stream::StreamProvider + 'static,
-    A: acyclic_fs::AsyncAuthorityStore + 'static,
-    O: acyclic_fs::AsyncObjectStore + 'static,
-{
-    let mut custody = work.retain_owned(0).map_err(native_error)?;
+    let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     let mut tasks = session_tasks(state, work)?;
     let pi_definition = PiTaskMachine::new(work)?.definition(work)?;
     let preparation_definition = if tasks.0.iter().any(|task| task.preparation.is_some()) {
@@ -296,7 +297,7 @@ where
             let intent = super::pi_root_provider::guarded_pi_decode::<super::pi_native::PiNativeLaunchIntent>(
                 &bytes.0, super::MAXIMUM_ADAPTER_STATE_BYTES,
                 std::mem::size_of::<super::pi_native::PiNativeLaunchIntent>() as u64,
-                acyclic_harness::JsonValueSchema::None,
+                acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
                 super::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)?;
             intent.0.validate(work)?;
             if intent.0.agent_alias != alias {
@@ -407,7 +408,7 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
 
-    let mut custody = work.retain_owned(0).map_err(native_error)?;
+    let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     let mut retained_owned = 0;
     let remaining = work.remaining().map_err(native_error)?;
     let bounds = acyclic_harness::JsonBounds {
@@ -489,9 +490,9 @@ pub(crate) fn vector_slots<T>(count: usize, work: &NativeMaterializationWork) ->
     let bytes = count.checked_mul(std::mem::size_of::<T>())
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?;
-    if count == 0 { return work.retain_owned(0).map_err(native_error); }
+    if count == 0 { return work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error); }
     // Exactly one with_capacity allocation attempt follows this admission.
-    work.claim(bytes).map_err(native_error)
+    work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)
 }
 
 
@@ -556,7 +557,7 @@ mod allocation_tests {
         }
         assert_eq!(observations.capacity(), 3);
         assert_eq!(custody.bytes(), (3 * std::mem::size_of::<PiTaskObservation>()) as u64);
-        let original = work.retain_owned(0).unwrap();
+        let original = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
         assert!(custody.shares_ledger(&original));
         drop(observations);
         drop(custody);
@@ -574,12 +575,12 @@ mod allocation_tests {
             &cancellation).unwrap();
         let second = NativeMaterializationWork::new(super::super::pi_root_provider::allocation_budget(),
             &cancellation).unwrap();
-        let mut retained = Some(first.retain_owned(8).unwrap());
-        let mut observed = NativeOwned::native(("original producer", second.retain_owned(16).unwrap()));
-        assert!(matches!(transfer_custody(&mut retained, &mut observed),
+        let mut retained = first.claim(8, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
+        let mut observed = ("original producer", second.claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap());
+        assert!(matches!(retained.absorb(&mut observed.1).map_err(native_error),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::InvalidLayout, .. })));
-        assert_eq!(retained.as_ref().unwrap().bytes(), 8);
-        assert_eq!(observed.custody.as_ref().unwrap().bytes(), 16);
+        assert_eq!(retained.bytes(), 8);
+        assert_eq!(observed.1.bytes(), 16);
         assert_eq!(second.live_allocation_bytes(), 16);
         drop(observed);
         drop(retained);

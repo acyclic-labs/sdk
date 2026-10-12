@@ -260,7 +260,7 @@ impl Domain for HarnessViews {
 
 fn file(label: &str, bytes: &[u8]) -> FileRef {
     let volume = VolumeRef::new(
-        ProviderRef::new("example", "filesystem", "2").unwrap(),
+        ProviderRef::new("example".into(), "filesystem".into(), "2".into(), &mut None).unwrap(),
         "project",
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
@@ -739,7 +739,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
         )
     };
     let filesystem = acyclic_fs::Fs::memory();
-    let provider = ProviderRef::new("client-edit", "filesystem", "2")?;
+    let provider = ProviderRef::new("client-edit".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(filesystem.clone(), provider.clone())?;
     let owner = AgentId::from_bytes([3; 16]);
     let volume = VolumeRef::new(

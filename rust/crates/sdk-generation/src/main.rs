@@ -1,6 +1,6 @@
 use cargo_metadata::{Metadata, Package, TargetKind};
 use sdk_docs::rustdoc_profiles::{
-    api_owner_for_package, extract_owned_api_for_crate, observe_rustdoc, project_into_docs,
+    api_owner_for_package, extract_owned_api, observe_rustdoc, project_into_docs,
     validate_rustdoc_version, ApiOwnerKind, ProfileId, ProfileSpec,
 };
 use sdk_docs::{
@@ -363,7 +363,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
                 })
                 .transpose()
                 .map_err(CliError)?;
-            let (plan, index) = historical::archive_plan_with_inventory(
+            let (plan, index) = historical::archive_plan(
                 &args.version,
                 args.historical_archives
                     .as_deref()
@@ -565,7 +565,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         let crate_name = observation.crate_name.clone();
         if !is_binary_receipt(receipt, &executed_profiles) {
             let items =
-                extract_owned_api_for_crate(receipt, &owner, profile_id.clone(), &crate_name)
+                extract_owned_api(receipt, &owner, profile_id.clone(), &crate_name)
                     .map_err(profile_error)?;
             profile_items.extend(items);
         }
@@ -629,7 +629,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         let profile = executed.spec.clone();
         let profile_id = profile.id();
         profile_items.extend(
-            extract_owned_api_for_crate(
+            extract_owned_api(
                 receipt,
                 &owner,
                 profile_id.clone(),
@@ -715,7 +715,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         sdk_docs::historical::build(&input, scope)
     } else {
         let native = historical_docs_input(&metadata, &executed_profiles, &[], None)?;
-        sdk_docs::build_data_with_binaries(&input, &native.binaries)
+        sdk_docs::build_data(&input, &native.binaries)
     }
     .map_err(docs_error)?;
     let mut generated_source_artifacts = input.generated_sources.clone();
@@ -787,7 +787,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             };
             sdk_docs::historical::build(&variant_input, &scope)
         } else {
-            build_data(&variant_input)
+            build_data(&variant_input, &[])
         }
         .map_err(docs_error)?;
         generated_source_artifacts.extend(variant_input.generated_sources.clone());
@@ -876,7 +876,7 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             .map(|release| release.package.clone())
             .collect::<BTreeSet<_>>();
         let examples = historical::examples(&metadata, &root, &owners).map_err(CliError)?;
-        let executions = historical::execute_examples_with_context(
+        let executions = historical::execute_examples(
             &root,
             cargo_path
                 .as_deref()
@@ -1273,7 +1273,7 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
 
 fn load_metadata(root: &Path, cargo_path: Option<&Path>) -> Result<Metadata, CliError> {
     let mut metadata =
-        sdk_docs::rustdoc_profiles::load_metadata_with_cargo(root.join("Cargo.toml"), cargo_path)
+        sdk_docs::rustdoc_profiles::load_metadata(root.join("Cargo.toml"), sdk_docs::rustdoc_profiles::CargoExecutionContext { cargo_path, lock_selection: None })
             .map_err(profile_error)?;
     let missing = published_packages(root)?
         .into_iter()
@@ -1443,7 +1443,7 @@ fn execute_historical_profiles(
     plan: &historical::Plan,
 ) -> Result<Vec<ExecutedProfile>, CliError> {
     use sdk_docs::rustdoc_profiles::{
-        execute_target_profile_with_context, CargoExecutionContext, RustdocTarget,
+        execute_profile, CargoExecutionContext, RustdocTarget,
     };
     let host = rustc_host()?;
     let available = BTreeSet::from([host.clone()]);
@@ -1533,7 +1533,7 @@ fn execute_historical_profiles(
                     root.join("Cargo.toml")
                 };
                 let lock = manifest.with_file_name("Cargo.lock");
-                execute_target_profile_with_context(
+                execute_profile(
                     &manifest,
                     execution_metadata,
                     &spec,
@@ -1673,7 +1673,7 @@ fn execute_default_profiles(
                 let receipt = rustdoc_dir.join(format!("{}.json", target.name.replace('-', "_")));
                 let rustdoc_target =
                     sdk_docs::rustdoc_profiles::RustdocTarget::Binary(target.name.clone());
-                sdk_docs::rustdoc_profiles::execute_target_profile_with_context(
+                sdk_docs::rustdoc_profiles::execute_profile(
                     &manifest,
                     metadata,
                     &profile,
@@ -1755,7 +1755,7 @@ fn execute_default_profiles(
             if let Some(parent) = receipt.parent() {
                 fs::create_dir_all(parent).map_err(io_error)?;
             }
-            sdk_docs::rustdoc_profiles::execute_target_profile_with_context(
+            sdk_docs::rustdoc_profiles::execute_profile(
                 &manifest,
                 metadata,
                 &profile,
@@ -3170,7 +3170,7 @@ mod tests {
                 }],
                 generated_sources: sources.clone(),
                 mark_latest: false,
-            })
+            }, &[])
             .unwrap();
             println!(
                 "projected {}/{}: {} families",

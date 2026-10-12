@@ -76,11 +76,7 @@ impl<E> OperationFailure<E> {
         OperationFailure { error: map_error(self.error), work: self.work }
     }
 
-    /// Prepends exact work performed by a containing operation while mapping
-    /// the nested error into the containing error domain.
-    ///
-    /// Accounting overflow takes precedence over the nested error because a
-    /// caller must never receive an inexact or sentinel work receipt.
+    /// Prepends exact work performed by a containing operation while mapping the nested error into the containing error domain.
     pub fn map_with_prior_work<T>(
         self,
         prior: WorkCounters,
@@ -153,9 +149,7 @@ pub struct WorkCounters {
     pub materializations: u64,
 }
 
-/// Invokes `$apply` with every additive counter of [`WorkCounters`], in
-/// declaration order. `peak_allocation_bytes` is a maximum, not a sum, and is
-/// handled by each caller.
+/// Invokes `$apply` with every additive counter of [`WorkCounters`], in declaration order.
 macro_rules! additive_counters {
     ($apply:ident) => {
         $apply!(
@@ -212,9 +206,8 @@ impl WorkCounters {
         additive_counters!(intersect)
     }
 
-    /// No work at all, as a constant: [`WorkCounters::default`] usable in
-    /// `const` charges such as one page read.
-    pub(crate) const UNCHARGED: Self = Self {
+    /// No work at all, as a constant: [`WorkCounters::default`] usable in `const` charges such as one page read.
+    pub const UNCHARGED: Self = Self {
         authority_records_read: 0,
         authority_records_appended: 0,
         authority_bytes_read: 0,
@@ -270,10 +263,6 @@ impl WorkCounters {
     };
 
     /// Adds one receipt while failing closed on accounting overflow.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkError::Overflow`] if any exact counter cannot be represented.
     #[inline]
     pub fn checked_add(self, other: Self) -> Result<Self, WorkError> {
         // Every counter is summed without branching; one overflow flag
@@ -299,13 +288,7 @@ impl WorkCounters {
         Ok(combined)
     }
 
-    /// Checks, without changing `self`, that adding `delta` neither overflows
-    /// nor exceeds `budget`: exactly the outcome of `self.checked_add(*delta)`
-    /// followed by [`Self::verify`] of that sum.
-    ///
-    /// # Errors
-    ///
-    /// Returns overflow or the first counter the sum would exceed.
+    /// Checks, without changing `self`, that adding `delta` neither overflows nor exceeds `budget`: exactly the outcome of `self.checked_add(*delta)` followed by [`Self::verify`] of that sum.
     #[inline]
     pub(crate) fn admit(&self, delta: &Self, budget: &WorkBudget) -> Result<(), WorkError> {
         let mut overflow = false;
@@ -331,13 +314,7 @@ impl WorkCounters {
         self.checked_add(*delta)?.exceeded(budget)
     }
 
-    /// Adds a backend receipt spent while this operation held `live_bytes`:
-    /// the backend's peak allocation coexisted with them, so the combined
-    /// peak is their sum rather than the larger of the two.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkError::Overflow`] if any exact counter cannot be represented.
+    /// Adds a backend receipt spent while this operation held `live_bytes`: the backend's peak allocation coexisted with them, so the combined peak is their sum rather than the larger of the two.
     pub(crate) fn with_backend(
         self,
         mut backend: Self,
@@ -350,14 +327,7 @@ impl WorkCounters {
         Ok(merged)
     }
 
-    /// Adds `delta` in place once [`Self::admit`] accepts it: exactly
-    /// `*self = self.checked_add(*delta)?` after that sum verifies against
-    /// `budget`, but copies neither counter set. On failure `self` is
-    /// unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns overflow or the first counter the sum would exceed.
+    /// Adds `delta` in place once [`Self::admit`] accepts it: exactly `*self = self.checked_add(*delta)?` after that sum verifies against `budget`, but copies neither counter set.
     #[inline]
     pub(crate) fn charge(&mut self, delta: &Self, budget: &WorkBudget) -> Result<(), WorkError> {
         self.admit(delta, budget)?;
@@ -365,12 +335,7 @@ impl WorkCounters {
         Ok(())
     }
 
-    /// Adds `delta` in place: exactly `*self = self.checked_add(*delta)?`,
-    /// without copying either counter set. On overflow `self` is unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkError::Overflow`] if any exact counter cannot be represented.
+    /// Adds `delta` in place: exactly `*self = self.checked_add(*delta)?`, without copying either counter set.
     #[inline]
     pub(crate) fn try_add_assign(&mut self, delta: &Self) -> Result<(), WorkError> {
         let mut overflow = false;
@@ -387,8 +352,7 @@ impl WorkCounters {
         Ok(())
     }
 
-    /// Adds `delta` in place after [`Self::admit`] or an equivalent overflow
-    /// check has accepted exactly this `self` and `delta`.
+    /// Adds `delta` in place after [`Self::admit`] or an equivalent overflow check has accepted exactly this `self` and `delta`.
     #[inline]
     fn add_admitted(&mut self, delta: &Self) {
         macro_rules! add_in_place {
@@ -400,8 +364,7 @@ impl WorkCounters {
         self.peak_allocation_bytes = self.peak_allocation_bytes.max(delta.peak_allocation_bytes);
     }
 
-    /// Emits this receipt as one `acyclic.work` debug event whose fields carry
-    /// the counter names; a disabled callsite costs one interest check.
+    /// Emits this receipt as one `acyclic.work` debug event whose fields carry the counter names; a disabled callsite costs one interest check.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn emit(&self, span: &tracing::Span, op: &'static str, outcome: &'static str) {
         macro_rules! event {
@@ -419,37 +382,19 @@ impl WorkCounters {
         additive_counters!(event);
     }
 
-    /// Verifies every counter against `budget` by reference: exactly
-    /// [`Self::verify`], without copying either counter set.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first stable counter name that exceeded its bound.
+    /// Verifies every counter against `budget` by reference: exactly [`Self::verify`], without copying either counter set.
     #[inline]
     pub(crate) fn verify_ref(&self, budget: &WorkBudget) -> Result<(), WorkError> {
         self.verify_within(budget)
     }
 
     /// Verifies every counter against an admitted hard budget.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first stable counter name that exceeded its bound.
     #[inline]
     pub fn verify(self, budget: WorkBudget) -> Result<(), WorkError> {
         self.verify_within(&budget)
     }
 
     /// Charges `count` examined items in place.
-    ///
-    /// Exactly equivalent to replacing `self` with its [`Self::checked_add`]
-    /// of `count` items once that sum verifies against `budget`, but copies
-    /// neither counter set: hot traversals charge once per examined item.
-    /// On failure `self` is unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns overflow or the first counter exceeding `budget`.
     #[inline]
     pub fn charge_items(&mut self, count: u64, budget: &WorkBudget) -> Result<(), WorkError> {
         let prior = self.items_examined;
@@ -459,13 +404,7 @@ impl WorkCounters {
         })
     }
 
-    /// Charges `operations` allocations that leave `live_bytes` owned at
-    /// once, in place, with the same exactness and failure behavior as
-    /// [`Self::charge_items`]: peak allocation is the maximum ever live.
-    ///
-    /// # Errors
-    ///
-    /// Returns overflow or the first counter exceeding `budget`.
+    /// Charges `operations` allocations that leave `live_bytes` owned at once, in place, with the same exactness and failure behavior as [`Self::charge_items`]: peak allocation is the maximum ever live.
     #[inline]
     pub fn charge_allocation(
         &mut self,
@@ -618,13 +557,6 @@ impl WorkCounters {
     }
 
     /// Returns the remaining additive budget after this spent receipt.
-    /// Peak allocation is an operation-wide maximum, so its remaining limit is
-    /// unchanged and each backend allocation is checked against the same cap.
-    ///
-    /// # Errors
-    ///
-    /// Returns the exact exceeded counter when already-spent work is outside
-    /// the admitted budget.
     #[inline]
     pub fn remaining(self, budget: WorkBudget) -> Result<WorkBudget, WorkError> {
         self.verify_within(&budget)?;

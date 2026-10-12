@@ -56,7 +56,7 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
     -> Result<Binding>
 {
     let limits = Limits { context_messages: 8, ..Limits::default() };
-    let provider = ProviderRef::new("durable-continuation", "filesystem", "2")?;
+    let provider = ProviderRef::new("durable-continuation".into(), "filesystem".into(), "2".into(), &mut None)?;
     let volume = VolumeRef::new(provider.clone(), "conversation", VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent))?;
     let host = Arc::new(FilesystemHost::new(
@@ -77,7 +77,7 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
         root.join("stream"), Default::default()).await
         .map_err(|error| Error::Storage(error.to_string()))?);
     if initialize {
-        let mut aggregate = StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new()).await?;
+        let mut aggregate = StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         aggregate.execute(Command {
             operation_id: OperationId::new(), idempotency_key: IdempotencyKey::new("bind-durable-10k")?,
             expected_revision: 0, scope: scope.clone(), causal_parent: None,
@@ -98,7 +98,7 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
     };
     let bundle = HarnessBuilder::new().journal(journal.clone())
         .content(ContentBindings { reader, writer: Some(writer) })
-        .model(Model::new("synthetic", "durable-continuation", "1", serde_json::Value::Null)?, model)
+        .model(Model::new("synthetic".into(), "durable-continuation".into(), "1".into(), serde_json::Value::Null)?, model)
         .grant("model:generate").grant(read).grant(write).limits(limits)
         .context(ContextPipeline::new([Arc::new(SourceStage::new("instructions", "1",
             Arc::new(instructions), ContextPlacement::Prepend)) as Arc<dyn crate::context::ContextStage>]))

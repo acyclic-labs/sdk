@@ -2,7 +2,7 @@
 use super::super::response;
 use super::*;
 use crate::LocalObjectsLimits;
-use crate::body::{BodyParts, LocalBodyLocation};
+use crate::body::{LocalBodyLocation};
 use crate::physical::native_durability;
 use fs2::FileExt;
 use std::collections::BTreeSet;
@@ -52,8 +52,8 @@ impl Publication {
     }
     pub(crate) fn allocation_failed(&self, error: std::collections::TryReserveError) -> NativeObjectsError {
         match &self.meter {
-            Some(meter) => NativeObjectsError::Admission(meter.allocation_failed(error)),
-            None => NativeObjectsError::Service(Unavailable.into()),
+            Some(meter) => NativeObjectsError::from(NativeObjectsCause::Admission(meter.allocation_failed(error))),
+            None => NativeObjectsError::from(NativeObjectsCause::Service(Unavailable.into())),
         }
     }
     pub(crate) fn retire(&mut self, bytes: usize) -> Result<(), NativeObjectsError> {
@@ -69,8 +69,8 @@ impl Publication {
         let mut claim = self.meter.as_ref().map(|meter| ReadAllocation::new(meter, requested)).transpose()?;
         if let Err(error) = value.try_reserve_exact(additional) {
             return Err(self.meter.as_ref().map_or_else(
-                || NativeObjectsError::Service(Unavailable.into()),
-                |meter| NativeObjectsError::Admission(meter.allocation_failed(error)),
+                || NativeObjectsError::from(NativeObjectsCause::Service(Unavailable.into())),
+                |meter| NativeObjectsError::from(NativeObjectsCause::Admission(meter.allocation_failed(error))),
             ));
         }
         if let Some(claim) = &mut claim {
@@ -130,21 +130,27 @@ impl Publication {
         let mut output = Vec::new();
         self.reserve(&mut output, length)?;
         self.codec(length, 0, 0, || value.encode(&mut output))?
-            .map_err(|_| NativeObjectsError::Service(Unavailable.into()))?;
+            .map_err(|_| NativeObjectsError::from(NativeObjectsCause::Service(Unavailable.into())))?;
         Ok(output)
     }
 }
 
 pub(super) fn service_error(error: NativeObjectsError) -> Error {
     match error {
-        NativeObjectsError::Service(error) => error,
+        error if !error.has_payload() => match error.into_cause() {
+            NativeObjectsCause::Service(error) => error,
+            _ => Unavailable.into(),
+        },
         _ => Unavailable.into(),
     }
 }
 
 fn open_error(error: NativeObjectsError) -> LocalOpenError {
     match error {
-        NativeObjectsError::Admission(error) => LocalOpenError::Io(error),
+        error if !error.has_payload() => match error.into_cause() {
+            NativeObjectsCause::Admission(error) => LocalOpenError::Io(error),
+            _ => LocalOpenError::Unavailable,
+        },
         _ => LocalOpenError::Unavailable,
     }
 }
@@ -156,7 +162,7 @@ fn composite_publication(parts: Vec<StoredBody>, length: usize, publication: &mu
             let allocation = publication.retained.as_mut().ok_or(Error::from(Unavailable))?.split(capacity)?;
             StoredBody::composite_measured(parts, length, meter, allocation)
         }
-        None => Ok(StoredBody::Composite { parts: Arc::new(BodyParts { values: parts, _allocation: None }), length }),
+        None => Ok(StoredBody::Composite { parts: Arc::new(crate::v1::Guarded { value: parts, _allocation: None }), length }),
     }
 }
 
@@ -173,7 +179,7 @@ fn relocated_publication(body: &StoredBody, moves: &crate::body::LocalBodyReloca
 fn unpersisted(body: &StoredBody) -> bool {
     match body {
         StoredBody::Memory(_) => true,
-        StoredBody::Composite { parts, .. } => parts.values.iter().any(unpersisted),
+        StoredBody::Composite { parts, .. } => parts.value.iter().any(unpersisted),
         StoredBody::Local { .. } => false,
     }
 }
@@ -425,7 +431,7 @@ impl MemoryObjects {
                     crate::physical::PhysicalError::Corrupt => LocalOpenError::Corrupt,
                 })?;
                 report.journal_bytes_reclaimed = journal.compact(&next, None).map_err(|error| match error {
-                    NativeObjectsError::Service(error) if error.code == QuotaExceeded => LocalOpenError::Invalid,
+                    error if !error.has_payload() && matches!(&error.cause, NativeObjectsCause::Service(error) if error.code == QuotaExceeded) => LocalOpenError::Invalid,
                     error => open_error(error),
                 })?;
                 *state = next;
@@ -794,8 +800,8 @@ impl Journal {
             }
             StoredBody::Composite { parts, length } => {
                 let mut output = Vec::new();
-                publication.reserve(&mut output, parts.values.len())?;
-                for part in parts.values.iter() {
+                publication.reserve(&mut output, parts.value.len())?;
+                for part in parts.value.iter() {
                     output.push(self.external(part, publication)?);
                 }
                 composite_publication(output, *length, publication)
@@ -850,7 +856,7 @@ fn bodies(body: &StoredBody, publication: &mut Publication) -> Result<Vec<BodyRe
                 Ok(())
             }
             StoredBody::Composite { parts, .. } => {
-                for part in parts.values.iter() { ordered(part, out, publication)?; }
+                for part in parts.value.iter() { ordered(part, out, publication)?; }
                 Ok(())
             }
             _ => Err(Error::from(Unavailable).into()),
@@ -1024,7 +1030,7 @@ fn restore_body(
         return Err(LocalOpenError::Corrupt);
     }
     Ok(StoredBody::Composite {
-        parts: Arc::new(BodyParts { values: leaves, _allocation: None }),
+        parts: Arc::new(crate::v1::Guarded { value: leaves, _allocation: None }),
         length,
     })
 }

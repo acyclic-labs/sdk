@@ -274,9 +274,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "extension migration request is invalid".into(),
             ));
         }
-        if let Some(revision) = self.operation_revision(request.operation_id).await? {
+        if let Some(event) = self.operation_event(request.operation_id).await? {
             return self
-                .replay_extension_migration(request, scope, publisher, revision)
+                .replay_extension_migration(request, scope, publisher, event.revision)
                 .await;
         }
         self.reducer.preflight_extension_migration(
@@ -664,58 +664,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(())
     }
 
-    /// Opens and replays an aggregate, treating an absent path as empty.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.harness.store.open",
-            level = "info",
-            skip_all,
-            fields(rev = crate::obs::Empty, items = crate::obs::Empty, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
-    pub async fn open(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-    ) -> Result<Self> {
-        crate::obs::outcome(
-            Self::open_with_read_limits(
-                client,
-                authority,
-                authority_verifier,
-                schemas,
-                default_projection_read_limits(),
-            )
-            .await,
-        )
-    }
-
-    /// Opens from an authenticated checkpoint and bounded suffix.
-    #[cfg(feature = "filesystem")]
-    pub async fn open_measured(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Self>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            let aggregate = Self::open_with_read_limits_with_work(
-                client,
-                authority,
-                authority_verifier,
-                schemas, crate::store::default_projection_read_limits(), &mut Some(&mut work)).await?;
-            work.return_staged_output()?;
-            Ok(aggregate)
-        }.await;
-        work.finish(result)
-    }
-
     /// Restores the same authenticated checkpoint and suffix on the original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn open_with_native_work(
@@ -727,73 +675,28 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let mut native_io = history::native_work_io(original_work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let aggregate = async {
-            history::HistoryIo::check_cancellation(&native_io)?;
-            let aggregate = Self::open_with_read_limits_with_work(
-                client,
-                authority,
-                authority_verifier,
-                schemas, crate::store::default_projection_read_limits(), &mut Some(&mut native_io)).await?;
-            native_io.return_staged_output()?;
-            Ok::<Self, Error>(aggregate)
-        }.await?;
+        history::HistoryIo::check_cancellation(&native_io)?;
+        let aggregate = Self::open(client, authority, authority_verifier, schemas, None,
+            default_projection_read_limits(), DEFAULT_TERMINAL_EFFECTS, None,
+            &mut Some(&mut native_io)).await?;
+        native_io.return_staged_output()?;
         Ok((aggregate, native_io.into_custody()))
     }
 
-    pub(crate) async fn open_at_revision_with_work(
-        client: &std::sync::Arc<P>, authority: Authority,
-        authority_verifier: AuthorityVerifier, schemas: SchemaRegistry,
-        original_revision: u64, limits: HistoryReadLimits,
-        work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<Self> {
-        Self::open_inner(client, authority, authority_verifier, schemas, None,
-            limits, DEFAULT_TERMINAL_EFFECTS, Some(original_revision), work).await
-    }
-
-    pub(crate) async fn open_with_read_limits_with_work(
-        client: &std::sync::Arc<P>, authority: Authority,
-        authority_verifier: AuthorityVerifier, schemas: SchemaRegistry,
-        limits: HistoryReadLimits, work: &mut Option<&mut dyn history::HistoryIo>,
-    ) -> Result<Self> {
-        Self::open_inner(client, authority, authority_verifier, schemas, None,
-            limits, DEFAULT_TERMINAL_EFFECTS, None, work).await
-    }
-
-    /// Moves the canonical reducer out without copying or replaying it.
+    /// Moves the reducer out without copying or replaying it.
     pub fn into_reducer(self) -> Reducer {
         self.reducer
     }
-    /// Restores a bounded suffix through an exact committed revision.
-    pub async fn open_at_revision_with_read_limits(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        original_revision: u64,
-        limits: HistoryReadLimits,
-    ) -> Result<Self> {
-        Self::open_inner(
-            client,
-            authority,
-            authority_verifier,
-            schemas,
-            None,
-            limits,
-            DEFAULT_TERMINAL_EFFECTS,
-            Some(original_revision),
-            &mut None,
-        ).await
-    }
 
-    /// Restores the same exact historical cut with one cumulative finite SDK-boundary receipt.
+    /// Restores a bounded committed cut with a finite work receipt.
     #[cfg(feature = "filesystem")]
     #[allow(clippy::too_many_arguments, reason = "original exact-cut open arguments plus the cumulative work receipt")]
-    pub async fn open_at_revision_measured(
+    pub async fn open_measured(
         client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
-        original_revision: u64,
+        original_revision: Option<u64>,
         limits: HistoryReadLimits,
         budget: acyclic_fs::WorkBudget,
         cancellation: &acyclic_fs::CancellationToken,
@@ -801,120 +704,27 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut work = history::HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            let aggregate = Self::open_inner(
+            Self::open(
                 client,
                 authority,
                 authority_verifier,
-                schemas,
-                None,
-                limits,
-                DEFAULT_TERMINAL_EFFECTS,
-                Some(original_revision),
-                &mut Some(&mut work),
-            ).await?;
-            work.return_staged_output()?;
-            Ok(aggregate)
+                schemas, None, limits, DEFAULT_TERMINAL_EFFECTS, original_revision, &mut Some(&mut work)).await
         }.await;
         work.finish(result)
     }
 
-    /// Opens the latest authenticated durable projection and a finite canonical suffix.
-    pub async fn open_with_read_limits(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        limits: HistoryReadLimits,
-    ) -> Result<Self> {
-        Self::open_with_projection_limits(
-            client,
-            authority,
-            authority_verifier,
-            schemas,
-            limits,
-            DEFAULT_TERMINAL_EFFECTS,
-        )
-        .await
-    }
-
-    /// Opens with finite cold input bounds and a configurable terminal-effect cache.
-    pub async fn open_with_projection_limits(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        limits: HistoryReadLimits,
-        maximum_terminal_effects: usize,
-    ) -> Result<Self> {
-        Self::open_inner(
-            client,
-            authority,
-            authority_verifier,
-            schemas,
-            None,
-            limits,
-            maximum_terminal_effects,
-            None,
-            &mut None,
-        )
-        .await
-    }
-
-    /// Restores an integrity-checked snapshot, then replays its retained suffix.
+    /// Restores an authenticated aggregate at a bounded committed cut.
     #[cfg_attr(
         not(target_arch = "wasm32"),
         tracing::instrument(
-            name = "acyclic.harness.store.restore",
+            name = "acyclic.harness.store.open",
             level = "info",
             skip_all,
             fields(rev = crate::obs::Empty, items = crate::obs::Empty, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
         )
     )]
-    pub async fn open_from_snapshot(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        snapshot: Snapshot,
-    ) -> Result<Self> {
-        crate::obs::outcome(
-            Self::open_from_snapshot_with_read_limits(
-                client,
-                authority,
-                authority_verifier,
-                schemas,
-                snapshot,
-                default_projection_read_limits(),
-            )
-            .await,
-        )
-    }
-
-    /// Restores authenticated state within a cumulative input allowance.
-    pub async fn open_from_snapshot_with_read_limits(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        snapshot: Snapshot,
-        limits: HistoryReadLimits,
-    ) -> Result<Self> {
-        Self::open_inner(
-            client,
-            authority,
-            authority_verifier,
-            schemas,
-            Some(snapshot),
-            limits,
-            DEFAULT_TERMINAL_EFFECTS,
-            None,
-            &mut None,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments, reason = "one original restore engine with optional exact cut and observer")]
-    pub(crate) async fn open_inner(
+    #[allow(clippy::too_many_arguments, reason = "canonical restore inputs and observer")]
+    pub async fn open(
         client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
@@ -932,11 +742,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "projection read bounds must be positive".into(),
             ));
         }
-        let reader = match work.as_deref_mut() {
-            Some(work) => HistoryReader::new_with_work(
-                client, &authority, &authority_verifier, Some(work))?,
-            None => HistoryReader::new(client, &authority, authority_verifier.clone())?,
-        };
+        let reader = HistoryReader::new(client, &authority, &authority_verifier, work)?;
         let reader_bytes = if work.is_some() { reader.logical_owned_bytes()? } else { 0 };
         let loaded = match snapshot {
             Some(snapshot) => checkpoints::supplied(client, &authority, snapshot, limits, original_revision, work).await?,
@@ -1056,7 +862,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .await?;
         let cursor_bytes = cursor.authority.id.capacity() as u64;
         drop(cursor);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(cursor_bytes)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(cursor_bytes)?; }
         if page.cursor.after_revision != through {
             return Err(Error::Invalid(
                 "projection suffix exceeds byte allowance".into(),
@@ -1066,7 +872,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let record_capacity = (records.capacity() * std::mem::size_of::<operations::ObservedRecord>()) as u64;
         let page_cursor_bytes = page.cursor.authority.id.capacity() as u64;
         drop(page.cursor);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(page_cursor_bytes)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(page_cursor_bytes)?; }
         for (event, record) in page.events.into_iter().zip(records) {
             let (indexed, bytes) = effects::retirement_proof_with_work(
                 client,
@@ -1091,12 +897,12 @@ impl<P: StreamProvider> StreamAggregate<P> {
             drop(event);
             let record_bytes = operations::sdk_record_retained_bytes(&record, work);
             drop(record);
-            if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
+            if let Some(work) = work.as_deref_mut() { work.release_owned(record_bytes)?; }
         }
         if let Some(work) = work.as_deref_mut() {
             work.release_owned(events_retained_bytes)?;
-            work.release_bytes(event_bytes)?;
-            work.release_bytes(record_capacity)?;
+            work.release_owned(event_bytes)?;
+            work.release_owned(record_capacity)?;
             work.check_cancellation()?;
         }
         Ok(())
@@ -1140,10 +946,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             crate::contract::validate_trusted_json_byte_bound(state, limits.maximum_bytes, work)?;
             return crate::core::native_effect_clone_with_custody(state, work).map(Some);
         }
-        let reader = if work.is_some() {
-            let verifier = self.reducer.event_verifier(work)?;
-            HistoryReader::new_owned(&self.client, self.reducer.authority(), verifier, work)?
-        } else { self.history_reader()? };
+        let reader = HistoryReader::new(&self.client, self.reducer.authority(), self.reducer.event_verifier(), work)?;
         let reader_bytes = if work.is_some() { reader.logical_owned_bytes()? } else { 0 };
         let authority = match work.as_deref_mut() {
             Some(observer) => observer.clone_authority(self.reducer.authority()),
@@ -1182,12 +985,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
     }
 
-
-    /// Configures the event/retry cache; canonical Stream history and live projections remain authoritative.
-    pub fn with_resident_event_limit(mut self, maximum: usize) -> Result<Self> {
-        self.set_resident_event_limit(maximum)?;
-        Ok(self)
-    }
 
     /// Reconfigures the bounded event/retry cache without moving a borrowed aggregate.
     pub fn set_resident_event_limit(&mut self, maximum: usize) -> Result<()> {
@@ -1230,12 +1027,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self
     }
 
-    /// Configures content and projection bounds for future admissions.
-    pub fn with_limits(mut self, limits: Limits) -> Result<Self> {
-        self.set_limits(limits)?;
-        Ok(self)
-    }
-
     /// Updates admission bounds without discarding the verified projection.
     pub fn set_limits(&mut self, limits: Limits) -> Result<()> {
         limits.validate(&mut None)?;
@@ -1257,17 +1048,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
         operations::find_operation_bounded_with_work(
             &self.client,
             self.reducer.authority(),
-            &self.reducer.event_verifier(&mut None)?,
+            self.reducer.event_verifier(),
             operation, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut None,
         ).await.map(|(event, _)| event)
-    }
-
-    /// Exact historical operation revision, independent of the resident retry index.
-    pub async fn operation_revision(&self, operation: OperationId) -> Result<Option<u64>> {
-        Ok(self
-            .operation_event(operation)
-            .await?
-            .map(|event| event.revision))
     }
 
     /// Exact committed model selection, including operations archived from resident state.
@@ -1290,24 +1073,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ) -> Result<Option<(ApplyResult, u64)>> {
         let mut owned = crate::wire_codec::CodecQuota::from_retained(work, 0);
         self.reducer.verify_command_scope_with_work(command, owned.work())?;
-        let verifier = self.reducer.event_verifier(owned.work())?;
-        let verifier_bytes = if owned.work().is_some() { verifier.logical_owned_bytes()? } else { 0 };
-        let read = operations::bounded_operation_with_retained_quota(
-            &self.client, self.reducer.authority(), &verifier,
+        let (event, _) = operations::bounded_operation_with_retained_quota(
+            &self.client, self.reducer.authority(), self.reducer.event_verifier(),
             command.operation_id, maximum_bytes, return_event, owned.work(),
-        ).await;
-        drop(verifier);
-        let released_verifier = match owned.work().as_deref_mut() {
-            Some(work) => work.release_owned(verifier_bytes),
-            None => Ok(()),
-        };
-        let (event, _) = match read {
-            Ok(read) => { released_verifier?; read },
-            Err(error) => {
-                let _ = released_verifier;
-                return Err(error);
-            },
-        };
+        ).await?;
         let Some((event, original_owned)) = event else {
             if self.reducer.operation_revision(command.operation_id).is_some() {
                 return Err(guarded_boundary(owned.work(), crate::wire::ErrorCode::Storage,
@@ -1341,11 +1110,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     /// Opens an archival reader without replaying or cloning the resident event history.
     pub fn history_reader(&self) -> Result<HistoryReader<P>> {
-        HistoryReader::new(
-            &self.client,
-            self.reducer.authority(),
-            self.reducer.event_verifier(&mut None)?,
-        )
+        HistoryReader::new(&self.client, self.reducer.authority(), self.reducer.event_verifier(), &mut None)
     }
 
     /// Resolves one attested event within this projection's committed boundary.
@@ -1365,14 +1130,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         };
         let cursor_bytes = if owned.work().is_some() { cursor.authority.id.capacity() as u64 } else { 0 };
         owned.adopt(cursor_bytes)?;
-        let verifier = self.reducer.event_verifier(owned.work())?;
-        let verifier_bytes = if owned.work().is_some() { verifier.logical_owned_bytes()? } else { 0 };
-        owned.adopt(verifier_bytes)?;
-        let reader = HistoryReader::new_owned(&self.client, self.reducer.authority(), verifier, owned.work())?;
-        if owned.work().is_some() {
-            owned.adopt(reader.logical_owned_bytes()?.checked_sub(verifier_bytes)
-                .ok_or_else(|| Error::Invalid("history reader ownership underflows".into()))?)?;
-        }
+        let reader = HistoryReader::new(&self.client, self.reducer.authority(), self.reducer.event_verifier(), owned.work())?;
+        if owned.work().is_some() { owned.adopt(reader.logical_owned_bytes()?)?; }
         let (page, _, _, retained) = reader.read_page_with_work(&cursor,
             HistoryReadLimits { maximum_events: 1, maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64 },
             false, owned.work().as_mut().map(|work| &mut **work as &mut dyn history::HistoryIo)).await?;
@@ -1555,7 +1314,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             self.validate_causal_reference(event.causal_parent.as_ref(), &mut None)
                 .await?;
             let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
-            let request = publication.request(&self.client, idempotency_key).await?;
+            let request = publication.request(&self.client, idempotency_key, &mut None).await?.0;
             let fork_guard = if let crate::core::Action::PublishFork { seed } = &command.action {
                 let verifier = self
                     .fork_verifier
@@ -1605,7 +1364,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             };
             let result = match outcome {
                 CommitOutcome::Committed(envelope) => {
-                    if publication.verify(&envelope).is_err() {
+                    if publication.verify(&envelope, &mut None).is_err() {
                         return Err(Error::Indeterminate(publication.operation_id));
                     }
                     match self.reducer.apply_committed(event.clone(), &mut None).and_then(|result|
@@ -1727,7 +1486,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let (bytes, claim) = Self::read_admission_content_with_work(
                 verifier.as_ref(), reference, scratch.work()).await?;
             scratch.adopt(claim)?;
-            let validated = ticket.validate_request_bytes_with_work(&bytes, scratch.work());
+            let validated = ticket.validate_request_bytes(&bytes, scratch.work()).and_then(|request| {
+                let measured = request.1;
+                drop(request);
+                scratch.work().as_deref_mut().map_or(Ok(()), |io| io.release_owned(measured))
+            });
             drop(bytes);
             let released = scratch.relinquish(claim);
             return match validated {
@@ -1762,16 +1525,16 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let (request_bytes, request_claim) = Self::read_admission_content_with_work(
             verifier.as_ref(), &ticket.request, scratch.work()).await?;
         scratch.adopt(request_claim)?;
-        let request = ticket.validate_request_bytes_owned_with_work(&request_bytes, scratch.work())?;
-        scratch.adopt(request.measured_owned_bytes())?;
+        let request = ticket.validate_request_bytes(&request_bytes, scratch.work())?;
+        scratch.adopt(request.1)?;
         let (bytes, claim) = Self::read_admission_content_with_work(
             verifier.as_ref(), reference, scratch.work()).await?;
         scratch.adopt(claim)?;
         match detail_outcome {
             Some(outcome) => ticket.validate_decision_bytes(
-                request.request(), outcome, reference, &bytes, scratch.work()),
+                &request.0, outcome, reference, &bytes, scratch.work()),
             None => ticket.validate_answer_bytes(
-                request.request(), reference, &bytes, scratch.work()),
+                &request.0, reference, &bytes, scratch.work()),
         }
     }
 
@@ -1801,7 +1564,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 Error::Unsupported("interaction content verifier is not bound".into())
             })?;
             let bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            ticket.validate_request_bytes(&bytes)?;
+            ticket.validate_request_bytes(&bytes, &mut None)?;
         }
         if let crate::core::Action::ResolveInteraction { resolution } = action
             && let InteractionOutcome::Answered { answer } = &resolution.outcome
@@ -1814,7 +1577,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
             let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?.0;
             let answer_bytes = verifier.read(answer, answer.descriptor().byte_length(), None)?.await?;
             ticket.validate_answer_bytes(&request, answer, &answer_bytes, &mut None)?;
         }
@@ -1829,7 +1592,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
             let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?.0;
             let detail_bytes = verifier.read(detail, detail.descriptor().byte_length(), None)?.await?;
             ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes, &mut None)?;
         }
@@ -2043,8 +1806,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if reference.authority == *self.reducer.authority() { return Ok(()); }
         let path = reference.authority.stream_path(work)?;
         let path_bytes = if work.is_some() { path.capacity() as u64 } else { 0 };
-        let read = match operations::stream_text_with_work(&self.client, &path, work) {
-            Ok(stream) => operations::one_record(&self.client, stream.stream.path(),
+        let read = match operations::stream(&self.client, &path, work) {
+            Ok(stream) => operations::one_record(&self.client, stream.0.path(),
                 reference.revision.saturating_sub(1), work).await,
             Err(error) => Err(error),
         };
@@ -2060,7 +1823,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let decoded = crate::wire_codec::decode_event(&record.value, work);
         drop(record);
         let released_record = match work.as_deref_mut() {
-            Some(observer) => observer.release_record(raw), None => Ok(()),
+            Some(observer) => observer.release_owned(raw), None => Ok(()),
         };
         let ((authority, event), event_retained) = match decoded {
             Ok(decoded) => { released_record?; decoded },
@@ -2195,7 +1958,7 @@ mod tests {
     fn content() -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "extension",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
@@ -2335,7 +2098,7 @@ mod tests {
                     1,
                     json!({"type": "object"}),
                     [9; 32],
-                    crate::core::ExtensionForkPolicy::Inherit
+                    crate::core::ExtensionForkPolicy::Inherit, [], None
                 )
                 .is_ok()
         );
@@ -2348,34 +2111,34 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = provider.clone();
         provider.forbid_writes.store(true, Ordering::SeqCst);
-        let reader = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let reader = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         let cursor = reader.pin(0, None).await?;
         let limits = HistoryReadLimits {
             maximum_events: 1,
             maximum_bytes: 65_536,
         };
         assert_eq!(cursor.through_revision, 0);
-        assert!(reader.read_page(&cursor, limits).await?.events.is_empty());
+        assert!(reader.read_page(&cursor, limits, None).await?.events.is_empty());
         assert!(matches!(reader.pin(1, None).await, Err(Error::Invalid(_))));
         let future = HistoryCursor {
             through_revision: 1,
             ..cursor.clone()
         };
         assert!(matches!(
-            reader.read_page(&future, limits).await,
+            reader.read_page(&future, limits, None).await,
             Err(Error::Invalid(_))
         ));
         assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
         provider.forbid_writes.store(false, Ordering::SeqCst);
         let mut writer = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         writer.execute(command(1)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
         provider.forbid_writes.store(true, Ordering::SeqCst);
-        assert!(reader.read_page(&cursor, limits).await?.events.is_empty());
+        assert!(reader.read_page(&cursor, limits, None).await?.events.is_empty());
         assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
         let current = reader.pin(0, None).await?;
-        let page = reader.read_page(&current, limits).await?;
+        let page = reader.read_page(&current, limits, None).await?;
         assert_eq!(page.events.len(), 1);
         assert_eq!(page.cursor.after_revision, 1);
         Ok(())
@@ -2387,10 +2150,10 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = provider.clone();
         let mut writer = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas())
-                .await?
-                .with_resident_event_limit(1)?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                .await?,
         );
+        writer.set_resident_event_limit(1)?;
         let original = command(1)?;
         let first = writer.execute(original.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
         let ApplyResult::Applied { event } = first else {
@@ -2479,7 +2242,7 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = provider.clone();
         let mut writer = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         let agent = crate::AgentId::from_bytes([8; 16]);
         let file = content()?;
@@ -2541,7 +2304,7 @@ mod tests {
         );
         drop(writer);
         let reopened =
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?;
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         assert_eq!(
             reopened
                 .reducer()
@@ -2560,7 +2323,8 @@ mod tests {
                 .first()
                 .ok_or_else(|| Error::Storage("head record missing".into()))?
                 .value,
-        )?;
+            None,
+        )?.0;
         forged["sequence"] = json!(2);
         head.append(crate::contract::canonical_json_bytes(&forged)?)
             .await?;
@@ -2574,7 +2338,7 @@ mod tests {
         acyclic_stream::Stream::new(std::sync::Arc::clone(&incomplete), authority().stream_path(&mut None)?)?
             .append(encode_event(&authority(), &event, &mut None)?)
             .await?;
-        let incomplete_reader = HistoryReader::new(&incomplete, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let incomplete_reader = HistoryReader::new(&incomplete, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         assert!(matches!(
             incomplete_reader.latest_conversation_message(65_536).await,
             Err(Error::Storage(_))
@@ -2589,10 +2353,10 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = provider.clone();
         let mut writer = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas())
-                .await?
-                .with_resident_event_limit(1)?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                .await?,
         );
+        writer.set_resident_event_limit(1)?;
         let agent = crate::AgentId::from_bytes([8; 16]);
         let file = content()?;
         let scope = issuer().issue("message-writer", &Capabilities::new([
@@ -2643,7 +2407,7 @@ mod tests {
             }
             writer.execute(next, #[cfg(feature = "filesystem")] None, &mut None).await?;
             if matches!(sequence, 1 | 1_000 | 10_000) {
-                let cold = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+                let cold = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
                 provider.forbid_writes.store(true, Ordering::SeqCst);
                 provider.observation_reads.store(0, Ordering::SeqCst);
                 assert_eq!(
@@ -2655,7 +2419,7 @@ mod tests {
         }
         provider.forbid_writes.store(true, Ordering::SeqCst);
         let restored =
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?;
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         assert_eq!(restored.reducer().revision(), writer.reducer().revision());
         let restored_history = restored
             .reducer()
@@ -2744,7 +2508,8 @@ mod tests {
                 .first()
                 .ok_or_else(|| Error::Storage("message index missing".into()))?
                 .value,
-        )?;
+            None,
+        )?.0;
         let forged_id = uuid::Uuid::from_u128(50_000);
         forged["message_id"] = json!(forged_id);
         acyclic_stream::Stream::new(std::sync::Arc::clone(&client), format!(
@@ -2757,7 +2522,8 @@ mod tests {
                 .first()
                 .ok_or_else(|| Error::Storage("message index missing".into()))?
                 .value,
-        )?;
+            None,
+        )?.0;
         forged_sequence["sequence"] = json!(20_001);
         acyclic_stream::Stream::new(std::sync::Arc::clone(&client), "harness/v2/conversation-sequences/conversations/conversation-1/20001")?
             .append(crate::contract::canonical_json_bytes(&forged_sequence)?)
@@ -2982,7 +2748,7 @@ mod tests {
         {
             use crate::executor::ExecutionJournal as _;
             let filesystem_provider =
-                crate::resources::ProviderRef::new("cold-selected-context", "filesystem", "2")?;
+                crate::resources::ProviderRef::new("cold-selected-context".into(), "filesystem".into(), "2".into(), &mut None)?;
             let host = Arc::new(crate::filesystem::FilesystemHost::new(
                 acyclic_fs::Fs::memory(),
                 filesystem_provider.clone(),
@@ -3016,9 +2782,7 @@ mod tests {
                 selection.conversation_revision,
                 selection.clone(),
                 &TestContent,
-                3,
-                8,
-                65_536,
+                crate::conversation::Limits { context_messages: 3, attachments: 8, render_bytes: 65_536, ..Default::default() },
                 8,
                 None,
             )
@@ -3053,10 +2817,10 @@ mod tests {
     async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result<()> {
         let client = Arc::new(MemoryStream::default());
         let mut writer = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas())
-                .await?
-                .with_resident_event_limit(2)?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                .await?,
         );
+        writer.set_resident_event_limit(2)?;
         let original = command(1)?;
         let first = writer.execute(original.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
         for identity in 2..=5 {
@@ -3093,16 +2857,14 @@ mod tests {
             Err(Error::Conflict(_))
         ));
         let mut restored = with_content(
-            StreamAggregate::open_from_snapshot(
+            StreamAggregate::open(
                 &client,
                 authority(),
                 issuer().verifier(&mut None).expect("verifier copy"),
-                schemas(),
-                snapshot,
-            )
-            .await?
-            .with_resident_event_limit(2)?,
+                schemas(), Some(snapshot), crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+            .await?,
         );
+        restored.set_resident_event_limit(2)?;
         assert_eq!(restored.reducer().archived_through_revision(), 3);
         let ApplyResult::Replayed { event } = restored.execute(original, #[cfg(feature = "filesystem")] None, &mut None).await? else {
             return Err(Error::Invalid("cold retry was not replayed".into()));
@@ -3130,7 +2892,7 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = provider.clone();
         let mut writer = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         for identity in 1_u64..=10_000 {
             let mut next = command(1)?;
@@ -3148,7 +2910,7 @@ mod tests {
         let mut later = command(2)?;
         later.expected_revision = writer.reducer().revision();
         provider.forbid_writes.store(true, Ordering::SeqCst);
-        let reader = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let reader = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         let cursor = reader.pin(9_997, None).await?;
         assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
         provider.forbid_writes.store(false, Ordering::SeqCst);
@@ -3158,15 +2920,15 @@ mod tests {
             maximum_events: 2,
             maximum_bytes: 131_072,
         };
-        let first = reader.read_page(&cursor, limits).await?;
+        let first = reader.read_page(&cursor, limits, None).await?;
         assert_eq!(first.events.len(), 2);
         assert_eq!(first.cursor.after_revision, 9_999);
-        let second = reader.read_page(&first.cursor, limits).await?;
+        let second = reader.read_page(&first.cursor, limits, None).await?;
         assert_eq!(second.events, vec![last.clone()]);
         assert_eq!(second.cursor.after_revision, 10_000);
         assert!(
             reader
-                .read_page(&second.cursor, limits)
+                .read_page(&second.cursor, limits, None)
                 .await?
                 .events
                 .is_empty()
@@ -3184,40 +2946,34 @@ mod tests {
         );
         for fault in [1, 2, 3, 4] {
             provider.history_read_fault.store(fault, Ordering::SeqCst);
-            assert!(reader.read_page(&cursor, limits).await.is_err());
-            assert_eq!(reader.read_page(&cursor, limits).await?, first);
+            assert!(reader.read_page(&cursor, limits, None).await.is_err());
+            assert_eq!(reader.read_page(&cursor, limits, None).await?, first);
         }
         assert!(
             reader
-                .read_page(
-                    &cursor,
-                    HistoryReadLimits {
+                .read_page(&cursor, HistoryReadLimits {
                         maximum_bytes: 1,
                         ..limits
-                    }
-                )
+                    }, None)
                 .await
                 .is_err()
         );
         assert!(
             reader
-                .read_page(
-                    &cursor,
-                    HistoryReadLimits {
+                .read_page(&cursor, HistoryReadLimits {
                         maximum_events: 0,
                         ..limits
-                    }
-                )
+                    }, None)
                 .await
                 .is_err()
         );
         let mut invalid = cursor.clone();
         invalid.through_revision = 10_002;
-        assert!(reader.read_page(&invalid, limits).await.is_err());
+        assert!(reader.read_page(&invalid, limits, None).await.is_err());
         invalid = cursor;
         invalid.authority.id = "other".into();
         assert!(matches!(
-            reader.read_page(&invalid, limits).await,
+            reader.read_page(&invalid, limits, None).await,
             Err(Error::Unauthorized(_))
         ));
         assert_cold_operation_lookup(&reader, last).await?;
@@ -3243,16 +2999,25 @@ mod tests {
             allocation_operations: 8, peak_allocation_bytes: bytes,
             ..WorkBudget::default()
         };
+        let read = async |cursor: &HistoryCursor, limits: HistoryReadLimits,
+            budget: WorkBudget, cancellation: &CancellationToken| {
+            let mut work = HistoryWork::new(budget, cancellation);
+            let result = async {
+                work.preflight()?;
+                reader.read_page(cursor, limits, Some(&mut work)).await
+            }.await;
+            work.finish(result)
+        };
         let cancellation = CancellationToken::new();
-        let page = reader.read_page_measured(cursor, limits, budget, &cancellation).await
+        let page = read(cursor, limits, budget, &cancellation).await
             .map_err(|failure| failure.error)?;
         assert_eq!(&page.value, expected);
         for fault in 1..=6 {
             provider.history_read_fault.store(fault, Ordering::SeqCst);
-            assert!(reader.read_page_measured(cursor,
+            assert!(read(cursor,
                 HistoryReadLimits { maximum_bytes: bytes, ..limits }, budget, &cancellation,
             ).await.is_err());
-            assert_eq!(reader.read_page_measured(cursor, limits, budget, &cancellation).await
+            assert_eq!(read(cursor, limits, budget, &cancellation).await
                 .map_err(|failure| failure.error)?.value, *expected);
         }
         for narrow in [
@@ -3261,26 +3026,34 @@ mod tests {
             WorkBudget { output_bytes: 0, ..budget },
             WorkBudget { peak_allocation_bytes: 0, ..budget },
         ] {
-            assert!(reader.read_page_measured(cursor, limits, narrow, &cancellation).await.is_err());
+            assert!(read(cursor, limits, narrow, &cancellation).await.is_err());
         }
         let invalid = HistoryCursor {
             authority: Authority { id: "other".into(), ..cursor.authority.clone() }, ..cursor.clone()
         };
-        assert!(matches!(reader.read_page_measured(&invalid, limits, budget, &cancellation).await,
+        assert!(matches!(read(&invalid, limits, budget, &cancellation).await,
             Err(acyclic_fs::OperationFailure { error: Error::Unauthorized(_), .. })));
         let cancelled = CancellationToken::new();
         cancelled.cancel();
-        assert!(reader.pin_measured(0, budget, &cancelled).await.is_err());
-        assert!(reader.read_page_measured(cursor, limits, budget, &cancelled).await.is_err());
-        assert!(reader.pin_measured(0, WorkBudget::UNBOUNDED, &cancellation).await.is_err());
+        assert!(async {
+            let mut work = HistoryWork::new(budget, &cancelled);
+            work.preflight()?;
+            reader.pin(0, Some(&mut work)).await
+        }.await.is_err());
+        assert!(read(cursor, limits, budget, &cancelled).await.is_err());
+        assert!(async {
+            let mut work = HistoryWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            work.preflight()?;
+            reader.pin(0, Some(&mut work)).await
+        }.await.is_err());
         let terminal = HistoryCursor { after_revision: cursor.through_revision, ..cursor.clone() };
-        assert!(reader.read_page_measured(&terminal, limits, budget, &cancellation).await
+        assert!(read(&terminal, limits, budget, &cancellation).await
             .map_err(|failure| failure.error)?.value.events.is_empty());
         let during_tail = CancellationToken::new();
         *provider.history_cancel_after_tail.lock()
             .map_err(|_| Error::Storage("history cancellation fixture poisoned".into()))? =
             Some(during_tail.clone());
-        assert!(reader.read_page_measured(cursor, limits, budget, &during_tail).await.is_err());
+        assert!(read(cursor, limits, budget, &during_tail).await.is_err());
         Ok(())
     }
 
@@ -3300,7 +3073,7 @@ mod tests {
             let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
             let client = provider.clone();
             let mut aggregate = with_content(
-                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
             );
             let submitted = command(1)?;
             provider
@@ -3389,7 +3162,7 @@ mod tests {
                 None,
             )
             .await?;
-        let reader = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let reader = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         assert!(matches!(reader.operation_event(event.operation_id, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event),
             Err(Error::Storage(message)) if message.contains("atomic canonical event")));
         Ok(())
@@ -3416,17 +3189,14 @@ mod tests {
                     None,
                 )
                 .await?;
-            let reader = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+            let reader = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
             let cursor = reader.pin(0, None).await?;
             assert!(
                 reader
-                    .read_page(
-                        &cursor,
-                        HistoryReadLimits {
+                    .read_page(&cursor, HistoryReadLimits {
                             maximum_events: 1,
                             maximum_bytes: 65_536,
-                        }
-                    )
+                        }, None)
                     .await
                     .is_err()
             );
@@ -3438,9 +3208,9 @@ mod tests {
     async fn incremental_refresh_pins_tail_and_advances_only_bounded_pages() -> Result<()> {
         let client = Arc::new(MemoryStream::default());
         let mut reader =
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?;
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         let mut writer = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         for identity in 1..=5 {
             let mut next = command(identity)?;
@@ -3465,7 +3235,7 @@ mod tests {
         assert!(reader.refresh_through(6, 2).await?);
         assert_eq!(reader.reducer().revision(), 6);
         let reopened =
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?;
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         assert_eq!(
             reader.reducer().events_after(0, 6)?,
             reopened.reducer().events_after(0, 6)?
@@ -3478,7 +3248,7 @@ mod tests {
         let provider = Arc::new(MemoryStream::default());
         let client = provider;
         let mut unbound =
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?;
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         assert!(matches!(
             unbound.execute(command(1)?, #[cfg(feature = "filesystem")] None, &mut None).await,
             Err(Error::Unsupported(_))
@@ -3492,17 +3262,17 @@ mod tests {
                 "required": ["text"]
             }),
             [9; 32],
-            crate::core::ExtensionForkPolicy::Inherit,
+            crate::core::ExtensionForkPolicy::Inherit, [], None,
         )?;
         let mut invalid = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), wrong_schemas).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), wrong_schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         assert!(matches!(
             invalid.execute(command(1)?, #[cfg(feature = "filesystem")] None, &mut None).await,
             Err(Error::Invalid(_))
         ));
         let mut valid = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         valid.execute(command(1)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
         let records = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path(&mut None)?)?
@@ -3533,7 +3303,7 @@ mod tests {
             2,
             json!({"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}),
             [10; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let mut migrations = NativeExtensionMigrations::default();
         migrations.register(
@@ -3559,8 +3329,7 @@ mod tests {
                 &client,
                 authority(),
                 issuer().verifier(&mut None).expect("verifier copy"),
-                valid_schemas.clone(),
-            )
+                valid_schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?,
         );
         original.execute(command(1)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
@@ -3591,10 +3360,10 @@ mod tests {
             2,
             json!({"type":"object","required":["text"],"properties":{"text":{"type":"integer"}}}),
             [10; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let mut invalid = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), invalid_schemas)
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), invalid_schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await?,
         )
         .with_extension_migrations(migrations.clone());
@@ -3608,8 +3377,7 @@ mod tests {
                 &client,
                 authority(),
                 issuer().verifier(&mut None).expect("verifier copy"),
-                valid_schemas.clone(),
-            )
+                valid_schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?,
         );
         assert!(matches!(
@@ -3630,8 +3398,7 @@ mod tests {
                 &client,
                 authority(),
                 issuer().verifier(&mut None).expect("verifier copy"),
-                valid_schemas.clone(),
-            )
+                valid_schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?,
         )
         .with_extension_migrations(Arc::new(wrong_migrations));
@@ -3645,8 +3412,7 @@ mod tests {
                 &client,
                 authority(),
                 issuer().verifier(&mut None).expect("verifier copy"),
-                valid_schemas.clone(),
-            )
+                valid_schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?,
         )
         .with_extension_migrations(migrations);
@@ -3656,7 +3422,7 @@ mod tests {
             ApplyResult::Replayed { .. }
         ));
         let reopened =
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), valid_schemas).await?;
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), valid_schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         assert_eq!(
             reopened
                 .reducer()
@@ -3676,7 +3442,7 @@ mod tests {
             2,
             json!({"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}),
             [10; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let mut migrations = NativeExtensionMigrations::default();
         migrations.register(
@@ -3689,7 +3455,7 @@ mod tests {
         let files = MigrationContentStore::default();
         files.insert(&content()?, EXTENSION_BYTES)?;
         let mut aggregate =
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas)
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await?
                 .with_content_verifier(Arc::new(files.clone()))
                 .with_extension_migrations(Arc::new(migrations));
@@ -3706,7 +3472,7 @@ mod tests {
         };
         let publisher = TestPublisher {
             volume: VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "extension-child",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])),
@@ -3801,7 +3567,7 @@ mod tests {
             version: 1,
         };
         let mut schemas = SchemaRegistry::new();
-        schemas.register_configured(
+        schemas.register(
             extension.name.clone(),
             extension.version,
             json!({"type":"object"}),
@@ -3827,8 +3593,7 @@ mod tests {
             &client,
             authority.clone(),
             issuer.verifier(&mut None).expect("verifier copy"),
-            schemas.clone(),
-        )
+            schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?;
         assert!(matches!(
             aggregate.execute(command.clone(), #[cfg(feature = "filesystem")] None, &mut None).await,
@@ -3847,7 +3612,7 @@ mod tests {
         let mut aggregate = aggregate.with_content_verifier(Arc::new(InteractionContent(valid)));
         aggregate.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await?;
         let reopened =
-            StreamAggregate::open(&client, authority, issuer.verifier(&mut None).expect("verifier copy"), schemas).await?;
+            StreamAggregate::open(&client, authority, issuer.verifier(&mut None).expect("verifier copy"), schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         assert_eq!(reopened.reducer().revision(), 1);
         assert!(matches!(
             &reopened.reducer().events_after(0, 1)?[0].payload,
@@ -3865,7 +3630,7 @@ mod tests {
         use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost};
 
         let agent = crate::AgentId::from_bytes([94; 16]);
-        let provider = ProviderRef::new("admission-bytes", "filesystem", "2")?;
+        let provider = ProviderRef::new("admission-bytes".into(), "filesystem".into(), "2".into(), &mut None)?;
         let volume = VolumeRef::new(provider.clone(), "admission-bytes",
             VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider)?);
@@ -3879,7 +3644,7 @@ mod tests {
             host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?);
-        let request = Interaction::question("original published prompt", json!({"type": "string"}))?;
+        let request = Interaction::question("original published prompt".into(), json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),
             "interactions/request.json", &published, "application/json", "request.json").await?;
@@ -3906,7 +3671,7 @@ mod tests {
         assert_eq!(claim, 0, "native carrier owns its claim, not the observer");
         let alias = bytes.clone();
         let empty_alias = alias.slice(0..0);
-        ticket.validate_request_bytes_with_work(&alias, &mut Some(&mut io))?;
+        ticket.validate_request_bytes(&alias, &mut Some(&mut io))?;
         drop(bytes);
         drop(alias);
         assert!(empty_alias.is_empty());
@@ -3920,7 +3685,7 @@ mod tests {
 
         let client = Arc::new(MemoryStream::default());
         let aggregate = StreamAggregate::open(&client, authority(), issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new()).await?.with_content_verifier(reader.clone());
+            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_content_verifier(reader.clone());
         aggregate.validate_task_admission_content_with_work(
             &Action::OpenInteraction { ticket: ticket.clone() }, &mut Some(&mut io)).await?;
         native.admit_retained(available)
@@ -3952,7 +3717,7 @@ mod tests {
     -> Result<()> {
         let client = Arc::new(MemoryStream::default());
         let request =
-            Interaction::question("secret prompt", json!({"type": "string", "minLength": 2}))?;
+            Interaction::question("secret prompt".into(), json!({"type": "string", "minLength": 2}))?;
         let request_bytes =
             serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
         let answer_bytes = br#"{"type":"question","value":"yes"}"#;
@@ -3968,7 +3733,7 @@ mod tests {
         bytes.insert(ticket.request.path().to_owned(), request_bytes.clone());
         bytes.insert(answer.path().to_owned(), answer_bytes.to_vec());
         let mut aggregate =
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas())
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await?
                 .with_content_verifier(Arc::new(InteractionContent(bytes)));
         aggregate
@@ -4032,7 +3797,7 @@ mod tests {
                 .any(|window| window == answer_bytes)
         }));
         let reopened =
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?;
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         assert_eq!(
             reopened
                 .reducer()
@@ -4092,7 +3857,7 @@ mod tests {
             },
         );
         assert!(matches!(
-            StreamAggregate::open(&client, authority(), foreign.verifier(&mut None).expect("verifier copy"), schemas()).await,
+            StreamAggregate::open(&client, authority(), foreign.verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await,
             Err(Error::Unauthorized(_))
         ));
         Ok(())
@@ -4103,10 +3868,10 @@ mod tests {
         let provider = Arc::new(MemoryStream::default());
         let client = provider;
         let mut first = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         let mut stale = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         first.execute(command(1)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
         let rejected = command(2)?;
@@ -4116,7 +3881,7 @@ mod tests {
         ));
         assert_eq!(stale.reducer().revision(), 0);
         let mut reopened = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         assert!(matches!(
             reopened.reconcile(&rejected).await,
@@ -4130,10 +3895,10 @@ mod tests {
         let provider = Arc::new(MemoryStream::default());
         let client = provider;
         let mut writer = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         let mut uncertain = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         let submitted = command(1)?;
         writer.execute(submitted.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
@@ -4179,7 +3944,7 @@ mod tests {
         let provider = Arc::new(MemoryStream::default());
         let client = provider;
         let mut aggregate = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         aggregate.execute(command(1)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
         let mut second = command(2)?;
@@ -4201,13 +3966,11 @@ mod tests {
             3
         );
 
-        let reopened = StreamAggregate::open_from_snapshot(
+        let reopened = StreamAggregate::open(
             &client,
             authority(),
             issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
-            snapshot,
-        )
+            schemas(), Some(snapshot), crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?;
         assert_eq!(reopened.reducer().revision(), 3);
         Ok(())
@@ -4227,7 +3990,7 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = provider.clone();
         let mut writer = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         for cut in [64_u64, 128] {
             while writer.reducer().revision() < cut {
@@ -4241,7 +4004,7 @@ mod tests {
                 .store(cut / 64, Ordering::SeqCst);
             provider.forbid_writes.store(true, Ordering::SeqCst);
             let cold =
-                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?;
+                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
             assert_eq!(cold.reducer().revision(), cut);
             assert_eq!(cold.reducer().snapshot(usize::MAX, &mut None)?.0.events.len(), 1);
             assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
@@ -4261,7 +4024,7 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = provider.clone();
         let mut writer = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         for revision in 0..69 {
             writer
@@ -4273,15 +4036,12 @@ mod tests {
         let defaults = default_projection_read_limits();
         let loaded =
             checkpoints::load_with_work(&client, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), defaults, None, &mut None).await?;
-        let suffix = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?
-            .read_page(
-                &HistoryCursor {
+        let suffix = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?
+            .read_page(&HistoryCursor {
                     authority: authority(),
                     after_revision: 64,
                     through_revision: 69,
-                },
-                defaults,
-            )
+                }, defaults, None)
             .await?;
         let suffix_bytes = suffix.events.iter().try_fold(0_u64, |sum, event| {
             Ok::<_, Error>(sum + encode_event(&authority(), event, &mut None)?.len() as u64)
@@ -4291,13 +4051,11 @@ mod tests {
             maximum_bytes: loaded.consumed_bytes + suffix_bytes,
         };
         assert_eq!(
-            StreamAggregate::open_with_read_limits(
+            StreamAggregate::open(
                 &client,
                 authority(),
                 issuer().verifier(&mut None).expect("verifier copy"),
-                schemas(),
-                exact
-            )
+                schemas(), None, exact, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .reducer()
             .revision(),
@@ -4318,13 +4076,11 @@ mod tests {
             },
         ] {
             assert!(
-                StreamAggregate::open_with_read_limits(
+                StreamAggregate::open(
                     &client,
                     authority(),
                     issuer().verifier(&mut None).expect("verifier copy"),
-                    schemas(),
-                    limits
-                )
+                    schemas(), None, limits, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await
                 .is_err()
             );
@@ -4332,12 +4088,12 @@ mod tests {
         for fault in [1, 2, 3, 4] {
             provider.history_read_fault.store(fault, Ordering::SeqCst);
             assert!(
-                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas())
+                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                     .await
                     .is_err()
             );
             assert_eq!(
-                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas())
+                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                     .await?
                     .reducer()
                     .revision(),
@@ -4350,7 +4106,7 @@ mod tests {
                 authority(),
                 AuthorityIssuer::new("test", [8; 32], authority()).verifier(&mut None).expect("verifier copy"),
                 schemas()
-            )
+            , None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await
             .is_err()
         );
@@ -4365,7 +4121,7 @@ mod tests {
             let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
             let client = provider.clone();
             let mut writer = with_content(
-                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
             );
             for revision in 0..63 {
                 writer
@@ -4379,7 +4135,7 @@ mod tests {
             let _uncertain = writer.execute(original.clone(), #[cfg(feature = "filesystem")] None, &mut None).await;
             drop(writer);
             let mut cold = with_content(
-                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
             );
             cold.execute(original.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
             assert_eq!(cold.reducer().revision(), 64);
@@ -4550,7 +4306,7 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let source = provider;
         let mut writer = with_content(
-            StreamAggregate::open(&source, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&source, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         for revision in 0..64 {
             writer
@@ -4560,7 +4316,7 @@ mod tests {
         for mode in 0..=8 {
             let client = copied_projection_client(&source, mode).await?;
             let result =
-                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await;
+                StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await;
             match mode {
                 1 => assert!(matches!(result, Err(Error::Unauthorized(_)))),
                 2 => assert_eq!(result?.reducer().revision(), 64),
@@ -4575,7 +4331,7 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = provider.clone();
         let mut writer = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?,
+            StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
         );
         for revision in 0..64 {
             writer
@@ -4600,17 +4356,14 @@ mod tests {
                 .map(|record| record.value.len() as u64)
                 .sum::<u64>();
         provider.forbid_writes.store(true, Ordering::SeqCst);
-        let restored = StreamAggregate::open_from_snapshot_with_read_limits(
+        let restored = StreamAggregate::open(
             &client,
             authority(),
             issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
-            snapshot.copy(&mut None)?,
-            HistoryReadLimits {
+            schemas(), Some(snapshot.copy(&mut None)?), HistoryReadLimits {
                 maximum_events: 6,
                 maximum_bytes: bytes,
-            },
-        )
+            }, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?;
         assert_eq!(restored.reducer().revision(), 69);
         for limits in [
@@ -4624,31 +4377,25 @@ mod tests {
             },
         ] {
             assert!(
-                StreamAggregate::open_from_snapshot_with_read_limits(
+                StreamAggregate::open(
                     &client,
                     authority(),
                     issuer().verifier(&mut None).expect("verifier copy"),
-                    schemas(),
-                    snapshot.copy(&mut None)?,
-                    limits,
-                )
+                    schemas(), Some(snapshot.copy(&mut None)?), limits, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await
                 .is_err()
             );
         }
         provider.observation_reads.store(0, Ordering::SeqCst);
         assert!(
-            StreamAggregate::open_from_snapshot_with_read_limits(
+            StreamAggregate::open(
                 &client,
                 authority(),
                 issuer().verifier(&mut None).expect("verifier copy"),
-                schemas(),
-                snapshot,
-                HistoryReadLimits {
+                schemas(), Some(snapshot), HistoryReadLimits {
                     maximum_events: 6,
                     maximum_bytes: snapshot_bytes - 1
-                },
-            )
+                }, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await
             .is_err()
         );

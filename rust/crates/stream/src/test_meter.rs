@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
 use acyclic_native_runtime::{NativeReadMeter, NativeOperationKind};
+use crate::memory::TestClock;
 
 #[derive(Debug)]
 pub(crate) struct NativeDenial(pub(crate) &'static str);
@@ -8,13 +9,8 @@ impl std::fmt::Display for NativeDenial {
 }
 impl std::error::Error for NativeDenial {}
 
-#[derive(Default)]
-pub(crate) struct TestClock(pub(crate) AtomicU64);
-impl crate::UnixMillisClock for TestClock {
-    fn now_unix_millis(&self) -> u64 { self.0.load(Ordering::SeqCst) }
-}
-
 pub(crate) struct Meter {
+    pub(crate) check_on_record: bool,
     pub(crate) deny_allocation: AtomicBool,
     pub(crate) deny_durability: AtomicBool,
     pub(crate) cancel_on_write: AtomicBool,
@@ -47,6 +43,7 @@ pub(crate) struct Meter {
 impl Default for Meter {
     fn default() -> Self {
         Self {
+            check_on_record: false,
             deny_allocation: AtomicBool::new(false), deny_durability: AtomicBool::new(false),
             cancel_on_write: AtomicBool::new(false), cancel_on_copy: AtomicBool::new(false),
             cancel_on_durability: AtomicBool::new(false), expire_after_hash: Mutex::new(None),
@@ -67,6 +64,11 @@ impl Default for Meter {
 }
 
 impl Meter {
+    #[cfg(feature = "local")]
+    pub(crate) fn local() -> Self { Self { check_on_record: true, ..Self::default() } }
+    fn recorded(&self) -> std::io::Result<()> {
+        if self.check_on_record { self.check() } else { Ok(()) }
+    }
     fn denial(reason: &'static str) -> std::io::Error { std::io::Error::other(NativeDenial(reason)) }
     pub(crate) fn assert_refunded(&self) {
         for held in [&self.pending_read, &self.pending_write, &self.pending_read_operations,
@@ -123,7 +125,7 @@ impl NativeReadMeter for Meter {
                 if self.cancel_on_durability.swap(false, Ordering::SeqCst) { self.cancelled.store(true, Ordering::SeqCst); }
             }
         }
-        self.check()
+        self.recorded()
     }
     fn admit_write_bytes(&self, _: usize) -> std::io::Result<()> { self.check() }
     fn reserve_bytes(&self, kind: NativeOperationKind, maximum: u64) -> std::io::Result<()> {
@@ -182,7 +184,7 @@ impl NativeReadMeter for Meter {
         if hashed != 0 && let Some((clock, now)) = self.expire_after_hash.lock().expect("test clock is not poisoned").take() {
             clock.0.store(now, Ordering::SeqCst);
         }
-        self.check()
+        self.recorded()
     }
     fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
         self.admit_examination(items, copied)?;
@@ -191,7 +193,7 @@ impl NativeReadMeter for Meter {
     fn admit_examination(&self, _: u64, _: u64) -> std::io::Result<()> { self.check() }
     fn record_examination(&self, _: u64, copied: u64) -> std::io::Result<()> {
         self.copied.fetch_add(copied, Ordering::SeqCst);
-        self.check()
+        self.recorded()
     }
     fn release(&self, bytes: u64) {
         assert!(self.held.fetch_sub(bytes, Ordering::SeqCst) >= bytes);
@@ -210,25 +212,26 @@ impl NativeReadMeter for Meter {
     fn admit_operations(&self, _: u64) -> std::io::Result<()> { self.check() }
     fn record_operations(&self, count: u64) -> std::io::Result<()> {
         self.read_operations.fetch_add(count, Ordering::SeqCst);
-        self.check()
+        self.recorded()
     }
     fn record_read(&self, bytes: usize) -> std::io::Result<()> {
         let completed = self.read.fetch_add(bytes as u64, Ordering::SeqCst) + bytes as u64;
         if completed >= self.cancel_after_read { self.cancelled.store(true, Ordering::SeqCst); }
-        self.check()
+        self.recorded()
     }
     fn admit_write(&self, _: usize) -> std::io::Result<()> { self.check() }
     fn record_write(&self, bytes: usize) -> std::io::Result<()> {
         self.write_bytes.fetch_add(bytes as u64, Ordering::SeqCst);
         if self.late_write_error || bytes != 0 && self.cancel_on_write.swap(false, Ordering::SeqCst) {
             self.cancelled.store(true, Ordering::SeqCst);
+            return self.check();
         }
-        self.check()
+        self.recorded()
     }
     fn admit_write_operations(&self, _: u64) -> std::io::Result<()> { self.check() }
     fn record_write_operations(&self, count: u64) -> std::io::Result<()> {
         self.write_operations.fetch_add(count, Ordering::SeqCst);
-        self.check()
+        self.recorded()
     }
     fn admit_durability(&self) -> std::io::Result<()> {
         self.check()?;
@@ -246,4 +249,3 @@ impl NativeReadMeter for Meter {
         self.record_write_operations(1)
     }
 }
-

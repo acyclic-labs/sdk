@@ -53,11 +53,11 @@ impl PiLazyCapture {
                 }), crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)?;
             let (revision, custody) = crate::pi_root_provider::guarded_pi_decode::<ResourceRevision>(
                 &bytes.0, crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
-                acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)?;
+                acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)?;
             (revision, custody)
         };
         source.validate_snapshot_with_native_work(frozen, work).await.map_err(native_lazy_error)?;
-        let mut slot = work.claim((std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64)
+        let mut slot = { let claim_bytes = (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED) }
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         metadata.absorb(&mut slot).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(Arc::new(Self { source, frozen, revision, _metadata_custody: metadata }))
@@ -71,8 +71,8 @@ impl PiLazyCapture {
         let maximum = crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64;
         let bytes = crate::pi_root_provider::canonical_pi_value(
             &Selection { required: true, revision: &self.revision }, maximum, work)?;
-        crate::pi_root_provider::guarded_pi_decode::<ForkSelection>(&bytes.0, maximum, maximum,
-            acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)
+        crate::pi_root_provider::guarded_pi_decode::<Capture>(&bytes.0, maximum, maximum,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)
     }
 
     async fn selected(&self, request: &ForkRequest, selection: &ForkSelection,
@@ -101,7 +101,7 @@ impl PiLazyCapture {
         let bytes = crate::pi_root_provider::canonical_pi_value(
             &ResultValue::Captured(Resource { source: &self.revision, revision: &self.revision }), maximum, work)?;
         crate::pi_root_provider::guarded_pi_decode::<Capture>(&bytes.0, maximum, maximum,
-            acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)
     }
 }
 
@@ -182,25 +182,23 @@ where P: acyclic_stream::StreamProvider,
     owner.verify_with_native_work(false, work).await?;
     let observed = physical.observe_with_native_work(work, &mut guard).await?;
     guard().await?;
-    let rebound = source.rebind_source_with_native_work(work).await.map_err(native_lazy_error)?;
+    let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, work.cancellation()).map_err(native_lazy_error)?;
+    let rebound = source.rebind_source(&accounting).await.map_err(native_lazy_error)?;
     guard().await?;
-    if rebound.0.source != observed.0.source {
+    if rebound.as_state().source != observed.0.source {
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
             reason: "Root source rebind changed its guarded watcher observation" });
     }
-    let mut frozen = source.snapshot_with_native_work(work).await.map_err(native_lazy_error)?;
+    let frozen = source.snapshot(&accounting).await.map_err(native_lazy_error)?;
     guard().await?;
-    if frozen.0.source != observed.0.source {
+    if frozen.source != observed.0.source {
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
             reason: "Root source freeze changed its guarded watcher observation" });
     }
     owner.verify_with_native_work(false, work).await?;
-    drop(rebound.0);
-    drop(rebound.1);
+    drop(rebound);
     drop(observed.0);
-    let mut observed_custody = observed.1;
-    frozen.1.absorb(&mut observed_custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    Ok(frozen)
+    Ok((frozen, observed.1))
 }
 
 pub(crate) fn native_lazy_error(source: acyclic_fs::LazyWorkspaceError) -> Error {

@@ -6,7 +6,7 @@ use super::persistent_btree::{Format, Page, children_within, leaf_within};
 use super::{DecodeLimits, persistent_io};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use crate::storage::ObjectId;
 
 pub(crate) type Failure = OperationFailure<Error>;
@@ -73,17 +73,17 @@ impl<T> Owned<Vec<T>> {
         }
         let actual = crate::foundation::usize_to_u64((self.value.capacity() - previous) * std::mem::size_of::<T>());
         let checked = accounting.reconcile_owned(&mut allocation, requested, actual);
-        absorb(&mut self.allocation, allocation)?;
+        self.allocation.absorb(&mut allocation)?;
         self.bytes = self.bytes.checked_add(actual).ok_or(crate::WorkError::Overflow)?;
         checked
     }
 }
 
-pub(crate) fn split_allocation(allocation: &mut KernelOwnedAllocation, bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
+pub(crate) fn split_allocation(allocation: &mut KernelOwnedAllocation, _bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
     match allocation {
         KernelOwnedAllocation::Standalone => Ok(KernelOwnedAllocation::Standalone),
         #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(guard) => Ok(KernelOwnedAllocation::NativeOriginal(guard.split_off(bytes)?)),
+        KernelOwnedAllocation::NativeOriginal(guard) => Ok(KernelOwnedAllocation::NativeOriginal(guard.split_off(_bytes)?)),
     }
 }
 
@@ -101,22 +101,6 @@ pub(crate) fn retire_allocation(
         }.map_err(|error| error.into_work_or(crate::FsError::Decode(super::CanonicalDecodeError::AllocationFailed))),
         #[cfg(not(target_arch = "wasm32"))]
         KernelOwnedAllocation::NativeOriginal(guard) => { drop(guard); Ok(()) }
-    }
-}
-
-pub(super) fn absorb(
-    destination: &mut KernelOwnedAllocation,
-    mut source: KernelOwnedAllocation,
-) -> Result<(), crate::FsError> {
-    match (destination, &mut source) {
-        (KernelOwnedAllocation::Standalone, KernelOwnedAllocation::Standalone) => Ok(()),
-        #[cfg(not(target_arch = "wasm32"))]
-        (KernelOwnedAllocation::NativeOriginal(destination), KernelOwnedAllocation::NativeOriginal(source)) => {
-            destination.absorb(source)?;
-            Ok(())
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        _ => unreachable!("one query never crosses allocation ledgers"),
     }
 }
 
@@ -145,7 +129,9 @@ where S: AsyncObjectStore, F: Format {
     if root.kind != F::kind() { return Err(query_error(Error::WrongRootKind)); }
     if !limits.page_limits_valid(1) { return Err(query_error(Error::InvalidLimits)); }
     let mut visited = VisitedObjectSet::new_with_accounting(
-        usize::from(limits.maximum_page_height), accounting,
+        usize::from(limits.maximum_page_height).min(
+            usize::try_from(limits.maximum_visited_pages).unwrap_or(usize::MAX),
+        ), accounting,
     )?;
     let mut lower: Option<Owned<F::Key>> = None;
     let mut upper: Option<Owned<F::Key>> = None;

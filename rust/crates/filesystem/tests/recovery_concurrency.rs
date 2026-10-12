@@ -440,12 +440,6 @@ fn target_tree() -> BTreeMap<String, Vec<u8>> {
 
 impl MaterializationBackend for TreeBackend {
     type Error = TreeBackendError;
-    fn append_preimage(&self, journal: &mut MaterializationJournal, preimage: MaterializationPreimage) -> Result<(), Self::Error> {
-        if preimage.custody.is_some() { return Err(TreeBackendError); }
-        journal.preimages.push(preimage);
-        Ok(())
-    }
-
     async fn capture(
         &self,
         edit: &MaterializationEdit,
@@ -624,10 +618,6 @@ impl MutationCrashBackend {
 
 impl MaterializationBackend for MutationCrashBackend {
     type Error = TreeBackendError;
-    fn append_preimage(&self, journal: &mut MaterializationJournal, preimage: MaterializationPreimage) -> Result<(), Self::Error> {
-        self.inner.append_preimage(journal, preimage)
-    }
-
     async fn capture(
         &self,
         edit: &MaterializationEdit,
@@ -1184,7 +1174,7 @@ fn finite_native_budget() -> WorkBudget {
 fn native_backend(
     directory: &std::path::Path,
     work: &NativeMaterializationWork,
-) -> NativeTreeMaterializationBackend {
+) -> Arc<NativeTreeMaterializationBackend> {
     let root = directory.join("root");
     let operation = directory.join("operation");
     std::fs::create_dir(&root).expect("fixture source root");
@@ -1206,14 +1196,14 @@ fn native_backend(
 #[cfg(not(target_arch = "wasm32"))]
 async fn native_prepared_packet(
     store: &CrashJournalStore,
-    backend: &NativeTreeMaterializationBackend,
+    backend: &Arc<NativeTreeMaterializationBackend>,
     work: &NativeMaterializationWork,
     case: u8,
 ) -> MaterializationJournal {
     let (path, path_custody) = work.copy_bytes(b"file").expect("real paid path copy");
     let mut path_custody = path_custody;
     let path = path;
-    let mut custody = work.claim(std::mem::size_of::<MaterializationEdit>() as u64)
+    let mut custody = work.claim(std::mem::size_of::<MaterializationEdit>() as u64, u64::from((std::mem::size_of::<MaterializationEdit>() as u64) != 0), acyclic_fs::WorkCounters::default())
         .expect("admit plan vector before allocation");
     let path = path; // Retire path data before either possible owning guard.
     let mut edits = Vec::with_capacity(1);
@@ -1265,7 +1255,7 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
                 .expect("genuine Memory completion accepted before the physical action");
             assert!(original.receipt().bytes_copied > before_admission.bytes_copied);
             assert_eq!(std::fs::read(&file).expect("unchanged before acceptance"), b"before");
-            work.write_owned_bytes(&mut output, b"after!").expect("actual original-resource action");
+            acyclic_native_runtime::write_all_at(&output, 0, b"after!", Some((work.runtime_meter().as_ref(), false))).expect("actual original-resource action");
             if cancel_after_action {
                 cancellation.cancel();
             }

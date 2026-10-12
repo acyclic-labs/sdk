@@ -12,7 +12,7 @@ pub(crate) const PI_BUILTIN_TOOL_REVISION: &str = "1.1.0";
 pub(crate) fn builtin_tool_definition_with_native_work(
     work: &NativeMaterializationWork,
 ) -> Result<(acyclic_harness::tool::ToolDefinition, NativeAllocation)> {
-    acyclic_harness::tool::ToolDefinition::new_with_native_work(
+    acyclic_harness::tool::ToolDefinition::new(
         PI_BUILTIN_COMMAND_KIND, PI_BUILTIN_TOOL_REVISION,
         "Pi builtin IO through the original task's declared SOURCE, PROJECT or SCRATCH",
         r#"{
@@ -238,7 +238,7 @@ pub(crate) fn read_response(bytes: &[u8], path: &str, volume_role: &str, work: &
     use sha2::{Digest as _, Sha256};
     let size = bytes.len().checked_add(2).and_then(|size| size.checked_div(3))
         .and_then(|size| size.checked_mul(4)).ok_or_else(|| invalid("builtin response size overflow"))?;
-    let _encoded = work.retain_owned(size as u64 + 64).map_err(native_error)?;
+    let _encoded = work.claim(size as u64 + 64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, bytes_encoded: bytes.len() as u64,
         ..WorkCounters::default() }).map_err(native_error)?;
     let content_base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -264,7 +264,7 @@ fn decoded_tool_request(
         &invocation.arguments, MAXIMUM_BUILTIN_BYTES * 2, work)?;
     let decoded = crate::pi_root_provider::guarded_pi_decode::<PiBuiltinRequest>(
         &encoded.0, MAXIMUM_BUILTIN_BYTES * 2, MAXIMUM_BUILTIN_BYTES * 4,
-        acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, work)?;
+        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, work)?;
     drop(encoded.0);
     drop(encoded.1);
     decoded.0.validate()?;
@@ -331,7 +331,7 @@ pub(crate) fn mounted_relative_path(
     let bytes = (capacity as u64).checked_mul(2)
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<std::path::PathBuf>() as u64))
         .ok_or_else(|| invalid("mounted path ownership overflow"))?;
-    let custody = work.retain_owned(bytes).map_err(native_error)?;
+    let custody = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     let mut path = std::path::PathBuf::with_capacity(capacity);
     path.push(prefix);
     path.push(leaf);
@@ -361,7 +361,7 @@ async fn accepted_builtin_io(
         &admission.0.input, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?;
     let input = crate::pi_root_provider::guarded_pi_decode::<crate::pi_task::PiTaskInput>(
         &encoded.0, crate::MAXIMUM_ADAPTER_STATE_BYTES, crate::MAXIMUM_ADAPTER_STATE_BYTES,
-        acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
+        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
     drop(encoded.0);
     drop(encoded.1);
     let _input_custody = input.1;
@@ -469,7 +469,7 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
             drop(decoded.1);
             drop(admission.0);
             drop(admission.1);
-            let custody = work.retain_owned(std::mem::size_of::<Option<acyclic_harness::tool::ToolResult>>() as u64)
+            let custody = work.claim(std::mem::size_of::<Option<acyclic_harness::tool::ToolResult>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                 .map_err(native_error)?;
             Ok((None, custody))
         })
@@ -539,7 +539,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let encoded = crate::pi_root_provider::guarded_pi_bytes(&payload, MAXIMUM_BUILTIN_BYTES * 2, &self.work)?;
         let decoded = crate::pi_root_provider::guarded_pi_decode::<PiBuiltinRequest>(
             &encoded.0, MAXIMUM_BUILTIN_BYTES * 2, MAXIMUM_BUILTIN_BYTES * 4,
-            acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, &self.work)?;
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, &self.work)?;
         drop(encoded.0);
         drop(encoded.1);
         let _request_custody = decoded.1;
@@ -626,7 +626,7 @@ fn scoped_variants<'a>(variants: &'a [String], root: &Path) -> Result<[Option<&'
 
 fn logical_path(path: &Path, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
     let maximum = path.as_os_str().len();
-    let custody = work.retain_owned(maximum as u64).map_err(native_error)?;
+    let custody = work.claim(maximum as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     let mut value = String::with_capacity(maximum);
     for component in path.components() {
         let part = component.as_os_str().to_str().ok_or_else(|| invalid("builtin leaf has no wire representation"))?;

@@ -18,10 +18,6 @@
     "./proto": {
       "types": "./generated/proto/workers/v1/workers_pb.d.ts",
       "default": "./generated/proto/workers/v1/workers_pb.js"
-    },
-    "./grpc": {
-      "default": "./dist/grpc.js",
-      "types": "./dist/grpc.d.ts"
     }
   },
   "types": "./dist/index.d.ts",

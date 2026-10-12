@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import {
   DEFAULT_LIMITS, NativeContracts, type ModelTokenCountWire,
 } from "../src/index.js";
-import type { WasmModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { ModelRequest as ModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 
 const contracts = await NativeContracts.create();
 
@@ -18,7 +18,7 @@ test("canonical accounting rejects lossy UTF-16 requests, values and keys", () =
       expect(() => contracts.digestCanonicalJson(value)).toThrow();
     }
     const replacement = new TextDecoder().decode(new TextEncoder().encode(invalid));
-    const request: WasmModelRequestWire = {
+    const request: ModelRequestWire = {
       model: { provider: "synthetic", name: "byte-counter", revision: "1", options: {} },
       messages: [{ role: "user", content: replacement }], tools: [], max_output_tokens: 1_024,
     };
@@ -65,7 +65,7 @@ test("generated compaction policy validates actual capacity and finite output in
 });
 
 test("generated provider accounting binds canonical requests, dimensions and portable sums", () => {
-  const request: WasmModelRequestWire = {
+  const request: ModelRequestWire = {
     model: { provider: "synthetic", name: "byte-counter", revision: "1", options: {} },
     messages: [{ role: "user", content: "é🦀" }],
     tools: [],

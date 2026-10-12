@@ -63,8 +63,7 @@ async fn bind_conversation(
             id: id.into(),
         },
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     aggregate
         .execute(Command {
@@ -368,7 +367,7 @@ impl ModelProvider for TextModel {
 
 #[tokio::test]
 async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
-    let provider = ProviderRef::new("tool-claim-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("tool-claim-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([55; 16]);
     let private = VolumeRef::new(
@@ -481,7 +480,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     assert!(journal_a.replay(paged, 0, 64).await?.is_empty());
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new("fixture", "paged", "1", Value::Null)?,
+            model: Model::new("fixture".into(), "paged".into(), "1".into(), Value::Null)?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("paged request".into()),
@@ -585,7 +584,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
 
 #[tokio::test]
 async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
-    let provider = ProviderRef::new("tool-owner-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("tool-owner-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([58; 16]);
     let private = VolumeRef::new(
@@ -629,7 +628,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         executions: executions.clone(),
         reconciliations: reconciliations.clone(),
     });
-    let mut registry = ToolRegistry::new();
+    let mut registry = ToolRegistry::default();
     registry.register(Tool {
         definition: definition.clone(),
         executor: counted.clone(),
@@ -968,7 +967,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
 
 #[tokio::test]
 async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()> {
-    let provider = ProviderRef::new("journal-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("journal-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([42; 16]);
     let private = VolumeRef::new(
@@ -1001,7 +1000,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     )?;
     let model = Arc::new(TextModel(AtomicUsize::new(0)));
     let executor = StockExecutor::new(
-        Model::new("test", "text", "1", Value::Null)?,
+        Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
         model.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -1085,7 +1084,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
 
 #[tokio::test]
 async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Result<()> {
-    let provider = ProviderRef::new("interaction-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("interaction-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let private = VolumeRef::new(
         provider,
@@ -1142,7 +1141,7 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
         &scope,
         4_096, None,
     )?;
-    let request = Interaction::question("The private prompt", json!({"type":"string"}))?;
+    let request = Interaction::question("The private prompt".into(), json!({"type":"string"}))?;
     journal.open_interaction(id, request.clone()).await?;
     journal.open_interaction(id, request).await?;
     assert!(journal.interaction_outcome(id).await?.is_none());
@@ -1238,7 +1237,7 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
 
 #[tokio::test]
 async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> Result<()> {
-    let provider = ProviderRef::new("tool-approval-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("tool-approval-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let private = VolumeRef::new(
         provider,
@@ -1294,7 +1293,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
             format!("interaction:respond:{denied_id}"),
             format!("interaction:respond:{approved_id}"),
         ]), None, None, &mut None).expect("scope proof");
-    let approval = Interaction::approval("Install echo", operation, digest)?;
+    let approval = Interaction::approval("Install echo".into(), operation, digest)?;
     journal
         .open_interaction(denied_id, approval.clone())
         .await?;
@@ -1304,7 +1303,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         executor: Arc::new(NoopTool),
         projection: Arc::new(NoopTool),
     };
-    let mut registry = ToolRegistry::new();
+    let mut registry = ToolRegistry::default();
     assert!(
         registry
             .install_scoped(
@@ -1380,7 +1379,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
 
 #[tokio::test]
 async fn typed_file_input_requires_resident_authorized_bytes_before_journaling() -> Result<()> {
-    let provider = ProviderRef::new("file-input-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("file-input-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let private = VolumeRef::new(
         provider.clone(),
@@ -1467,7 +1466,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         FilesystemExecutionJournal::new(stream, host, &private, &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(), &scope, 4_096, None)?;
     let model = Arc::new(CapturingModel::default());
     let executor = StockExecutor::new(
-        Model::new("test", "capture", "1", Value::Null)?,
+        Model::new("test".into(), "capture".into(), "1".into(), Value::Null)?,
         model.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),

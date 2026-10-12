@@ -23,8 +23,8 @@ The service implementation and execution authority live outside this crate.
 This crate validates customer-authored requests and packages the versioned wire
 descriptor used to generate TypeScript bindings.
 
-`grpc::connect(endpoint, token)` exposes every generated Workers service RPC.
-Use `grpc::connect_with_ca_certificate` for a caller-supplied private CA.
+`grpc::connect(endpoint, token, None)` exposes every generated Workers service RPC.
+Pass `Some(ca)` to trust a caller-supplied private CA.
 `http::Client::new(endpoint, token, maximum_response_bytes)` exposes the same
 seven operations using canonical Protobuf JSON. Version invocation addresses the
 exact digest; alias invocation reports the version and revision resolved by the
