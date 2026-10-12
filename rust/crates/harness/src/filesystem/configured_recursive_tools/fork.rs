@@ -73,67 +73,32 @@ where
             }
         }
         let ordinary;
-        let checkpoint_io = match io {
+        let observer = match io {
             Some(io) => io,
             None => {
                 ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
                 &ordinary
             }
         };
-        let pinned = self
+        let parent = self
             .open(
                 &caller.owner,
                 Some(intent.request.parent_revision),
-                Some(checkpoint_io),
+                Some(observer),
             )
             .await?;
-        let operation = checkpoint_operation(context.operation_id());
-        let checkpoint = match original {
-            Some(original) => Some(crate::executor::with_history_io(io, |work| {
-                original.source_checkpoint.copy(work)
-            })?),
-            None => 'observed: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = checkpoint_io.original_native_work() {
-                    let (file, custody) = context
-                        .observe_staged_file_once_with_native_work(operation, work)
-                        .await?;
-                    checkpoint_io.absorb_native_custody(custody)?;
-                    break 'observed file;
-                }
-                checkpoint_io.receive(
-                    context
-                        .observe_staged_file_once_measured(
-                            operation,
-                            checkpoint_io.remaining()?,
-                            checkpoint_io.cancellation(),
-                        )
-                        .await,
-                )?
-            }
-        };
-        let snapshot = if checkpoint.is_none() {
-            Some(crate::executor::with_history_io(io, |work| {
-                pinned
-                    .reducer()
-                    .snapshot(1, work)
-                    .map(|(snapshot, _)| snapshot)
-            })?)
-        } else {
-            None
-        };
         let source = self
             .source(
                 context,
                 caller,
-                pinned.into_reducer(),
+                parent.into_reducer(),
                 &intent.request,
                 cancellation,
                 io,
             )
             .await?;
         let (mut child, child_scope) = self
-            .child_claims(context, caller, allocation, arguments, &source, io)
+            .child_claims(context, allocation, arguments, &source, io)
             .await?;
         if allocation_digest(allocation, &mut child, &child_scope, io)? != intent.allocation_digest
         {
@@ -143,39 +108,18 @@ where
                 "child claims changed after immutable source selection",
             ));
         }
-        let source_checkpoint = match checkpoint {
-            Some(file) => file,
+        let operation = checkpoint_operation(context.operation_id());
+        let source_checkpoint = match original {
+            Some(original) => {
+                crate::executor::with_history_io(io, |work| original.source_checkpoint.copy(work))?
+            }
             None => {
-                let request = crate::executor::with_history_io(io, |work| {
-                    intent.request.copy(work).map(|(request, _)| request)
-                })?;
-                let arguments = ForkToolArguments {
-                    id: arguments.id,
-                    msg: fork_preparer_io::clone_text(&arguments.msg, io)?,
-                    source: arguments.source,
-                };
-                let capture = SourceCheckpoint {
-                    snapshot: snapshot.expect("new checkpoint needs its pinned snapshot"),
-                    request,
-                    caller: caller.task,
-                    arguments,
-                };
-                let bytes_hold;
-                let bytes = if io.is_some() {
-                    checkpoint_io.encode(
-                        &capture,
-                        context.effective_scope().limits().file_bytes,
-                        false,
-                    )?
-                } else {
-                    serde_json::to_vec(&capture).map_err(invalid_json)?.into()
-                };
-                bytes_hold = if io.is_some() {
-                    Some(checkpoint_io.guard_bytes(&bytes)?)
-                } else {
-                    None
-                };
-                let path_hold;
+                let bytes = observer.encode(
+                    intent,
+                    context.effective_scope().limits().file_bytes,
+                    false,
+                )?;
+                let bytes_hold = observer.guard_bytes(&bytes)?;
                 let path = crate::contract::preparation_format(
                     format_args!(
                         "recursive-tools/{}/source-checkpoint.json",
@@ -183,12 +127,12 @@ where
                     ),
                     io,
                 )?;
-                path_hold = io
+                let path_hold = io
                     .map(|io| io.guard_owned(path.capacity() as u64))
                     .transpose()?;
                 let file = 'staged: {
                     #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) = checkpoint_io.original_native_work() {
+                    if let Some(work) = observer.original_native_work() {
                         let (file, custody) = context
                             .stage_file_once_with_native_work(
                                 operation,
@@ -199,10 +143,10 @@ where
                                 work,
                             )
                             .await?;
-                        checkpoint_io.absorb_native_custody(custody)?;
+                        observer.absorb_native_custody(custody)?;
                         break 'staged file;
                     }
-                    checkpoint_io.receive(
+                    observer.receive(
                         context
                             .stage_file_once_measured(
                                 operation,
@@ -210,23 +154,20 @@ where
                                 &bytes,
                                 "application/json",
                                 "source-checkpoint.json",
-                                checkpoint_io.remaining()?,
-                                checkpoint_io.cancellation(),
+                                observer.remaining()?,
+                                observer.cancellation(),
                             )
                             .await,
                     )?
                 };
-                drop(path);
-                drop(path_hold);
+                drop((path, path_hold));
                 drop(bytes);
                 drop(bytes_hold);
                 file
             }
         };
-        let bytes = self
-            .read(context, &source_checkpoint, checkpoint_io)
-            .await?;
-        let capture: SourceCheckpoint = match io {
+        let bytes = self.read(context, &source_checkpoint, observer).await?;
+        let record: RecursiveForkSourceIntent = match io {
             #[cfg(not(target_arch = "wasm32"))]
             Some(io) => crate::filesystem::retain_decoded(io.decode(
                 std::marker::PhantomData,
@@ -235,30 +176,15 @@ where
             )?),
             _ => serde_json::from_slice(&bytes).map_err(invalid_json)?,
         };
-        if capture.caller != caller.task
-            || capture.arguments != *arguments
-            || capture.request != intent.request
-        {
+        if record != *intent {
             return Err(failure(
                 io,
                 ErrorCode::Unauthorized,
                 "published checkpoint differs from immutable source intent",
             ));
         }
-        let snapshot = capture.snapshot;
-        #[cfg(not(target_arch = "wasm32"))]
-        let snapshot = if let Some(io) = io {
-            let bytes = snapshot.predecoded_native_owned_bytes()?;
-            snapshot.adopt_predecoded_native_custody(io.take_native_custody(bytes)?)?
-        } else {
-            snapshot
-        };
-        drop(
-            self.restore_snapshot(&caller.owner, &capture.request, snapshot, cancellation, io)
-                .await?,
-        );
         for file in &allocation.input_files {
-            drop(self.read(context, file, checkpoint_io).await?);
+            drop(self.read(context, file, observer).await?);
         }
         let parent = self.open(&caller.owner, None, io).await?;
         let child_conversation = self.open(&allocation.child, None, io).await?;

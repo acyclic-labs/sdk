@@ -128,33 +128,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 maximum_items: context.maximum_work,
                 maximum_depth: 32,
             };
-            let encoded_hold;
-            let encoded = source_json(value, bounds, io)?;
-            encoded_hold = io.guard_bytes(&encoded)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            let frozen_hold = io
-                .original_native_work()
-                .map(|work| {
-                    work.claim(
-                        std::mem::size_of::<LazySnapshotRef>() as u64,
-                        0,
-                        acyclic_fs::WorkCounters::UNCHARGED,
-                    )
-                })
-                .transpose()?;
-            let frozen = crate::contract::json_from_slice_bounded(
-                std::marker::PhantomData::<LazySnapshotRef>,
-                &encoded,
-                bounds,
-                0,
-                io.original_native_work()
-                    .is_some()
-                    .then_some(crate::wire::ErrorCode::Invalid),
-                Some(crate::contract::JsonValueSchema::None),
-                &mut |charge| io.codec_charge(charge, false),
-            )?;
-            drop(encoded);
-            drop(encoded_hold);
+            let (frozen, _frozen) = source_snapshot(value, bounds, io)?;
             if frozen.workspace_id != opened.id() || frozen.authored_generation != generation_id {
                 return Err(failure(
                     Some(io),
@@ -163,8 +137,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 ));
             }
             lazy.backing.validate(frozen, io)?.await?;
-            #[cfg(not(target_arch = "wasm32"))]
-            drop(frozen_hold);
         }
         check()?;
         io.remaining()?;
@@ -204,42 +176,30 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootProjec
     }
 }
 
-fn source_json<T: serde::Serialize>(
-    value: &T,
-    bounds: JsonBounds,
-    io: &crate::filesystem::PreparationIo,
-) -> Result<acyclic_stream::OwnedBytes> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.original_native_work() {
-        let diagnostic = work.claim(
-            crate::contract::sdk_json_diagnostic_bytes(),
-            0,
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )?;
-        let bytes = crate::contract::canonical_json_bytes_bounded(
-            value,
-            bounds,
-            Some(crate::wire::ErrorCode::Invalid),
-            &mut |charge| io.codec_charge(charge, true),
-        )
-        .map_err(|error| match error {
-            Error::NativeEncode {
-                code,
-                source,
-                custody: None,
-            } => Error::NativeEncode {
-                code,
-                source,
-                custody: Some(diagnostic),
-            },
-            error => error,
-        })?;
-        return crate::filesystem::fork_preparer_io::source_bytes_from_vec(bytes, Some(io));
+impl crate::filesystem::PreparationRecord for LazySnapshotRef {
+    fn maximum_slot_bytes() -> u64 {
+        0 // All fields are fixed-size values.
     }
-    canonical_json_bytes_bounded(value, bounds, None, &mut |charge| {
-        io.codec_charge(charge, true)
-    })
-    .map(Into::into)
+}
+
+pub(super) fn source_snapshot<'a>(
+    value: &serde_json::Value,
+    bounds: JsonBounds,
+    io: &'a crate::filesystem::PreparationIo,
+) -> Result<(LazySnapshotRef, crate::filesystem::DecodeReservation<'a>)> {
+    crate::contract::json_owned_value_shape_bounded(
+        value,
+        bounds,
+        crate::contract::JsonValueSchema::None,
+        &mut |charge| io.codec_charge(charge, false),
+    )?;
+    let bytes = io.encode(value, bounds.maximum_bytes, true)?;
+    let _bytes = io.guard_bytes(&bytes)?;
+    io.decode(
+        std::marker::PhantomData,
+        &bytes,
+        crate::wire::ErrorCode::Invalid,
+    )
 }
 
 pub(super) fn source_budget(maximum_work: u64, maximum_bytes: u64) -> Result<WorkBudget> {

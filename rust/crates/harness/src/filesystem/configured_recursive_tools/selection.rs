@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
 where
@@ -9,13 +10,12 @@ where
     pub(super) async fn child_claims(
         &self,
         context: &ToolContext,
-        caller: &ConfiguredRecursiveCaller,
         allocation: &ConfiguredRecursiveFork,
         arguments: &ForkToolArguments,
         source: &RetainedSourceBinding<A, O>,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<(TaskAdmissionRecord, Scope)> {
-        use crate::filesystem::fork_preparer_io::{clone_text, failure, reference_key, vector};
+        use crate::filesystem::fork_preparer_io::{clone_text, failure, reference_key};
         let mut child = 'child: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
@@ -26,16 +26,8 @@ where
                 io.absorb_native_custody(custody)?;
                 break 'child child;
             }
-            break 'child allocation.admission.clone();
+            allocation.admission.clone()
         };
-        if child.parent != Some(caller.task) || allocation.child.scope.agent() != Some(arguments.id)
-        {
-            return Err(failure(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "child allocation differs from original caller or agent",
-            ));
-        }
         #[cfg(not(target_arch = "wasm32"))]
         let reference_io = io
             .map(|io| {
@@ -47,49 +39,31 @@ where
             .transpose()?;
         let references = 'references: {
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(reference_io) = &reference_io {
-                let work = reference_io
-                    .original_native_work()
-                    .expect("child claims verified original work");
-                break 'references crate::NativeFutureBundle::new(work, || {
-                    source
-                        .preparer
-                        .required_reference_grants(&source.request, Some(reference_io))
-                })?
-                .await?;
+            if let Some(observer) = &reference_io {
+                break 'references observer
+                    .history_future(|| {
+                        source
+                            .preparer
+                            .required_reference_grants(&source.request, Some(observer))
+                    })?
+                    .await?;
             }
-            break 'references source
+            source
                 .preparer
                 .required_reference_grants(&source.request, None)
-                .await?;
+                .await?
         };
-        let extra = (2 + usize::from(allocation.result_volume.is_some()))
-            .checked_mul(2)
-            .and_then(|count| count.checked_add(allocation.input_files.len()))
-            .and_then(|count| count.checked_add(references.len()))
-            .ok_or_else(|| {
-                failure(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "child claim slots overflow",
-                )
-            })?;
-        let capacity = |count: usize| {
-            count.checked_add(extra).ok_or_else(|| {
-                failure(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "child claim slots overflow",
-                )
-            })
-        };
-        let mut grants = vector(capacity(child.grants.iter().count())?, io)?;
-        let mut scoped = vector(
-            capacity(allocation.child.scope.capabilities().iter().count())?,
-            io,
-        )?;
-        let append = |values: &mut Vec<String>, value: &str| -> Result<()> {
-            values.push(clone_text(value, io)?);
+        let mut grants = BTreeSet::new();
+        let mut scoped = BTreeSet::new();
+        let append = |values: &mut BTreeSet<String>, grant: &str| -> Result<()> {
+            crate::filesystem::fork_preparer_io::item(io, 0)?;
+            if !values.contains(grant) {
+                if let Some(io) = io {
+                    io.retain_owned(std::mem::size_of::<String>() as u64)?;
+                    io.allocation_attempt(std::mem::size_of::<String>() as u64)?;
+                }
+                values.insert(clone_text(grant, io)?);
+            }
             Ok(())
         };
         for grant in child.grants.iter() {
@@ -103,28 +77,26 @@ where
             .chain(allocation.result_volume.as_ref())
         {
             for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-                let hold;
                 let grant = crate::executor::with_history_io(io, |work| {
                     volume.capability(operation, work)
                 })?;
-                hold = io
+                let hold = io
                     .map(|io| io.guard_owned(grant.capacity() as u64))
                     .transpose()?;
-                let grant = (grant, hold);
-                append(&mut grants, &grant.0)?;
-                append(&mut scoped, &grant.0)?;
+                append(&mut grants, &grant)?;
+                append(&mut scoped, &grant)?;
+                drop((grant, hold));
             }
         }
         for file in &allocation.input_files {
             self.delegate_file(context, file, io).await?;
-            let hold;
             let grant = reference_key(file, io)?;
-            hold = io
+            let hold = io
                 .map(|io| io.guard_owned(grant.capacity() as u64))
                 .transpose()?;
-            let grant = (grant, hold);
-            append(&mut grants, &grant.0)?;
-            append(&mut scoped, &grant.0)?;
+            append(&mut grants, &grant)?;
+            append(&mut scoped, &grant)?;
+            drop((grant, hold));
         }
         for reference in &references {
             if reference.reader != arguments.id {
@@ -139,41 +111,25 @@ where
             {
                 self.delegate_file(context, file, io).await?;
             }
-            let hold;
             let grant = reference_key(&reference.file, io)?;
-            hold = io
+            let hold = io
                 .map(|io| io.guard_owned(grant.capacity() as u64))
                 .transpose()?;
-            let grant = (grant, hold);
-            append(&mut grants, &grant.0)?;
-            append(&mut scoped, &grant.0)?;
+            append(&mut grants, &grant)?;
+            append(&mut scoped, &grant)?;
+            drop((grant, hold));
         }
-        let capabilities = |values: Vec<String>| -> Result<Capabilities> {
-            let slots = values.capacity() as u64 * std::mem::size_of::<String>() as u64;
-            if let Some(io) = io {
-                let bytes = values.len() as u64 * std::mem::size_of::<String>() as u64;
-                io.retain_owned(bytes)?;
-                if bytes != 0 {
-                    io.allocation_attempt(bytes)?;
-                }
-            }
-            let capabilities = Capabilities::new(values);
-            if let Some(io) = io {
-                io.release(slots)?;
-            }
-            Ok(capabilities)
-        };
-        let old_grants_bytes = if io.is_some() {
+        let old_bytes = if io.is_some() {
             child.grants.logical_owned_bytes()?
         } else {
             0
         };
-        let old = std::mem::replace(&mut child.grants, capabilities(grants)?);
+        let old = std::mem::replace(&mut child.grants, Capabilities::from_owned_set(grants));
         drop(old);
         if let Some(io) = io {
-            io.release(old_grants_bytes)?;
+            io.release(old_bytes)?;
         }
-        let scoped = capabilities(scoped)?;
+        let scoped = Capabilities::from_owned_set(scoped);
         let scope = crate::executor::with_history_io(io, |work| {
             allocation.child.issuer().issue(
                 allocation.child.scope.id(),
@@ -276,13 +232,9 @@ where
             cancellation
                 .check()
                 .map_err(|error| Error::Storage(error.to_string()))?;
-            let owner = Arc::new(
-                self.runtime(io)?
-                    .task_host()
-                    .journal_owner(caller.task, context.task().owned_task_fence()?)
-                    .await?
-                    .with_invocation_cancellation(cancellation),
-            );
+            let owner = self
+                .source_owner(context.task(), cancellation, None)
+                .await?;
             Some(
                 owner
                     .authorize_project_source(
@@ -313,19 +265,11 @@ where
             limits.validate(work)?;
             arguments.source_task(caller.task, limits, work).map(|_| ())
         })?;
-        let verifier =
-            crate::executor::with_history_io(io, |work| caller.owner.issuer().verifier(work))?;
-        if parent.reducer().authority() != caller.owner.authority()
-            || parent
-                .reducer()
-                .conversation()
-                .and_then(|conversation| conversation.agent)
-                != caller.owner.scope.agent()
-            || caller.owner.scope.agent()
-                != match caller.private_volume.owner() {
-                    VolumeOwner::Agent(agent) => Some(*agent),
-                    _ => None,
-                }
+        if parent
+            .reducer()
+            .conversation()
+            .and_then(|conversation| conversation.agent)
+            != caller.owner.scope.agent()
             || !context.scope().grants().contains("fork:publish")
         {
             return Err(failure(
@@ -334,25 +278,26 @@ where
                 "fork source is not the admitted caller agent",
             ));
         }
-        if io.is_none() {
-            for volume in [&caller.project, &caller.private_volume] {
-                let read = volume.capability(VolumeOperation::Read, &mut None)?;
-                if !context.scope().grants().contains(&read) {
-                    return Err(failure(
-                        None,
-                        ErrorCode::Unauthorized,
-                        "caller lacks its selected source read",
-                    ));
-                }
-                ContentGrant::verify(
-                    &verifier,
-                    &caller.owner.scope,
-                    volume,
-                    VolumeOperation::Read,
-                    u64::MAX,
-                    &mut None,
-                )?;
+        // Authentication already checked Private and the current caller's Project.
+        if io.is_none() && selected != caller.task {
+            let read = caller
+                .project
+                .capability(VolumeOperation::Read, &mut None)?;
+            if !context.scope().grants().contains(&read) {
+                return Err(failure(
+                    None,
+                    ErrorCode::Unauthorized,
+                    "caller lacks its source read",
+                ));
             }
+            ContentGrant::verify(
+                &verifier(&caller.owner)?,
+                &caller.owner.scope,
+                &caller.project,
+                VolumeOperation::Read,
+                u64::MAX,
+                &mut None,
+            )?;
         }
         let config = crate::executor::with_history_io(io, |work| {
             Ok(RecursiveForkConfig {
@@ -432,7 +377,7 @@ where
             )
             .await?;
         let (mut child, scope) = self
-            .child_claims(context, caller, allocation, arguments, &source, io)
+            .child_claims(context, allocation, arguments, &source, io)
             .await?;
         Ok(RecursiveForkSourceIntent {
             arguments: ForkToolArguments {

@@ -186,28 +186,7 @@ where
         )
     }
 
-    pub(super) async fn admit_prepared_command(
-        &self,
-        task: TaskId,
-        fence: &LeaseFence,
-        command: &WorkflowCommand,
-        payload: Value,
-        reconciliation_only: bool,
-        io: Option<&crate::filesystem::PreparationIo>,
-    ) -> Result<TaskCommandProgress> {
-        let request: PreparedTaskAdmitCommand = mail::decode_command(payload, io)?;
-        self.admit(
-            task,
-            fence,
-            command.operation_id,
-            request.admission,
-            reconciliation_only,
-            io,
-        )
-        .await
-    }
-
-    async fn admit(
+    pub(super) async fn admit(
         &self,
         task: TaskId,
         fence: &LeaseFence,
@@ -313,7 +292,7 @@ where
         }
     }
 
-    pub(super) async fn task_command_with_io(
+    pub(super) async fn task_command(
         &self,
         task: TaskId,
         context: &TaskContext,

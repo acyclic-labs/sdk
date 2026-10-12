@@ -223,17 +223,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
                     "model configuration requires original native work",
                 )
             })?;
-            if self
-                .model
-                .as_ref()
-                .and_then(|binding| binding.native_custody.as_ref())
-                .is_some_and(|custody| !custody.work().shares_allocation_context(work))
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "command configuration belongs to another original work",
-                });
-            }
+            self.validate_native_configuration_work(work)?;
             self.model = None;
             let before = io.owned_bytes()?;
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
@@ -284,6 +274,25 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         });
         Ok(self)
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn validate_native_configuration_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        if self
+            .model
+            .as_ref()
+            .and_then(|binding| binding.native_custody.as_ref())
+            .is_some_and(|custody| !custody.work().shares_allocation_context(work))
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native command configuration belongs to another original work",
+            });
+        }
+        Ok(())
+    }
+
     /// Binds the existing effect registry.
     pub fn with_effects(
         mut self,
@@ -390,31 +399,6 @@ where
     }
 }
 
-impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
-where
-    P: StreamProvider + 'static,
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn validate_native_configuration_work(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        if self
-            .model
-            .as_ref()
-            .and_then(|binding| binding.native_custody.as_ref())
-            .is_some_and(|custody| !custody.work().shares_allocation_context(work))
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native command configuration belongs to another original work",
-            });
-        }
-        Ok(())
-    }
-}
 fn rejected(
     reason: crate::InteractionRejection,
     io: Option<&super::PreparationIo>,

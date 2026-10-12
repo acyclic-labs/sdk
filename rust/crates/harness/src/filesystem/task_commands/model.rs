@@ -15,29 +15,11 @@ where
         payload: Value,
         reconciliation_only: bool,
         io: Option<&crate::filesystem::PreparationIo>,
-        receive: Option<OperationId>,
+        stock: bool,
     ) -> Result<TaskCommandProgress> {
         use crate::filesystem::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let WorkerContext::Native(_) = &context {
-            let io = io.ok_or_else(|| {
-                boundary(
-                    io,
-                    ErrorCode::Unsupported,
-                    "native model requires original observer",
-                )
-            })?;
-            io.original_native_work().ok_or_else(|| {
-                boundary(
-                    Some(io),
-                    ErrorCode::Unsupported,
-                    "native model requires original work",
-                )
-            })?;
-        }
         let mut input: ModelTaskCommand = mail::decode_command(payload, io)?;
-        input.mailbox_operation = input.mailbox_operation.or(receive);
         let binding = self.model.as_ref().ok_or_else(|| {
             boundary(
                 io,
@@ -45,18 +27,61 @@ where
                 "model command provider is not bound",
             )
         })?;
+        let steering = if stock || input.mailbox_operation.is_some() {
+            #[cfg(not(target_arch = "wasm32"))]
+            let journal = match io {
+                Some(io) => {
+                    self.runtime
+                        .workflow_journal_with_native_work(
+                            task,
+                            fence,
+                            io.original_native_work().ok_or_else(|| {
+                                boundary(
+                                    Some(io),
+                                    ErrorCode::Unsupported,
+                                    "original mail work is absent",
+                                )
+                            })?,
+                        )
+                        .await?
+                }
+                None => self.runtime.workflow_journal(task, fence.clone()).await?,
+            };
+            #[cfg(target_arch = "wasm32")]
+            let journal = self.runtime.workflow_journal(task, fence.clone()).await?;
+            let latest = journal.observe_latest_record(io).await?.ok_or_else(|| {
+                boundary(io, ErrorCode::Unauthorized, "model checkpoint is absent")
+            })?;
+            if !latest.transition.commands.iter().any(|command| {
+                command.operation_id == turn && command.kind == MODEL_TASK_COMMAND_KIND
+            }) {
+                return Err(boundary(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "model is outside the committed outbox",
+                ));
+            }
+            let recorded = if stock && !latest.next.state["mail"].is_null() {
+                Some(
+                    OperationId::deserialize(&latest.next.state["receive"]["operation_id"])
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                )
+            } else {
+                None
+            };
+            input
+                .mailbox_operation
+                .or(recorded)
+                .map(|receive| (journal, latest, receive))
+        } else {
+            None
+        };
         let (journal, operation) = 'journal: {
             #[cfg(not(target_arch = "wasm32"))]
             if let WorkerContext::Native(_) = &context {
                 let work = io
                     .and_then(crate::filesystem::PreparationIo::original_native_work)
-                    .ok_or_else(|| {
-                        boundary(
-                            io,
-                            ErrorCode::Unsupported,
-                            "native model requires original work",
-                        )
-                    })?;
+                    .expect("native dispatch constructs its original observer");
                 let (journal, operation) = self
                     .runtime
                     .execution_journal_with_native_work(task, fence, turn, work)
@@ -91,7 +116,7 @@ where
         {
             return mail::reconciled(io);
         }
-        if let Some(receive) = input.mailbox_operation {
+        if let Some((journal, latest, receive)) = steering {
             let ordinary;
             let reader = match &context {
                 WorkerContext::Ordinary(_) => {
@@ -102,8 +127,9 @@ where
                 WorkerContext::Native(context) => context.context(),
             };
             let item = self
-                .committed_mail_input(task, fence, turn, receive, reader, io)
+                .steering_mail(task, &journal, &latest, receive, reader, io)
                 .await?;
+            drop((journal, latest));
             let copy_operation = crate::durable_host::received_copy_operation(task, receive, io)?;
             let path_hold;
             let copy_path =
@@ -346,165 +372,82 @@ where
             StockTurnProgress::Rejected(reason) => rejected(reason, io),
         }
     }
-    pub(super) async fn stock_mail_operation(
+    async fn steering_mail(
         &self,
         task: TaskId,
-        fence: &LeaseFence,
-        model: OperationId,
-        io: Option<&crate::filesystem::PreparationIo>,
-    ) -> Result<Option<OperationId>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let journal = match io {
-            Some(io) => {
-                self.runtime
-                    .workflow_journal_with_native_work(
-                        task,
-                        fence,
-                        io.original_native_work()
-                            .ok_or(Error::Unsupported("original mail work is absent".into()))?,
-                    )
-                    .await?
-            }
-            None => self.runtime.workflow_journal(task, fence.clone()).await?,
-        };
-        #[cfg(target_arch = "wasm32")]
-        let journal = self.runtime.workflow_journal(task, fence.clone()).await?;
-        let record = journal
-            .observe_latest_record(io)
-            .await?
-            .ok_or_else(|| Error::Unauthorized("stock model has no selection checkpoint".into()))?;
-        if !record
-            .transition
-            .commands
-            .iter()
-            .any(|command| command.operation_id == model && command.kind == MODEL_TASK_COMMAND_KIND)
-        {
-            return Err(Error::Unauthorized(
-                "stock model is not in the selected outbox".into(),
-            ));
-        }
-        if record.next.state["mail"].is_null() {
-            return Ok(None);
-        }
-        OperationId::deserialize(&record.next.state["receive"]["operation_id"])
-            .map(Some)
-            .map_err(|error| Error::Invalid(error.to_string()))
-    }
-    pub(super) async fn committed_mail_input(
-        &self,
-        task: TaskId,
-        fence: &LeaseFence,
-        model_operation: OperationId,
-        receive_operation: OperationId,
+        journal: &super::super::FilesystemWorkflowJournal<P, A, O>,
+        latest: &crate::workflow::WorkflowRecord,
+        receive: OperationId,
         context: &TaskContext,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<crate::scheduler::InboxItem> {
-        use crate::filesystem::task_runtime::observed::boundary;
+        use crate::filesystem::fork_preparer_io::failure;
         use crate::wire::ErrorCode;
-        #[cfg(not(target_arch = "wasm32"))]
-        let journal = match io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-            Some(work) => {
-                self.runtime
-                    .workflow_journal_with_native_work(task, fence, work)
-                    .await?
-            }
-            None => self.runtime.workflow_journal(task, fence.clone()).await?,
-        };
-        #[cfg(target_arch = "wasm32")]
-        let journal = self.runtime.workflow_journal(task, fence.clone()).await?;
-        let latest = journal.observe_latest_record(io).await?.ok_or_else(|| {
-            boundary(
-                io,
-                ErrorCode::Unauthorized,
-                "model steering has no committed checkpoint",
-            )
-        })?;
-        if !latest.transition.commands.iter().any(|command| {
-            command.operation_id == model_operation && command.kind == MODEL_TASK_COMMAND_KIND
-        }) {
-            return Err(boundary(
-                io,
-                ErrorCode::Unauthorized,
-                "model is not in the committed steering outbox",
-            ));
-        }
         let previous = journal
             .observe_transition(latest.prior.revision, io)
             .await?;
-        let [receive] = previous.transition.commands.as_slice() else {
-            return Err(boundary(
+        let [selection] = previous.transition.commands.as_slice() else {
+            return Err(failure(
                 io,
                 ErrorCode::Unauthorized,
-                "steering requires one committed receive",
+                "steering requires one receive",
             ));
         };
-        if receive.operation_id != receive_operation
-            || receive.kind != MAIL_RECEIVE_TASK_COMMAND_KIND
+        if selection.operation_id != receive
+            || selection.kind != MAIL_RECEIVE_TASK_COMMAND_KIND
             || previous.next != latest.prior
         {
-            return Err(boundary(
+            return Err(failure(
                 io,
                 ErrorCode::Unauthorized,
-                "steering checkpoint does not consume the receive",
+                "steering changed its receive checkpoint",
             ));
         }
-        let commands = latest.input["commands"].as_array().ok_or_else(|| {
-            boundary(
+        let results = latest.input["commands"]
+            .as_array()
+            .ok_or_else(|| failure(io, ErrorCode::Unauthorized, "steering result is absent"))?;
+        let [result] = results.as_slice() else {
+            return Err(failure(
                 io,
                 ErrorCode::Unauthorized,
-                "steering checkpoint has no command result",
-            )
-        })?;
-        let [result] = commands.as_slice() else {
-            return Err(boundary(
-                io,
-                ErrorCode::Unauthorized,
-                "steering checkpoint consumes more than one item",
+                "steering requires one result",
             ));
         };
         let result: CommittedMailResult = match io {
             Some(io) => crate::filesystem::retain_decoded(
                 io.value_decode_preparation(result, ErrorCode::Unauthorized)?,
             ),
-            None => serde_json::from_value(result.clone()).map_err(|cause| {
-                Error::Unauthorized(format!("invalid steering receipt: {cause}"))
-            })?,
+            None => serde_json::from_value(result.clone())
+                .map_err(|error| Error::Unauthorized(error.to_string()))?,
         };
-        if result.operation_id != receive_operation {
-            return Err(boundary(
-                io,
-                ErrorCode::Unauthorized,
-                "steering result changed its operation",
-            ));
-        }
         let Outcome::Succeeded(item) = result.value else {
-            return Err(boundary(
+            return Err(failure(
                 io,
                 ErrorCode::Unauthorized,
                 "steering receive did not succeed",
             ));
         };
-        if item.task_id != task || item.sequence == 0 {
-            return Err(boundary(
+        if result.operation_id != receive || item.task_id != task || item.sequence == 0 {
+            return Err(failure(
                 io,
                 ErrorCode::Unauthorized,
-                "steering item belongs to another recipient",
+                "steering result identity differs",
             ));
         }
         #[cfg(not(target_arch = "wasm32"))]
         let bytes = match io.and_then(crate::filesystem::PreparationIo::original_native_work) {
             Some(work) => {
                 context
-                    .read_file_with_native_work(&receive.payload, work)
+                    .read_file_with_native_work(&selection.payload, work)
                     .await?
             }
-            None => context.read_file(&receive.payload).await?,
+            None => context.read_file(&selection.payload).await?,
         };
         #[cfg(target_arch = "wasm32")]
-        let bytes = context.read_file(&receive.payload).await?;
+        let bytes = context.read_file(&selection.payload).await?;
         let selection: MailReceiveTaskCommand = match io {
             Some(io) => crate::filesystem::retain_decoded(io.decode(
-                std::marker::PhantomData::<MailReceiveTaskCommand>,
+                std::marker::PhantomData,
                 &bytes,
                 ErrorCode::Storage,
             )?),
@@ -512,42 +455,18 @@ where
                 .map_err(|error| Error::Storage(error.to_string()))?,
         };
         if selection.after.checked_add(1) != Some(item.sequence) {
-            return Err(boundary(
+            return Err(failure(
                 io,
                 ErrorCode::Unauthorized,
-                "steering receipt changed the selected cursor",
+                "steering receive cursor differs",
             ));
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let retained = match io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-            Some(work) => {
-                let (items, custody) = self
-                    .runtime
-                    .task_host()
-                    .inbox_with_native_work(task, item.sequence - 1, 1, work)
-                    .await?;
-                io.expect("native inbox observer")
-                    .absorb_native_custody(custody)?;
-                items
-            }
-            None => {
-                self.runtime
-                    .task_host()
-                    .inbox(task, item.sequence - 1, 1)
-                    .await?
-            }
-        };
-        #[cfg(target_arch = "wasm32")]
-        let retained = self
-            .runtime
-            .task_host()
-            .inbox(task, item.sequence - 1, 1)
-            .await?;
+        let retained = self.inbox(task, item.sequence - 1, io).await?;
         if retained.as_slice() != std::slice::from_ref(&item) {
-            return Err(boundary(
+            return Err(failure(
                 io,
                 ErrorCode::Conflict,
-                "steering item differs from the original mail",
+                "steering differs from retained mail",
             ));
         }
         Ok(item)

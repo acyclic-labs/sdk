@@ -66,12 +66,6 @@ where
                 .await
             }
             MODEL_TASK_COMMAND_KIND => {
-                let receive = if admission.task.name == "acyclic.stock_turn" {
-                    self.stock_mail_operation(task, &fence, command.operation_id, io)
-                        .await?
-                } else {
-                    None
-                };
                 self.model_command(
                     task,
                     context,
@@ -80,12 +74,12 @@ where
                     payload,
                     reconciliation_only,
                     io,
-                    receive,
+                    admission.task.name == "acyclic.stock_turn",
                 )
                 .await
             }
             EFFECT_TASK_COMMAND_KIND => {
-                self.effect_command_with_io(
+                self.effect_command(
                     task,
                     &fence,
                     command.operation_id,
@@ -96,13 +90,13 @@ where
                 .await
             }
             MAIL_SEND_TASK_COMMAND_KIND if reconciliation_only => {
-                self.reconcile_mail_with_io(task, &fence, &command, payload, io)
+                self.reconcile_mail(task, &fence, &command, payload, io)
                     .await
             }
             MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND
                 if !reconciliation_only =>
             {
-                self.mail_command_with_io(
+                self.mail_command(
                     task,
                     &fence,
                     &command,
@@ -113,7 +107,7 @@ where
                 .await
             }
             TASK_ADMIT_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => {
-                self.task_command_with_io(
+                self.task_command(
                     task,
                     context.context(),
                     &fence,
@@ -138,11 +132,12 @@ where
                 .await
             }
             TASK_ADMIT_PREPARED_COMMAND_KIND => {
-                self.admit_prepared_command(
+                let input: PreparedTaskAdmitCommand = mail::decode_command(payload, io)?;
+                self.admit(
                     task,
                     &fence,
-                    &command,
-                    payload,
+                    command.operation_id,
+                    input.admission,
                     reconciliation_only,
                     io,
                 )
@@ -255,7 +250,7 @@ where
             }
             MAIL_RECEIVE_TASK_COMMAND_KIND => {
                 let input: MailReceiveTaskCommand = mail::decode_command(payload, io)?;
-                self.wait_mail_with_io(task, input.after, io).await
+                self.wait_mail(task, input.after, io).await
             }
             TASK_OBSERVE_COMMAND_KIND => {
                 let input: TaskObserveCommand = mail::decode_command(payload, io)?;

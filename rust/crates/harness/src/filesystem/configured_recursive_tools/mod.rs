@@ -7,9 +7,7 @@ use crate::{
         BoundedContentFuture, ContentGrant, ConversationMessage, Limits, VolumeOperation,
         VolumeOwner, VolumeRef,
     },
-    core::{
-        Authority, AuthorityIssuer, AuthorityVerifier, Reducer, SchemaRegistry, Scope, Snapshot,
-    },
+    core::{Authority, AuthorityIssuer, AuthorityVerifier, Reducer, SchemaRegistry, Scope},
     durable_tool::ResumableTool,
     filesystem::{
         FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
@@ -43,10 +41,9 @@ mod merge;
 mod ops;
 mod preparation;
 mod selection;
-use config::SourceCheckpoint;
 pub use config::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
-    ConfiguredRecursiveMerge, ConfiguredRecursiveSourceCheckpoint, ConfiguredRecursiveToolsConfig,
+    ConfiguredRecursiveMerge, ConfiguredRecursiveToolsConfig,
 };
 
 /// Portable source factory using the runtime's actual Filesystem and Stream.
@@ -76,7 +73,6 @@ where
         if config.callers.len() > 64
             || config.forks.len() > 64
             || config.merges.len() > 64
-            || config.original_sources.len() > 64
             || config.history_limits.maximum_events == 0
             || config.history_limits.maximum_bytes == 0
             || config.history_limits.maximum_bytes == u64::MAX
@@ -163,29 +159,6 @@ where
                     "configured merge lacks unique configured caller/source bindings".into(),
                 ));
             }
-        }
-        for (index, original) in config.original_sources.iter().enumerate() {
-            original.request.validate(&mut None)?;
-            let caller = config
-                .callers
-                .iter()
-                .find(|caller| caller.task == original.caller)
-                .ok_or_else(|| {
-                    Error::Unauthorized("original source lacks its actual configured caller".into())
-                })?;
-            if &original.request.parent != caller.owner.authority()
-                || original.snapshot.authority != original.request.parent
-                || original.snapshot.revision != original.request.parent_revision
-                || config.original_sources[..index]
-                    .iter()
-                    .any(|prior| prior.request.operation_id == original.request.operation_id)
-            {
-                return Err(Error::Unauthorized(
-                    "original source record changed its unique caller or exact canonical cut"
-                        .into(),
-                ));
-            }
-            crate::contract::validate_json_byte_bound(&original.snapshot, limits.file_bytes)?;
         }
         Ok(Arc::new(Self {
             config,

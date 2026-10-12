@@ -122,3 +122,31 @@ async fn real_filesystem_birth_without_protected_root_association_is_not_source_
     ));
     Ok(())
 }
+
+#[test]
+fn selected_lazy_snapshot_decodes_with_finite_io() -> Result<()> {
+    let value = serde_json::json!({
+        "id": ([1; 32]), "workspace_id": ([2; 16]), "authored_generation": ([3; 32]),
+        "source": { "identity": ([4; 16]), "epoch": 7 },
+        "overlay": ([5; 32]), "shadows": ([6; 32])
+    });
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = source_budget(14_000_000, 90_000_000)?;
+    let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)?;
+    let ordinary = crate::filesystem::PreparationIo::from_budget(budget, &cancellation)?;
+    let original = crate::filesystem::PreparationIo::from_native_work(&native)?;
+    for io in [&ordinary, &original] {
+        let (snapshot, _hold) = super::verify::source_snapshot(
+            &value,
+            JsonBounds {
+                maximum_bytes: 4096,
+                maximum_items: 4096,
+                maximum_depth: 32,
+            },
+            io,
+        )?;
+        assert_eq!(snapshot.workspace_id.into_bytes(), [2; 16]);
+        assert_eq!(snapshot.source.epoch, 7);
+    }
+    Ok(())
+}

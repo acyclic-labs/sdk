@@ -18,23 +18,6 @@ where
     ) -> Result<TaskCommandProgress> {
         use crate::filesystem::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let WorkerContext::Native(_) = &context {
-            let io = io.ok_or_else(|| {
-                boundary(
-                    io,
-                    ErrorCode::Unsupported,
-                    "native tool requires original observer",
-                )
-            })?;
-            io.original_native_work().ok_or_else(|| {
-                boundary(
-                    Some(io),
-                    ErrorCode::Unsupported,
-                    "native tool requires original work",
-                )
-            })?;
-        }
         let input: ToolTaskCommand = mail::decode_command(payload, io)?;
         let definition = self
             .runtime
@@ -44,13 +27,7 @@ where
             if let WorkerContext::Native(_) = &context {
                 let work = io
                     .and_then(crate::filesystem::PreparationIo::original_native_work)
-                    .ok_or_else(|| {
-                        boundary(
-                            io,
-                            ErrorCode::Unsupported,
-                            "native tool requires original work",
-                        )
-                    })?;
+                    .expect("native dispatch constructs its original observer");
                 break 'journal self
                     .runtime
                     .execution_journal_with_native_work(task, fence, turn, work)

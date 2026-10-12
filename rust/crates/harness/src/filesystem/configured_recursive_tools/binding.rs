@@ -180,86 +180,69 @@ where
         scope: &Scope,
         aggregate: StreamAggregate<P>,
         content: Option<Arc<dyn crate::conversation::ContentResidencyVerifier>>,
-        _io: Option<&crate::filesystem::PreparationIo>,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<StreamAggregate<P>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = _io {
-            let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "native aggregate binding requires original work",
-            })?;
-            let verifier = {
-                let mut history = io.history_io();
-                binding.issuer().verifier(&mut Some(&mut history))?
-            };
-            let content = match content {
-                Some(content) => content,
-                None => FilesystemContentVerifier::new(
-                    Arc::clone(&self.filesystem),
-                    &verifier,
-                    scope,
-                    self.limits.file_bytes,
-                    Some(io),
-                )?,
-            };
-            let filesystem: Arc<dyn crate::fork::ForkSeedVerifier> = FilesystemForkVerifier::new(
-                Arc::clone(&self.filesystem),
-                self.limits.file_bytes,
-                None,
-                Some((&verifier, scope, io)),
-            )?;
-            let history: Arc<dyn crate::fork::ForkSeedVerifier> = StreamHistoryForkVerifier::new(
-                &self.config.stream_provider,
-                &mut Some(&mut io.history_io()),
-            )?
-            .into_native_shared(work)?;
-            let forks = CompositeForkVerifier::new(
-                &[filesystem, history],
-                &mut Some(&mut io.history_io()),
-            )?
-            .into_native_shared(work)?;
-            let merge = FilesystemProjectMergeVerifier::new(
-                Arc::clone(&self.filesystem),
-                Some((&verifier, scope, io)),
-            )?;
-            let mut aggregate = aggregate
-                .with_content_verifier(content)
-                .with_fork_verifier(forks)
-                .with_merge_verifier(merge);
-            aggregate.set_limits(self.limits)?;
-            return Ok(aggregate);
-        }
+        let native = io
+            .map(|io| {
+                io.original_native_work().ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "native aggregate binding requires original work",
+                })
+            })
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let io = None;
+        let verifier = if io.is_some() || content.is_none() {
+            Some(crate::executor::with_history_io(io, |work| {
+                binding.issuer().verifier(work)
+            })?)
+        } else {
+            None
+        };
         let content = match content {
             Some(content) => content,
             None => FilesystemContentVerifier::new(
-                self.filesystem.clone(),
-                &(verifier(binding)?),
-                &scope,
+                Arc::clone(&self.filesystem),
+                verifier.as_ref().expect("content verifier"),
+                scope,
                 self.limits.file_bytes,
-                None,
+                io,
             )?,
         };
-        let forks = Arc::new(CompositeForkVerifier::new(
-            &[
-                FilesystemForkVerifier::new(
-                    self.filesystem.clone(),
-                    self.limits.file_bytes,
-                    None,
-                    None,
-                )?,
-                Arc::new(StreamHistoryForkVerifier::new(
-                    &self.config.stream_provider,
-                    &mut None,
-                )?),
-            ],
-            &mut None,
-        )?);
+        let original = io.map(|io| (verifier.as_ref().expect("native verifier"), scope, io));
+        let filesystem: Arc<dyn crate::fork::ForkSeedVerifier> = FilesystemForkVerifier::new(
+            Arc::clone(&self.filesystem),
+            self.limits.file_bytes,
+            None,
+            original,
+        )?;
+        let history = crate::executor::with_history_io(io, |work| {
+            StreamHistoryForkVerifier::new(&self.config.stream_provider, work)
+        })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let history = match native {
+            Some(work) => history.into_native_shared(work)?,
+            None => Arc::new(history),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let history = Arc::new(history);
+        let forks = crate::executor::with_history_io(io, |work| {
+            CompositeForkVerifier::new(&[filesystem, history], work)
+        })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let forks = match native {
+            Some(work) => forks.into_native_shared(work)?,
+            None => Arc::new(forks),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let forks = Arc::new(forks);
         let mut aggregate = aggregate
             .with_content_verifier(content)
             .with_fork_verifier(forks)
             .with_merge_verifier(FilesystemProjectMergeVerifier::new(
-                self.filesystem.clone(),
-                None,
+                Arc::clone(&self.filesystem),
+                original,
             )?);
         aggregate.set_limits(self.limits)?;
         Ok(aggregate)

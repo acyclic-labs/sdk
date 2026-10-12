@@ -2,6 +2,7 @@ use super::*;
 use crate::filesystem::default_tools::{
     decode, encode, recursive_command_outbox, recursive_reject,
 };
+use crate::filesystem::task_runtime::observed::digest;
 use crate::filesystem::{PreparationIo, PreparationRecord};
 use crate::wire::ErrorCode;
 
@@ -22,7 +23,6 @@ enum State {
         operation_id: OperationId,
         request_digest: [u8; 32],
     },
-    Settled,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,17 +63,7 @@ impl ForkPreparationMachine {
             include_str!("preparation.rs"),
             include_str!("machine.rs"),
         ] {
-            for line in code.split_inclusive('\n') {
-                match line.strip_suffix("\r\n") {
-                    Some(line) => {
-                        digest.update(line.as_bytes());
-                        digest.update(b"\n");
-                    }
-                    None => {
-                        digest.update(line.as_bytes());
-                    }
-                }
-            }
+            digest.update(code.as_bytes());
         }
         Self {
             identity: MachineIdentity {
@@ -125,7 +115,7 @@ impl ForkPreparationMachine {
         encode(
             &State::Ready {
                 command,
-                request_digest: payload_digest(&request.payload, io)?,
+                request_digest: digest(&request.payload, io, u64::MAX)?,
             },
             io,
         )
@@ -136,6 +126,13 @@ impl ForkPreparationMachine {
         input: &Value,
         io: Option<&PreparationIo>,
     ) -> Result<MachineTransition> {
+        if state.is_null() {
+            return Err(recursive_reject(
+                io,
+                ErrorCode::Conflict,
+                "fork preparation is already settled",
+            ));
+        }
         let (state, commands, status) = match decode::<State>(state, io)? {
             State::Ready {
                 command,
@@ -150,10 +147,10 @@ impl ForkPreparationMachine {
                     ));
                 }
                 (
-                    State::Waiting {
+                    Some(State::Waiting {
                         operation_id: command.operation_id,
                         request_digest,
-                    },
+                    }),
                     recursive_command_outbox(command, io)?,
                     MachineStatus::Suspended,
                 )
@@ -174,7 +171,7 @@ impl ForkPreparationMachine {
                     Outcome::Succeeded(report) => {
                         crate::executor::with_history_io(io, |work| report.validate(work))?;
                         if report.request.operation_id != operation_id
-                            || payload_digest(&report.request, io)? != request_digest
+                            || digest(&report.request, io, u64::MAX)? != request_digest
                         {
                             return Err(recursive_reject(
                                 io,
@@ -201,14 +198,7 @@ impl ForkPreparationMachine {
                         ));
                     }
                 };
-                (State::Settled, Vec::new(), status)
-            }
-            State::Settled => {
-                return Err(recursive_reject(
-                    io,
-                    ErrorCode::Conflict,
-                    "fork preparation is already settled",
-                ));
+                (None, Vec::new(), status)
             }
         };
         Ok(MachineTransition {
@@ -280,16 +270,6 @@ impl ResumableMachine for ForkPreparationMachine {
         Ok((transition, custody))
     }
 }
-fn payload_digest<T: Serialize>(value: &T, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
-    match io {
-        Some(io) => crate::contract::canonical_json_digest_with_work(
-            value,
-            io.remaining()?.bytes_encoded,
-            &mut Some(&mut io.history_io()),
-        ),
-        None => crate::contract::canonical_json_digest(value),
-    }
-}
-const PREPARATION_STATE_SCHEMA: &[u8] = br#"{"oneOf":[{"type":"object","required":["phase","command","request_digest"],"properties":{"phase":{"const":"ready"},"command":{"type":"object"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"object","required":["phase","operation_id","request_digest"],"properties":{"phase":{"const":"waiting"},"operation_id":{"type":"string"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"object","required":["phase"],"properties":{"phase":{"const":"settled"}},"additionalProperties":false}]}"#;
+const PREPARATION_STATE_SCHEMA: &[u8] = br#"{"oneOf":[{"type":"object","required":["phase","command","request_digest"],"properties":{"phase":{"const":"ready"},"command":{"type":"object"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"object","required":["phase","operation_id","request_digest"],"properties":{"phase":{"const":"waiting"},"operation_id":{"type":"string"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"null"}]}"#;
 const PREPARATION_INPUT_SCHEMA: &[u8] = br#"{"type":"object","required":["provider","child","resources","creation_grant","maximum_resources","maximum_work","maximum_bytes","payload","command"],"properties":{"provider":{"type":"object"},"child":{"type":"object"},"resources":{"type":"array","minItems":1,"items":{"type":"object"}},"creation_grant":{"const":"fork:publish"},"maximum_resources":{"type":"integer","minimum":1,"maximum":4294967295},"maximum_work":{"type":"integer","minimum":1,"maximum":18446744073709551614},"maximum_bytes":{"type":"integer","minimum":1,"maximum":18446744073709551614},"payload":{"type":"object"},"source_checkpoint":{"type":["object","null"]},"input_files":{"type":"array","items":{"type":"object"}},"read_authorization":{"type":["object","null"]},"command":{"type":"object","required":["operation_id","kind","payload"],"properties":{"operation_id":{"type":"string","minLength":1},"kind":{"const":"acyclic.fork.prepare.v1"},"payload":{"type":"object"}},"additionalProperties":false}},"additionalProperties":false}"#;
 const PREPARATION_OUTPUT_SCHEMA: &[u8] = br#"{"type":"object","required":["request","captures","child_private_volume","child_private_generation","inherited_context","summary","inherited_through_sequence","shared_grants","reference_grants","history_witness","attachment_manifests"],"properties":{"request":{"type":"object"},"captures":{"type":"array"},"child_private_volume":{"type":"object"},"child_private_generation":{"type":"object"},"child_result_volume":{"type":["object","null"]},"child_result_generation":{"type":["object","null"]},"inherited_context":{"type":"array"},"summary":{"type":["object","null"]},"inherited_through_sequence":{"type":"integer","minimum":0},"shared_grants":{"type":"array"},"reference_grants":{"type":"array"},"history_witness":{"type":["array","null"]},"attachment_manifests":{"type":"array"}},"additionalProperties":false}"#;

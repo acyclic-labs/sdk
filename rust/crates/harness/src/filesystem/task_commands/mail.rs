@@ -62,7 +62,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn mail_command_with_io(
+    pub(super) async fn mail_command(
         &self,
         task: TaskId,
         fence: &LeaseFence,
@@ -83,27 +83,7 @@ where
             ready(Outcome::Succeeded(Value::Null), io)
         } else {
             let input: MailReceiveTaskCommand = decode_command(payload, io)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = io
-                && let Some(native) = io.original_native_work()
-            {
-                let (items, custody) = self
-                    .runtime
-                    .task_host()
-                    .inbox_with_native_work(task, input.after, 1, native)
-                    .await?;
-                io.absorb_native_custody(custody)?;
-                let Some(item) = items.into_iter().next() else {
-                    return if select_only {
-                        ready(Outcome::Succeeded(Value::Null), Some(io))
-                    } else {
-                        Ok(TaskCommandProgress::Pending)
-                    };
-                };
-                return ready(Outcome::Succeeded(item), Some(io));
-            }
-            let items = self.runtime.task_host().inbox(task, input.after, 1).await?;
-            let Some(item) = items.into_iter().next() else {
+            let Some(item) = self.inbox(task, input.after, io).await?.into_iter().next() else {
                 return if select_only {
                     ready(Outcome::Succeeded(Value::Null), io)
                 } else {
@@ -114,7 +94,7 @@ where
         }
     }
 
-    pub(super) async fn reconcile_mail_with_io(
+    pub(super) async fn reconcile_mail(
         &self,
         task: TaskId,
         fence: &LeaseFence,
@@ -135,7 +115,7 @@ where
         reconciled(io)
     }
 
-    pub(super) async fn wait_mail_with_io(
+    pub(super) async fn wait_mail(
         &self,
         task: TaskId,
         after: u64,
@@ -144,19 +124,43 @@ where
         require_native_observer(io)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io
-            && let Some(native) = io.original_native_work()
+            && let Some(work) = io.original_native_work()
         {
             let (items, custody) = self
                 .runtime
                 .task_host()
-                .inbox_with_native_work(task, after, 1, native)
+                .inbox_with_native_work(task, after, 1, work)
                 .await?;
             let ready = !items.is_empty();
-            drop(items);
-            drop(custody);
+            drop((items, custody));
             return Ok(ready);
         }
-        let items = self.runtime.task_host().inbox(task, after, 1).await?;
-        Ok(!items.is_empty())
+        Ok(!self
+            .runtime
+            .task_host()
+            .inbox(task, after, 1)
+            .await?
+            .is_empty())
+    }
+
+    pub(super) async fn inbox(
+        &self,
+        task: TaskId,
+        after: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<Vec<crate::scheduler::InboxItem>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io
+            && let Some(work) = io.original_native_work()
+        {
+            let (items, custody) = self
+                .runtime
+                .task_host()
+                .inbox_with_native_work(task, after, 1, work)
+                .await?;
+            io.absorb_native_custody(custody)?;
+            return Ok(items);
+        }
+        self.runtime.task_host().inbox(task, after, 1).await
     }
 }

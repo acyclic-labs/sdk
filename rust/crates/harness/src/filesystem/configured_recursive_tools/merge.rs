@@ -97,13 +97,12 @@ where
             ordinary = runtime
                 .inspect_source(caller.task, arguments.source)
                 .await?;
-            if ordinary.project()?.volume != source.project
-                || ordinary
-                    .volumes()
-                    .iter()
-                    .filter(|snapshot| snapshot.volume == source.private_volume)
-                    .count()
-                    != 1
+            if ordinary
+                .volumes()
+                .iter()
+                .filter(|snapshot| snapshot.volume == source.private_volume)
+                .count()
+                != 1
                 || source.result_volume.as_ref().is_some_and(|result| {
                     ordinary
                         .volumes()
@@ -174,86 +173,67 @@ where
             quota.transfer();
             Ok(notice)
         })?;
-        let source_read = 'source_read: {
+        let owner = match owner {
+            Some(owner) => owner,
+            None => {
+                self.source_owner(context.task(), cancellation, None)
+                    .await?
+            }
+        };
+        let authorization = original.and_then(|plan| plan.authorized_source.as_ref());
+        let source_read = if let Some(authorization) = authorization {
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(owner) = &owner {
-                let io = io.expect("native merge IO");
-                let work = io.original_native_work().expect("native merge work");
-                let read = if let Some(authorization) =
-                    original.and_then(|plan| plan.authorized_source.as_ref())
-                {
-                    let (handle, custody) = owner
-                        .restore_project_source_authorization_with_native_work(
-                            context.task(),
-                            authorization,
-                            work,
-                        )?
-                        .await?;
-                    io.absorb_native_custody(custody)?;
-                    Some(handle)
-                } else {
-                    let allowed = io.contains_capability(
-                        context.effective_scope().grants(),
-                        &selected.volume,
-                        "volume:read:",
-                    )?;
-                    if !allowed {
-                        if original.is_some() || self.project_policy.get().is_none() {
-                            return Err(failure(
-                                Some(io),
-                                ErrorCode::Unauthorized,
-                                "merge lacks its original Project read authority",
-                            ));
-                        }
-                        work.remaining()?;
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                let (handle, custody) = owner
+                    .restore_project_source_authorization_with_native_work(
+                        context.task(),
+                        authorization,
+                        work,
+                    )?
+                    .await?;
+                io.expect("native merge observer")
+                    .absorb_native_custody(custody)?;
+                Some(handle)
+            } else {
+                Some(
+                    owner
+                        .restore_project_source_authorization(context.task(), authorization)
+                        .await?,
+                )
+            }
+            #[cfg(target_arch = "wasm32")]
+            Some(
+                owner
+                    .restore_project_source_authorization(context.task(), authorization)
+                    .await?,
+            )
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(io) = io {
+                if !io.contains_capability(
+                    context.effective_scope().grants(),
+                    &selected.volume,
+                    "volume:read:",
+                )? {
+                    if original.is_some() || self.project_policy.get().is_none() {
                         return Err(failure(
                             Some(io),
-                            ErrorCode::Unsupported,
-                            "native Project policy requires originally funded installed metadata",
+                            ErrorCode::Unauthorized,
+                            "merge lacks its original Project read authority",
                         ));
                     }
-                    None
-                };
-                if let Some(handle) = &read {
-                    handle.require_selection(
-                        context.operation_id(),
-                        arguments.source,
-                        &selected.volume,
-                        &generation,
-                        handle.authorization().native_snapshot.as_ref(),
-                        Some(work),
-                    )?;
+                    io.original_native_work()
+                        .expect("native merge work")
+                        .remaining()?;
+                    return Err(failure(
+                        Some(io),
+                        ErrorCode::Unsupported,
+                        "native Project policy requires originally funded installed metadata",
+                    ));
                 }
-                drop(
-                    context
-                        .read_file_with_native_work(&notice.content, work)
-                        .await?,
-                );
-                break 'source_read read;
             }
-            let read = if let Some(authorization) =
-                original.and_then(|plan| plan.authorized_source.as_ref())
-            {
-                let owner = Arc::new(
-                    runtime
-                        .task_host()
-                        .journal_owner(caller.task, context.task().owned_task_fence()?)
-                        .await?
-                        .with_invocation_cancellation(cancellation),
-                );
-                let handle = owner
-                    .restore_project_source_authorization(context.task(), authorization)
-                    .await?;
-                handle.require_selection(
-                    context.operation_id(),
-                    arguments.source,
-                    &selected.volume,
-                    &generation,
-                    source.native_snapshot.as_ref(),
-                    None,
-                )?;
-                Some(handle)
-            } else if original.is_none()
+            if io.is_none()
+                && original.is_none()
                 && arguments.source != caller.task
                 && !context.scope().grants().contains(
                     &selected
@@ -268,13 +248,6 @@ where
                         "foreign merge lacks an explicit RootService Project policy",
                     )
                 })?;
-                let owner = Arc::new(
-                    runtime
-                        .task_host()
-                        .journal_owner(caller.task, context.task().owned_task_fence()?)
-                        .await?
-                        .with_invocation_cancellation(cancellation),
-                );
                 Some(
                     owner
                         .authorize_project_source(
@@ -295,15 +268,36 @@ where
                 )
             } else {
                 None
-            };
-            drop(
-                context
-                    .read_file_measured(&notice.content, self.config.content_budget, cancellation)
-                    .await
-                    .map_err(|failure| failure.error)?,
-            );
-            read
+            }
         };
+        if let Some(handle) = &source_read {
+            #[cfg(not(target_arch = "wasm32"))]
+            let work = io.and_then(PreparationIo::original_native_work);
+            #[cfg(target_arch = "wasm32")]
+            let work = None;
+            let snapshot = if io.is_some() {
+                handle.authorization().native_snapshot.as_ref()
+            } else {
+                source.native_snapshot.as_ref()
+            };
+            handle.require_selection(
+                context.operation_id(),
+                arguments.source,
+                &selected.volume,
+                &generation,
+                snapshot,
+                work,
+            )?;
+        }
+        let ordinary_io;
+        let reader = match io {
+            Some(io) => io,
+            None => {
+                ordinary_io = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
+                &ordinary_io
+            }
+        };
+        drop(self.read(context, &notice.content, reader).await?);
         let (verifier, scope, project, source_authority, source_project) =
             crate::executor::with_history_io(io, |work| {
                 let verifier = caller.owner.issuer().verifier(work)?;
@@ -319,18 +313,7 @@ where
                     selected.volume.copy(work)?,
                 ))
             })?;
-        let resolver = 'resolver: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(owner) = owner {
-                break 'resolver self.resolver(context, owner, io)?;
-            }
-            self.resolver(
-                context,
-                self.source_owner(context.task(), cancellation, None)
-                    .await?,
-                None,
-            )?
-        };
+        let resolver = self.resolver(context, owner, io)?;
         check_cancellation(cancellation, io)?;
         let destination = self.open(&caller.owner, None, io).await?;
         check_cancellation(cancellation, io)?;

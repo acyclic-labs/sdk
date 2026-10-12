@@ -6,7 +6,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn effect_command_with_io(
+    pub(super) async fn effect_command(
         &self,
         task: TaskId,
         fence: &LeaseFence,

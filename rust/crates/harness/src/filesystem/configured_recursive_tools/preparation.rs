@@ -67,7 +67,7 @@ where
                 "preparation changed its retained sealed Project source",
             ));
         }
-        let reducer = if let Some(checkpoint) = &preparation.source_checkpoint {
+        if let Some(checkpoint) = &preparation.source_checkpoint {
             let bytes = 'read: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(work) = io.and_then(PreparationIo::original_native_work) {
@@ -79,7 +79,7 @@ where
                     .map_err(|failure| failure.error)?
                     .value
             };
-            let capture: SourceCheckpoint = match io {
+            let record: RecursiveForkSourceIntent = match io {
                 #[cfg(not(target_arch = "wasm32"))]
                 Some(io) => crate::filesystem::retain_decoded(io.decode(
                     std::marker::PhantomData,
@@ -88,54 +88,29 @@ where
                 )?),
                 _ => serde_json::from_slice(&bytes).map_err(invalid_json)?,
             };
-            if capture.request != request || capture.caller != caller_task {
+            if record.request != request
+                || record.caller != caller_task
+                || record.child_operation_id != preparation.child.operation_id
+            {
                 return Err(failure(
                     io,
                     ErrorCode::Unauthorized,
                     "configured preparation checkpoint changed original caller/request",
                 ));
             }
-            let snapshot = capture.snapshot;
-            #[cfg(not(target_arch = "wasm32"))]
-            let snapshot = if let Some(io) = io {
-                let custody = io.take_native_custody(snapshot.predecoded_native_owned_bytes()?)?;
-                snapshot.adopt_predecoded_native_custody(custody)?
-            } else {
-                snapshot
-            };
-            self.restore_snapshot(&caller.owner, &request, snapshot, cancellation, io)
-                .await?
-        } else if let Some(original) = self
-            .config
-            .original_sources
-            .iter()
-            .find(|original| original.request.operation_id == request.operation_id)
-        {
-            if original.caller != caller_task || original.request != request {
-                return Err(failure(
-                    io,
-                    ErrorCode::Unauthorized,
-                    "trusted original record differs from the sealed preparation request",
-                ));
+        }
+        let ordinary;
+        let observer = match io {
+            Some(io) => io,
+            None => {
+                ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
+                &ordinary
             }
-            let snapshot =
-                crate::executor::with_history_io(io, |work| original.snapshot.copy(work))?;
-            self.restore_snapshot(&caller.owner, &request, snapshot, cancellation, io)
-                .await?
-        } else {
-            let ordinary;
-            let observer = match io {
-                Some(io) => io,
-                None => {
-                    ordinary =
-                        PreparationIo::from_budget(self.config.content_budget, cancellation)?;
-                    &ordinary
-                }
-            };
-            self.open(&caller.owner, Some(request.parent_revision), Some(observer))
-                .await?
-                .into_reducer()
         };
+        let reducer = self
+            .open(&caller.owner, Some(request.parent_revision), Some(observer))
+            .await?
+            .into_reducer();
         #[cfg(not(target_arch = "wasm32"))]
         if let WorkerContext::Native(shared) = context {
             let io = io.ok_or_else(|| {
@@ -202,63 +177,5 @@ where
             cancellation,
         )
         .await
-    }
-    pub(super) async fn restore_snapshot(
-        &self,
-        binding: &ConfiguredRecursiveAuthorityBinding,
-        request: &ForkRequest,
-        snapshot: Snapshot,
-        cancellation: &CancellationToken,
-        io: Option<&crate::filesystem::PreparationIo>,
-    ) -> Result<Reducer> {
-        use crate::filesystem::fork_preparer_io::failure;
-        use crate::wire::ErrorCode;
-        if snapshot.authority != request.parent
-            || snapshot.revision != request.parent_revision
-            || &snapshot.authority != binding.authority()
-            || snapshot.revision == 0
-        {
-            return Err(failure(
-                io,
-                ErrorCode::Unauthorized,
-                "configured checkpoint differs from original caller cut",
-            ));
-        }
-        check_cancellation(cancellation, io)?;
-        let mut history = io.map(crate::filesystem::PreparationIo::history_io);
-        let mut observer = history.as_mut().map(|work| work as &mut dyn HistoryIo);
-        let verifier = binding.issuer().verifier(&mut observer)?;
-        let expected = snapshot.events.last().ok_or_else(|| {
-            failure(
-                io,
-                ErrorCode::Unauthorized,
-                "checkpoint has no canonical head",
-            )
-        })?;
-        let head_hold;
-        let (head, _) = crate::store::operations::bounded_operation_with_retained_quota(
-            &self.stream,
-            binding.authority(),
-            &verifier,
-            expected.operation_id,
-            self.config.history_limits.maximum_bytes,
-            true,
-            &mut observer,
-        )
-        .await?;
-        head_hold = io
-            .map(|io| io.guard_owned(head.as_ref().map_or(0, |(_, retained)| *retained)))
-            .transpose()?;
-        let head = (head, head_hold);
-        check_cancellation(cancellation, io)?;
-        if head.0.as_ref().map(|(event, _)| event) != Some(expected) {
-            return Err(failure(
-                io,
-                ErrorCode::Unauthorized,
-                "checkpoint head differs from immutable canonical Stream event",
-            ));
-        }
-        drop(head);
-        Reducer::restore_with_work(snapshot, verifier, SchemaRegistry::new(), &mut observer)
     }
 }
