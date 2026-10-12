@@ -1273,11 +1273,11 @@ pub trait MountFilesystem: Send + Sync + 'static {
     ) -> Result<MountDirectoryPage, MountSourceError>;
 
     /// Removes the exact binding on a shared original invocation.
-    fn remove_with_meter(
+    fn remove(
         &self, path: &MountPath, expected: Option<FileId>, work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Renames the exact binding with original source grants.
-    fn rename_with_meter(
+    fn rename(
         &self, source: &MountPath, destination: &MountPath, replace: bool,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
@@ -1592,15 +1592,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         destination: &MountPath,
         destination_offset: u64,
         length: u64,
-    ) -> Result<(), MountSourceError>;
-    /// Removes one namespace binding.
-    fn remove(&self, path: &MountPath, expected: Option<FileId>) -> Result<(), MountSourceError>;
-    /// Renames one binding atomically within the volume.
-    fn rename(
-        &self,
-        source: &MountPath,
-        destination: &MountPath,
-        replace: bool,
     ) -> Result<(), MountSourceError>;
     /// Reconciles exact final host state for one projected path and seals it.
     fn capture_host_path(

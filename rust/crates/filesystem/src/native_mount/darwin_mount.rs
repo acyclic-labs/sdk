@@ -4005,7 +4005,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
             });
         }
         context.unlink(&path, lookup, || {
-            context.source.remove_with_meter(&path, Some(lookup.node.file_id), work.native)
+            context.source.remove(&path, Some(lookup.node.file_id), work.native)
         }, work)?;
         context.namespace_changed();
         Ok(0)
@@ -4026,7 +4026,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
         }
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
         let replace = flags & RENAME_NOREPLACE == 0;
-        let rename = || context.source.rename_with_meter(&source, &destination, replace, work.native);
+        let rename = || context.source.rename(&source, &destination, replace, work.native);
         // Replacing the destination unlinks it.
         match replace.then(|| context.lookup(&destination, work)) {
             Some(Ok(replaced)) => context.unlink(&destination, replaced, rename, work)?,
@@ -5301,7 +5301,7 @@ mod tests {
             "a content write keeps the listing"
         );
 
-        source.remove(&second, None)?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&second, None, work))?;
         assert!(
             label(&root)? > root_label,
             "a namespace change relabels its directory"
@@ -5594,7 +5594,7 @@ mod tests {
         assert!(bound(read)?, "the first read binds the source file");
 
         let stale = context.run_request(false, |work| context.open(&path, 0, work)).map_err(os)?;
-        source.remove(&path, Some(created.node.file_id))?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&path, Some(created.node.file_id), work))?;
         source.create_file(&path, FileMetadata::default())?;
         assert_eq!(context.run_request(false, |work| context.file_target(&path, stale, work).map(|target| target.0)).err(), Some(libc::ESTALE));
         Ok(())
