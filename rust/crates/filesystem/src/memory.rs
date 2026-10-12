@@ -1201,6 +1201,7 @@ pub struct MemoryObjectStore {
 }
 
 // The backing vector is destroyed before its original capacity guard.
+#[derive(Default)]
 struct MemoryObjectState {
     objects: Vec<(ObjectId, OwnedBytes)>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -1208,14 +1209,6 @@ struct MemoryObjectState {
 }
 
 impl MemoryObjectState {
-    fn new() -> Self {
-        Self {
-            objects: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
-            table_custody: None,
-        }
-    }
-
     fn get(&self, id: &ObjectId) -> Option<&OwnedBytes> {
         self.objects.binary_search_by_key(id, |(id, _)| *id)
             .ok().map(|index| &self.objects[index].1)
@@ -1292,7 +1285,7 @@ impl MemoryObjectStore {
         }
         Ok(Self {
             maximum_object_bytes,
-            objects: RwLock::new(MemoryObjectState::new()),
+            objects: RwLock::new(MemoryObjectState::default()),
         })
     }
 
@@ -1512,7 +1505,7 @@ impl Default for MemoryObjectStore {
     fn default() -> Self {
         Self {
             maximum_object_bytes: DEFAULT_MAX_OBJECT_BYTES,
-            objects: RwLock::new(MemoryObjectState::new()),
+            objects: RwLock::new(MemoryObjectState::default()),
         }
     }
 }

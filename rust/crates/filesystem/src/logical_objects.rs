@@ -136,13 +136,6 @@ impl<P> LogicalObjectStore<P> {
     }
 }
 
-fn has_native_accounting(accounting: &KernelAccounting<'_>) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    { accounting.native_work().is_some() }
-    #[cfg(target_arch = "wasm32")]
-    { let _ = accounting; false }
-}
-
 fn service_read_error(error: Error) -> ObjectStoreError {
     match error.code {
         wire::ErrorCode::NotFound => ObjectStoreError::Missing,
@@ -418,7 +411,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
             &self.bucket, object_id, maximum_bytes, accounting)?;
         request_custody = custody;
         let remaining = accounting.remaining()?;
-        let native = has_native_accounting(accounting);
+        let native = accounting.standalone_parts().is_none();
         let maximum = maximum_bytes.min(self.maximum_object_bytes).min(remaining.object_bytes_read);
         let maximum = if native { maximum } else { maximum.min(remaining.peak_allocation_bytes) };
         request.1 = maximum;
@@ -501,7 +494,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         accounting.reconcile_owned(&mut output_custody, requested_output_bytes,
             (values.capacity() as u64).checked_mul(size_of::<ObjectRead>() as u64)
                 .ok_or(WorkError::Overflow)?)?;
-        let native = has_native_accounting(accounting);
+        let native = accounting.standalone_parts().is_none();
         let result_bytes = (requests.len() as u64)
             .checked_mul(size_of::<Result<Object, Error>>() as u64).ok_or(WorkError::Overflow)?;
         let result_custody = if native { KernelOwnedAllocation::Standalone } else {
@@ -614,7 +607,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         request_custody = custody;
         let request_bytes = put_request_bytes(&request);
         accounting.admit(WorkCounters { object_bytes_written: length, ..WorkCounters::UNCHARGED })?;
-        let native = has_native_accounting(accounting);
+        let native = accounting.standalone_parts().is_none();
         let result = match accounting {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work, .. } => {
@@ -712,7 +705,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
             total.checked_add(writes[index].bytes.len() as u64).ok_or(WorkError::Overflow)
         })?;
         accounting.admit(WorkCounters { object_bytes_written: total, ..WorkCounters::UNCHARGED })?;
-        let native = has_native_accounting(accounting);
+        let native = accounting.standalone_parts().is_none();
         let response_custody;
         let results;
         #[cfg(not(target_arch = "wasm32"))]
@@ -785,7 +778,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
                         Ok((existing, custody)) => {
                             let actual = existing.bytes.len() as u64;
                             drop(existing);
-                            if !has_native_accounting(accounting) {
+                            if accounting.standalone_parts().is_some() {
                                 release_write_custody(accounting, custody, actual)?;
                             }
                             if actual == length { record_write_completion(accounting, length) }

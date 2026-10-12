@@ -1161,7 +1161,7 @@ mod tests {
     #[test]
     fn short_startup_budget_denies_the_resident_cleanup_suffix_before_native_io()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::source_watch::{HostChangeSink, NativeSourceWatch};
+        use crate::source_watch::NativeSourceWatch;
         use crate::demand::{DemandError, DemandWork};
         use crate::{CancellationToken, WorkBudget};
         use std::sync::Arc;
@@ -1183,7 +1183,7 @@ mod tests {
     #[test]
     fn stop_denial_and_cancellation_retain_the_same_native_owner()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::source_watch::{HostChangeSink, NativeSourceWatch};
+        use crate::source_watch::NativeSourceWatch;
         use crate::{CancellationToken, WorkBudget, WorkCounters};
         use std::os::windows::io::AsRawHandle as _;
         use std::sync::Arc;
@@ -1641,7 +1641,7 @@ mod tests {
     #[test]
     fn startup_denies_handle_cleanup_before_opening_the_directory()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::source_watch::{HostChangeSink, NativeSourceWatch};
+        use crate::source_watch::NativeSourceWatch;
         use crate::{CancellationToken, WorkBudget};
         use std::sync::Arc;
         let root = tempfile::tempdir()?;
