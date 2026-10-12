@@ -40,9 +40,9 @@ async fn native_and_mounted_cargo_and_lake_workloads() {
         .await
         .expect("local SDK engine");
     let workspace = engine
-        .create_workspace("toolchain-workloads")
+        .create_workspace("toolchain-workloads", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
         .await
-        .expect("SDK workload workspace");
+        .expect("SDK workload workspace").value;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .expect("fixture transaction");
     transaction

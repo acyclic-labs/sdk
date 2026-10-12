@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     /// Explicitly performs the same observation-safe head advancement used
     pub async fn refresh_live(
         &mut self,
@@ -17,7 +16,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .map(|()| self.generation_id());
         measured(result, &accounting)
     }
-
 
     pub(crate) async fn synchronize_live_with_accounting(
         &mut self,
@@ -43,7 +41,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
         }
     }
-
 
     /// Applies and durably publishes one direct-live mutation operation.
     pub async fn mutate_live(
@@ -79,7 +76,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             work,
         })
     }
-
 
     /// Compiles, atomically applies, and durably publishes one authored live transaction.
     pub async fn apply_authored_live(
@@ -120,7 +116,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         })
     }
 
-
     /// Resumes publication of an unresolved direct-live candidate.
     pub async fn resume_live(
         &mut self,
@@ -160,7 +155,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         Ok(publication)
     }
-
 
     /// Resumes the existing live retry controller on the original operation.
     #[cfg(not(target_arch = "wasm32"))]
@@ -234,7 +228,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
     }
 
-
     pub(super) fn validate_live_operation(&self, maximum_attempts: u32) -> Result<(), FsError> {
         if self.mode.access != AccessMode::ReadWrite
             || self.mode.consistency != ConsistencyMode::Live
@@ -247,7 +240,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         Ok(())
     }
-
 
     pub(super) async fn publish_live(
         &mut self, operation_id: OperationId, maximum_attempts: u32, maximum_conflicts: u32,
@@ -281,7 +273,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }.await;
         measured(result, &accounting)
     }
-
 
     pub(super) async fn finish_live_retry(
         &mut self, state: &mut LiveRetryState, publication: CheckoutCommitOutcome, maximum_conflicts: u32,

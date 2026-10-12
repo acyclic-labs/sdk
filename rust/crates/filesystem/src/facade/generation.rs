@@ -28,11 +28,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Option<DurableCommit>> {
-        let receipt = {
-            let mut authority_work = crate::AuthorityWork::new(budget, cancellation);
-            let result = self.inner.authority.find_operation(volume_authority_id(volume_id), operation_id, &mut authority_work).await.map(|(value, _allocation)| value);
-            authority_work.receipt(result)
-        }
+        let receipt = ({ let __authority_args = (volume_authority_id(volume_id), operation_id, budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self
+            .inner
+            .authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
             .map_err(|failure| {
                 OperationFailure::new(FsError::Authority(failure.error), *failure.work)
             })?;
@@ -41,7 +39,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             work: receipt.work,
         })
     }
-
 
     pub(crate) async fn generation_parents<W: FsWork>(
         &self, volume: &Volume<A, O>, generation: GenerationId, budget: W, cancellation: &CancellationToken,
@@ -68,13 +65,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         self.id
     }
 
-
     /// Immutable volume configuration reconstructed from authority.
     #[must_use]
     pub const fn config(&self) -> VolumeConfig {
         self.config
     }
-
 
     /// Resolves the exact generation root object and, for a writable
     pub(super) async fn resolve_checkout_generation(
@@ -127,7 +122,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         }
     }
 
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn resolve_checkout_generation_with_native_work(
         &self, selector: GenerationSelector, mode: CheckoutMode, work: &NativeMaterializationWork, cancellation: &CancellationToken,
@@ -150,7 +144,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         }
     }
 
-
     pub(super) async fn resolve_head_generation(
         &self,
         budget: WorkBudget,
@@ -158,25 +151,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     ) -> Result<(ObjectId, Head, WorkCounters), OperationFailure<FsError>> {
         async {
             let authority_id = volume_authority_id(self.id);
-            let head = {
-                let mut authority_work = crate::AuthorityWork::new(budget, cancellation);
-                let result = self.fs.inner.authority.head(authority_id, &mut authority_work).await;
-                authority_work.receipt(result)
-            }
+            let head = ({ let __authority_args = (authority_id, budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = self
+                .fs
+                .inner
+                .authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                 .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
             let mut work = head.work;
             if head.value.sequence == Sequence::GENESIS {
                 return Err(OperationFailure::new(FsError::EmptyAuthority, work));
             }
             let after = Sequence::new(head.value.sequence.get().saturating_sub(1));
-            let records = {
-                let mut authority_work = crate::AuthorityWork::new(remaining(work, budget)?, cancellation);
-                let result = self.fs.inner.authority.replay(authority_id, after, ReplayLimit {
-                                    records: 1,
-                                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                                }, &mut authority_work).await.map(|(value, _allocation)| value);
-                authority_work.receipt(result)
-            }
+            let records = ({ let __authority_args = (authority_id, after, ReplayLimit {
+                        records: 1,
+                        payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
+                    }, remaining(work, budget)?, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = self
+                .fs
+                .inner
+                .authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
                 .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
             work = add(work, records.work)?;
             let latest = records
@@ -189,22 +180,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         .await
     }
 
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn resolve_head_generation_with_native_work(
         &self, work: &NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<(ObjectId, Head), FsError> {
         cancellation.check()?;
         let authority_id = volume_authority_id(self.id);
-        let head = {
-            let mut authority_work = crate::AuthorityWork::native(work, cancellation);
-            self.fs.inner.authority.head(authority_id, &mut authority_work).await
-        }?;
+        let head = ({ let __authority_args = (authority_id, work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = self.fs.inner.authority.head(__authority_args.0, &mut __authority_work).await; __authority_result })?;
         if head.sequence == Sequence::GENESIS { return Err(FsError::EmptyAuthority); }
-        let records = {
-            let mut authority_work = crate::AuthorityWork::native(work, cancellation);
-            self.fs.inner.authority.replay(authority_id, Sequence::new(head.sequence.get().saturating_sub(1)), ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, &mut authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority result retains its allocation")))
-        }?;
+        let records = ({ let __authority_args = (authority_id, Sequence::new(head.sequence.get().saturating_sub(1)), ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.3, __authority_args.4); let __authority_result = self.fs.inner.authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result })?;
         let latest = records.0.first().ok_or(FsError::InvalidAuthorityHistory)?;
         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
         Ok((generation_from_head_record_value(latest, self.id, &mut KernelAccounting::native(work, cancellation))?, head))

@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     /// Applies independent changes as if one at a time in order, landing
     pub async fn apply_group(
         &mut self,
@@ -19,7 +18,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result.map(|output| FsReceipt { value: output.value, work })
             .map_err(|error| OperationFailure::new(error, work))
     }
-
 
     pub(crate) async fn apply_group_with_accounting(
         &mut self,
@@ -101,7 +99,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if let Err(error) = result { output.retire(accounting)?; return Err(error); }
         Ok(output)
     }
-
 
     pub(super) async fn compile_grouped_with_accounting(
         &mut self,

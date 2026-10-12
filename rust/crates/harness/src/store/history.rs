@@ -19,7 +19,7 @@ pub(crate) use native::{AcceptedCompletionIo, adopt_native_sdk_output, native_sd
 pub use native::{NativeHistoryIo, native_work_io};
 
 /// The native branch owns its original pre-funded frame outside the boxed future.
-pub(crate) enum HistoryContentFuture<'a, T> {
+pub enum HistoryContentFuture<'a, T> {
     Ordinary {
         future: acyclic_stream::BoxProviderFuture<'a, Result<T>>,
         frame_bytes: u64,

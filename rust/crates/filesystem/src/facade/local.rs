@@ -106,7 +106,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             .map(OwnershipAnchor::release_barrier)
     }
 
-
     /// Opens the infrastructure-free durable local composition.
     pub async fn local(options: LocalOptions) -> Result<Self, FsError> {
         let span = crate::obs::span!(
@@ -184,7 +183,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             .await,
         )
     }
-
 
     pub(super) async fn open_local_unshared(
         options: LocalOptions,

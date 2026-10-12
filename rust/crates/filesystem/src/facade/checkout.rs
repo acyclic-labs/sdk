@@ -20,15 +20,7 @@ pub struct Checkout<A, O> {
     pub(super) mode: CheckoutMode,
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum CheckoutControlOrigin {
-    Standalone,
-    #[cfg(not(target_arch = "wasm32"))]
-    NativeOriginal,
-}
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
-
 
     /// Opens one immutable pinned checkout after authenticating its bounded root.
     pub async fn checkout(
@@ -77,11 +69,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 let expected = authority_head.ok_or_else(|| {
                     OperationFailure::new(FsError::WritableCheckoutRequiresHead, work)
                 })?;
-                let fenced = {
-                    let mut authority_work = crate::AuthorityWork::new(remaining(work, budget)?, cancellation);
-                    let result = self.fs.inner.authority.fence(volume_authority_id(self.id), expected, &mut authority_work).await;
-                    authority_work.receipt(result)
-                }
+                let fenced = ({ let __authority_args = (volume_authority_id(self.id), expected, remaining(work, budget)?, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self
+                    .fs
+                    .inner
+                    .authority.fence(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                     .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
                 work = add(work, fenced.work)?;
                 authority_head = Some(match fenced.value {
@@ -157,7 +148,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         result.observe_on(&span, "checkout")
     }
 
-
     /// Opens the authenticated checkout on the supplied original native ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn checkout_with_native_work(
@@ -180,10 +170,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         if mode.access == AccessMode::ReadWrite
             && self.config.concurrency == ConcurrencyMode::ExclusiveWriter {
             let expected = authority_head.ok_or(FsError::WritableCheckoutRequiresHead)?;
-            authority_head = Some(match {
-                let mut authority_work = crate::AuthorityWork::native(original, cancellation);
-                self.fs.inner.authority.fence(volume_authority_id(self.id), expected, &mut authority_work).await
-            }? {
+            authority_head = Some(match ({ let __authority_args = (volume_authority_id(self.id), expected, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.fs.inner.authority.fence(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result })? {
                 FenceOutcome::Advanced(head) => head,
                 FenceOutcome::Conflict { actual } => return Err(FsError::ExclusiveWriterConflict { actual }),
             });
@@ -235,13 +222,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
 
 impl<A, O> Checkout<A, O> {
 
-
     /// Owning volume identity.
     #[must_use]
     pub const fn volume_id(&self) -> VolumeId {
         self.volume.id
     }
-
 
     /// Immutable owning-volume semantics and operation bounds.
     #[must_use]
@@ -249,13 +234,11 @@ impl<A, O> Checkout<A, O> {
         self.volume.config
     }
 
-
     /// Exact immutable generation identity.
     #[must_use]
     pub const fn generation_id(&self) -> GenerationId {
         GenerationId::new(self.generation_root.digest)
     }
-
 
     /// Authenticated decoded generation root.
     #[must_use]
@@ -263,20 +246,17 @@ impl<A, O> Checkout<A, O> {
         &self.root
     }
 
-
     /// Admitted checkout behavior.
     #[must_use]
     pub const fn mode(&self) -> CheckoutMode {
         self.mode
     }
 
-
     /// Whether the private candidate differs from its immutable base.
     #[must_use]
     pub fn has_pending_mutations(&self) -> bool {
         self.root.file_table != self.base_file_table || self.prepared_merge_parent.is_some()
     }
-
 
     /// Whether reads retain exact observations for safe rebase and commit.
     pub(super) fn tracks_observations(&self) -> bool {
@@ -285,7 +265,6 @@ impl<A, O> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-
 
     /// Discards a private candidate and reauthenticates its immutable base.
     pub async fn discard(
@@ -322,7 +301,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.dependencies.proof().clear();
         Ok(FsReceipt { value: (), work })
     }
-
 
     /// Explicitly advances one clean manual or tracking checkout to head.
     pub async fn refresh_head(
@@ -382,7 +360,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             work,
         })
     }
-
 
     /// Checks retained original custody, without admitting work or granting rights.
     #[cfg(not(target_arch = "wasm32"))]

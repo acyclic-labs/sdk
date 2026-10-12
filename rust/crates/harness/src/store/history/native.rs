@@ -1236,7 +1236,7 @@ mod tests {
         assert!(matches!(io.reserve_text(&mut text, 1), Err(Error::NativeBoundary { .. })));
         assert!(matches!(io.clone_text("owned clone"), Err(Error::NativeBoundary { .. })));
         assert!(matches!(io.decode_json_value(b"null"), Err(Error::NativeBoundary { .. })));
-        let value_shape = crate::contract::json::admit_json_value_shape(
+        let value_shape = crate::contract::admit_json_value_shape(
             b"null", crate::contract::JsonBounds::IDENTITY, crate::contract::JsonValueSchema::Root,
             &mut |_| Ok(()),
         ).expect("SDK-issued fixture shape");

@@ -8,7 +8,6 @@ pub(super) const CREATION_FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-create-finger
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     /// Creates a fresh volume identity and its authenticated empty generation.
     pub async fn create_volume(
         &self,
@@ -19,7 +18,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         self.create_volume_with_id(VolumeId::new(), config, budget, cancellation)
             .await
     }
-
 
     /// Idempotently creates one caller-selected volume identity.
     pub async fn create_volume_with_id(
@@ -47,7 +45,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result.observe_on(&span, "create_volume")
     }
 
-
     pub(super) async fn create_volume_with_id_operation(
         &self,
         volume_id: VolumeId,
@@ -59,11 +56,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = self.create_volume_with_id_operation_with_accounting(
             volume_id, config, operation_id, &mut accounting, cancellation, |id, commit, budget| async move {
-                    let created = {
-                        let mut authority_work = crate::AuthorityWork::new(budget, cancellation);
-                        let result = self.inner.authority.create_first_record(id, commit, &mut authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity));
-                        authority_work.receipt(result)
-                    };
+                    let created = ({ let __authority_args = (id, commit, budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.create_first_record(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) });
                     let work = match &created { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
                     (created.map(|receipt| receipt.value).map_err(|failure| FsError::from(failure.error)), work)
                 },
@@ -71,7 +64,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let work = accounting.spent();
         result.map(|(value, _)| FsReceipt { value, work }).map_err(|error| OperationFailure::new(error, work))
     }
-
 
     pub(super) async fn create_volume_with_id_operation_with_accounting<E, P, Fut>(
         &self, volume_id: VolumeId, config: VolumeConfig, operation_id: Option<OperationId>,
@@ -117,7 +109,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result.map(|volume| (volume, generation_root))
     }
 
-
     /// Opens one volume by reconstructing its immutable configuration from the
     pub async fn open_volume(
         &self,
@@ -156,7 +147,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await;
         result.observe_on(&span, "open_volume")
     }
-
 
     /// Restores a volume authority from a fully imported immutable generation.
     pub async fn restore_volume(
@@ -213,7 +203,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result.observe_on(&span, "restore_volume")
     }
 
-
     /// Durably creates a volume's authority with its creation record, once
     pub(super) async fn publish_volume_creation(
         &self,
@@ -234,11 +223,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             );
             self.publish_volume_creation_with_accounting(
                 creation, operation_id, closure, proven_at, &mut accounting, cancellation, |id, commit, budget| async move {
-                    let created = {
-                        let mut authority_work = crate::AuthorityWork::new(budget, cancellation);
-                        let result = self.inner.authority.create_first_record(id, commit, &mut authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity));
-                        authority_work.receipt(result)
-                    };
+                    let created = ({ let __authority_args = (id, commit, budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.create_first_record(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) });
                     let work = match &created { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
                     (created.map(|receipt| receipt.value).map_err(|failure| FsError::from(failure.error)), work)
                 },
@@ -246,7 +231,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         };
         result.map(|value| FsReceipt { value, work }).map_err(|error| OperationFailure::new(error, work))
     }
-
 
     pub(super) async fn publish_volume_creation_with_accounting<E, P, Fut>(
         &self, creation: VolumeCreated, operation_id: Option<OperationId>, closure: &[ObjectId], proven_at: u64, accounting: &mut KernelAccounting<'_>,
@@ -298,7 +282,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(Volume { fs: self.clone(), id: volume_id, config })
     }
 
-
     pub(super) async fn read_creation_record<W: FsWork>(
         &self, volume_id: VolumeId, budget: W, cancellation: &CancellationToken,
     ) -> W::Output<(VolumeCreated, OperationId), FsError> {
@@ -307,18 +290,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
                 accounting.check()?;
-                let records = {
-                    let mut authority_work = crate::AuthorityWork::native(original, cancellation);
-                    self.inner.authority.replay(volume_authority_id(volume_id), Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, &mut authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority result retains its allocation")))
-                }?;
+                let records = ({ let __authority_args = (volume_authority_id(volume_id), Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.3, __authority_args.4); let __authority_result = self.inner.authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result })?;
                 return decode_first_creation_record(volume_id, &records.0, &mut accounting);
             }
             let allowance = accounting.standalone_parts().expect("standalone creation read").2;
-            let records = {
-                let mut authority_work = crate::AuthorityWork::new(allowance, cancellation);
-                let result = self.inner.authority.replay(volume_authority_id(volume_id), Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, &mut authority_work).await.map(|(value, _allocation)| value);
-                authority_work.receipt(result)
-            };
+            let records = ({ let __authority_args = (volume_authority_id(volume_id), Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, allowance, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = self.inner.authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) });
             let completed = match &records { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
             *accounting.standalone_parts().expect("standalone creation read").1 = completed;
             let records = records.map_err(|failure| FsError::from(failure.error))?;
@@ -326,7 +302,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }.await;
         budget.finish(result, &accounting)
     }
-
 
     pub(super) async fn build_empty_generation_with_accounting(
         &self,

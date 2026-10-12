@@ -5562,7 +5562,7 @@ pub(crate) mod tests {
         let foreign = Authority { kind: AggregateKind::Task, id: "native-foreign-owner".into() };
         let issuer = AuthorityIssuer::new("native-foreign-owner", [92; 32], foreign.clone());
         let signed = issuer.issue("foreign", fixture.host.owner_scope.capabilities(), Some(AgentId::from_bytes([92; 16])), None, &mut None).expect("scope proof");
-        let host = CoordinatorTaskHost::new(DistributedCoordinator::open(&fixture.stream, fixture.host.payloads.clone(), None, &mut None).await?, fixture.stream.clone(), fixture.host.payloads.clone(), fixture.host.reader.clone(), &(foreign), signed, issuer.verifier(&mut None).expect("verifier copy"), fixture.root_scope.clone(), fixture.host.tasks.clone(), fixture.host.machines.clone(), fixture.host.clock.clone(), None)?;
+        let host = CoordinatorTaskHost::new(DistributedCoordinator::open(&fixture.stream, fixture.host.reader.clone(), None, &mut None).await?, fixture.stream.clone(), fixture.host.payloads.clone(), fixture.host.reader.clone(), &(foreign), signed, issuer.verifier(&mut None).expect("verifier copy"), fixture.root_scope.clone(), fixture.host.tasks.clone(), fixture.host.machines.clone(), fixture.host.clock.clone(), None)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
         let (pending, pending_guard) = fixture.host.outcome_with_native_work(fixture.root, &work).await?;
@@ -7517,7 +7517,7 @@ pub(crate) mod tests {
         let (replacement_approval, cancellation_approval_pending) = {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
-                stream.commit(approval_pending.0).await?,
+                { let outcome = stream.commit(approval_pending.0).await?; drop(approval_pending.1); outcome },
                     acyclic_stream::CommitOutcome::Conflict(_)
             ));
             assert!(
@@ -7590,7 +7590,7 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    stream.commit(original_pending.0).await?,
+                    { let outcome = stream.commit(original_pending.0).await?; drop(original_pending.1); outcome },
                     acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "lease replacement after preflight must atomically prevent publication"
@@ -7649,7 +7649,7 @@ pub(crate) mod tests {
             {
                 assert!(
                     matches!(
-                        stream.commit(execution_pending.0).await?,
+                        { let outcome = stream.commit(execution_pending.0).await?; drop(execution_pending.1); outcome },
                     acyclic_stream::CommitOutcome::Conflict(_)
                     ),
                     "lease replacement must atomically fence execution publication"
@@ -7702,7 +7702,7 @@ pub(crate) mod tests {
             use crate::executor::{ExecutionEvent, ExecutionJournal};
             assert!(
                 matches!(
-                    stream.commit(execution_pending.0).await?,
+                    { let outcome = stream.commit(execution_pending.0).await?; drop(execution_pending.1); outcome },
                     acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "cancellation must atomically fence execution publication"
@@ -7902,7 +7902,7 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    stream.commit(pending.0).await?,
+                    { let outcome = stream.commit(pending.0).await?; drop(pending.1); outcome },
                     acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "cancellation after preflight must atomically prevent publication"
@@ -7937,7 +7937,7 @@ pub(crate) mod tests {
         {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
-                stream.commit(cancellation_approval_pending.0).await?,
+                { let outcome = stream.commit(cancellation_approval_pending.0).await?; drop(cancellation_approval_pending.1); outcome },
                     acyclic_stream::CommitOutcome::Conflict(_)
             ));
             assert!(
