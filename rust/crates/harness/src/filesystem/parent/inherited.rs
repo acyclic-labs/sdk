@@ -441,10 +441,10 @@ if let Some(io) = io { io.retain_owned(std::mem::size_of::<((String, String), (F
             native_creation_guard.ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native inherited publication requires its original issued creation guard",
-            })?.verify_creation_with_native_work(work)?.await?;
+            })?.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         if !native && let Some(preparation) = preparation {
-            preparation.verify_creation().await?;
+            preparation.verify(false, io)?.await?;
         }
         if let Some(io) = io {
             let project = io.capability(&self.project, "volume:read:")?;

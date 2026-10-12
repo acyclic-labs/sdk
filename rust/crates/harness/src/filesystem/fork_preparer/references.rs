@@ -46,7 +46,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(work) = io.and_then(PreparationIo::original_native_work)
             && let Some(task) = &self.task_preparation
         {
-            task.verify_creation_with_native_work(work)?.await?;
+            task.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         Ok(grants)
     }
@@ -70,7 +70,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(work) = native
             && let Some(task) = &self.task_preparation
         {
-            task.verify_creation_with_native_work(work)?.await?;
+            task.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         let controller = self.controller(io.filter(|io| io.original_native_work().is_some()))?;
         let (grants, custody) = controller

@@ -65,6 +65,12 @@ pub enum MountLifecycleError {
     },
 }
 
+impl From<crate::FsError> for MountLifecycleError {
+    fn from(error: crate::FsError) -> Self {
+        Self::Source(error.into())
+    }
+}
+
 /// SDK source retained after its view-dependent physical work has retired.
 pub struct NativeMountDrainProof {
     pub(super) _source: Arc<dyn MountFilesystem>,

@@ -351,7 +351,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let bytes_hold = io.guard_bytes(&bytes)?;
         let record = io.encode(&self.record(), MAX_REQUEST_BYTES, true)?;
         let record_hold = io.guard_bytes(&record)?;
-        let exact = bytes == record && *bounded_io::digest(&bytes, Some(io))?.as_bytes() == self.record_digest;
+        let exact = bytes == record && crate::model::hash_bytes(&bytes, Some(io))? == self.record_digest;
         drop((bytes, record));
         drop((bytes_hold, record_hold));
         drop(journal);

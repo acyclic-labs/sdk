@@ -255,7 +255,8 @@ impl PreparationIo {
                     .peak_allocation_bytes
                     .checked_add(allocations.live_bytes())
                     .ok_or(acyclic_fs::WorkError::Overflow)?;
-                work.try_add_assign(&next).map_err(Into::into)
+                *work = work.checked_add(next)?;
+                Ok(())
             } else {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Self::Native { work, .. } = self {

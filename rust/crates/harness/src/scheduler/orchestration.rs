@@ -374,7 +374,7 @@ impl Scheduler {
                     return Ok(false);
                 }
                 Ok(digest
-                    == Some(crate::contract::canonical_json_digest_with_work(
+                    == Some(crate::contract::canonical_json_digest(
                         &(
                             assembly,
                             Values {
@@ -392,7 +392,7 @@ impl Scheduler {
                     return Ok(false);
                 }
                 Ok(digest
-                    == Some(crate::contract::canonical_json_digest_with_work(
+                    == Some(crate::contract::canonical_json_digest(
                         &(
                             expected,
                             Values {

@@ -89,10 +89,7 @@ where
                 |publication, _| publication,
             )
             .await?;
-        if installed.is_some() {
-            if !authored.shared_checkout().publishes_at_native_boundary().await {
-                return Ok(());
-            }
+        if installed == Some(super::super::MountPublication::PerMutation) {
             let original = carrier.original_native_work();
             let shared = match carrier {
                 adapter::NativeDemandCarrier::Shared(meter) =>

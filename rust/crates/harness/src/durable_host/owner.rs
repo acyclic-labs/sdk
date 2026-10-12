@@ -199,8 +199,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     io.preflight(step)?;
                     io.charge(step)?;
                 }
-                if &binding.file == file {
-                    reader = Some(&binding.reader);
+                if &binding.0 == file {
+                    reader = Some(&binding.1);
                     break;
                 }
             }

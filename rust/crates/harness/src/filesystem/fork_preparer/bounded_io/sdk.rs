@@ -262,13 +262,13 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
             reason: "native creation requires its original issued task guard",
         })?);
         guard
-            .verify_creation_with_native_work(io.original_native_work().unwrap())?
+            .verify(false, Some(io))?
             .await?;
         let mut before = acyclic_fs::NativeAuthorityGuard(
             move |work: &acyclic_fs::NativeMaterializationWork| {
                 let work = work.clone();
                 let guard = Arc::clone(&guard);
-                async move { guard.verify_creation_with_native_work(&work)?.await }
+                async move { guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await }
             },
         );
         let (result, recorded) = host
@@ -287,7 +287,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
         return Ok(());
     }
     if let Some(task) = preparation {
-        task.verify_creation().await?;
+        task.verify(false, io)?.await?;
     }
     if let Some(io) = io {
         io.sdk(
@@ -309,7 +309,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
             .map_err(|failure| map_error(failure.error))?;
     }
     if let Some(task) = preparation {
-        task.verify_creation().await?;
+        task.verify(false, io)?.await?;
     }
     Ok(())
 }
@@ -336,7 +336,7 @@ pub(in crate::filesystem) async fn apply_generation_task_guarded<
         let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
             let work = work.clone();
             let guard = Arc::clone(&guard);
-            async move { guard.verify_creation_with_native_work(&work)?.await }
+            async move { guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await }
         };
         return publish_native(host, reference, expected, mutations, key, io, &mut before).await;
     }
@@ -349,7 +349,7 @@ pub(in crate::filesystem) async fn apply_generation_task_guarded<
         io,
         &mut |_| async move {
             let result = match preparation {
-                Some(task) => task.verify_creation().await,
+                Some(task) => task.verify(false, io).map_err(OperationFailure::before_work)?.await,
                 None => Ok(()),
             };
             result
@@ -610,14 +610,14 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "task-bound native fork requires its original issued creation guard",
             })?
-            .verify_creation_with_native_work(work)?
+            .verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?
             .await?;
     } else if let Some(task) = preparation {
-        task.verify_creation().await?;
+        task.verify(false, io)?.await?;
     }
     #[cfg(target_arch = "wasm32")]
     if let Some(task) = preparation {
-        task.verify_creation().await?;
+        task.verify(false, io)?.await?;
     }
     grant.require(source, VolumeOperation::Read, io)?;
     let Some(io) = io else {
@@ -625,7 +625,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
             .fork_volume_pinned(source, selected, child, paths, key)
             .await?;
         if let Some(task) = preparation {
-            task.verify_creation().await?;
+            task.verify(false, io)?.await?;
         }
         return Ok(observed);
     };
@@ -653,7 +653,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
             let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
                 let work = work.clone();
                 let guard = Arc::clone(&guard);
-                async move { guard.verify_creation_with_native_work(&work)?.await }
+                async move { guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await }
             };
             break 'forked workspace
                 .fork_with_native_work(
@@ -706,7 +706,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
     if io.original_native_work().is_none()
         && let Some(task) = preparation
     {
-        task.verify_creation().await?;
+        task.verify(false, io)?.await?;
     }
     Ok(observed)
 }
