@@ -12,10 +12,9 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 #[cfg(feature = "filesystem")]
 pub(crate) const fn model_serde_diagnostic_label_bytes() -> u64 {
     crate::contract::preparation_serde_diagnostic_label_bytes() + concat!(
-        "ModelPrefix", "version", "parent", "binding_digest", "message_digest", "total_messages",
-        "messages", "ModelRequestManifest", "version", "request_digest", "wire_bytes",
-        "binding_digest", "message_digests",
-    ).len() as u64 + 13 * 4
+        "ModelPrefix", "version", "parent", "message_digest", "total_messages",
+        "messages",
+    ).len() as u64 + 6 * 4
 }
 
 #[cfg(feature = "filesystem")]
@@ -1115,23 +1114,7 @@ pub struct ModelRequest {
 pub struct PreparedModelRequest {
     request: ModelRequest,
     bytes: acyclic_stream::OwnedBytes,
-    manifest: ModelRequestManifest,
-}
-
-/// Versioned identity of ordered provider input; counters bound wire bytes, not heap use.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelRequestManifest {
-    /// Canonical construction version.
-    pub version: u32,
-    /// BLAKE3 digest of the exact supplied bytes.
-    pub request_digest: [u8; 32],
-    /// Serialized byte count.
-    pub wire_bytes: u64,
-    /// Exact model and ordered tool definitions, including pinned revisions and schemas.
-    pub binding_digest: [u8; 32],
-    /// Ordered role and content identities.
-    pub message_digests: Vec<[u8; 32]>,
+    request_digest: [u8; 32],
 }
 
 impl ModelRequest {
@@ -1272,9 +1255,7 @@ impl ModelRequest {
 impl PreparedModelRequest {
     /// Returned graph excluding the independently guarded encoded bytes.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        let bytes = model_owned_add(std::mem::size_of::<Self>() as u64,
-            model_request_payload_bytes(&self.request)?)?;
-        model_owned_add(bytes, model_owned_mul(self.manifest.message_digests.capacity(), std::mem::size_of::<[u8; 32]>())?)
+        model_owned_add(std::mem::size_of::<Self>() as u64, model_request_payload_bytes(&self.request)?)
     }
 
     /// Decodes exact canonical bytes on the optional preparation ledger.
@@ -1350,35 +1331,9 @@ impl PreparedModelRequest {
             bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         }
         let request_digest = hash_bytes(&bytes, io)?;
-        let binding_digest = crate::executor::preparation_digest(&(&request.model, &request.tools), io)?;
-        #[cfg(feature = "filesystem")]
-        let capacity = request.messages.len().checked_mul(std::mem::size_of::<[u8; 32]>())
-            .ok_or_else(|| Error::Invalid("model message digest capacity overflow".into()))?;
-        #[cfg(feature = "filesystem")]
-        let mut digest_hold = if let Some(io) = io {
-            io.claim(capacity as u64)?;
-            let hold = io.guard_owned(capacity as u64)?;
-            io.allocation_attempt(capacity as u64)?;
-            Some(hold)
-        } else { None };
-        let mut message_digests = Vec::with_capacity(request.messages.len());
-        for message in &request.messages {
-            model_step(io, 1)?;
-            message_digests.push(crate::executor::preparation_digest(message, io)?);
-        }
-        let manifest = ModelRequestManifest {
-            version: 1, request_digest, wire_bytes: bytes.len() as u64,
-            binding_digest, message_digests,
-        };
         #[cfg(feature = "filesystem")]
         if let Some(hold) = bytes_hold { hold.into_retained(); }
-        #[cfg(feature = "filesystem")]
-        if let Some(hold) = digest_hold.take() { hold.into_retained(); }
-        Ok(Self {
-            request,
-            bytes,
-            manifest,
-        })
+        Ok(Self { request, bytes, request_digest })
     }
 
     /// Read-only admitted values for provider-specific encoding.
@@ -1393,10 +1348,10 @@ impl PreparedModelRequest {
         &self.bytes
     }
 
-    /// Versioned identity of these bytes and ordered content.
+    /// BLAKE3 digest of the exact admitted request bytes.
     #[must_use]
-    pub fn manifest(&self) -> &ModelRequestManifest {
-        &self.manifest
+    pub const fn request_digest(&self) -> [u8; 32] {
+        self.request_digest
     }
 
     /// Byte-additive token bound including every pinned immutable file.
@@ -1425,7 +1380,7 @@ impl PreparedModelRequest {
         let fixed_tokens = u32::try_from(self.bytes.len())
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
         let count = crate::context::ModelTokenCount {
-            request_digest: self.manifest.request_digest, fixed_tokens, message_tokens,
+            request_digest: self.request_digest, fixed_tokens, message_tokens,
         };
         let retained = model_owned_add(std::mem::size_of::<crate::context::ModelTokenCount>() as u64,
             model_owned_mul(count.message_tokens.capacity(), std::mem::size_of::<u32>())?)?;
@@ -1440,7 +1395,6 @@ impl PreparedModelRequest {
 pub struct ModelPrefix {
     version: u32,
     parent: Option<FileRef>,
-    binding_digest: [u8; 32],
     message_digest: [u8; 32],
     total_messages: usize,
     messages: Vec<ModelMessage>,
@@ -1469,10 +1423,10 @@ impl ModelPrefix {
         if messages.is_empty() {
             return Err(Error::Invalid("model prefix must advance its parent".into()));
         }
-        let message_digest = ordered_message_digest(&request.manifest.message_digests)?;
+        let message_digest = ordered_message_digest(&request.request.messages)?;
         Ok(Self {
             version: 1, parent: parent.cloned(),
-            binding_digest: request.manifest.binding_digest, message_digest,
+            message_digest,
             total_messages: request.request.messages.len(), messages: messages.to_vec(),
         })
     }
@@ -1488,10 +1442,10 @@ impl ModelPrefix {
 
 }
 
-fn ordered_message_digest(digests: &[[u8; 32]]) -> Result<[u8; 32]> {
+fn ordered_message_digest(messages: &[ModelMessage]) -> Result<[u8; 32]> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"harness:model-prefix:ordered:v1");
-    for digest in digests { hasher.update(digest); }
+    for message in messages { hasher.update(&crate::contract::canonical_json_digest(message)?); }
     Ok(*hasher.finalize().as_bytes())
 }
 
@@ -2030,8 +1984,8 @@ mod tests {
         }
         let changed = PreparedModelRequest::prepare(original, Limits::default(), None)?;
         assert_ne!(
-            prepared.manifest().request_digest,
-            changed.manifest().request_digest
+            prepared.request_digest(),
+            changed.request_digest()
         );
         Ok(())
     }
@@ -2206,10 +2160,6 @@ mod tests {
             assert_eq!(
                 changed_request.request().messages,
                 inherited.request().messages
-            );
-            assert_ne!(
-                changed_request.manifest().binding_digest,
-                inherited.manifest().binding_digest
             );
             // Inherited tool exchanges must still validate against the new schema set.
             let mut incompatible = local.clone();

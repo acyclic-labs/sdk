@@ -179,7 +179,7 @@ use crate::{
 /// The closed SDK persistence graph has one borrowed encoder for ordinary and native calls.
 pub(crate) enum CanonicalWire<'a> {
     #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
-    Journal(crate::journal::CommandRef<'a>),
+    Journal(&'a crate::journal::Command),
     Append(&'a crate::AppendRequest),
     Fork(&'a crate::ForkRequest),
     Commit(&'a crate::CommitRequest),
@@ -309,9 +309,9 @@ impl CanonicalWire<'_> {
         match self {
             #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
             Self::Journal(command) => match command {
-                crate::journal::CommandRef::Append(value) => sink.nested(1, Self::Append(value))?,
-                crate::journal::CommandRef::Fork(value) => sink.nested(2, Self::Fork(value))?,
-                crate::journal::CommandRef::Commit(value) => sink.nested(5, Self::Commit(value))?,
+                crate::journal::Command::Append(value) => sink.nested(1, Self::Append(value))?,
+                crate::journal::Command::Fork(value) => sink.nested(2, Self::Fork(value))?,
+                crate::journal::Command::Commit(value) => sink.nested(5, Self::Commit(value))?,
             },
             Self::Append(value) => {
                 sink.field(1, value.path.as_str().as_bytes(), false)?;

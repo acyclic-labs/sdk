@@ -195,7 +195,7 @@ impl ModelProvider for Deterministic {
         work: &'a NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, NativeModelStream<'a>>> {
         work.remaining()?;
-        if request.manifest().request_digest != dispatch.request_digest {
+        if request.request_digest() != dispatch.request_digest {
             return Err(Error::Conflict("model dispatch request changed".into()));
         }
         self.context_capacity_with_native_work(&request.request().model, work)?;
@@ -262,13 +262,13 @@ impl ModelProvider for Deterministic {
         }).collect::<Result<Vec<_>>>()?;
         let fixed_tokens = u32::try_from(request.bytes().len())
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
-        Ok(ModelTokenCount { request_digest: request.manifest().request_digest, fixed_tokens, message_tokens })
+        Ok(ModelTokenCount { request_digest: request.request_digest(), fixed_tokens, message_tokens })
     }
 
     fn generate<'a>(&'a self, request: PreparedModelRequest, dispatch: ModelDispatch)
         -> BoxProviderStream<'a, Result<ModelEvent>>
     {
-        if request.manifest().request_digest != dispatch.request_digest {
+        if request.request_digest() != dispatch.request_digest {
             return Box::pin(futures::stream::iter([Err(Error::Conflict("model dispatch request changed".into()))]));
         }
         if let Err(error) = self.context_capacity(&request.request().model) {
