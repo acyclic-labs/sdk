@@ -229,20 +229,10 @@ async fn paths_the_source_gains_appear_once_revalidated() -> Result<(), Box<dyn 
 async fn advanced_view_reveals_a_path_absent_before() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let root = tempfile::tempdir()?;
-    let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-    let workspace = engine
-        .create_workspace("advance-projfs", WorkBudget::UNBOUNDED, work.cancellation())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = local_workspace(root.path(), "advance-projfs", &work).await?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
-    let mount = workspace
-        .mount(
-            &path,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = workspace.mount(&path, manual_mount_options()).await?;
     let added = path.join("added.txt");
     assert_eq!(
         std::fs::metadata(&added).err().map(|error| error.kind()),
@@ -291,12 +281,7 @@ async fn a_lazy_workspace_lists_through_the_projection() -> Result<(), Box<dyn s
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy
-        .mount(
-            &destination,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = lazy.mount(&destination, manual_mount_options()).await?;
     assert_eq!(sorted_names(&destination)?, ["a.txt", "b.rs"]);
     mount.unmount().await?;
     Ok(())
@@ -325,12 +310,7 @@ async fn rustc_links_object_files_created_inside_projection()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let root = tempfile::tempdir()?;
-    let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-    let workspace = engine
-        .create_workspace("rustc-projfs", WorkBudget::UNBOUNDED, work.cancellation())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = local_workspace(root.path(), "rustc-projfs", &work).await?;
     workspace
         .write(
             "/acyclic-workflow.rs",
@@ -339,12 +319,7 @@ async fn rustc_links_object_files_created_inside_projection()
         .await?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
-    let mount = workspace
-        .mount(
-            &path,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = workspace.mount(&path, manual_mount_options()).await?;
     let compiler_path = path.clone();
     let output = tokio::task::spawn_blocking(move || {
         acyclic_native_runtime::process_output(

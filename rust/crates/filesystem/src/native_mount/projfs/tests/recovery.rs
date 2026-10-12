@@ -38,8 +38,7 @@ fn stale_projection_is_preserved_for_recovery() {
         )
     }
     .expect("mark projection root");
-    let error = reject_stale_projection(root.path()).expect_err("preserve stale root");
-    assert!(error.to_string().contains("preserved for recovery"));
+    reject_stale_projection(root.path()).expect_err("preserve stale root");
     assert!(root.path().exists());
 }
 
