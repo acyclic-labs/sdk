@@ -3381,7 +3381,7 @@ impl<D: DemandSource> FilteredDemandSource<D> {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 fn clone_source_change_with_ledger(
     change: &SourceChange, ledger: &mut crate::kernel::allocation::AllocationLedger,
     work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,

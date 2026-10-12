@@ -19,10 +19,9 @@ fn decode_location_with_work(
     bytes: &[u8],
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<EffectLocation> {
-    if work.is_some() {
-        operations::validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
-    }
-    let Some(observer) = work.as_deref_mut() else { return crate::executor::decode_json(bytes); };
+    operations::validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
+    let Some(observer) = work.as_deref_mut() else { return crate::contract::json_from_slice(bytes)
+        .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}"))); };
     let mut reservation = 0;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
         bytes.len() as u64,

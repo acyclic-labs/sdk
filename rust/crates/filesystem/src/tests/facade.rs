@@ -418,30 +418,30 @@ async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed
     });
 
     reads.store(0, Ordering::Relaxed);
-    generation.pin("first").await?;
-    cloned.pin("first").await?;
+    generation.pin("first", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    cloned.pin("first", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(
         reads.load(Ordering::Relaxed),
         0,
         "the original committed generation and its clone share publication custody"
     );
-    generation.pin("first").await?;
+    generation.pin("first", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(reads.load(Ordering::Relaxed), 0, "an identical live retention does not reprove");
-    generation.pin("second").await?;
+    generation.pin("second", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(reads.load(Ordering::Relaxed), 1, "a different label proves its closure");
-    generation.pin("first").await?;
-    cloned.pin("second").await?;
+    generation.pin("first", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    cloned.pin("second", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(reads.load(Ordering::Relaxed), 1, "repeat retentions do not reprove");
 
-    cold.pin("cold").await?;
+    cold.pin("cold", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(reads.load(Ordering::Relaxed), 2, "a cold head proves once without publication custody");
-    cold.pin("cold").await?;
+    cold.pin("cold", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(reads.load(Ordering::Relaxed), 2);
     *unreadable.lock().map_err(|_| "unreadable lock poisoned")? = Some(ObjectKind::BlobChunk);
-    generation.pin("first").await?;
+    generation.pin("first", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     for expected_reads in [3, 4] {
         assert!(matches!(
-            generation.pin("third").await,
+            generation.pin("third", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
             Err(crate::workspace::WorkspaceError::Filesystem(error))
                 if error.to_string().contains("object is missing")
         ));
