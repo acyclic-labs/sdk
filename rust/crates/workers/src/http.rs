@@ -9,7 +9,7 @@ use reqwest::{
 
 /// HTTP configuration, encoding, or remote service failure.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum Error<E = wire::Error> {
     /// Invalid endpoint, credential, bound, or request path.
     #[error("invalid HTTP client configuration or request")]
     InvalidArgument,
@@ -28,13 +28,13 @@ pub enum Error {
         /// HTTP response status.
         status: u16,
         /// Decoded wire error, including service codes unknown to this SDK.
-        detail: Option<wire::Error>,
+        detail: Option<E>,
         /// Exact response body, including empty or malformed error payloads.
         raw_details: Vec<u8>,
     },
 }
 
-impl Error {
+impl<E> Error<E> {
     /// Stable classification for tracing's `error.kind`.
     #[must_use]
     pub const fn kind(&self) -> &'static str {
@@ -49,7 +49,8 @@ impl Error {
 }
 
 /// Plain HTTP is admitted only for `localhost` and loopback IP literals.
-fn loopback(endpoint: &Url) -> bool {
+#[doc(hidden)]
+pub fn loopback(endpoint: &Url) -> bool {
     endpoint.host_str().is_some_and(|host| {
         host == "localhost"
             || host
