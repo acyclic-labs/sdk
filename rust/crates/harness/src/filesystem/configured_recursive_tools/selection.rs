@@ -254,7 +254,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     code: crate::wire::ErrorCode::Unauthorized, reason: "foreign fork has no operation-sealed Project reader" }),
                 None => None,
             };
-            let config = crate::executor::with_history_io(Some(&output), |observer| Ok(RecursiveForkConfig {
+            let config = crate::executor::with_history_io(Some(&output), |observer| Ok::<_, Error>(RecursiveForkConfig {
                 child: observer.as_deref_mut().expect("native fork observer").clone_authority(allocation.child.authority())?,
                 child_project: allocation.project.copy(observer)?, child_private: allocation.private_volume.copy(observer)?,
                 child_result_volume: allocation.result_volume.as_ref().map(|volume| volume.copy(observer)).transpose()?,

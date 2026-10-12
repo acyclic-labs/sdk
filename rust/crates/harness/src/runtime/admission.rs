@@ -430,8 +430,8 @@ impl TaskAdmissionRecord {
                     crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
                         let containers = crate::contract::json_decode_owned_bytes(
                             value_shape, false, Some(crate::wire::ErrorCode::Invalid))?.0;
-                        let diagnostics = crate::contract::audited_preparation_diagnostic_bytes(
-                            value_shape.input_bytes(), Some(crate::wire::ErrorCode::Invalid))?;
+                        let diagnostics = crate::contract::json_typed_diagnostic_owned_bytes(
+                            value_shape, crate::contract::preparation_serde_diagnostic_label_bytes(), Some(crate::wire::ErrorCode::Invalid))?;
                         let bytes = containers.checked_add(diagnostics)
                             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
                             .ok_or_else(|| crate::store::guarded_boundary(quota.work(),

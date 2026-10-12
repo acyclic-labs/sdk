@@ -2469,7 +2469,6 @@ mod tests {
     {
         use std::sync::atomic::Ordering;
         let payloads = Arc::new(TestPayloadStore::new()?);
-        let context_bytes = crate::contract::canonical_json_bytes(&context)?;
         let verifier = Arc::new(CountingVerifier {
             count: std::sync::atomic::AtomicUsize::new(0),
             payloads,
@@ -3018,6 +3017,7 @@ mod tests {
             metadata: BTreeMap::new(),
             current_input_index: None,
         };
+        let context_bytes = crate::contract::canonical_json_bytes(&context)?;
         let payloads = Arc::new(TestPayloadStore::new()?);
         let (payload, _payload_hold) = payloads
             .stage(
