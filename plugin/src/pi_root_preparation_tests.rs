@@ -14,7 +14,7 @@ struct Fixture {
     owner: PiOwnerConfig,
     request: PiRootRequest,
     command: WorkflowCommand,
-    runtime: PiTaskRuntime<LocalStream>,
+    runtime: PiTaskRuntime,
     private: acyclic_fs::NativeHostPrivateStateRoot,
     work: acyclic_fs::NativeMaterializationWork,
     _command: acyclic_fs::NativeAllocation,
@@ -27,7 +27,7 @@ async fn open(
         FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
     >,
     work: &acyclic_fs::NativeMaterializationWork,
-) -> PiTaskRuntime<LocalStream> {
+) -> PiTaskRuntime {
     let stream = Arc::new(
         LocalStream::open(session.join("stream"), LocalStreamLimits::default())
             .await
@@ -444,7 +444,7 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
     let head = fixture.head().await;
     for case in ["key", "bytes", "concurrency", "depth"] {
         let other = tempfile::tempdir().unwrap();
-        let mut owner = PiOwnerConfig::load(fixture.session.path()).unwrap();
+        let mut owner = crate::pi_owner::tests::load_owner(fixture.session.path()).unwrap();
         match case {
             "key" => owner = PiOwnerConfig::new(&owner.policy, None, &fixture.work).unwrap(),
             "bytes" => owner.policy.maximum_payload_bytes /= 2,

@@ -150,26 +150,22 @@ pub(in crate::bindings) fn encode_merge_preparation(
     preparation: MergePreparation,
     work: acyclic_fs::WorkCounters,
 ) -> Result<Ts<BrowserMergePreparationResult>, JsValue> {
-    let result = match preparation {
-        MergePreparation::Prepared { generation_id } => BrowserMergePreparationResult {
-            status: "prepared",
-            generation_id: Some(generation_id.digest().into_bytes().to_vec().into()),
-            conflicts: Vec::new(),
-            truncated: false,
-            work: browser_work(work),
-        },
+    let (status, generation, conflicts, truncated) = match preparation {
+        MergePreparation::Prepared { generation_id } => {
+            ("prepared", Some(generation_id), Vec::new(), false)
+        }
         MergePreparation::Conflicted {
             conflicts,
             truncated,
-        } => BrowserMergePreparationResult {
-            status: "conflicted",
-            generation_id: None,
-            conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
-            truncated,
-            work: browser_work(work),
-        },
+        } => ("conflicted", None, conflicts, truncated),
     };
-    ts(result)
+    ts(BrowserMergePreparationResult {
+        status: status,
+        generation_id: generation.map(|value| value.digest().into_bytes().to_vec().into()),
+        conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
+        truncated,
+        work: browser_work(work),
+    })
 }
 
 pub(in crate::bindings) fn encode_merge_conflict(conflict: MergeConflict) -> MergeConflictResult {

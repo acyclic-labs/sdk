@@ -430,24 +430,19 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         meter.charge(copying)?;
         let idempotency_key = meter.stream_key(b"fence", &identity)?;
         let mut conditions = meter.vec(3)?;
-        meter.push(
-            &mut conditions,
+        for condition in [
             acyclic_stream::CommitCondition::Absent { path: retirement },
-        )?;
-        meter.push(
-            &mut conditions,
             acyclic_stream::CommitCondition::Tail {
                 path: records,
                 expected: (snapshot.head.sequence.get() + 1),
             },
-        )?;
-        meter.push(
-            &mut conditions,
             acyclic_stream::CommitCondition::Tail {
                 path: epochs.clone(),
                 expected: snapshot.epoch_tail,
             },
-        )?;
+        ] {
+            meter.push(&mut conditions, condition)?;
+        }
         let encoded = meter.stream_bytes(EPOCH_DOMAIN, &[&epoch.get().to_le_bytes()])?;
         let mut mutations = meter.vec(1)?;
         meter.append_record(&mut mutations, epochs, [encoded])?;

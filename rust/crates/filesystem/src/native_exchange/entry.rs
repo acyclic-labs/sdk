@@ -1,59 +1,6 @@
 use super::*;
 use crate::native_host::NativeHostWork;
 
-/// Exchanges entries under the caller's original work and cancellation.
-pub fn exchange_native_entries(
-    left: &Path,
-    right: &Path,
-    work: &crate::NativeMaterializationWork,
-) -> Result<(), NativeExchangeError> {
-    if left == right {
-        return Err(NativeExchangeError::InvalidLayout);
-    }
-    let mut work = work;
-    let left_parent = crate::native_host::open_root_directory(
-        left.parent().ok_or(NativeExchangeError::InvalidLayout)?,
-        &mut work,
-    )
-    .map(|(directory, _)| directory)?;
-    let right_parent = crate::native_host::open_root_directory(
-        right.parent().ok_or(NativeExchangeError::InvalidLayout)?,
-        &mut work,
-    )
-    .map(|(directory, _)| directory)?;
-    exchange_native_entries_held(
-        &left_parent,
-        Path::new(left.file_name().ok_or(NativeExchangeError::InvalidLayout)?),
-        &right_parent,
-        Path::new(
-            right
-                .file_name()
-                .ok_or(NativeExchangeError::InvalidLayout)?,
-        ),
-        &mut work,
-    )
-    .map_err(Into::into)
-}
-
-/// Recovers the original physical entries named by a durable witness.
-pub fn recover_native_entry_exchange(
-    live: &Path,
-    work: &crate::NativeMaterializationWork,
-) -> Result<(), NativeExchangeError> {
-    let mut work = work;
-    let parent = crate::native_host::open_root_directory(
-        live.parent().ok_or(NativeExchangeError::InvalidLayout)?,
-        &mut work,
-    )
-    .map(|(directory, _)| directory)?;
-    recover_native_entry_exchange_held(
-        &parent,
-        Path::new(live.file_name().ok_or(NativeExchangeError::InvalidLayout)?),
-        &mut work,
-    )
-    .map_err(Into::into)
-}
-
 pub(super) fn attempted<W: NativeHostWork, T>(
     work: &mut W,
     delta: crate::WorkCounters,
@@ -65,7 +12,7 @@ pub(super) fn attempted<W: NativeHostWork, T>(
     operation().map_err(Into::into)
 }
 /// Exchanges entries through their original held parents and the existing scratch/witness protocol.
-pub(crate) fn exchange_native_entries_held<W: NativeHostWork>(
+pub(crate) fn exchange_native_entries<W: NativeHostWork>(
     left: &cap_std::fs::Dir,
     left_name: &Path,
     right: &cap_std::fs::Dir,
@@ -163,7 +110,7 @@ pub(super) fn exchange_kernel_held<W: NativeHostWork>(
     })
 }
 /// Recovers only the physical preimages named by the surviving entry witness.
-pub(crate) fn recover_native_entry_exchange_held<W: NativeHostWork>(
+pub(crate) fn recover_native_entry_exchange<W: NativeHostWork>(
     parent: &cap_std::fs::Dir,
     name: &Path,
     work: &mut W,

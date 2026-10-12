@@ -132,7 +132,7 @@ impl McpStdioRequest {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(guard) = custody.as_mut() {
             guard
-                .resize_retained(std::mem::size_of::<McpStdioExchange>() as u64)
+                .resize(std::mem::size_of::<McpStdioExchange>() as u64)
                 .map_err(native_error)?;
             guard.grow(maximum_bytes as u64).map_err(native_error)?;
         }

@@ -62,13 +62,27 @@ impl MountOptions {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<NativeMaterializationWork, MountLifecycleError> {
-        if let Some(work) = &self.work {
-            return Ok(work.clone());
+        let work = match &self.work {
+            Some(work) => work.clone(),
+            None => {
+                acyclic_native_runtime::initialize_native_io_services()
+                    .map_err(NativeMountError::from)?;
+                super::super::initialize_native_mount_services()?;
+                NativeMaterializationWork::new(budget, cancellation)
+                    .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?
+            }
+        };
+        if self
+            .native_original
+            .as_ref()
+            .is_some_and(|binding| !work.shares_allocation_context(binding))
+        {
+            return Err(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            )
+            .into());
         }
-        acyclic_native_runtime::initialize_native_io_services().map_err(NativeMountError::from)?;
-        super::super::initialize_native_mount_services()?;
-        NativeMaterializationWork::new(budget, cancellation)
-            .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))
+        Ok(work)
     }
 
     /// Creates a writable tracking-safe sparse mount with close/fsync publication.
@@ -89,11 +103,8 @@ impl MountOptions {
     pub fn read_only() -> Self {
         Self {
             writable: false,
-            subdirectory: std::borrow::Cow::Borrowed("/"),
             publication: MountPublication::Manual,
-            work: None,
-            callback_guard: None,
-            native_original: None,
+            ..Self::read_write()
         }
     }
 
@@ -124,4 +135,27 @@ impl MountOptions {
         self.native_original = original.cloned();
         self
     }
+}
+
+pub(super) async fn in_native_heap<T, F>(
+    work: &NativeMaterializationWork,
+    create: impl FnOnce() -> F,
+) -> Result<T, MountLifecycleError>
+where
+    F: Future<Output = Result<T, MountLifecycleError>>,
+{
+    let mut custody = None;
+    let (mut future, _) = crate::heap_future::in_heap_admitted(
+        &mut custody,
+        |custody, bytes| {
+            **custody =
+                Some(work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::default())?);
+            Ok::<(), crate::NativeTreeMaterializationError>(())
+        },
+        |_| create(),
+    )?;
+    let result = future.as_mut().await;
+    drop(future);
+    drop(custody);
+    result
 }

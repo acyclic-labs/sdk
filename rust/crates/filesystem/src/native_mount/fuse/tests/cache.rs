@@ -33,8 +33,9 @@ pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
     Ok(())
 }
 #[test]
-pub(super) fn administrative_helper_retains_actual_tree_and_original_payload_on_denial()
+pub(super) fn administrative_recovery_retains_the_tree_and_retries_on_its_own_budget()
 -> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
     let cancellation = crate::CancellationToken::new();
     let creator =
         crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
@@ -82,6 +83,23 @@ pub(super) fn administrative_helper_retains_actual_tree_and_original_payload_on_
     assert!(!control.namespace_detach_confirmed());
     assert_eq!(denied.receipt().backend_write_operations, 0);
 
+    let denied_probe = crate::NativeMaterializationWork::new(
+        crate::WorkBudget {
+            backend_read_operations: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(cause, _)| cause)?;
+    assert!(matches!(
+        control.recover(temporary.path(), &denied_probe),
+        Err(crate::NativeMountError::Materialization(
+            crate::NativeTreeMaterializationError::Work(_)
+        ))
+    ));
+    assert!(control.controls_pending());
+    assert!(!control.namespace_detach_confirmed());
+
     let cancelled_token = crate::CancellationToken::new();
     let cancelled =
         crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancelled_token)
@@ -101,13 +119,13 @@ pub(super) fn administrative_helper_retains_actual_tree_and_original_payload_on_
         &cancellation,
     )
     .map_err(|(cause, _)| cause)?;
-    control.retire_controls(&original_admin)?;
+    control.recover(temporary.path(), &original_admin)?;
     assert!(!control.controls_pending());
     assert!(control.helper_work.is_none());
     assert!(control.deadline.is_none());
     assert!(
-        !control.namespace_detach_confirmed(),
-        "process reap is not namespace evidence"
+        control.namespace_detach_confirmed(),
+        "the real directory probe establishes namespace absence"
     );
     assert_eq!(
         creator.receipt(),
@@ -119,68 +137,6 @@ pub(super) fn administrative_helper_retains_actual_tree_and_original_payload_on_
     Ok(())
 }
 
-#[test]
-pub(super) fn administrative_recovery_retry_uses_its_own_finite_action_budget()
--> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
-    let cancellation = crate::CancellationToken::new();
-    let creator =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-    let mut control = crate::native_mount::fuse::FuseRecoveryControl::default();
-    acyclic_native_runtime::ProcessTree::spawn_closed_measured(
-        c"/bin/sleep",
-        &[c"60"],
-        creator.runtime_meter().as_ref(),
-        &mut control.helper,
-    )
-    .map_err(|error| creator.runtime_error(error))?;
-    control.helper_work = Some(creator.clone());
-    let denied = crate::NativeMaterializationWork::new(
-        crate::WorkBudget {
-            backend_read_operations: 0,
-            ..crate::WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-    )
-    .map_err(|(cause, _)| cause)?;
-    assert!(matches!(
-        control.recover(temporary.path(), &denied),
-        Err(crate::NativeMountError::Materialization(
-            crate::NativeTreeMaterializationError::Work(_)
-        ))
-    ));
-    assert!(control.controls_pending());
-    assert!(!control.namespace_detach_confirmed());
-    assert!(
-        control
-            .helper_work
-            .as_ref()
-            .ok_or("payload owner lost")?
-            .shares_ledger(&creator)
-    );
-    let retry = crate::NativeMaterializationWork::new(
-        crate::WorkBudget {
-            backend_read_operations: 4096,
-            backend_write_operations: 64,
-            ..crate::WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-    )
-    .map_err(|(cause, _)| cause)?;
-    let creator_receipt = creator.receipt();
-    control.recover(temporary.path(), &retry)?;
-    assert!(!control.controls_pending());
-    assert!(
-        control.namespace_detach_confirmed(),
-        "only the real directory probe establishes absence"
-    );
-    assert!(control.helper_work.is_none());
-    assert_eq!(creator.receipt(), creator_receipt);
-    assert!(retry.receipt().backend_read_operations >= 2);
-    assert!(retry.receipt().backend_write_operations > 0);
-    Ok(())
-}
 pub(super) fn regular(file_id: FileId, logical_bytes: u64) -> MountLookup {
     MountLookup {
         node: MountNode {
@@ -225,7 +181,7 @@ pub(super) fn kernel_forget_retires_only_an_inode_with_no_open_handle() -> Resul
             true,
             &fuse_fixture_work(),
         )
-        .map_err(fuse_fixture_errno)
+        .map_err(native_callback_errno)
     };
     let forgotten = intern(&mut state, name("first"))?;
     state
@@ -378,7 +334,7 @@ pub(super) fn each_name_keeps_its_own_verification() -> Result<(), i32> {
             true,
             &fuse_fixture_work(),
         )
-        .map_err(fuse_fixture_errno)
+        .map_err(native_callback_errno)
     };
     let inode = intern(&mut by_inode, "alias", Some(first))?;
     assert_eq!(intern(&mut by_inode, "original", Some(second))?, inode);
@@ -473,7 +429,7 @@ pub(super) fn a_name_joins_its_node_whatever_link_count_its_facts_carry() -> Res
         true,
         &fuse_fixture_work(),
     )
-    .map_err(fuse_fixture_errno)?;
+    .map_err(native_callback_errno)?;
     let second = intern_projected(
         &mut next_inode,
         &mut by_inode,
@@ -485,7 +441,7 @@ pub(super) fn a_name_joins_its_node_whatever_link_count_its_facts_carry() -> Res
         true,
         &fuse_fixture_work(),
     )
-    .map_err(fuse_fixture_errno)?;
+    .map_err(native_callback_errno)?;
     assert_eq!(first, second);
     assert_eq!(by_inode[&first].bindings.len(), 2);
     Ok(())
@@ -523,7 +479,7 @@ pub(super) fn a_reused_identity_gets_a_fresh_inode() -> Result<(), i32> {
         true,
         &fuse_fixture_work(),
     )
-    .map_err(fuse_fixture_errno)?;
+    .map_err(native_callback_errno)?;
     if let Some(binding) = by_inode.get_mut(&old).and_then(|entry| {
         entry
             .binding_mut(&name("removed"), &fuse_fixture_work())
@@ -561,7 +517,7 @@ pub(super) fn a_reused_identity_gets_a_fresh_inode() -> Result<(), i32> {
         true,
         &fuse_fixture_work(),
     )
-    .map_err(fuse_fixture_errno)?;
+    .map_err(native_callback_errno)?;
     assert_ne!(created, old, "the new file gets a fresh inode");
     assert_eq!(by_inode[&created].anchor(), &name("created"));
     assert!(
@@ -682,7 +638,7 @@ pub(super) fn invalidation_drops_exactly_the_superseded_kernel_items() -> Result
             true,
             &fuse_fixture_work(),
         )
-        .map_err(fuse_fixture_errno)
+        .map_err(native_callback_errno)
     };
     let file = intern(&mut by_inode, "changed")?;
     assert_eq!(intern(&mut by_inode, "kept")?, file);
@@ -1059,7 +1015,7 @@ pub(super) fn root_inode_survives_checkout_identity_changes() -> Result<(), i32>
             1,
             crate::WorkCounters::UNCHARGED,
         )
-        .map_err(|error| fuse_fixture_errno(error.into()))?;
+        .map_err(|error| native_callback_errno(error.into()))?;
     let mut inode_by_file = HashMap::from([(old_file, (ROOT_INODE, storage))]);
 
     replace_root_lookup(
@@ -1068,7 +1024,7 @@ pub(super) fn root_inode_survives_checkout_identity_changes() -> Result<(), i32>
         directory(new_file),
         &fuse_fixture_work(),
     )
-    .map_err(fuse_fixture_errno)?;
+    .map_err(native_callback_errno)?;
 
     assert_eq!(by_inode[&ROOT_INODE].lookup.node.file_id, new_file);
     assert_eq!(by_inode[&ROOT_INODE].anchor(), &MountPath::root());
@@ -1084,7 +1040,7 @@ pub(super) fn root_inode_survives_checkout_identity_changes() -> Result<(), i32>
             regular(FileId::new(), 0),
             &fuse_fixture_work()
         )
-        .map_err(fuse_fixture_errno),
+        .map_err(native_callback_errno),
         Err(libc::EIO),
         "the root stays a directory"
     );
@@ -1112,7 +1068,7 @@ pub(super) fn enumerated_entries_receive_nonzero_inodes_without_fake_lookup_refe
         false,
         &fuse_fixture_work(),
     )
-    .map_err(fuse_fixture_errno)?;
+    .map_err(native_callback_errno)?;
     assert_ne!(enumerated, 0);
     assert_eq!(by_inode[&enumerated].lookup_references, 0);
 
@@ -1127,7 +1083,7 @@ pub(super) fn enumerated_entries_receive_nonzero_inodes_without_fake_lookup_refe
         true,
         &fuse_fixture_work(),
     )
-    .map_err(fuse_fixture_errno)?;
+    .map_err(native_callback_errno)?;
     assert_eq!(looked_up, enumerated);
     assert_eq!(by_inode[&enumerated].lookup_references, 1);
 
@@ -1147,7 +1103,7 @@ pub(super) fn enumerated_entries_receive_nonzero_inodes_without_fake_lookup_refe
             false,
             &fuse_fixture_work()
         )
-        .map_err(fuse_fixture_errno),
+        .map_err(native_callback_errno),
         Err(libc::EOVERFLOW)
     );
     assert_eq!(next_inode, u64::MAX);

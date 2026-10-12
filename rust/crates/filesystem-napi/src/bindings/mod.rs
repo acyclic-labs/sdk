@@ -17,6 +17,16 @@ macro_rules! sdk_value {
     };
 }
 
+macro_rules! checkout_call {
+    ($owner:ident, $checkout:ident, $operation:ident($($argument:expr),* $(,)?)) => {
+        $checkout.$operation(
+            $($argument,)*
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &$owner.cancellation,
+        ).await.map_err(napi_error)
+    };
+}
+
 macro_rules! checkout_mutation {
     ($owner:ident, $operation:ident($($argument:expr),* $(,)?)) => {{
         let mut checkout = Box::pin($owner.inner.lock()).await;

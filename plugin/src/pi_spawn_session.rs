@@ -3,10 +3,11 @@
 use super::*;
 use acyclic_fs::{LazySnapshotRef, NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::runtime::TaskStateProvider;
+use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     conversation::ContentResidencyVerifier,
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
-    filesystem::{FilesystemContentVerifier, TaskCommandProgress},
+    filesystem::{PreparationIo, TaskCommandProgress},
     runtime::NativeTaskContext,
     workflow::WorkflowCommand,
 };
@@ -135,7 +136,7 @@ impl PiSession {
             self.filesystem.clone(),
             self.stream.clone(),
             &self.resources,
-            native.original_owner(),
+            std::sync::Arc::clone(&native.protected),
             &work,
         )?;
         let plan = coordinator.load_original_plan(original).await?;
@@ -221,7 +222,7 @@ impl PiSession {
                     "Pi recursive spawn requires its actual running caller owner".to_owned(),
                 )
             })?;
-            if live.binding != *self.binding(caller)?
+            if live.prepared.binding != *self.binding(caller)?
                 || live.context.context().durable_task_id() != Some(caller)
             {
                 return Err(acyclic_harness::Error::Invalid(
@@ -356,17 +357,12 @@ impl PiSession {
         {
             if let Some(plan) = &plan {
                 let root_waiting = if caller == owner.policy().root_task {
-                    let (suspension, suspension_custody) = (async {
-                        let mut io = acyclic_harness::store::native_work_io(&work)?;
-                        let value = self
-                            .runtime
-                            .runtime
-                            .task_host()
-                            .workflow_suspension(caller, &mut Some(&mut io))
-                            .await?;
-                        Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
-                    })
-                    .await?;
+                    let (suspension, suspension_custody) = self
+                        .runtime
+                        .runtime
+                        .task_host()
+                        .workflow_suspension_with_native_work(caller, &work)
+                        .await?;
                     let suspension = suspension;
                     let waiting = suspension
                         .as_ref()
@@ -392,18 +388,9 @@ impl PiSession {
                             "Pi original preparation admission was substituted".to_owned(),
                         ));
                     }
-                    let reservation = crate::pi_selected_host::PiControlHost::new(
-                        self.runtime.clone(),
-                        self.filesystem.clone(),
-                        self.stream.clone(),
-                        &self.resources,
-                        native.original_owner(),
-                        &self.state,
-                        &self.roots,
-                        native.clone(),
-                        &work,
-                    )?
-                    .reservation_with_native_work(plan, &work)?;
+                    let reservation = self
+                        .command_host(&work, Some(native.clone()))?
+                        .reservation_with_native_work(plan, &work)?;
                     let reservation = spawn_pending_batch(reservation, &work)?;
                     self.spawn_save_pending(Some(reservation), &commit, operations, &work)?;
                     drop(admission);
@@ -443,10 +430,7 @@ impl PiSession {
             }
             let (acknowledgement, pending, prepared) = if let Some(live) = &live {
                 live.owner
-                    .verify(
-                        false,
-                        &mut Some(&mut acyclic_harness::store::native_work_io(&work)?),
-                    )
+                    .verify(false, &mut Some(&mut native_work_io(&work)?))
                     .await?;
                 self.spawn_child_step(
                     owner,
@@ -547,10 +531,7 @@ impl PiSession {
         }
         if let Some(live) = &live {
             live.owner
-                .verify(
-                    false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(&work)?),
-                )
+                .verify(false, &mut Some(&mut native_work_io(&work)?))
                 .await?;
         }
         self.spawn_save_created(&commit, operations, &prepared, &work)?;
@@ -734,27 +715,24 @@ impl PiSession {
             format!("project-{task}"),
             VolumeClass::Project,
             VolumeOwner::Project(root_key.clone()),
-            &mut None,
         )?;
         let scratch = VolumeRef::new(
             volume_provider.clone(),
-            "scratch".into(),
+            "scratch",
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(operations.agent),
-            &mut None,
         )?;
         let results = VolumeRef::new(
             volume_provider,
-            "native-results".into(),
+            "native-results",
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(operations.agent),
-            &mut None,
         )?;
         let paths = pi_native::planned_native_paths(
             &self.resources,
             &self.state.root_session_id,
             task,
-            Some(&root_key),
+            &root_key,
             work,
         )?;
         let paths = &paths.0;
@@ -873,26 +851,23 @@ impl PiSession {
         };
         // Owned data is declared after its guard so unwinding destroys data first.
         let reference = reference;
-        let (authority, _authority_custody) = owner.authority_with_native_work(work)?;
+        let authority = owner.authority(work)?;
         let maximum = owner
             .policy()
             .maximum_payload_bytes
             .min(MAXIMUM_ADAPTER_STATE_BYTES);
-        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
-        let reader = FilesystemContentVerifier::new(
+        let io = PreparationIo::from_native_work(work)?;
+        let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(
             self.filesystem.clone(),
             &authority.verifier,
             &authority.signed,
             maximum,
             Some(&io),
         )?;
-        let bytes = acyclic_harness::conversation::ContentResidencyVerifier::read(
-            reader.as_ref(),
-            &reference,
-            maximum,
-            Some(&io),
-        )?
-        .await?;
+        let (bytes, bytes_custody) = reader
+            .read_with_native_work(&reference, maximum, work)
+            .await?;
+        let bytes = bytes;
         let owned = std::mem::size_of::<T>() as u64;
         let (value, custody) = pi_root_provider::guarded_pi_decode(
             &bytes,
@@ -948,28 +923,8 @@ impl PiSession {
         Option<(Vec<PendingSpawn>, NativeAllocation)>,
         Option<pi_fork::PreparedPiFork>,
     )> {
-        let selected = pi_selected_host::PiControlHost::new(
-            self.runtime.clone(),
-            self.filesystem.clone(),
-            self.stream.clone(),
-            &self.resources,
-            native.original_owner(),
-            &self.state,
-            &self.roots,
-            native,
-            work,
-        )?;
-        let workflow = pi_workflow::PiWorkflowHost::new(
-            &self.relative_directory,
-            self.runtime.clone(),
-            self.filesystem.clone(),
-            self.stream.clone(),
-            &self.resources,
-            &self.state,
-            work.clone(),
-        )
-        .with_controls(&selected);
-        let reply = workflow
+        let selected = self.command_host(work, Some(native))?;
+        let reply = selected
             .control_step_with_native_work(command, wake_pending)
             .await?;
         let pending = selected.pending_to_save()?;
@@ -995,17 +950,7 @@ impl PiSession {
         Option<(Vec<PendingSpawn>, NativeAllocation)>,
         Option<pi_fork::PreparedPiFork>,
     )> {
-        let fork = crate::pi_selected_host::PiControlHost::new(
-            self.runtime.clone(),
-            self.filesystem.clone(),
-            self.stream.clone(),
-            &self.resources,
-            native.original_owner(),
-            &self.state,
-            &self.roots,
-            native,
-            &work,
-        )?;
+        let fork = self.command_host(work, Some(native))?;
         let fence = context.context().owned_task_fence()?;
         let (payload, mut input_custody) =
             pi_root_provider::guarded_pi_value(input, owner.policy().maximum_payload_bytes, work)?;
@@ -1016,7 +961,7 @@ impl PiSession {
             TaskCommandProgress::ReadyWithNativeCustody { value, mut custody } => {
                 if let Err(cause) = custody.absorb(&mut input_custody) {
                     drop(value);
-                    return Err(native_error(cause));
+                    return Err(acyclic_harness::Error::from(cause));
                 }
                 Some((value, custody))
             }
@@ -1068,12 +1013,12 @@ impl PiSession {
             &self.resources,
             &self.state.root_session_id,
             commit.child.task_id,
-            Some(key),
+            key,
             work,
         )?;
         let paths = paths;
         let (workspace, workspace_custody) = {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let mut io = native_work_io(work)?;
             let value = project.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -1130,25 +1075,23 @@ impl PiSession {
         self.prepare_native_catalog_slot(work)?;
         let original_length = self.state.pending.len();
         if self.state.pending.capacity() == original_length {
-            let capacity = original_length
-                .checked_add(1)
-                .ok_or_else(|| native_error(acyclic_fs::WorkError::Overflow.into()))?;
+            let capacity = original_length.checked_add(1).ok_or_else(|| {
+                acyclic_harness::Error::from(acyclic_fs::WorkError::Overflow.into())
+            })?;
             let bytes = capacity
                 .checked_mul(std::mem::size_of::<PendingSpawn>())
-                .ok_or_else(|| native_error(acyclic_fs::WorkError::Overflow.into()))?
-                as u64;
-            let backing = work
-                .claim(
-                    bytes,
-                    u64::from((bytes) != 0),
-                    acyclic_fs::WorkCounters::UNCHARGED,
-                )
-                .map_err(native_error)?;
+                .ok_or_else(|| {
+                    acyclic_harness::Error::from(acyclic_fs::WorkError::Overflow.into())
+                })? as u64;
+            let backing = work.claim(
+                bytes,
+                u64::from((bytes) != 0),
+                acyclic_fs::WorkCounters::UNCHARGED,
+            )?;
             work.charge(acyclic_fs::WorkCounters {
                 bytes_copied: (original_length * std::mem::size_of::<PendingSpawn>()) as u64,
                 ..acyclic_fs::WorkCounters::UNCHARGED
-            })
-            .map_err(native_error)?;
+            })?;
             let mut replacement = std::collections::VecDeque::with_capacity(capacity);
             replacement.append(&mut self.state.pending);
             let old = std::mem::replace(&mut self.state.pending, replacement);
@@ -1209,7 +1152,7 @@ impl PiSession {
             &self.resources,
             &self.state.root_session_id,
             commit.child.task_id,
-            Some(key),
+            key,
             work,
         )?;
         let paths = &paths.0;
@@ -1274,9 +1217,7 @@ impl PiSession {
         };
         let report: acyclic_harness::fork::ForkReport = serde_json::from_value(value)
             .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-        report.validate(&mut Some(&mut acyclic_harness::store::native_work_io(
-            work,
-        )?))?;
+        report.validate()?;
         let (request, request_custody) =
             pi_root_provider::guarded_pi_value(&report.request, maximum_owned_bytes, work)?;
         let request = request;
@@ -1390,13 +1331,11 @@ impl PiSession {
         let (route_key, route) = (route_key, route);
         drop(bytes);
         drop(bytes_custody);
-        let mut slot_custody = work
-            .claim(
-                std::mem::size_of::<(String, Route)>() as u64,
-                u64::from((std::mem::size_of::<(String, Route)>() as u64) != 0),
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )
-            .map_err(native_error)?;
+        let mut slot_custody = work.claim(
+            std::mem::size_of::<(String, Route)>() as u64,
+            u64::from((std::mem::size_of::<(String, Route)>() as u64) != 0),
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
         if let Err(cause) = route_custody.absorb(&mut slot_custody) {
             drop(route);
             drop(route_key);
@@ -1486,10 +1425,7 @@ impl PiSession {
             (None, None)
         };
         let outcome = outcome;
-        let state = if outcome
-            .as_ref()
-            .is_some_and(|outcome| !matches!(outcome, Outcome::Indeterminate { .. }))
-        {
+        let state = if outcome.as_ref().is_some_and(Outcome::is_terminal) {
             "completed"
         } else if created {
             "pending"
@@ -1499,7 +1435,7 @@ impl PiSession {
         let native_effect = acyclic_harness::effect_host::task_effect_id(
             commit.child.task_id,
             operations.native,
-            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
+            &mut Some(&mut native_work_io(work)?),
         )?;
         let body = SpawnObservation {
             operation: &commit.sdk_operation,
@@ -1531,19 +1467,19 @@ impl PiSession {
         if let Some(mut preparation_custody) = preparation_custody {
             if let Err(cause) = custody.absorb(&mut preparation_custody) {
                 drop(value);
-                return Err(native_error(cause));
+                return Err(acyclic_harness::Error::from(cause));
             }
         }
         if let Some(mut outcome_custody) = outcome_custody {
             if let Err(cause) = custody.absorb(&mut outcome_custody) {
                 drop(value);
-                return Err(native_error(cause));
+                return Err(acyclic_harness::Error::from(cause));
             }
         }
         if let Some(mut original_custody) = original_custody {
             if let Err(cause) = custody.absorb(&mut original_custody) {
                 drop(value);
-                return Err(native_error(cause));
+                return Err(acyclic_harness::Error::from(cause));
             }
         }
         Ok((value, custody))
@@ -1555,13 +1491,11 @@ fn spawn_pending_batch(
     work: &NativeMaterializationWork,
 ) -> acyclic_harness::Result<(Vec<PendingSpawn>, NativeAllocation)> {
     let pending = pending;
-    let mut backing = work
-        .claim(
-            std::mem::size_of::<PendingSpawn>() as u64,
-            u64::from((std::mem::size_of::<PendingSpawn>() as u64) != 0),
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )
-        .map_err(native_error)?;
+    let mut backing = work.claim(
+        std::mem::size_of::<PendingSpawn>() as u64,
+        u64::from((std::mem::size_of::<PendingSpawn>() as u64) != 0),
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
     let mut records = Vec::with_capacity(1);
     records.push(pending);
     if let Err(cause) = custody.absorb(&mut backing) {
@@ -1589,11 +1523,4 @@ fn spawn_retain_custody(
         *retained = Some(custody);
     }
     Ok(())
-}
-
-fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> acyclic_harness::Error {
-    acyclic_harness::Error::NativeWork {
-        cause,
-        custody: None,
-    }
 }

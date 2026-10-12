@@ -31,8 +31,8 @@ fn binary_handoff_drains_live_sessions_before_reopen() {
             .unwrap()
             .unwrap()
             .unwrap();
-        let (_lock, reopened) = test_service_control(fixture.data.clone()).await.unwrap();
-        assert!(reopened.sessions.is_empty());
+        let (_lock, reopened) = test_concurrent_service(fixture.data.clone()).await.unwrap();
+        assert!(reopened.catalog.lock().await.active.is_empty());
         reopened.shutdown().await.unwrap();
     });
 }
@@ -87,7 +87,7 @@ fn failed_startup_releases_the_service_and_root() {
         );
         let fence = acquire_service_lock(&fixture.data).unwrap().unwrap();
         drop(fence);
-        let (_lock, reopened) = test_service_control(fixture.data.clone()).await.unwrap();
+        let (_lock, reopened) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         reopened.shutdown().await.unwrap();
     });
 }

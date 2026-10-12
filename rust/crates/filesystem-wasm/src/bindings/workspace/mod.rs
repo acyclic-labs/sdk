@@ -417,21 +417,22 @@ impl BrowserWorkspace {
                     options.maximum_changes,
                     options.maximum_conflicts,
                 )
-                .plan_pinned(
-                    browser_join_generation(
+                .plan_at(
+                    &browser_join_generation(
                         source,
                         options.source_generation.as_deref(),
                         "source generation",
                     )
                     .await?,
-                    browser_join_generation(
+                    &browser_join_generation(
                         target,
                         options.target_generation.as_deref(),
                         "target generation",
                     )
                     .await?,
+                    acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
                 )
-                .await
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(js_error)?
         };
         Ok(BrowserJoinPlan { engine })

@@ -63,7 +63,7 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
     std::fs::write(&original, b"old")?;
     let owner = std::fs::metadata(&original)?;
     let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
-    let target = root.open_macos_metadata_target(Path::new("file"), &mut work)?;
+    let target = open_macos_metadata_target(&root.directory, Path::new("file"), &mut work)?;
     let moved = root_path.join("moved");
     std::fs::rename(&original, &moved)?;
     std::fs::write(&original, b"replacement")?;
@@ -91,45 +91,40 @@ fn held_metadata_restores_fields_without_retargeting_a_replaced_path()
     assert_eq!(std::fs::read(&original)?, b"replacement");
     assert_ne!(std::fs::metadata(&original)?.mode() & 0o7777, 0o4751);
     assert!(
-        root.open_macos_metadata_target(Path::new("../outside"), &mut work)
-            .is_err()
+        open_macos_metadata_target(&root.directory, Path::new("../outside"), &mut work).is_err()
     );
     let outside = temporary.path().join("outside");
     std::fs::write(&outside, b"untouched")?;
     std::os::unix::fs::symlink(temporary.path(), root_path.join("pivot"))?;
     assert!(
-        root.open_macos_metadata_target(Path::new("pivot/outside"), &mut work)
-            .is_err()
+        open_macos_metadata_target(&root.directory, Path::new("pivot/outside"), &mut work).is_err()
     );
     assert_eq!(std::fs::read(outside)?, b"untouched");
-    root.open_macos_metadata_target(Path::new("file"), &mut work)?
-        .apply(
+    open_macos_metadata_target(&root.directory, Path::new("file"), &mut work)?.apply(
+        FileMetadata {
+            posix_flags: MetadataField::Value(0),
+            ..FileMetadata::default()
+        },
+        &mut work,
+    )?;
+    assert!(matches!(
+        open_macos_metadata_target(&root.directory, Path::new("file"), &mut work)?.apply(
             FileMetadata {
-                posix_flags: MetadataField::Value(0),
+                posix_flags: MetadataField::Value(1),
                 ..FileMetadata::default()
             },
-            &mut work,
-        )?;
-    assert!(matches!(
-        root.open_macos_metadata_target(Path::new("file"), &mut work)?
-            .apply(
-                FileMetadata {
-                    posix_flags: MetadataField::Value(1),
-                    ..FileMetadata::default()
-                },
-                &mut work
-            ),
+            &mut work
+        ),
         Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
     ));
     assert!(matches!(
-        root.open_macos_metadata_target(Path::new("file"), &mut work)?
-            .apply(
-                FileMetadata {
-                    changed_ns: MetadataField::Value(1),
-                    ..FileMetadata::default()
-                },
-                &mut work
-            ),
+        open_macos_metadata_target(&root.directory, Path::new("file"), &mut work)?.apply(
+            FileMetadata {
+                changed_ns: MetadataField::Value(1),
+                ..FileMetadata::default()
+            },
+            &mut work
+        ),
         Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
     ));
     Ok(())
@@ -147,17 +142,16 @@ fn fifo_metadata_uses_a_nonblocking_held_handle_and_socket_metadata_fails_closed
     let socket = temporary.path().join("socket");
     let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
     let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
-    root.open_macos_metadata_target(Path::new("pipe"), &mut work)?
-        .apply(
-            FileMetadata {
-                posix_mode: MetadataField::Value(0o640),
-                created_ns: MetadataField::Value(1_234_567_890_123_000_000),
-                modified_ns: MetadataField::Value(1_234_567_891_234_000_000),
-                accessed_ns: MetadataField::Value(1_234_567_892_345_000_000),
-                ..FileMetadata::default()
-            },
-            &mut work,
-        )?;
+    open_macos_metadata_target(&root.directory, Path::new("pipe"), &mut work)?.apply(
+        FileMetadata {
+            posix_mode: MetadataField::Value(0o640),
+            created_ns: MetadataField::Value(1_234_567_890_123_000_000),
+            modified_ns: MetadataField::Value(1_234_567_891_234_000_000),
+            accessed_ns: MetadataField::Value(1_234_567_892_345_000_000),
+            ..FileMetadata::default()
+        },
+        &mut work,
+    )?;
     let observed = std::fs::symlink_metadata(&pipe)?;
     assert_eq!(observed.mode() & 0o7777, 0o640);
     for (actual, expected) in [
@@ -167,21 +161,20 @@ fn fifo_metadata_uses_a_nonblocking_held_handle_and_socket_metadata_fails_closed
     ] {
         assert_eq!(actual.duration_since(UNIX_EPOCH)?.as_nanos(), expected);
     }
-    root.open_macos_metadata_target(Path::new("socket"), &mut work)?
+    open_macos_metadata_target(&root.directory, Path::new("socket"), &mut work)?
         .apply(FileMetadata::default(), &mut work)?;
     assert!(matches!(
-        root.open_macos_metadata_target(Path::new("socket"), &mut work)?
-            .apply(
-                FileMetadata {
-                    posix_mode: MetadataField::Value(0o640),
-                    ..FileMetadata::default()
-                },
-                &mut work
-            ),
+        open_macos_metadata_target(&root.directory, Path::new("socket"), &mut work)?.apply(
+            FileMetadata {
+                posix_mode: MetadataField::Value(0o640),
+                ..FileMetadata::default()
+            },
+            &mut work
+        ),
         Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
     ));
     let old_socket = temporary.path().join("old-socket");
-    let pending = root.open_macos_metadata_target(Path::new("socket"), &mut work)?;
+    let pending = open_macos_metadata_target(&root.directory, Path::new("socket"), &mut work)?;
     std::fs::rename(&socket, old_socket)?;
     let _replacement = std::os::unix::net::UnixListener::bind(&socket)?;
     assert!(matches!(

@@ -1,12 +1,12 @@
 use super::*;
 
-/// Crash-recovery custody paired by the root owner with its original fence.
+/// Crash recovery paired with the root owner's original fence.
 #[derive(Default)]
 pub(in crate::native_mount) struct FuseRecoveryControl {
     pub(super) helper: Option<acyclic_native_runtime::ProcessTree>,
     pub(super) helper_work: Option<crate::NativeMaterializationWork>,
+    // A retained helper without a deadline failed during spawn cleanup.
     pub(super) deadline: Option<std::time::Instant>,
-    pub(super) failed_spawn: bool,
     pub(super) detached: bool,
 }
 
@@ -14,6 +14,7 @@ impl FuseRecoveryControl {
     pub(in crate::native_mount) fn namespace_detach_confirmed(&self) -> bool {
         self.detached
     }
+
     pub(in crate::native_mount) fn controls_pending(&self) -> bool {
         self.helper.is_some()
     }
@@ -30,21 +31,19 @@ impl FuseRecoveryControl {
         self.helper.take();
         self.helper_work.take();
         self.deadline = None;
-        self.failed_spawn = false;
         Ok(())
     }
 
-    /// Performs crash recovery on the supplied meter.
+    /// Recovers the namespace using the supplied administrative work.
     pub(in crate::native_mount) fn recover(
         &mut self,
         destination: &Path,
-        native: &crate::NativeMaterializationWork,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        let work = native;
         work.admit(crate::WorkCounters::UNCHARGED)?;
         let mounted = fuse_recovery_is_mounted(destination, work)?;
         self.detached = !mounted;
-        if self.helper.is_some() && (!mounted || self.failed_spawn) {
+        if self.helper.is_some() && (!mounted || self.deadline.is_none()) {
             self.retire_controls(work)?;
         }
         if !mounted {
@@ -62,8 +61,7 @@ impl FuseRecoveryControl {
                             ..crate::WorkCounters::UNCHARGED
                         },
                         || {
-                            // SAFETY: the admitted terminated pathname stays alive
-                            // throughout this actual native control call.
+                            // SAFETY: the terminated pathname lives through the syscall.
                             if unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } == 0 {
                                 Ok(())
                             } else {
@@ -97,23 +95,21 @@ impl FuseRecoveryControl {
                     .map_err(|error| work.runtime_error(error))
                 },
             );
-            if self.helper.is_some() {
-                self.deadline = Some(std::time::Instant::now() + Duration::from_secs(30));
-                self.failed_spawn = spawned.is_err();
-            }
             if self.helper.is_none() {
                 self.helper_work.take();
             }
             spawned?;
+            self.deadline = Some(std::time::Instant::now() + Duration::from_secs(30));
         }
         loop {
-            let status = {
-                let helper = self.helper.as_mut().expect("accepted helper remains owned");
-                helper
-                    .try_wait(Some(work.runtime_meter().as_ref()))
-                    .map_err(|error| work.runtime_error(error))?
-            };
-            if status.is_some() {
+            if self
+                .helper
+                .as_mut()
+                .expect("accepted helper remains owned")
+                .try_wait(Some(work.runtime_meter().as_ref()))
+                .map_err(|error| work.runtime_error(error))?
+                .is_some()
+            {
                 break;
             }
             if self
@@ -189,9 +185,7 @@ pub(super) fn fuse_recovery_is_mounted(
         .ok_or(NativeMountError::InvalidDestination)?;
     let parent =
         crate::native_host::unix_name(parent.as_os_str(), &mut &*work, fuse_recovery_stat)?;
-    let destination =
-        crate::native_host::unix_name(destination.as_os_str(), &mut &*work, fuse_recovery_stat);
-    match destination {
+    match crate::native_host::unix_name(destination.as_os_str(), &mut &*work, fuse_recovery_stat) {
         Ok(metadata) => Ok(metadata.st_dev != parent.st_dev),
         Err(crate::NativeTreeMaterializationError::Io(error))
             if error.raw_os_error() == Some(libc::ENOTCONN) =>
@@ -216,10 +210,7 @@ pub(super) fn fuse_recovery_helper(
         c"/usr/bin/fusermount",
         c"/bin/fusermount",
     ] {
-        work.charge(crate::WorkCounters {
-            items_examined: 1,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
+        fuse_item(work)?;
         match fuse_recovery_stat(candidate, &mut &*work) {
             Ok(metadata) if metadata.st_mode & libc::S_IFMT == libc::S_IFREG => {
                 return Ok(candidate);

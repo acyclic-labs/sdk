@@ -3,7 +3,7 @@ use crate::{
 };
 use std::fs;
 
-fn entries() -> Result<(tempfile::TempDir, PathBuf, PathBuf), Box<dyn std::error::Error>> {
+fn entries() -> Result<(tempfile::TempDir, PathBuf, PathBuf), NativeExchangeError> {
     let temporary = tempfile::tempdir()?;
     let live = temporary.path().join("live");
     let prepared = temporary.path().join("prepared");
@@ -12,7 +12,7 @@ fn entries() -> Result<(tempfile::TempDir, PathBuf, PathBuf), Box<dyn std::error
     Ok((temporary, live, prepared))
 }
 
-fn trees() -> Result<(tempfile::TempDir, PathBuf, PathBuf), Box<dyn std::error::Error>> {
+fn trees() -> Result<(tempfile::TempDir, PathBuf, PathBuf), NativeExchangeError> {
     let temporary = tempfile::tempdir()?;
     let live = temporary.path().join("live");
     let prepared = temporary.path().join("prepared");
@@ -58,6 +58,44 @@ fn run(
 }
 
 use super::*;
+
+fn exchange_paths(
+    left: &Path,
+    right: &Path,
+    work: &NativeMaterializationWork,
+) -> Result<(), NativeExchangeError> {
+    if left == right {
+        return Err(NativeExchangeError::InvalidLayout);
+    }
+    let mut work = work;
+    let left_parent =
+        crate::native_host::open_root_directory(left.parent().expect("fixture path"), &mut work)
+            .map(|(directory, _)| directory)?;
+    let right_parent =
+        crate::native_host::open_root_directory(right.parent().expect("fixture path"), &mut work)
+            .map(|(directory, _)| directory)?;
+    exchange_native_entries(
+        &left_parent,
+        Path::new(left.file_name().expect("fixture path")),
+        &right_parent,
+        Path::new(right.file_name().expect("fixture path")),
+        &mut work,
+    )
+    .map_err(Into::into)
+}
+
+fn recover_path(live: &Path, work: &NativeMaterializationWork) -> Result<(), NativeExchangeError> {
+    let mut work = work;
+    let parent =
+        crate::native_host::open_root_directory(live.parent().expect("fixture path"), &mut work)
+            .map(|(directory, _)| directory)?;
+    recover_native_entry_exchange(
+        &parent,
+        Path::new(live.file_name().expect("fixture path")),
+        &mut work,
+    )
+    .map_err(Into::into)
+}
 
 fn finite_entry_budget() -> WorkBudget {
     WorkCounters {
@@ -115,17 +153,17 @@ fn entry_witness_fixture(live: &Path, prepared: &Path, witness: &Path) {
 
 #[test]
 fn bounded_entry_exchange_rejects_zero_and_cancelled_work_before_io()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NativeExchangeError> {
     let (temporary, live, prepared) = entries()?;
     let cancellation = CancellationToken::new();
     let failure = run(WorkBudget::default(), &cancellation, |work| {
-        exchange_native_entries(&live, &prepared, work)
+        exchange_paths(&live, &prepared, work)
     })
     .expect_err("zero allowance");
     assert_eq!(failure.1, WorkCounters::default());
     cancellation.cancel();
     let failure = run(finite_entry_budget(), &cancellation, |work| {
-        exchange_native_entries(&live, &prepared, work)
+        exchange_paths(&live, &prepared, work)
     })
     .expect_err("cancelled");
     assert!(matches!(failure.0, NativeExchangeError::Cancelled));
@@ -138,7 +176,7 @@ fn bounded_entry_exchange_rejects_zero_and_cancelled_work_before_io()
 #[cfg(windows)]
 #[test]
 fn bounded_entry_journal_failure_cleans_only_its_provisional_handle()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NativeExchangeError> {
     for deny_bytes in [true, false] {
         let (temporary, live, prepared) = entries()?;
         let witness = entry_exchange_witness(&live)?;
@@ -151,7 +189,7 @@ fn bounded_entry_journal_failure_cleans_only_its_provisional_handle()
         }
         let cancellation = CancellationToken::new();
         let failure = run(budget, &cancellation, |work| {
-            exchange_native_entries(&live, &prepared, work)
+            exchange_paths(&live, &prepared, work)
         })
         .expect_err("journal admission denied before physical edits");
         assert!(matches!(failure.0, NativeExchangeError::Work(_)));
@@ -167,7 +205,7 @@ fn bounded_entry_journal_failure_cleans_only_its_provisional_handle()
         assert_eq!(fs::read(&live)?, b"before");
         assert_eq!(fs::read(&prepared)?, b"after");
         run(finite_entry_budget(), &cancellation, |work| {
-            exchange_native_entries(&live, &prepared, work)
+            exchange_paths(&live, &prepared, work)
         })
         .expect("the real durable request remains retryable");
         assert_eq!(fs::read(&live)?, b"after");
@@ -179,12 +217,12 @@ fn bounded_entry_journal_failure_cleans_only_its_provisional_handle()
 #[cfg(all(feature = "native-watch", unix))]
 #[test]
 fn bounded_entry_exchange_failure_retains_the_physical_edit_prefix()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NativeExchangeError> {
     let (temporary, live, prepared) = entries()?;
     let mut budget = finite_entry_budget();
     budget.durability_operations = 0;
     let failure = run(budget, &CancellationToken::new(), |work| {
-        exchange_native_entries(&live, &prepared, work)
+        exchange_paths(&live, &prepared, work)
     })
     .expect_err("durability denied");
     assert!(matches!(failure.0, NativeExchangeError::Work(_)));
@@ -198,7 +236,7 @@ fn bounded_entry_exchange_failure_retains_the_physical_edit_prefix()
 #[cfg(all(feature = "native-watch", unix))]
 #[test]
 fn bounded_exchange_keeps_original_parents_when_the_lexical_root_is_replaced()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NativeExchangeError> {
     let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("root");
     let saved = temporary.path().join("saved");
@@ -215,7 +253,7 @@ fn bounded_exchange_keeps_original_parents_when_the_lexical_root_is_replaced()
     fs::create_dir(&root)?;
     fs::write(root.join("live"), b"user-live")?;
     fs::write(root.join("prepared"), b"user-prepared")?;
-    exchange_native_entries_held(
+    exchange_native_entries(
         &parent,
         Path::new("live"),
         &parent,
@@ -233,7 +271,7 @@ fn bounded_exchange_keeps_original_parents_when_the_lexical_root_is_replaced()
 #[cfg(windows)]
 #[test]
 fn bounded_entry_retry_rejects_a_different_request_without_adopting_it()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NativeExchangeError> {
     let (temporary, live, prepared) = entries()?;
     let other = temporary.path().join("other");
     let witness = entry_exchange_witness(&live)?;
@@ -241,7 +279,7 @@ fn bounded_entry_retry_rejects_a_different_request_without_adopting_it()
     entry_witness_fixture(&live, &prepared, &witness);
     let cancellation = CancellationToken::new();
     let failure = run(finite_entry_budget(), &cancellation, |work| {
-        exchange_native_entries(&live, &other, work)
+        exchange_paths(&live, &other, work)
     })
     .expect_err("original request path identity remains authoritative");
     assert!(matches!(
@@ -254,7 +292,7 @@ fn bounded_entry_retry_rejects_a_different_request_without_adopting_it()
     assert_eq!(fs::read(&prepared)?, b"after");
     assert_eq!(fs::read(&other)?, b"unrelated request");
     run(finite_entry_budget(), &cancellation, |work| {
-        exchange_native_entries(&live, &prepared, work)
+        exchange_paths(&live, &prepared, work)
     })
     .expect("original rolled-back request proceeds to actual publication");
     assert_eq!(fs::read(&live)?, b"after");
@@ -263,8 +301,8 @@ fn bounded_entry_retry_rejects_a_different_request_without_adopting_it()
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_recovery_finishes_in_the_original_other_parent()
--> Result<(), Box<dyn std::error::Error>> {
+fn bounded_entry_recovery_finishes_in_the_original_other_parent() -> Result<(), NativeExchangeError>
+{
     let temporary = tempfile::tempdir()?;
     let live_parent = temporary.path().join("checkout");
     let prepared_parent = temporary.path().join("operation");
@@ -280,7 +318,7 @@ fn bounded_entry_recovery_finishes_in_the_original_other_parent()
     fs::rename(&live, &scratch)?;
     fs::rename(&prepared, &live)?;
     run(finite_entry_budget(), &CancellationToken::new(), |work| {
-        recover_native_entry_exchange(&live, work)
+        recover_path(&live, work)
     })
     .expect("held original other-parent recovery");
     assert_eq!(fs::read(&live)?, b"after");
@@ -292,8 +330,7 @@ fn bounded_entry_recovery_finishes_in_the_original_other_parent()
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_recovery_keeps_the_same_lost_ack_decision()
--> Result<(), Box<dyn std::error::Error>> {
+fn bounded_entry_recovery_keeps_the_same_lost_ack_decision() -> Result<(), NativeExchangeError> {
     let (temporary, live, prepared) = entries()?;
     let witness = entry_exchange_witness(&live)?;
     let scratch = scratch(&live)?;
@@ -303,13 +340,13 @@ fn bounded_entry_recovery_keeps_the_same_lost_ack_decision()
     fs::rename(&scratch, &prepared)?;
     let cancellation = CancellationToken::new();
     let recovered = run(finite_entry_budget(), &cancellation, |work| {
-        recover_native_entry_exchange(&live, work)
+        recover_path(&live, work)
     })
     .expect("restart recovers original decision");
     assert!(recovered.backend_write_operations > 0);
     assert!(!witness.exists());
     run(finite_entry_budget(), &cancellation, |work| {
-        recover_native_entry_exchange(&live, work)
+        recover_path(&live, work)
     })
     .expect("reopened cleanup is idempotent");
     assert_eq!(fs::read(&live)?, b"after");
@@ -319,8 +356,7 @@ fn bounded_entry_recovery_keeps_the_same_lost_ack_decision()
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_recovery_never_adopts_a_replacement_preimage()
--> Result<(), Box<dyn std::error::Error>> {
+fn bounded_entry_recovery_never_adopts_a_replacement_preimage() -> Result<(), NativeExchangeError> {
     for completed in [false, true] {
         let (temporary, live, prepared) = entries()?;
         let witness = entry_exchange_witness(&live)?;
@@ -334,7 +370,7 @@ fn bounded_entry_recovery_never_adopts_a_replacement_preimage()
         fs::rename(&live, &saved)?;
         fs::write(&live, b"user replacement")?;
         let failure = run(finite_entry_budget(), &CancellationToken::new(), |work| {
-            recover_native_entry_exchange(&live, work)
+            recover_path(&live, work)
         })
         .expect_err("replacement is not original authority");
         assert!(matches!(
@@ -362,8 +398,8 @@ fn bounded_entry_recovery_never_adopts_a_replacement_preimage()
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_recovery_preserves_a_replaced_physical_parent()
--> Result<(), Box<dyn std::error::Error>> {
+fn bounded_entry_recovery_preserves_a_replaced_physical_parent() -> Result<(), NativeExchangeError>
+{
     let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("root");
     let saved = temporary.path().join("saved");
@@ -384,7 +420,7 @@ fn bounded_entry_recovery_preserves_a_replaced_physical_parent()
     fs::create_dir(&root)?;
     fs::write(root.join("live"), b"user-live")?;
     fs::write(root.join("prepared"), b"user-prepared")?;
-    recover_native_entry_exchange_held(&parent, Path::new("live"), &mut work)
+    recover_native_entry_exchange(&parent, Path::new("live"), &mut work)
         .expect_err("persisted right parent no longer names the original root");
     assert_eq!(fs::read(root.join("live"))?, b"user-live");
     assert_eq!(fs::read(root.join("prepared"))?, b"user-prepared");
@@ -400,7 +436,7 @@ fn bounded_entry_recovery_preserves_a_replaced_physical_parent()
 #[cfg(windows)]
 #[test]
 fn bounded_entry_recovery_rejects_unbounded_lengths_before_buffer_allocation()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NativeExchangeError> {
     use std::io::{Seek as _, Write as _};
     let (temporary, live, prepared) = entries()?;
     let witness = entry_exchange_witness(&live)?;
@@ -410,7 +446,7 @@ fn bounded_entry_recovery_rejects_unbounded_lengths_before_buffer_allocation()
     journal.write_all(&u64::MAX.to_le_bytes())?;
     drop(journal);
     let failure = run(finite_entry_budget(), &CancellationToken::new(), |work| {
-        recover_native_entry_exchange(&live, work)
+        recover_path(&live, work)
     })
     .expect_err("overflowing buffer length rejected");
     assert!(matches!(
@@ -428,7 +464,7 @@ fn bounded_entry_recovery_rejects_unbounded_lengths_before_buffer_allocation()
 #[cfg(windows)]
 #[test]
 fn bounded_entry_recovery_retains_journal_replacements_and_trailing_data()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NativeExchangeError> {
     use std::io::Write as _;
     let (temporary, live, prepared) = entries()?;
     let witness = entry_exchange_witness(&live)?;
@@ -437,7 +473,7 @@ fn bounded_entry_recovery_retains_journal_replacements_and_trailing_data()
     journal.write_all(b"user trailing bytes")?;
     drop(journal);
     let failure = run(finite_entry_budget(), &CancellationToken::new(), |work| {
-        recover_native_entry_exchange(&live, work)
+        recover_path(&live, work)
     })
     .expect_err("noncanonical witness retained");
     assert!(matches!(
@@ -453,7 +489,7 @@ fn bounded_entry_recovery_retains_journal_replacements_and_trailing_data()
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_exchange_preserves_raw_windows_names() -> Result<(), Box<dyn std::error::Error>> {
+fn bounded_entry_exchange_preserves_raw_windows_names() -> Result<(), NativeExchangeError> {
     use std::os::windows::ffi::OsStringExt as _;
     let temporary = tempfile::tempdir()?;
     let live_name: Vec<_> = "live".encode_utf16().chain([0xd800]).collect();
@@ -467,7 +503,7 @@ fn bounded_entry_exchange_preserves_raw_windows_names() -> Result<(), Box<dyn st
     fs::write(&live, b"before")?;
     fs::write(&prepared, b"after")?;
     run(finite_entry_budget(), &CancellationToken::new(), |work| {
-        exchange_native_entries(&live, &prepared, work)
+        exchange_paths(&live, &prepared, work)
     })
     .expect("raw native exchange");
     assert_eq!(fs::read(&live)?, b"after");
@@ -476,8 +512,7 @@ fn bounded_entry_exchange_preserves_raw_windows_names() -> Result<(), Box<dyn st
 }
 
 #[test]
-fn carrying_recovery_keeps_a_concurrently_recreated_live_path()
--> Result<(), Box<dyn std::error::Error>> {
+fn carrying_recovery_keeps_a_concurrently_recreated_live_path() -> Result<(), NativeExchangeError> {
     let (temporary, live, prepared) = trees()?;
     fs::write(live.join("private"), b"original")?;
     let journal = temporary.path().join("exchange.json");
@@ -522,8 +557,7 @@ fn carrying_recovery_keeps_a_concurrently_recreated_live_path()
 }
 
 #[test]
-fn carrying_recovery_replays_a_partially_completed_rollback()
--> Result<(), Box<dyn std::error::Error>> {
+fn carrying_recovery_replays_a_partially_completed_rollback() -> Result<(), NativeExchangeError> {
     let (temporary, live, prepared) = trees()?;
     let carried = vec![PathBuf::from("first"), PathBuf::from("second")];
     for path in &carried {
@@ -549,8 +583,7 @@ fn carrying_recovery_replays_a_partially_completed_rollback()
 }
 
 #[test]
-fn carrying_recovery_rejects_replaced_roots_without_mutation()
--> Result<(), Box<dyn std::error::Error>> {
+fn carrying_recovery_rejects_replaced_roots_without_mutation() -> Result<(), NativeExchangeError> {
     for replace_live in [true, false] {
         let (temporary, live, prepared) = trees()?;
         fs::write(live.join("private"), b"original")?;
@@ -584,7 +617,7 @@ fn carrying_recovery_rejects_replaced_roots_without_mutation()
 
 #[test]
 fn invalid_carried_paths_fail_before_preparation_or_recovery_effects()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NativeExchangeError> {
     let (temporary, live, prepared) = trees()?;
     fs::write(prepared.join("valid"), b"untouched")?;
     let journal_path = temporary.path().join("exchange.json");
@@ -633,8 +666,7 @@ fn invalid_carried_paths_fail_before_preparation_or_recovery_effects()
 
 #[cfg(windows)]
 #[test]
-fn entry_exchange_recovery_preserves_both_rename_prefixes() -> Result<(), Box<dyn std::error::Error>>
-{
+fn entry_exchange_recovery_preserves_both_rename_prefixes() -> Result<(), NativeExchangeError> {
     for published in [false, true] {
         let (temporary, live, prepared) = entries()?;
         let scratch = scratch(&live)?;
@@ -644,7 +676,7 @@ fn entry_exchange_recovery_preserves_both_rename_prefixes() -> Result<(), Box<dy
         if published {
             fs::rename(&prepared, &live)?;
         }
-        recover_native_entry_exchange(
+        recover_path(
             &live,
             &NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .expect("test work"),
@@ -668,7 +700,7 @@ fn entry_exchange_recovery_preserves_both_rename_prefixes() -> Result<(), Box<dy
 #[cfg(windows)]
 #[test]
 fn entry_exchange_recovery_preserves_an_unowned_scratch_collision()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NativeExchangeError> {
     let temporary = tempfile::tempdir()?;
     let live = temporary.path().join("live");
     let scratch = scratch(&live)?;
@@ -676,7 +708,7 @@ fn entry_exchange_recovery_preserves_an_unowned_scratch_collision()
     fs::write(&scratch, b"unrelated")?;
 
     assert!(matches!(
-        recover_native_entry_exchange(
+        recover_path(
             &live,
             &NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .expect("test work")
@@ -690,7 +722,7 @@ fn entry_exchange_recovery_preserves_an_unowned_scratch_collision()
 
 #[test]
 fn recovery_recognizes_an_exchange_completed_before_journal_removal()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NativeExchangeError> {
     let (temporary, live, prepared) = trees()?;
     fs::write(live.join("old"), b"old")?;
     fs::write(prepared.join("new"), b"new")?;
@@ -704,7 +736,7 @@ fn recovery_recognizes_an_exchange_completed_before_journal_removal()
         NativeExchangePhase::Exchanging,
     );
     write_journal(&journal_path, &journal)?;
-    exchange_native_entries(
+    exchange_paths(
         &live,
         &prepared,
         &NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -728,8 +760,7 @@ fn recovery_recognizes_an_exchange_completed_before_journal_removal()
 }
 
 #[test]
-fn prepared_exchange_is_idempotent_and_rejects_other_requests()
--> Result<(), Box<dyn std::error::Error>> {
+fn prepared_exchange_is_idempotent_and_rejects_other_requests() -> Result<(), NativeExchangeError> {
     let (temporary, live, prepared) = trees()?;
     let journal_path = temporary.path().join("exchange.json");
     let operation = IdempotencyKey::from_bytes([12; 16]);
@@ -783,7 +814,7 @@ fn prepared_exchange_is_idempotent_and_rejects_other_requests()
 }
 
 #[test]
-fn publication_rejects_a_journal_for_different_roots() -> Result<(), Box<dyn std::error::Error>> {
+fn publication_rejects_a_journal_for_different_roots() -> Result<(), NativeExchangeError> {
     let temporary = tempfile::tempdir()?;
     let first_live = temporary.path().join("first-live");
     let first_prepared = temporary.path().join("first-prepared");
@@ -824,8 +855,7 @@ fn publication_rejects_a_journal_for_different_roots() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn non_v1_journal_versions_fail_closed_without_mutation() -> Result<(), Box<dyn std::error::Error>>
-{
+fn non_v1_journal_versions_fail_closed_without_mutation() -> Result<(), NativeExchangeError> {
     let (temporary, live, prepared) = trees()?;
     fs::write(live.join("old"), b"old")?;
     fs::write(prepared.join("new"), b"new")?;
@@ -864,7 +894,7 @@ fn non_v1_journal_versions_fail_closed_without_mutation() -> Result<(), Box<dyn 
 
 #[cfg(windows)]
 #[test]
-fn windows_recovery_preserves_both_exchange_prefixes() -> Result<(), Box<dyn std::error::Error>> {
+fn windows_recovery_preserves_both_exchange_prefixes() -> Result<(), NativeExchangeError> {
     for published in [false, true] {
         let (temporary, live, prepared) = trees()?;
         fs::create_dir(live.join("private"))?;
@@ -920,8 +950,7 @@ fn windows_recovery_preserves_both_exchange_prefixes() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn exchange_publishes_whole_tree_and_carries_nested_exclusion()
--> Result<(), Box<dyn std::error::Error>> {
+fn exchange_publishes_whole_tree_and_carries_nested_exclusion() -> Result<(), NativeExchangeError> {
     let temporary = tempfile::tempdir()?;
     let live = temporary.path().join("live");
     let prepared = temporary.path().join("prepared");
@@ -948,7 +977,7 @@ fn exchange_publishes_whole_tree_and_carries_nested_exclusion()
 
 #[test]
 fn stale_completed_journal_does_not_suppress_the_next_publication()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NativeExchangeError> {
     let (temporary, live, prepared) = trees()?;
     fs::write(live.join("first"), b"first")?;
     fs::write(prepared.join("second"), b"second")?;
@@ -962,7 +991,7 @@ fn stale_completed_journal_does_not_suppress_the_next_publication()
         NativeExchangePhase::Exchanging,
     );
     write_journal(&journal_path, &stale)?;
-    exchange_native_entries(
+    exchange_paths(
         &live,
         &prepared,
         &NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -990,7 +1019,7 @@ fn stale_completed_journal_does_not_suppress_the_next_publication()
 }
 
 #[test]
-fn entry_exchange_preserves_both_complete_entries() -> Result<(), Box<dyn std::error::Error>> {
+fn entry_exchange_preserves_both_complete_entries() -> Result<(), NativeExchangeError> {
     let temporary = tempfile::tempdir()?;
     let left = temporary.path().join("left");
     let right = temporary.path().join("right");
@@ -998,7 +1027,7 @@ fn entry_exchange_preserves_both_complete_entries() -> Result<(), Box<dyn std::e
     fs::create_dir(&right)?;
     fs::write(left.join("value"), b"left")?;
     fs::write(right.join("value"), b"right")?;
-    exchange_native_entries(
+    exchange_paths(
         &left,
         &right,
         &NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
