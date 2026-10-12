@@ -7,48 +7,20 @@ pub(crate) fn read_link_held_wide<W: NativeHostWork>(
     maximum: u64,
     work: &mut W,
 ) -> Result<(Vec<u16>, W::Allocation), W::Error> {
-    read_windows_link_wide(parent, name, maximum, work, || {
+    let invalid_request = || {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "native link exceeds its bounded buffer",
         )
         .into()
-    })
-}
-
-#[cfg(windows)]
-pub(crate) fn read_link_held<W: NativeHostWork>(
-    parent: &Dir,
-    name: &Path,
-    maximum: u64,
-    work: &mut W,
-) -> Result<(Vec<u16>, W::Allocation), W::Error> {
-    require_leaf(name)?;
-    with_wide_path(name, work, |name, work| {
-        read_link_held_wide(parent, name, maximum, work)
-    })
-}
-
-#[cfg(windows)]
-pub(super) fn read_windows_link_wide<W: NativeHostWork>(
-    parent: &Dir,
-    name: &[u16],
-    maximum: u64,
-    work: &mut W,
-    invalid_request: impl Fn() -> W::Error,
-) -> Result<(Vec<u16>, W::Allocation), W::Error> {
+    };
     let file = open_windows_link(parent, name, work, &invalid_request)?;
     let size = maximum.saturating_mul(4).saturating_add(32).min(16 * 1024);
     work.admit(WorkCounters {
         source_bytes_read: size,
         ..WorkCounters::UNCHARGED
     })?;
-    let allocation = work.claim(size)?;
-    let mut buffer = Vec::new();
-    if let Err(error) = buffer.try_reserve_exact(size as usize) {
-        work.release(allocation)?;
-        return Err(W::allocation_failed(error));
-    }
+    let (mut buffer, allocation) = buffer(size as usize, work)?;
     buffer.resize(size as usize, 0u8);
     let result = (|| {
         let returned = read_windows_link_record(&file, &mut buffer, work, &invalid_request)?;
@@ -61,12 +33,7 @@ pub(super) fn read_windows_link_wide<W: NativeHostWork>(
             ..WorkCounters::UNCHARGED
         };
         work.admit(copied)?;
-        let allocation = work.claim(length as u64)?;
-        let mut wide = Vec::new();
-        if let Err(error) = wide.try_reserve_exact(length / 2) {
-            work.release(allocation)?;
-            return Err(W::allocation_failed(error));
-        }
+        let (mut wide, allocation) = super::buffer(length / 2, work)?;
         wide.extend(
             target
                 .chunks_exact(2)
@@ -242,19 +209,6 @@ pub(super) fn prepare_source_link_buffer<W: crate::demand::SourceDemandReadWork>
             }
         },
     )
-}
-
-#[cfg(windows)]
-pub(crate) fn read_source_link_held<W: crate::demand::SourceDemandReadWork>(
-    parent: &Dir,
-    name: &Path,
-    maximum_bytes: u64,
-    work: &mut W,
-) -> Result<acyclic_stream::OwnedBytes, DemandError> {
-    require_leaf(name)?;
-    with_wide_path(name, work, |name, work| {
-        read_source_link_held_wide(parent, name, maximum_bytes, work)
-    })
 }
 
 #[cfg(windows)]

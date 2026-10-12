@@ -81,8 +81,14 @@ async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_init
         available: acyclic_harness::scheduler::ResourceSnapshot::default(),
         labels: BTreeMap::new(),
     };
-    fixture.runtime.runtime.run_operation_with_native_work(&worker, prepared.binding.task_id,
-        &fixture.runtime.runtime.commands(), 1, &work).await.unwrap();
+    (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+        let value = fixture.runtime.runtime.run_operation(&worker, prepared.binding.task_id, &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     assert!(!original_native_first_dispatch_pending(&fixture.runtime, &fixture.stream,
         &fixture.owner, &plan, &work).await.unwrap());
     fixture.runtime.runtime.task_host().cancel(prepared.binding.task_id, None).await.unwrap();

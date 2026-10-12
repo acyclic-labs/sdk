@@ -494,10 +494,7 @@ fn raw_link_set_denial_retains_real_created_prefix_and_prepaid_close()
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let mut close = work.reserve_work(WorkCounters {
-        backend_write_operations: 1,
-        ..WorkCounters::UNCHARGED
-    })?;
+    let mut close = work.reserve_work(WRITE)?;
     let mut created = None;
     let published = std::cell::Cell::new(false);
     let set = std::cell::Cell::new(false);
@@ -514,10 +511,7 @@ fn raw_link_set_denial_retains_real_created_prefix_and_prepaid_close()
     assert!(result.is_err());
     assert!(published.get() && !set.get());
     assert!(created.is_some());
-    close.started_drop_io(WorkCounters {
-        backend_write_operations: 1,
-        ..WorkCounters::UNCHARGED
-    });
+    close.started_drop_io(WRITE);
     drop(created.take());
     assert!(!temporary.path().join("link").try_exists()?);
     Ok(())
@@ -532,10 +526,7 @@ fn raw_link_original_cancellation_after_create_does_not_erase_capability()
     let cancellation = crate::CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut close = work.reserve_work(WorkCounters {
-        backend_write_operations: 1,
-        ..WorkCounters::UNCHARGED
-    })?;
+    let mut close = work.reserve_work(WRITE)?;
     let mut created = None;
     let set = std::cell::Cell::new(false);
     let result = create_windows_symbolic_link(
@@ -554,10 +545,7 @@ fn raw_link_original_cancellation_after_create_does_not_erase_capability()
     ));
     assert!(created.is_some() && !set.get());
     assert!(cancellation.is_cancelled());
-    close.started_drop_io(WorkCounters {
-        backend_write_operations: 1,
-        ..WorkCounters::UNCHARGED
-    });
+    close.started_drop_io(WRITE);
     drop(created.take());
     assert!(cancellation.is_cancelled());
     assert!(!temporary.path().join("link").try_exists()?);

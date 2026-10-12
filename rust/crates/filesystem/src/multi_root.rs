@@ -457,26 +457,12 @@ where
         operation_id: OperationId,
         conflict: &'static str,
     ) -> Result<PublicationReservation, WorkspaceMultiRootPublisherError<R::Error>> {
-        let authority_head = target
-            .volume.fs.authority()
-            .head(
-                target.authority_id(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let authority_head = ({ let __authority_args = (target.authority_id(), WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .volume.fs.authority().head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value;
-        match target
-            .volume.fs.authority()
-            .reserve_publication(
-                target.authority_id(),
-                authority_head,
-                operation_id,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        match ({ let __authority_args = (target.authority_id(), authority_head, operation_id, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = target
+            .volume.fs.authority().reserve_publication(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value
         {
@@ -500,14 +486,8 @@ where
                 "publication reservation is owned by another operation",
             )
             .await?;
-        target
-            .volume.fs.authority()
-            .release_publication(
-                reservation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        ({ let __authority_args = (reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?;
         Ok(())
     }
@@ -732,26 +712,12 @@ where
             .resolve(root.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        let authority_head = target
-            .volume.fs.authority()
-            .head(
-                target.authority_id(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let authority_head = ({ let __authority_args = (target.authority_id(), WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .volume.fs.authority().head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value;
-        let reservation = match target
-            .volume.fs.authority()
-            .reserve_publication(
-                target.authority_id(),
-                authority_head,
-                operation_id,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let reservation = match ({ let __authority_args = (target.authority_id(), authority_head, operation_id, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = target
+            .volume.fs.authority().reserve_publication(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value
         {
@@ -780,14 +746,8 @@ where
             .resolve(decoded.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        target
-            .volume.fs.authority()
-            .release_publication(
-                decoded.reservation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        ({ let __authority_args = (decoded.reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?;
         Ok(())
     }
@@ -856,14 +816,8 @@ where
                 },
             )
             .await;
-        let release = target
-            .volume.fs.authority()
-            .release_publication(
-                reservation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let release = ({ let __authority_args = (reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error));
         if let Err(error) = release {
             return Err(error.into());
@@ -905,9 +859,9 @@ where
         let projected = target.generation(projected_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let changed = original
             .diff_to(&projected, u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map_err(|failure| failure.error)?
+            .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?
             .changed_paths(u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?;
         let paths = changed
             .iter()
             .map(|change| {
@@ -944,14 +898,8 @@ where
                 },
             )
             .await;
-        let release = target
-            .volume.fs.authority()
-            .release_publication(
-                reservation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let release = ({ let __authority_args = (reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error));
         if let Err(error) = release {
             return Err(error.into());
@@ -1093,14 +1041,8 @@ where
         if target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id() != root.target_generation {
             if let Some(generation) = target.operation_generation(publisher_key(operation_id, root_id, b"publish"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             {
-                target
-                    .volume.fs.authority()
-                    .release_publication(
-                        decoded.reservation,
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                    )
-                    .await
+                ({ let __authority_args = (decoded.reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+                    .volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                     .map_err(|failure| WorkspaceError::engine(failure.error))?;
                 return Ok(MultiRootPublishRoot::AlreadyPublished(generation.id()));
             }
@@ -1141,14 +1083,8 @@ where
             outcome,
             MultiRootPublishRoot::Published(_) | MultiRootPublishRoot::AlreadyPublished(_)
         ) {
-            target
-                .volume.fs.authority()
-                .release_publication(
-                    decoded.reservation,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
+            ({ let __authority_args = (decoded.reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+                .volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                 .map_err(|failure| WorkspaceError::engine(failure.error))?;
         }
         Ok(outcome)

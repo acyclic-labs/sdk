@@ -1,5 +1,18 @@
 use super::*;
 
+pub(super) const READ: WorkCounters = WorkCounters {
+    backend_read_operations: 1,
+    ..WorkCounters::UNCHARGED
+};
+pub(super) const WRITE: WorkCounters = WorkCounters {
+    backend_write_operations: 1,
+    ..WorkCounters::UNCHARGED
+};
+pub(super) const ITEM: WorkCounters = WorkCounters {
+    items_examined: 1,
+    ..WorkCounters::UNCHARGED
+};
+
 pub(super) fn buffer<T, W: NativeHostWork>(
     capacity: usize,
     work: &mut W,
@@ -210,17 +223,11 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
 pub(super) fn native_write<W: crate::demand::SourceDemandReadWork>(
     work: &mut W,
 ) -> Result<(), DemandError> {
-    work.charge(WorkCounters {
-        backend_write_operations: 1,
-        ..WorkCounters::UNCHARGED
-    })
+    work.charge(WRITE)
 }
 
 pub(super) fn native_read<W: NativeHostWork>(work: &mut W) -> Result<(), W::Error> {
-    work.started_io(WorkCounters {
-        backend_read_operations: 1,
-        ..WorkCounters::UNCHARGED
-    })
+    work.started_io(READ)
 }
 
 pub(crate) struct NativeOwned<T> {

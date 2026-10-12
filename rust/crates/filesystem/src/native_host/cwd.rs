@@ -153,10 +153,7 @@ pub(crate) fn cwd_path<W: NativeHostWork<Error = DemandError, Allocation = u64>>
             }
             #[cfg(target_os = "macos")]
             for _ in 0..=length {
-                work.started_io(WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
+                work.started_io(ITEM)?;
             }
             let (mut owned, allocation) = buffer(length, work)?;
             let copied = WorkCounters {

@@ -8,7 +8,7 @@ use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{LazySnapshotRef, WorkBudget, WorkCounters, NativeMaterializationWork};
 use acyclic_harness::{Error, Result, TaskId, OperationId,
     durable_host::TaskJournalOwner, filesystem::{TaskCommandProgress, ForkPreparationLimits},
-    core::SchemaRegistry, NativeTaskContext, scheduler::LeaseFence,
+    core::SchemaRegistry, runtime::NativeTaskContext, scheduler::LeaseFence,
     store::StreamAggregate, workflow::WorkflowCommand};
 use acyclic_stream::{LocalStream};
 use serde::{Deserialize, Serialize};
@@ -173,13 +173,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 .ok_or_else(|| invalid("Pi selected child has no actual reopened creator workspace"))?
         };
         if let Some(plan) = plan {
-            source.validate_snapshot_with_native_work(plan.frozen, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+            source.validate_snapshot(plan.frozen, &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, (work).cancellation()).map_err(crate::pi_lazy_capture::native_lazy_error)?).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
             return Ok((source, plan.frozen, None));
         }
         let mut source_custody = None;
         let frozen = if command.commit.source_task == self.protected.policy().root_task {
             if let Some(frozen) = command.root_source {
-                source.validate_snapshot_with_native_work(frozen, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+                source.validate_snapshot(frozen, &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, (work).cancellation()).map_err(crate::pi_lazy_capture::native_lazy_error)?).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
                 frozen
             } else if owner.task_id() == self.protected.policy().root_task {
                 let actual = self.roots.get(root_key).ok_or_else(|| invalid("Pi selected root handle missing"))?;
@@ -210,7 +210,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             } else {
                 let frozen = self.native.source_frozen(command.commit.source_task)
                     .ok_or_else(|| invalid("Pi undispatched source lost its actual first native companion"))?;
-                source.validate_snapshot_with_native_work(frozen, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+                source.validate_snapshot(frozen, &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, (work).cancellation()).map_err(crate::pi_lazy_capture::native_lazy_error)?).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
                 frozen
             }
         };
@@ -236,7 +236,11 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             return Err(unauthorized("Pi SDK retained native paths differ from its original planned namespace"));
         }
         let project = plan.commit.child.project_volumes.values().next().ok_or_else(|| invalid("Pi project missing"))?;
-        let workspace = project.storage_name_with_native_work(work)?;
+        let workspace = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = project.storage_name(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         #[derive(Serialize)]
         struct Pending<'b> {
             task_binding: PluginTaskBinding<&'b crate::PiTaskBinding>, agent_id: Option<&'b str>, parent_agent_id: &'b str,
@@ -326,7 +330,11 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let conversation = self.protected.conversation_authority_with_native_work(owner.task_id(),
             caller.binding.agent_id, context.scope().grants(), work)?;
         let mut authority = (conversation.0, conversation.1);
-        let mut verifier = authority.0.1.verifier_with_native_work(work)?;
+        let mut verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = authority.0.1.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0,
             verifier.0, SchemaRegistry::new(), work).await?;
         let mut parent_custody = parent.1;
@@ -346,8 +354,12 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             hex::decode_to_slice(root_key, &mut root).map_err(|_| invalid("Pi pending root identity is not canonical"))?;
             let paths = crate::pi_native::planned_native_paths(self.resources, &self.retained.root_session_id,
                 plan.commit.child.task_id, Some(root_key), work)?;
-            let workspace = plan.commit.child.project_volumes.values().next().ok_or_else(|| invalid("Pi child project missing"))?
-                .storage_name_with_native_work(work)?;
+            let workspace = {
+                let volume = plan.commit.child.project_volumes.values().next().ok_or_else(|| invalid("Pi child project missing"))?;
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                let name = volume.storage_name(&mut Some(&mut io))?;
+                (name, io.into_custody())
+            };
             if !same_identity(binding, &plan.commit.child) || saved.tool_use_id != plan.commit.sdk_operation
                 || saved.agent_id.as_deref() != Some(plan.commit.alias.as_str())
                 || saved.parent_agent_id != self.parent_alias(plan.commit.caller)?
@@ -403,7 +415,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             if observed.caller != input.caller || observed.sdk_operation != input.sdk_operation || observed.root_key != input.root_key {
                 return Err(unauthorized("Pi original Root observation retry changed its source request"));
             }
-            actual.workspace.validate_snapshot_with_native_work(observed.snapshot, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+            actual.workspace.validate_snapshot(observed.snapshot, &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, (work).cancellation()).map_err(crate::pi_lazy_capture::native_lazy_error)?).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
             return ready(&PiRootSource { snapshot: observed.snapshot, root_key: &observed.root_key }, &work);
         }
         let frozen = freeze_created_root_source(self.protected.clone(), self.resources,

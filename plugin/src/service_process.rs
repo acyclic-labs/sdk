@@ -1551,7 +1551,7 @@ pub(crate) fn encode_native_control_value<T: serde::Serialize + ?Sized>(
         maximum_depth: 64,
     };
     let mut allocation = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_control_error)?;
-    match acyclic_harness::json_bytes_bounded_trusted(value, bounds, &mut |charge| {
+    match acyclic_harness::json_bytes_bounded(value, bounds, None, &mut |charge| {
         native_control_codec_charge(charge, work, &mut allocation)
     }) {
         Ok(bytes) => Ok((bytes, allocation)),
@@ -2205,8 +2205,8 @@ fn decode_native_control_json<T: serde::de::DeserializeOwned>(
         NativeControlJsonSchema::Value => acyclic_harness::JsonValueSchema::Root,
         NativeControlJsonSchema::Response => acyclic_harness::JsonValueSchema::ControlResponse,
     };
-    let decoded = acyclic_harness::json_from_slice_bounded_native_trusted(
-        bytes, bounds, 0, acyclic_harness::wire::ErrorCode::Invalid, value_schema, &mut |charge| {
+    let decoded = acyclic_harness::json_from_slice_bounded(
+        std::marker::PhantomData::<T>, bytes, bounds, 0, Some(acyclic_harness::wire::ErrorCode::Invalid), Some(value_schema), &mut |charge| {
             match charge {
                 JsonCodecCharge::Admission { value_shape, .. } => {
                     let value_owned = acyclic_harness::json_value_decode_owned_bytes(value_shape)?;

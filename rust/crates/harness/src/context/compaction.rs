@@ -566,12 +566,12 @@ mod tests {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn observed_compaction_matches_ordinary_exchange_and_input_selection() -> Result<()> {
-        use crate::conversation::{FileDescriptor, FileRef, ProviderRef, VolumeClass, VolumeOwner, VolumeRef};
+        use crate::{conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef}, resources::ProviderRef};
         use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
         let file = FileRef::new(VolumeRef::new(
-            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, "context", VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])))?,
-            "context/summary.txt", "pinned", FileDescriptor::from_bytes(b"summary", "text/plain")?, "summary.txt")?;
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, "context".into(), VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])), &mut None)?,
+            "context/summary.txt".into(), "pinned".into(), FileDescriptor::from_bytes(b"summary", "text/plain", &mut None)?, "summary.txt".into(), &mut None)?;
         let context = Context {
             messages: vec![
                 ModelMessage { role: ModelRole::User, content: ModelContent::Text("old".into()) },

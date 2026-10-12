@@ -130,10 +130,7 @@ impl PreparedMaterializationRecord {
         let file = &mut self.file;
         let mut offset = 0;
         while offset < bytes.len() {
-            self.credit.record_completed(WorkCounters {
-                backend_write_operations: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
+            self.credit.record_completed(WRITE)?;
             let count = file.write(&bytes[offset..]).map_err(E::Io)?;
             if count > bytes.len() - offset {
                 return Err(E::InvalidLayout);
@@ -152,10 +149,7 @@ impl PreparedMaterializationRecord {
             ..WorkCounters::UNCHARGED
         })?;
         sync_held_descriptor_once(file)?;
-        self.credit.record_completed(WorkCounters {
-            backend_write_operations: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
+        self.credit.record_completed(WRITE)?;
         #[cfg(unix)]
         {
             // SAFETY: this retained name was validated/terminated at prepare.
@@ -225,10 +219,7 @@ pub(super) fn prepared_materialization_name(
     use std::os::unix::ffi::OsStrExt as _;
     let bytes = leaf.as_os_str().as_bytes();
     for byte in bytes {
-        work.charge(WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
+        work.charge(ITEM)?;
         if *byte == 0 {
             return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout);
         }

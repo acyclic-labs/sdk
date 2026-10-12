@@ -14,13 +14,7 @@ pub(crate) fn apply_windows_metadata<W: crate::demand::SourceDemandReadWork>(
     }
     let current = query_windows_basic_info(&file, work)?;
     let desired = desired_windows_basic_info(metadata, current)?;
-    work.attempt_io(
-        WorkCounters {
-            backend_write_operations: 1,
-            ..WorkCounters::UNCHARGED
-        },
-        || set_windows_basic_info(&file, desired),
-    )?;
+    work.attempt_io(WRITE, || set_windows_basic_info(&file, desired))?;
     verify_windows_basic_info(metadata, desired, query_windows_basic_info(&file, work)?)
         .map_err(Into::into)
 }

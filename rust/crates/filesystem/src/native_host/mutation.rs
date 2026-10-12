@@ -1,81 +1,6 @@
 use super::*;
 
-pub(super) fn fence_cookie_held<W: NativeHostWork>(
-    parent: &Dir,
-    #[cfg(unix)] leaf: &std::ffi::CStr,
-    #[cfg(windows)] leaf: &[u16],
-    work: &mut W,
-) -> Result<(), W::Error> {
-    let cleanup = work.reserve_cleanup_write()?;
-    #[cfg(unix)]
-    let created = open_unix(
-        parent.as_raw_fd(),
-        leaf,
-        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        work,
-    );
-    #[cfg(windows)]
-    let created = create_windows_wide_at(parent, leaf, false, false, false, true, work);
-    let created = match created {
-        Ok(file) => file,
-        Err(error) => {
-            work.cancel_cleanup_write(cleanup);
-            return Err(error);
-        }
-    };
-    let completion = work.check();
-    let (removed, recorded) = work.attempt_cleanup_write(cleanup, || {
-        #[cfg(unix)]
-        {
-            // SAFETY: the held parent and prepared leaf survive cancellation.
-            if unsafe { libc::unlinkat(parent.as_raw_fd(), leaf.as_ptr(), 0) } < 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        }
-        #[cfg(windows)]
-        {
-            use windows::Wdk::Storage::FileSystem::{
-                FILE_DISPOSITION_INFORMATION, FileDispositionInformation,
-            };
-            windows_set_information(
-                &created,
-                &FILE_DISPOSITION_INFORMATION { DeleteFile: true },
-                FileDispositionInformation,
-            )
-        }
-    });
-    drop(created);
-    recorded?;
-    removed?;
-    completion?;
-    work.check()
-}
-
 impl HostRoot {
-    pub(crate) fn fence_cookie(
-        &self,
-        relative: &Path,
-        work: &mut DemandWork,
-    ) -> Result<(), DemandError> {
-        #[cfg(unix)]
-        {
-            with_unix_parent_leaf(&self.directory, relative, work, |parent, leaf, work| {
-                fence_cookie_held(parent, leaf, work)
-            })
-        }
-        #[cfg(windows)]
-        {
-            with_wide_path(relative, work, |relative, work| {
-                let (parent, leaf) = wide_parent_leaf(relative)?;
-                let parent = self
-                    .open_dir_held_wide(parent, work)
-                    .map(|(directory, _)| directory)?;
-                fence_cookie_held(&parent, leaf, work)
-            })
-        }
-    }
     pub(crate) fn create_file<W: crate::demand::SourceDemandReadWork>(
         &self,
         path: &Path,
@@ -138,48 +63,6 @@ impl HostRoot {
                 directory,
                 identity,
             })
-        }
-    }
-    pub(crate) fn hard_link<W: crate::demand::SourceDemandReadWork>(
-        &self,
-        source: &Path,
-        destination: &Path,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        #[cfg(windows)]
-        {
-            with_wide_path(source, work, |source, work| {
-                with_wide_path(destination, work, |destination, work| {
-                    self.hard_link_wide(source, destination, work)
-                })
-            })
-        }
-        #[cfg(unix)]
-        {
-            with_unix_parent_leaf(
-                &self.directory,
-                source,
-                work,
-                |source_parent, source_leaf, work| {
-                    with_unix_parent_leaf(
-                        &self.directory,
-                        destination,
-                        work,
-                        |parent, leaf, work| {
-                            // SAFETY: both capability parents and terminated names outlive linkat.
-                            unix_mutation(work, || unsafe {
-                                libc::linkat(
-                                    source_parent.as_raw_fd(),
-                                    source_leaf.as_ptr(),
-                                    parent.as_raw_fd(),
-                                    leaf.as_ptr(),
-                                    0,
-                                )
-                            })
-                        },
-                    )
-                },
-            )
         }
     }
     #[cfg(unix)]
@@ -412,13 +295,9 @@ pub(crate) fn rename_no_replace_held<W: NativeHostWork>(
     {
         unix_name(from_name.as_os_str(), work, |from_name, work| {
             unix_name(to_name.as_os_str(), work, |to_name, work| {
-                work.attempt_io(
-                    WorkCounters {
-                        backend_write_operations: 1,
-                        ..WorkCounters::UNCHARGED
-                    },
-                    || rename_unix_names_once(from, from_name, to, to_name, false),
-                )
+                work.attempt_io(WRITE, || {
+                    rename_unix_names_once(from, from_name, to, to_name, false)
+                })
             })
         })
     }
@@ -488,20 +367,14 @@ pub(crate) fn rename_no_replace_held<W: NativeHostWork>(
                 }
             }
             let length = u32::try_from(bytes).map_err(|_| crate::WorkError::Overflow)?;
-            work.attempt_io(
-                WorkCounters {
-                    backend_write_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                },
-                || {
-                    windows_name_packet_once(
-                        &file,
-                        &buffer,
-                        length,
-                        windows::Wdk::Storage::FileSystem::FileRenameInformation,
-                    )
-                },
-            )
+            work.attempt_io(WRITE, || {
+                windows_name_packet_once(
+                    &file,
+                    &buffer,
+                    length,
+                    windows::Wdk::Storage::FileSystem::FileRenameInformation,
+                )
+            })
         })();
         drop(buffer);
         work.release(allocation)?;

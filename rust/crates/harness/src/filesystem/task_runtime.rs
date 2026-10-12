@@ -433,7 +433,7 @@ where
             }
             if let Some(policy) = &policy { policy.supports_native_policy(work)?; }
             let payloads = FilesystemSchedulerPayloadStore::new(filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
-            let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
+            let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?;
             let coordinator = DistributedCoordinator::open(
                 &stream, reader.clone(), Some(payloads.clone()),
                 &mut Some(&mut crate::store::history::native_work_io(work)?),
@@ -473,7 +473,7 @@ where
         );
         let resumable_tools = resumable_tools.clone();
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
-        let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
+        let reader = FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?;
         let mut host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?, stream.clone(), payloads, reader.clone(), &(verifier.audience()), signed.clone(), verifier.clone(), scope.clone(), tasks.clone(), machines, clock, None)?
         .with_session_limits(session_limits, None)?
         .with_resource_creation_providers(creation_providers, None)?;

@@ -171,10 +171,7 @@ pub(super) fn clone_windows_file<W: crate::demand::SourceDemandReadWork>(
     };
     const CLONE_CHUNK: u64 = 1024 * 1024 * 1024;
     for alignment in [4 * 1024, 64 * 1024] {
-        work.charge(WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
+        work.charge(ITEM)?;
         let cloned: Result<(), DemandError> = (|| {
             let clone_length = length / alignment * alignment;
             if clone_length == 0 {
@@ -202,10 +199,7 @@ pub(super) fn clone_windows_file<W: crate::demand::SourceDemandReadWork>(
             truncate_file(target, length, work)?;
             let mut offset = 0;
             while offset < clone_length {
-                work.charge(WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
+                work.charge(ITEM)?;
                 let count = (clone_length - offset).min(CLONE_CHUNK);
                 let duplicate = DUPLICATE_EXTENTS_DATA {
                     FileHandle: HANDLE(source.as_raw_handle()),
@@ -240,10 +234,7 @@ pub(super) fn clone_windows_file<W: crate::demand::SourceDemandReadWork>(
                 let result: Result<(), DemandError> = (|| {
                     let mut buffer = [0_u8; 64 * 1024];
                     for range in &ranges {
-                        work.charge(WorkCounters {
-                            items_examined: 1,
-                            ..WorkCounters::UNCHARGED
-                        })?;
+                        work.charge(ITEM)?;
                         let size = usize::try_from(range.length)
                             .map_err(|_| crate::WorkError::Overflow)?;
                         let buffer = buffer.get_mut(..size).ok_or(DemandError::InvalidRequest)?;
@@ -275,10 +266,7 @@ pub(crate) fn truncate_file<W: NativeHostWork>(
     {
         let length = libc::off_t::try_from(length).map_err(|_| crate::WorkError::Overflow)?;
         loop {
-            let delta = WorkCounters {
-                backend_write_operations: 1,
-                ..WorkCounters::UNCHARGED
-            };
+            let delta = WRITE;
             work.admit(delta)?;
             work.record(delta)?;
             // SAFETY: ftruncate acts only on the live held descriptor.
@@ -298,13 +286,9 @@ pub(crate) fn truncate_file<W: NativeHostWork>(
         let information = FILE_END_OF_FILE_INFO {
             EndOfFile: i64::try_from(length).map_err(|_| crate::WorkError::Overflow)?,
         };
-        work.attempt_io(
-            WorkCounters {
-                backend_write_operations: 1,
-                ..WorkCounters::UNCHARGED
-            },
-            || windows_set_information(file, &information, FileEndOfFileInformation),
-        )
+        work.attempt_io(WRITE, || {
+            windows_set_information(file, &information, FileEndOfFileInformation)
+        })
     }
 }
 

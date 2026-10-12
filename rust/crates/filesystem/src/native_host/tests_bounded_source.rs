@@ -60,15 +60,7 @@ fn cleanup_reservations_restore_only_their_own_non_lifo_allowance()
     recorded?;
     assert_eq!(work.budget.backend_write_operations, 1);
     assert!(
-        work.work
-            .admit(
-                &WorkCounters {
-                    backend_write_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                },
-                &work.budget
-            )
-            .is_err(),
+        work.work.admit(&WRITE, &work.budget).is_err(),
         "the later reservation remains withheld"
     );
     work.cancel_cleanup_write(later);

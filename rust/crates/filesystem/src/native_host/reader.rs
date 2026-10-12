@@ -136,10 +136,7 @@ impl HostStatReader {
                 }
                 continue;
             };
-            let item = WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            };
+            let item = ITEM;
             work.admit(item)?;
             work.record(item)?;
             let (next, name) = decode_host_directory_record(&self.buffer, offset)?;
@@ -329,10 +326,7 @@ impl HostStatReader {
                     return Ok(None);
                 }
             }
-            let item = WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            };
+            let item = ITEM;
             work.admit(item)?;
             work.record(item)?;
             let bytes = unsafe {

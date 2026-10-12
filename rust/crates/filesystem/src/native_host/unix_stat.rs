@@ -85,15 +85,9 @@ pub(super) fn open_unix<W: NativeHostWork>(
     loop {
         work.started_io(
             if flags & (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT) != 0 {
-                WorkCounters {
-                    backend_write_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                }
+                WRITE
             } else {
-                WorkCounters {
-                    backend_read_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                }
+                READ
             },
         )?;
         // SAFETY: the held parent or AT_FDCWD and terminated name are live.
@@ -246,18 +240,17 @@ pub(super) fn stat_unix_fd_at<W: NativeHostWork>(
     })
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[cfg(any(feature = "native-mount", test))]
-pub(super) fn fstat<W: crate::demand::SourceDemandReadWork>(
+#[cfg(unix)]
+pub(super) fn fstat<W: NativeHostWork>(
     fd: std::os::fd::RawFd,
     work: &mut W,
-) -> Result<libc::stat, DemandError> {
-    let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
-    native_read(work)?;
-    // SAFETY: fstat initializes the whole result on success.
-    if unsafe { libc::fstat(fd, observed.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    // SAFETY: fstat succeeded above, so it initialized `observed`.
-    Ok(unsafe { observed.assume_init() })
+) -> Result<libc::stat, W::Error> {
+    work.attempt_io(READ, || {
+        let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: the held descriptor stays live; successful fstat initializes the complete output.
+        if unsafe { libc::fstat(fd, observed.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(unsafe { observed.assume_init() })
+    })
 }

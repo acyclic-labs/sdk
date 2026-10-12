@@ -101,10 +101,7 @@ pub(super) fn with_normalized_windows_root_name<W: NativeHostWork, T>(
         return operation(name, work);
     }
     let input = if name == [0] { &[46u16, 0][..] } else { name };
-    let step = WorkCounters {
-        items_examined: 1,
-        ..WorkCounters::UNCHARGED
-    };
+    let step = ITEM;
     let mut requested = work.attempt_io(step, || {
         let required =
             unsafe { GetFullPathNameW(windows::core::PCWSTR(input.as_ptr()), None, None) };
@@ -296,10 +293,7 @@ pub(super) fn check_root_wide_name<W: NativeHostWork>(
         return Err(W::invalid_request());
     }
     for unit in body {
-        let delta = WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        };
+        let delta = ITEM;
         work.admit(delta)?;
         work.record(delta)?;
         if *unit == 0 {
@@ -315,18 +309,12 @@ pub(crate) fn root_path_identity_wide<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<NativeRootIdentity, W::Error> {
     check_root_wide_name(name, work)?;
-    let file = work.attempt_io(
-        WorkCounters {
-            backend_read_operations: 1,
-            ..WorkCounters::UNCHARGED
-        },
-        || {
-            open_windows_root_name(
-                name,
-                windows::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES,
-            )
-        },
-    )?;
+    let file = work.attempt_io(READ, || {
+        open_windows_root_name(
+            name,
+            windows::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES,
+        )
+    })?;
     let directory = Dir::from_std_file(file);
     directory_identity(&directory, work)
 }

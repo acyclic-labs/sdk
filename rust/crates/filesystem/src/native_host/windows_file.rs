@@ -83,10 +83,7 @@ pub(super) fn windows_leaf_name<W: NativeHostWork>(
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid native leaf").into());
     }
     for unit in path {
-        let delta = WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        };
+        let delta = ITEM;
         work.admit(delta)?;
         let invalid = matches!(*unit, 0 | 47 | 58 | 92);
         work.record(delta)?;
@@ -148,23 +145,17 @@ pub(crate) fn create_windows_wide_at<W: NativeHostWork>(
         } else {
             Default::default()
         };
-    work.attempt_io(
-        WorkCounters {
-            backend_write_operations: 1,
-            ..WorkCounters::UNCHARGED
-        },
-        || {
-            open_windows_name(
-                directory,
-                &name,
-                access,
-                if open_if { FILE_OPEN_IF } else { FILE_CREATE },
-                options,
-                OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
-            )
-            .map_err(status_error)
-        },
-    )
+    work.attempt_io(WRITE, || {
+        open_windows_name(
+            directory,
+            &name,
+            access,
+            if open_if { FILE_OPEN_IF } else { FILE_CREATE },
+            options,
+            OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        )
+        .map_err(status_error)
+    })
 }
 
 #[cfg(windows)]
@@ -213,19 +204,13 @@ pub(crate) fn keep_windows_created_file<W: NativeHostWork>(
     file: &File,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    work.attempt_io(
-        WorkCounters {
-            backend_write_operations: 1,
-            ..WorkCounters::UNCHARGED
-        },
-        || {
-            windows_set_information(
-                file,
-                &8_u32,
-                windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS(64),
-            )
-        },
-    )
+    work.attempt_io(WRITE, || {
+        windows_set_information(
+            file,
+            &8_u32,
+            windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS(64),
+        )
+    })
 }
 
 #[cfg(windows)]
@@ -248,23 +233,17 @@ pub(crate) fn open_windows_leaf_handle<W: NativeHostWork>(
             Some(false) => FILE_NON_DIRECTORY_FILE,
             None => NTCREATEFILE_CREATE_OPTIONS(0),
         };
-    work.attempt_io(
-        WorkCounters {
-            backend_read_operations: 1,
-            ..WorkCounters::UNCHARGED
-        },
-        || {
-            open_windows_name(
-                parent,
-                &name,
-                access,
-                FILE_OPEN,
-                options,
-                windows::Win32::Foundation::OBJ_CASE_INSENSITIVE,
-            )
-            .map_err(status_error)
-        },
-    )
+    work.attempt_io(READ, || {
+        open_windows_name(
+            parent,
+            &name,
+            access,
+            FILE_OPEN,
+            options,
+            windows::Win32::Foundation::OBJ_CASE_INSENSITIVE,
+        )
+        .map_err(status_error)
+    })
 }
 
 #[cfg(windows)]
@@ -307,10 +286,7 @@ pub(super) fn with_windows_symlink_packet<W: NativeHostWork, T>(
         return Err(W::invalid_request());
     }
     for unit in target {
-        let examined = WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        };
+        let examined = ITEM;
         work.admit(examined)?;
         let invalid = *unit == 0;
         work.record(examined)?;
@@ -415,28 +391,22 @@ pub(super) fn set_windows_symlink_packet<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(), W::Error> {
     use std::os::windows::io::AsRawHandle as _;
-    work.attempt_io(
-        WorkCounters {
-            backend_write_operations: 1,
-            ..WorkCounters::UNCHARGED
-        },
-        || {
-            // SAFETY: the real creation handle and fully initialized exact ABI packet survive this same synchronous mutation for both work shapes.
-            unsafe {
-                windows::Win32::System::IO::DeviceIoControl(
-                    windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
-                    windows::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT,
-                    Some(buffer.as_ptr().cast()),
-                    buffer.len() as u32,
-                    None,
-                    0,
-                    None,
-                    None,
-                )
-            }
-            .map_err(Into::into)
-        },
-    )
+    work.attempt_io(WRITE, || {
+        // SAFETY: the real creation handle and fully initialized exact ABI packet survive this same synchronous mutation for both work shapes.
+        unsafe {
+            windows::Win32::System::IO::DeviceIoControl(
+                windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
+                windows::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT,
+                Some(buffer.as_ptr().cast()),
+                buffer.len() as u32,
+                None,
+                0,
+                None,
+                None,
+            )
+        }
+        .map_err(Into::into)
+    })
 }
 
 #[cfg(windows)]
@@ -501,45 +471,33 @@ pub(crate) fn remove_windows_leaf<W: NativeHostWork>(
         work,
     )?;
     if let Some(expected) = expected {
-        let observed = work.attempt_io(
-            WorkCounters {
-                backend_read_operations: 1,
-                ..WorkCounters::UNCHARGED
-            },
-            || {
-                let mut information = BY_HANDLE_FILE_INFORMATION::default();
-                // SAFETY: this is the same held DELETE handle that will receive the disposition.
-                unsafe {
-                    GetFileInformationByHandle(
-                        windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
-                        &raw mut information,
-                    )
-                    .map_err(io::Error::from)?;
-                }
-                Ok(crate::NativeRootIdentity {
-                    device: u64::from(information.dwVolumeSerialNumber),
-                    object: u64::from(information.nFileIndexHigh) << 32
-                        | u64::from(information.nFileIndexLow),
-                })
-            },
-        )?;
+        let observed = work.attempt_io(READ, || {
+            let mut information = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: this is the same held DELETE handle that will receive the disposition.
+            unsafe {
+                GetFileInformationByHandle(
+                    windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
+                    &raw mut information,
+                )
+                .map_err(io::Error::from)?;
+            }
+            Ok(crate::NativeRootIdentity {
+                device: u64::from(information.dwVolumeSerialNumber),
+                object: u64::from(information.nFileIndexHigh) << 32
+                    | u64::from(information.nFileIndexLow),
+            })
+        })?;
         if observed != expected {
             return Err(io::Error::other("held deletion target identity changed").into());
         }
     }
-    work.attempt_io(
-        WorkCounters {
-            backend_write_operations: 1,
-            ..WorkCounters::UNCHARGED
-        },
-        || {
-            windows_set_information(
-                &file,
-                &FILE_DISPOSITION_INFORMATION { DeleteFile: true },
-                FileDispositionInformation,
-            )
-        },
-    )
+    work.attempt_io(WRITE, || {
+        windows_set_information(
+            &file,
+            &FILE_DISPOSITION_INFORMATION { DeleteFile: true },
+            FileDispositionInformation,
+        )
+    })
 }
 
 #[cfg(windows)]
@@ -559,10 +517,7 @@ pub(crate) fn rename_windows_leaf<W: crate::demand::SourceDemandReadWork>(
         work,
     )?;
     for unit in to_name {
-        work.charge(WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
+        work.charge(ITEM)?;
         if *unit == 92 {
             return Err(DemandError::InvalidRequest);
         }
@@ -627,10 +582,7 @@ impl HostRoot {
             });
         }
         for component in path.split(|unit| *unit == 92) {
-            work.charge(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
+            work.charge(ITEM)?;
             if component.is_empty() || component == [46] || component == [46, 46] {
                 return Err(DemandError::InvalidRequest);
             }
@@ -773,13 +725,9 @@ pub(super) fn set_windows_name<W: NativeHostWork>(
                     name.len(),
                 );
             }
-            work.attempt_io(
-                WorkCounters {
-                    backend_write_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                },
-                || windows_name_packet_once(file, &storage, length as u32, class),
-            )
+            work.attempt_io(WRITE, || {
+                windows_name_packet_once(file, &storage, length as u32, class)
+            })
         })();
         drop(storage);
         work.release(allocation)?;

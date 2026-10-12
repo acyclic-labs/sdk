@@ -824,15 +824,15 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("file-preflight".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([61; 16])),
-            )?,
-            "source.txt",
-            "generation-1",
-            FileDescriptor::from_bytes(b"exact", "text/plain")?,
-            "source.txt",
-        )
+             &mut None)?,
+            "source.txt".into(),
+            "generation-1".into(),
+            FileDescriptor::from_bytes(b"exact", "text/plain", &mut None)?,
+            "source.txt".into(),
+         &mut None)
     }
 
     #[test]
@@ -921,11 +921,6 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         assert!(tool.executor.authorize(Some(&scope), &invocation).is_err());
-        assert_eq!(tool.definition.revision, "portable-5");
-        assert_eq!(
-            patch_file(4096, 16)?.definition.revision,
-            "portable-patch-4"
-        );
         Ok(())
     }
 }

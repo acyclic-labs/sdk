@@ -72,7 +72,7 @@ impl HttpMcpTransport {
     }
     async fn service<T: DeserializeOwned>(&self, operation: OperationId, method: &str, params: Value) -> Result<T> {
         validate_params(method, &params, None)?;
-        serde_json::from_value(validate_result(method, self.rpc(operation, method, params).await?, None)?)
+        serde_json::from_value(validate_result(method, self.rpc(operation, method, params, None).await?, None)?)
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 }

@@ -53,10 +53,7 @@ impl HostRoot {
         {
             let mut current = clone_directory(&self.directory, work)?;
             for component in path.components() {
-                let item = WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                };
+                let item = ITEM;
                 work.admit(item)?;
                 work.record(item)?;
                 let std::path::Component::Normal(name) = component else {
@@ -198,13 +195,9 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<Self, W::Error> {
         check_root_wide_name(name, work)?;
-        let file = work.attempt_io(
-            WorkCounters {
-                backend_read_operations: 1,
-                ..WorkCounters::UNCHARGED
-            },
-            || open_windows_root_name(name, windows::Win32::Storage::FileSystem::FILE_GENERIC_READ),
-        )?;
+        let file = work.attempt_io(READ, || {
+            open_windows_root_name(name, windows::Win32::Storage::FileSystem::FILE_GENERIC_READ)
+        })?;
         let directory = Dir::from_std_file(file);
         let identity = directory_identity(&directory, work)?;
         Ok(Self {
@@ -236,13 +229,9 @@ pub(crate) fn open_root_directory<W: NativeHostWork>(
     });
     #[cfg(windows)]
     let result = with_root_path_name(path, false, work, |name, work| {
-        opened = Some(work.attempt_io(
-            WorkCounters {
-                backend_read_operations: 1,
-                ..WorkCounters::UNCHARGED
-            },
-            || open_windows_root_name(name, windows::Win32::Storage::FileSystem::FILE_GENERIC_READ),
-        )?);
+        opened = Some(work.attempt_io(READ, || {
+            open_windows_root_name(name, windows::Win32::Storage::FileSystem::FILE_GENERIC_READ)
+        })?);
         Ok(())
     });
     if let Err(error) = result {
@@ -486,10 +475,7 @@ impl HostRoot {
         }
         let mut separator = None;
         for (index, unit) in path.iter().enumerate() {
-            work.charge(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
+            work.charge(ITEM)?;
             if *unit == u16::from(b'\\') {
                 separator = Some(index);
             }

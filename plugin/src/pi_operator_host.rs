@@ -4,7 +4,7 @@ use crate::{PiTaskBinding, pi_owner::PiOwnerConfig,
     pi_operator::{self, PiPreparedApproval, PiOperatorRequest, PiOperatorBody, PiOperatorDecision},
     pi_fork::{original_operation, derived}};
 use acyclic_fs::{NativeMaterializationWork, MaterializationPhase};
-use acyclic_harness::{Error, Result, Capabilities, OperationId, NativeTaskContext,
+use acyclic_harness::{Error, Result, Capabilities, OperationId, runtime::NativeTaskContext,
     durable_host::TaskJournalOwner, scheduler::LeaseFence,
     filesystem::{FilesystemExecutionJournal, TaskCommandProgress},
     core::SchemaRegistry, executor::ExecutionJournal,
@@ -67,9 +67,13 @@ fn conversation_journal<'a>(filesystem: &Arc<PiNativeFilesystem>, stream: &std::
     validate_descriptor(protected, &descriptor, work)?;
     let authority = protected.conversation_authority_with_native_work(protected.policy().root_task,
         protected.policy().agent, &protected.policy().grants, work)?;
-    let verifier = authority.0.1.verifier_with_native_work(work)?;
-    Journal::new_with_native_work(stream.clone(), Arc::clone(filesystem), descriptor.private_volume, &verifier.0, &authority.0.2,
-        protected.policy().maximum_payload_bytes, work)
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = authority.0.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
+    Journal::new(stream.clone(), Arc::clone(filesystem), descriptor.private_volume, &verifier.0, &SchemaRegistry::new(), &authority.0.2,
+        protected.policy().maximum_payload_bytes, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
 }
 
 /// Called only with the real materializer preparation, before the original SDK preparation ACK.
@@ -89,11 +93,14 @@ pub(crate) async fn open_prepared_approval(runtime: &PiNativeRuntime, filesystem
     let storage = protected.authority_with_native_work(work)?;
     let authority = protected.conversation_authority_with_native_work(binding.task_id, binding.agent_id,
         context.context().scope().grants(), work)?;
-    let verifier = authority.0.1.verifier_with_native_work(work)?;
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = authority.0.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let current = runtime.runtime.task_host().journal_owner_with_native_work(binding.task_id, fence, work).await?;
-    let journal = Journal::for_task_with_native_work(current, descriptor.operation, context.context().id(), Arc::clone(filesystem),
-        &protected.policy().journal, &storage.0.verifier, &storage.0.signed, protected.policy().maximum_payload_bytes, work)?
-        .with_interaction_owner_with_native_work(&verifier.0, &SchemaRegistry::new(), &authority.0.2, descriptor.private_volume, work)?;
+    let journal = Journal::for_task(current, descriptor.operation, context.context().id(), Arc::clone(filesystem), &protected.policy().journal, &storage.0.verifier, &storage.0.signed, protected.policy().maximum_payload_bytes, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?
+        .with_interaction_owner(&verifier.0, &SchemaRegistry::new(), &authority.0.2, descriptor.private_volume, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?;
     let (prompt, _prompt_custody) = work.display(&format_args!("Publish selected Pi writeback {}", descriptor.command.sdk_operation))
         .map_err(native_error)?;
     let interaction = Interaction::Approval { prompt, operation_id: descriptor.operation,
@@ -142,7 +149,7 @@ struct PiWritebackResponse<'a> {
     receipt: Option<&'a acyclic_fs::MaterializationJournal>,
 }
 fn status_response<'a>(descriptor: &'a PiPreparedApproval, status: &'static str,
-    native: Option<&'a acyclic_fs::OwnedMaterializationJournal>) -> PiWritebackResponse<'a> {
+    native: Option<&'a acyclic_fs::MaterializationJournal>) -> PiWritebackResponse<'a> {
     PiWritebackResponse { status, operation: &descriptor.command.sdk_operation,
         source: descriptor.command.source, root: &descriptor.command.root, paths: &descriptor.command.paths,
         approval_digest: &descriptor.approval_digest,
@@ -182,7 +189,7 @@ struct PiInspectionResponse<'a> {
 
 async fn observe_writeback(filesystem: &Arc<PiNativeFilesystem>, stream: &std::sync::Arc<LocalStream>,
     resources: &crate::ServiceResources, protected: &PiOwnerConfig, descriptor: &PiPreparedApproval,
-    work: &NativeMaterializationWork) -> Result<(&'static str, Option<acyclic_fs::OwnedMaterializationJournal>)> {
+    work: &NativeMaterializationWork) -> Result<(&'static str, Option<acyclic_fs::MaterializationJournal>)> {
     let journal = conversation_journal(filesystem, stream, protected, descriptor, work)?;
     let (outcome, _outcome_custody) = journal.interaction_outcome_with_native_work(
         acyclic_harness::durable_host::task_interaction_id_with_native_work(protected.policy().root_task, descriptor.operation, work)?, work)?.await?;

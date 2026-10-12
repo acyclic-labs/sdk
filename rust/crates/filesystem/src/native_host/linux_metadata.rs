@@ -43,10 +43,7 @@ pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
     #[cfg(target_os = "macos")]
     let fd = file.as_raw_fd();
     for (name, value) in attributes {
-        work.charge(WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
+        work.charge(ITEM)?;
         let mut entered = false;
         let result = unix_name(OsStr::from_bytes(name), work, |name, work| {
             entered = true;
@@ -113,10 +110,7 @@ pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
                     return Err(NativeMetadataError("named_attributes readback mismatch").into());
                 }
                 for (actual, expected) in readback.iter().zip(value.iter()) {
-                    work.charge(WorkCounters {
-                        items_examined: 1,
-                        ..WorkCounters::UNCHARGED
-                    })?;
+                    work.charge(ITEM)?;
                     if actual != expected {
                         return Err(
                             NativeMetadataError("named_attributes readback mismatch").into()

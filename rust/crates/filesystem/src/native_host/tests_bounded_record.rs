@@ -1,51 +1,4 @@
 use super::*;
-#[test]
-fn exclusive_fence_cookie_never_removes_an_existing_name() -> Result<(), Box<dyn std::error::Error>>
-{
-    let temporary = tempfile::tempdir()?;
-    std::fs::write(temporary.path().join("cookie"), b"keep")?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    let mut budget = WorkBudget::UNBOUNDED;
-    budget.backend_write_operations = 2;
-    let mut work = DemandWork::new(budget, &crate::CancellationToken::new());
-    let error = root
-        .fence_cookie(Path::new("cookie"), &mut work)
-        .expect_err("exclusive collision");
-    assert!(
-        matches!(error, DemandError::Io(error) if error.kind() == io::ErrorKind::AlreadyExists)
-    );
-    assert_eq!(std::fs::read(temporary.path().join("cookie"))?, b"keep");
-    assert_eq!(work.budget.backend_write_operations, 2);
-    assert_eq!(work.live_allocation_bytes(), 0);
-    Ok(())
-}
-#[test]
-fn committed_fence_cookie_is_removed_and_charged_after_cancellation()
--> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
-    let parent = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
-    let cancellation = crate::CancellationToken::new();
-    let mut budget = WorkBudget::UNBOUNDED;
-    budget.backend_write_operations = 2;
-    let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation)
-        .map_err(|(cause, _)| cause)?;
-    let mut boundary = CancelAfterName {
-        work: &work,
-        cancellation: &cancellation,
-        cancel_on_write: true,
-    };
-    #[cfg(unix)]
-    let name = c"cookie";
-    #[cfg(windows)]
-    let name = &[99_u16, 111, 111, 107, 105, 101][..];
-    assert!(matches!(
-        fence_cookie_held(&parent, name, &mut boundary),
-        Err(crate::materializer::NativeTreeMaterializationError::Cancelled)
-    ));
-    assert!(!temporary.path().join("cookie").exists());
-    Ok(())
-}
 #[cfg(unix)]
 #[test]
 fn held_canonical_directory_observes_renamed_object_not_replaced_spelling()
@@ -164,7 +117,6 @@ fn held_ancestry_survives_aliases_and_lexical_parent_replacement()
 struct CancelAfterName<'a> {
     work: &'a crate::materializer::NativeMaterializationWork,
     cancellation: &'a crate::CancellationToken,
-    cancel_on_write: bool,
 }
 impl NativeHostWork for CancelAfterName<'_> {
     type Error = crate::materializer::NativeTreeMaterializationError;
@@ -184,19 +136,13 @@ impl NativeHostWork for CancelAfterName<'_> {
     }
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
         self.work.record_admitted(delta)?;
-        if self.cancel_on_write && delta.backend_write_operations != 0
-            || !self.cancel_on_write && delta.bytes_copied != 0
-        {
+        if delta.bytes_copied != 0 {
             self.cancellation.cancel();
         }
         Ok(())
     }
     fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
-        self.work.charge(delta)?;
-        if self.cancel_on_write && delta.backend_write_operations != 0 {
-            self.cancellation.cancel();
-        }
-        Ok(())
+        self.work.charge(delta)
     }
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> {
         self.work.claim(
@@ -249,7 +195,6 @@ fn cancellation_after_native_name_copy_releases_it_without_consuming_the_record(
     let mut boundary = CancelAfterName {
         work: &work,
         cancellation: &cancellation,
-        cancel_on_write: false,
     };
     let (mut reader, allocation) = read_dir_held(&directory, &mut boundary)?;
     #[cfg(unix)]

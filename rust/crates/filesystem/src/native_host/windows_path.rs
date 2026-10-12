@@ -1,9 +1,6 @@
 use super::*;
 
-/// Whether Windows attributes `before` and `after` describe the same file.
-/// `ProjFS` marks a file it manages (reparse point, sparse, recall bits)
-/// and drops the marks when it stops managing it; hydrating a placeholder
-/// also sets its archive bit. Its content and metadata stay what they were.
+/// Compares attributes while allowing ProjFS hydration marks to change.
 #[cfg(windows)]
 pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
     const SPARSE: u32 = 0x0000_0200;
@@ -22,9 +19,7 @@ pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
     before & !ignored == after & !ignored && after & PROJFS_MARKS & !marks == 0
 }
 
-/// The error a failed `NTSTATUS` reports. A name deleted while another
-/// handle holds its file stays listed until that handle closes, yet nothing
-/// can open it again: it is gone, where Win32 would report denied access.
+/// Translates native status, treating a pending deletion as absent.
 #[cfg(windows)]
 pub(super) fn status_error(status: windows::Win32::Foundation::NTSTATUS) -> io::Error {
     const DELETE_PENDING: windows::Win32::Foundation::NTSTATUS =
@@ -45,10 +40,7 @@ pub(super) fn wide_units<W: NativeHostWork>(name: &OsStr, work: &mut W) -> Resul
     use std::os::windows::ffi::OsStrExt as _;
     let mut units = 0usize;
     for _ in name.encode_wide() {
-        work.started_io(WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
+        work.started_io(ITEM)?;
         units = units.checked_add(1).ok_or(crate::WorkError::Overflow)?;
     }
     Ok(units)
@@ -102,10 +94,7 @@ pub(super) fn windows_wide_name<W: NativeHostWork, T>(
     }
     if path != [u16::from(b'.')] {
         let mut begin = 0usize;
-        let item = WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        };
+        let item = ITEM;
         work.admit(item)?;
         work.record(item)?;
         for (index, unit) in path.iter().enumerate() {
@@ -129,6 +118,8 @@ pub(super) fn windows_wide_name<W: NativeHostWork, T>(
             return Ok(None);
         }
     }
+    // NT opens the held directory with an empty name; it does not resolve ".".
+    let path = if path == [46] { &[][..] } else { path };
     let length = u16::try_from(
         path.len()
             .checked_mul(2)
@@ -290,30 +281,24 @@ pub(super) fn windows_stat_information<W: NativeHostWork>(
     use windows::Wdk::Storage::FileSystem::{
         FILE_STAT_INFORMATION, FileStatInformation, NtQueryInformationFile,
     };
-    work.attempt_io(
-        WorkCounters {
-            backend_read_operations: 1,
-            ..WorkCounters::UNCHARGED
-        },
-        || {
-            let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
-            let mut information = FILE_STAT_INFORMATION::default();
-            // SAFETY: the held handle and fixed-size output survive this synchronous query.
-            let status = unsafe {
-                NtQueryInformationFile(
-                    windows::Win32::Foundation::HANDLE(file.as_handle().as_raw_handle()),
-                    &raw mut block,
-                    (&raw mut information).cast(),
-                    std::mem::size_of::<FILE_STAT_INFORMATION>() as u32,
-                    FileStatInformation,
-                )
-            };
-            if status.is_err() {
-                return Err(status_error(status));
-            }
-            Ok(information)
-        },
-    )
+    work.attempt_io(READ, || {
+        let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
+        let mut information = FILE_STAT_INFORMATION::default();
+        // SAFETY: the held handle and fixed-size output survive this synchronous query.
+        let status = unsafe {
+            NtQueryInformationFile(
+                windows::Win32::Foundation::HANDLE(file.as_handle().as_raw_handle()),
+                &raw mut block,
+                (&raw mut information).cast(),
+                std::mem::size_of::<FILE_STAT_INFORMATION>() as u32,
+                FileStatInformation,
+            )
+        };
+        if status.is_err() {
+            return Err(status_error(status));
+        }
+        Ok(information)
+    })
 }
 
 #[cfg(windows)]
@@ -376,10 +361,7 @@ impl HostRoot {
             return Ok((current, identity));
         }
         for component in path.split(|unit| *unit == u16::from(b'\\')) {
-            let item = WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            };
+            let item = ITEM;
             work.admit(item)?;
             work.record(item)?;
             let (next, next_identity) = self.open_dir_component_wide(&current, component, work)?;
@@ -598,10 +580,7 @@ pub(crate) fn reports_every_change<W: NativeHostWork<Error = DemandError>>(
     .map_err(io::Error::from)?;
     let mut length = 0;
     for unit in &name {
-        let examined = WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        };
+        let examined = ITEM;
         work.admit(examined)?;
         let terminator = *unit == 0;
         work.record(examined)?;

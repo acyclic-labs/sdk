@@ -17,10 +17,7 @@ pub(crate) fn create_directories<W: NativeHostWork>(
     if path.is_absolute() {
         base = path;
         while let Some(parent) = base.parent() {
-            let delta = WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            };
+            let delta = ITEM;
             work.admit(delta)?;
             work.record(delta)?;
             base = parent;
@@ -78,10 +75,7 @@ pub(super) fn create_directories_owned<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<Dir, W::Error> {
     for component in relative.components() {
-        let delta = WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        };
+        let delta = ITEM;
         work.admit(delta)?;
         work.record(delta)?;
         let name = match component {
@@ -133,20 +127,14 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
         unix_name(name.as_os_str(), work, |name, work| {
             let file = open_unix(parent.as_raw_fd(), name, flags, work)?;
             loop {
-                let result = work.attempt_io(
-                    WorkCounters {
-                        backend_read_operations: 1,
-                        ..WorkCounters::UNCHARGED
-                    },
-                    || {
-                        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-                        // SAFETY: held descriptor and complete output storage remain live.
-                        if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
-                            return Err(io::Error::last_os_error());
-                        }
-                        Ok(unsafe { stat.assume_init() })
-                    },
-                );
+                let result = work.attempt_io(READ, || {
+                    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+                    // SAFETY: held descriptor and complete output storage remain live.
+                    if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(unsafe { stat.assume_init() })
+                });
                 match result {
                     Ok(stat)
                         if stat.st_mode & libc::S_IFMT as libc::mode_t
@@ -211,10 +199,7 @@ pub(crate) fn read_builtin_file(
         bytes_copied: destination.len() as u64,
         ..crate::WorkCounters::UNCHARGED
     })?;
-    work.charge(WorkCounters {
-        backend_read_operations: 1,
-        ..WorkCounters::UNCHARGED
-    })?;
+    work.charge(READ)?;
     let count = (&*file).read(destination)?;
     let transferred = transfer.record(count).map_err(native_builtin_runtime_error);
     let copied = {
@@ -245,10 +230,7 @@ pub(crate) fn write_builtin_file(
         bytes_copied: source.len() as u64,
         ..crate::WorkCounters::UNCHARGED
     })?;
-    work.charge(WorkCounters {
-        backend_write_operations: 1,
-        ..WorkCounters::UNCHARGED
-    })?;
+    work.charge(WRITE)?;
     let count = (&*file).write(source)?;
     let transferred = transfer.record(count).map_err(native_builtin_runtime_error);
     let copied = {
@@ -277,10 +259,7 @@ pub(crate) fn lock_builtin_file(
     work: &crate::materializer::NativeMaterializationWork,
 ) -> Result<(), crate::materializer::NativeTreeMaterializationError> {
     use crate::materializer::NativeTreeMaterializationError;
-    work.charge(WorkCounters {
-        backend_read_operations: 1,
-        ..WorkCounters::UNCHARGED
-    })?;
+    work.charge(READ)?;
     let result = if writable {
         file.try_lock()
     } else {
@@ -324,10 +303,7 @@ pub(super) fn remove_unix_named_leaf<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(), W::Error> {
     loop {
-        let delta = WorkCounters {
-            backend_write_operations: 1,
-            ..WorkCounters::UNCHARGED
-        };
+        let delta = WRITE;
         work.started_io(delta)?;
         // SAFETY: the held directory and terminated single-component name remain live throughout the existing unlink operation.
         if unsafe {
