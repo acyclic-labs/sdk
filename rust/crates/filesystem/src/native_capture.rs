@@ -2935,7 +2935,7 @@ mod shared_watch_capture_tests {
         let native = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
         let original = native.original_demand_work();
-        let meter = Arc::clone(original.meter());
+        let meter = Arc::clone(&original.state);
         *binding.lock().expect("fixture binding") = Some(Arc::clone(&meter));
         let limits = checkout.volume_config().limits;
         let path = NamespacePath::from_portable(
@@ -3728,7 +3728,7 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
         let logical_bytes = metadata.len();
         let ranges = allocated_data_ranges(
             &file, 0, logical_bytes, maximum_extent_spans, &mut meter.source(),
-            |work| work.original_arc().lock().remaining(),
+            |work| work.original.lock().remaining(),
             #[cfg(windows)]
             |file, code, input, output, _work| {
                 native_device_control_in_scope(file, code, input, output, meter)

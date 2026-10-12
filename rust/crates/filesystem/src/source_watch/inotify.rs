@@ -990,7 +990,7 @@ impl Shared {
         let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(original) = &self.delivery.original {
             cleanup.records -= 1;
-            original.meter().with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
+            original.state.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
         } else if self.delivery.birth_matches(work) {
             cleanup.records -= 1;
             work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
@@ -1996,7 +1996,7 @@ mod admission_tests {
                 &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
             ) -> Result<(), DemandError> {
                 let original = self.original.upgrade().expect("live original callback");
-                assert!(Arc::ptr_eq(&original, work.original_arc()));
+                assert!(Arc::ptr_eq(&original, work.original));
                 assert!(original.0.try_lock().is_ok());
                 work.charge(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
                 self.invoked.store(true, Ordering::Release);
@@ -2073,7 +2073,7 @@ mod admission_tests {
                 &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
             ) -> Result<(), DemandError> {
                 let original = self.original.upgrade().expect("the actual reader retains its original");
-                assert!(Arc::ptr_eq(&original, work.original_arc()));
+                assert!(Arc::ptr_eq(&original, work.original));
                 assert!(original.0.try_lock().is_ok());
                 let watch = self.watch.lock().unwrap_or_else(PoisonError::into_inner).take();
                 drop(watch);

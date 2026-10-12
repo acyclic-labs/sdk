@@ -609,11 +609,11 @@ impl NativeMaterializationWork {
     pub(crate) fn from_original_demand_work(work: &crate::demand::OriginalDemandWork) -> Result<Self, crate::DemandError> {
         let cancellation = work.with_original_leaf(|state| state.cancellation().clone())?;
         Ok(Self {
-            state: std::sync::Arc::clone(work.meter()), cancellation,
-            resource: work.resource_allowance().cloned(), capture_origin: work.capture_origin().cloned(),
-            invocation: work.invocation_view_state().cloned(),
+            state: std::sync::Arc::clone(&work.state), cancellation,
+            resource: work.resource.clone(), capture_origin: work.capture_origin.clone(),
+            invocation: work.invocation.clone(),
             #[cfg(feature = "native-mount")]
-            execution: work.source_execution_view().cloned(),
+            execution: work.execution.clone(),
         })
     }
 

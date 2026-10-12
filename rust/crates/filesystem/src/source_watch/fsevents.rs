@@ -649,9 +649,9 @@ mod tests {
                 &mut self, operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
             ) -> T { self.inner.with_native_read_meter(operation) }
             fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
-                let before = self.inner.original_arc().with_original_leaf(|work| work.work.backend_write_operations);
+                let before = self.inner.original.with_original_leaf(|work| work.work.backend_write_operations);
                 let result = self.inner.with_original_leaf(operation);
-                let after = self.inner.original_arc().with_original_leaf(|work| work.work.backend_write_operations);
+                let after = self.inner.original.with_original_leaf(|work| work.work.backend_write_operations);
                 if !self.triggered && after > before {
                     self.triggered = true;
                     self.cancellation.cancel();
@@ -1140,7 +1140,7 @@ mod tests {
             ) -> Result<(), DemandError> {
                 if self.invoked.swap(true, Ordering::AcqRel) { return Ok(()); }
                 let original = self.original.upgrade().ok_or(DemandError::WorkerUnavailable)?;
-                assert!(Arc::ptr_eq(&original, work.original_arc()));
+                assert!(Arc::ptr_eq(&original, work.original));
                 assert!(original.0.try_lock().is_ok(), "callback runs outside the original admission lock");
                 *self.prefix.lock().map_err(|_| DemandError::WorkerUnavailable)? =
                     Some(original.with_original_leaf(|work| work.work));
