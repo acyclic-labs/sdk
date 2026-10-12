@@ -110,6 +110,18 @@ test("detail preserves Cloud's flattened spend for every role", async t => {
   assert.equal("spend" in root, false);
 });
 
+test("restored swarm limits preserve the omitted budget", async t => {
+  const detail = JSON.parse(readFileSync(new URL("./fixtures/detail-restored-limits.json", import.meta.url), "utf8"));
+  const { client } = await fixture(t, (request, response) => {
+    assert.equal(request.url, "/v1/swarms/restored");
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(detail));
+  });
+  const result = await client.detail("restored");
+  assert.deepEqual(result, detail);
+  assert.equal(result.limits.budget_usd, undefined);
+  assert.equal("budget_usd" in result.limits, false);
+});
+
 test("SSE parses split UTF-8, CRLF, multiline data and heartbeat, with exact replay cursors", async t => {
   const cursors = [];
   const event = { seq: 2, type: "log", agent_id: "agent", line: "résumé" };
@@ -223,14 +235,17 @@ test("failed mutations expose status, error payload and trace without retry", as
 test("bounded JSON and SSE reject oversize responses and incomplete events never advance the cursor", async t => {
   const { client } = await fixture(t, (request, response) => {
     if (request.url === "/v1/swarms/partial/events") response.writeHead(200, { "content-type": "text/event-stream" }).end('id: 2\ndata: {"seq":2}');
+    else if (request.url === "/v1/swarms/partial-utf8/events") response.writeHead(200, { "content-type": "text/event-stream" }).end(Buffer.concat([Buffer.from('id: 3\ndata: {"seq":3,"line":"'), Buffer.from([0xc3])]));
     else if (request.url.endsWith("/events")) response.writeHead(200, { "content-type": "text/event-stream" }).end(`data: ${"x".repeat(300)}\n\n`);
     else response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify("x".repeat(300)));
   }, { maximumResponseBytes: 256 });
   await assert.rejects(client.list(), RangeError);
   await assert.rejects(async () => { for await (const frame of client.watch("large")) assert.fail(frame); }, RangeError);
-  const frames = [];
-  for await (const frame of client.watch("partial")) frames.push(frame);
-  assert.deepEqual(frames, []);
+  for (const id of ["partial", "partial-utf8"]) {
+    const frames = [];
+    for await (const frame of client.watch(id)) frames.push(frame);
+    assert.deepEqual(frames, []);
+  }
 });
 
 test("abort, route encoding and redirects preserve the authenticated request boundary", async t => {

@@ -6,5 +6,5 @@
     "rootDir": ".",
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts", "test/role-spend.typecheck.ts"]
+  "include": ["src/**/*.ts", "test/*.typecheck.ts"]
 }

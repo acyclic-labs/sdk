@@ -40,7 +40,7 @@ export interface SwarmLimits {
   depth: number;
   running: number;
   web_calls: number;
-  budget_usd: number | null;
+  budget_usd?: number | null;
 }
 export interface SwarmResult { summary: string; diff_stat: string | null }
 export interface SwarmArtifact {

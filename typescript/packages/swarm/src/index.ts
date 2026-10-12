@@ -139,7 +139,7 @@ export class SwarmClient {
       while (true) {
         const chunk = await reader.read();
         // An incomplete event after disconnect is replayed by the next subscription.
-        if (chunk.done) { decoder.decode(); return; }
+        if (chunk.done) return;
         let offset = 0;
         while (offset < chunk.value.byteLength) {
           const newline = chunk.value.indexOf(10, offset);
