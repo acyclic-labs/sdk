@@ -14,8 +14,7 @@ fn error(value: Error) -> JsValue {
     let _ = js_sys::Reflect::set(&result, &"code".into(), &JsValue::from(value.code as i32));
     result.into()
 }
-/// Accepts a JavaScript byte limit as a number: wasm-bindgen would silently
-/// wrap a `usize` argument above 2^32, so reject non-integers and saturate.
+/// Accepts a JavaScript byte limit as a number: wasm-bindgen would silently wrap a `usize` argument above 2^32, so reject non-integers and saturate.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

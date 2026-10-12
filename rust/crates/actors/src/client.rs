@@ -1,8 +1,4 @@
 //! Shared authenticated Actors client over a tonic transport.
-//!
-//! Native callers obtain their transport from [`crate::grpc::connect`].
-//! Browser callers use the maintained `tonic-web-wasm-client` gRPC-Web
-//! transport. Operation methods below are shared for both transports.
 
 use crate::domain;
 use crate::wire;
@@ -368,9 +364,7 @@ pub async fn connect_with_ca_certificate(
     }
 }
 
-/// Runs an Actors operation until it completes or its monotonic cancellation
-/// token is cancelled. A cancelled token stays cancelled; callers that begin
-/// another operation must provide a fresh token.
+/// Runs an Actors operation until it completes or its monotonic cancellation token is cancelled.
 pub async fn run_with_cancellation<T, Operation>(
     operation: Operation,
     cancellation: Option<CancellationToken>,

@@ -84,7 +84,7 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         let configured = proof.creator == verifier;
         drop(verifier);
         drop(verifier_custody);
-        if !Arc::ptr_eq(&proof.host, &self.host) || proof.owner != *self.issuer.audience()
+        if !Arc::ptr_eq(&proof.host, &self.host) || proof.owner() != self.issuer.audience()
             || !configured || !proof.matches_native_work(work)
         {
             return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root allocation is not this configured creator's protected original"));
@@ -96,8 +96,10 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         let other = if proof.role == crate::resource_preparation::RootBootstrapContentRole::Project {
             self.root_scratch.get()
         } else { self.root_project.get() };
-        if other.is_some_and(|other| other.root != proof.root || other.owner != proof.owner
-            || other.agent != proof.agent || other.admission_digest != proof.admission_digest)
+        let root = proof.witness.binding();
+        if other.is_some_and(|other| other.witness.binding().original_task() != root.original_task()
+            || other.owner() != proof.owner() || other.witness.binding().agent() != root.agent()
+            || other.admission_digest != proof.admission_digest)
         {
             return Err(native_error(crate::wire::ErrorCode::Unauthorized, "configured Root allocations belong to different original admissions"));
         }
@@ -127,12 +129,8 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
 /// Protected Root allocation and its authenticated creation context.
 pub struct FilesystemRootBootstrapAllocation<A, O> {
     pub(crate) host: Arc<FilesystemHost<A, O>>,
-    pub(crate) owner: Authority,
-    pub(crate) audience: Authority,
     creator: crate::core::AuthorityVerifier,
-    pub(crate) root: TaskId,
     pub(crate) admission_digest: [u8; 32],
-    pub(crate) agent: crate::AgentId,
     pub(crate) role: crate::resource_preparation::RootBootstrapContentRole,
     pub(crate) request: crate::resource_preparation::RootBootstrapContentRequest,
     pub(crate) operation: acyclic_fs::OperationId,
@@ -326,15 +324,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             drop(journal);
             drop(journal_hold);
             let admission_digest = context.original_admission_digest();
-            let agent = root.agent();
             let root = root.original_task();
             let native_source = native_import.map(|(source, _)| source.clone());
             io.claim(std::mem::size_of::<FilesystemRootBootstrapAllocation<A, O>>() as u64)?;
-            let (owner, audience) = {
-                let mut observer = io.history_io();
-                (crate::store::history::HistoryIo::clone_authority(&mut observer, owner.root_bootstrap_owner())?,
-                    crate::store::history::HistoryIo::clone_authority(&mut observer, witness.binding().audience())?)
-            };
             let creator = {
                 let mut observer = io.history_io();
                 self.issuer.verifier_with_work(&mut Some(&mut observer))?
@@ -349,9 +341,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let evidence = allocation_ref(&self.host.provider, &volume, Some(&io))?.into_resource();
             let snapshot = if let Some(snapshot) = native_snapshot {
                 let remaining = io.remaining()?;
-                let value = crate::contract::json_value_bounded_native_trusted(&snapshot, crate::contract::JsonBounds {
+                let value = crate::contract::json_value_bounded(&snapshot, crate::contract::JsonBounds {
                     maximum_bytes: remaining.bytes_encoded, maximum_items: remaining.items_examined, maximum_depth: 32,
-                }, crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge, true))?;
+                }, Some(crate::wire::ErrorCode::Invalid), &mut |charge| io.codec_charge(charge, true))?;
                 io.release(std::mem::size_of::<serde_json::Value>() as u64)?;
                 Some(value)
             } else { None };
@@ -366,7 +358,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             drop(original_root);
             drop(original_custody);
             Ok(FilesystemRootBootstrapAllocation {
-                host: self.host.clone(), owner, audience, creator, root, admission_digest, agent, role, request,
+                host: self.host.clone(), creator, admission_digest, role, request,
                 operation, config, initial_generation, selected_generation, native_snapshot, native_source, writable,
                 publication_lease,
                 record_digest, witness, _custody: custody,
@@ -495,6 +487,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
 }
 
 impl<A, O> FilesystemRootBootstrapAllocation<A, O> {
+    pub(crate) fn owner(&self) -> &Authority { self.creator.audience() }
+
     /// Borrows the exact request minted from the protected original allocation.
     pub fn request(&self) -> &crate::resource_preparation::RootBootstrapContentRequest {
         &self.request
@@ -1244,12 +1238,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
                     .map_err(|_| native_error(crate::wire::ErrorCode::Unauthorized, "Root content snapshot is not its original fixed descriptor"))?),
                 None => None,
             };
-            if context.owner() != &allocation.owner || context.audience() != &allocation.audience
-                || context.agent() != allocation.agent || context.original_root().parent.is_some()
-                || context.original_root().task_id() != allocation.root
+            let root = allocation.witness.binding();
+            if context.owner() != allocation.owner() || context.audience() != root.audience()
+                || context.agent() != root.agent() || context.original_root().parent.is_some()
+                || context.original_root().task_id() != root.original_task()
                 || context.original_admission_digest() != allocation.admission_digest
                 || request.root_operation != context.original_root().operation_id
-                || request.graph_root != allocation.root || request.volume != allocation.request.volume
+                || request.graph_root != root.original_task() || request.volume != allocation.request.volume
                 || request.role != allocation.role
                 || request.generation.as_resource().provider() != &self.host.provider
                 || generation != Some(allocation.selected_generation.digest().into_bytes())
@@ -1328,7 +1323,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
                 use crate::store::history::HistoryIo as _;
                 let mut observer = crate::store::history::native_work_io(work)
                     .map_err(Error::from)?;
-                let audience = observer.clone_authority(&allocation.audience)?;
+                let audience = observer.clone_authority(root.audience())?;
                 let mut custody = observer.into_custody();
                 receipt_custody.absorb(&mut custody).map_err(|cause| Error::NativeWork {
                     cause, custody: Some(custody),
@@ -1765,12 +1760,12 @@ mod tests {
         drop(staged);
         drop(staged_custody);
         let policy = super::super::super::root_source::FsRootProjectSourceProvider::new_with_native_work(
-            fixture.filesystem.clone(), &project.owner, fixture.root, &work,
+            fixture.filesystem.clone(), project.owner(), fixture.root, &work,
         )?.with_bootstrap_source_with_native_work(Arc::clone(project), &work)?;
         let selection = ProjectSourceSnapshot { project: project.request.volume.clone(),
             generation: project.request.generation.clone(), native_snapshot: None };
         policy.verify_with_native_work(RootProjectSourceContext {
-            owner: &project.owner, caller: &admission, source: &admission, graph_root: fixture.root,
+            owner: project.owner(), caller: &admission, source: &admission, graph_root: fixture.root,
             operation_id: OperationId::from_bytes([180; 16]), maximum_work: 1_048_576,
             maximum_bytes: 1_048_576, cancellation: work.cancellation(), created_project_authenticated: false,
         }, &selection, &work)?.await?;

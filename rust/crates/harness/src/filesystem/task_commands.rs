@@ -1335,7 +1335,7 @@ where
         {
             return Err(boundary(io, ErrorCode::Unauthorized, "model is not in the committed steering outbox"));
         }
-        let previous = journal.observe_transition_with_io(latest.prior.revision, io).await?;
+        let previous = journal.observe_transition(latest.prior.revision, io).await?;
         let [receive] = previous.transition.commands.as_slice() else {
             return Err(boundary(io, ErrorCode::Unauthorized, "steering requires one committed receive"));
         };
@@ -1442,7 +1442,7 @@ fn tool_invocation(
             "task scope lacks tool call grant".into(),
         ));
     }
-    validate_value(&definition.input_schema, &arguments, "tool input")?;
+    validate_value(&definition.input_schema, &arguments, "tool input", None)?;
     let task = context
         .durable_task_id()
         .ok_or_else(|| Error::Unauthorized("tool has no task".into()))?;
@@ -1514,7 +1514,7 @@ fn tool_invocation_with_native_operation(
         });
     }
     drop(grant);
-    crate::contract::validate_json_schema_value_with_io(
+    crate::contract::validate_json_schema_value(
         &definition.input_schema, &arguments, "tool input", Some(io),
     )?;
     let (call_id, custody) = work.display(&operation)?;

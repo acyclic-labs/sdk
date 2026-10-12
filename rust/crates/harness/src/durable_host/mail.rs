@@ -1,6 +1,7 @@
 //! The original v3 atomic mail engine with optional original SDK observation.
 
 use super::*;
+use crate::distributed::{sdk_error, sdk_source};
 use crate::executor::PreparationIo;
 #[cfg(feature = "filesystem")]
 use crate::filesystem::PreparationRecord as MailRecord;
@@ -185,8 +186,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mailbox = operations::stream_text_with_work(&self.stream, recipient_path(task, &mut text), &mut work)?;
         let bounds = match operations::bounds_with_work(&self.stream, mailbox.stream.path(), &mut work).await? {
             Ok(bounds) => bounds,
-            Err(error) if *error.source() == StreamError::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into_error(&work)),
+            Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(sdk_error(error, &work)),
         };
         if after > bounds.tail { return Err(boundary(io, crate::wire::ErrorCode::Invalid, "inbox cursor is beyond the tail")); }
         let maximum = u32::try_from(limit.min(acyclic_stream::MAX_ITEMS))
@@ -194,8 +195,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mut records = match operations::read_records_with_work(&self.stream, &mailbox.stream,
             after, maximum, &mut work).await? {
             Ok(records) => records,
-            Err(error) if *error.source() == StreamError::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into_error(&work)),
+            Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(sdk_error(error, &work)),
         };
         let mut expected = after;
         let mut items = Vec::new();
@@ -369,8 +370,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
             let (tail, target) = match operations::bounds_with_work(&self.stream, mailbox.stream.path(), &mut work).await? {
                 Ok(bounds) => (bounds.tail, CommitCondition::Tail { path: mailbox.stream.path().clone(), expected: bounds.tail }),
-                Err(error) if *error.source() == StreamError::NotFound => (0, CommitCondition::Absent { path: mailbox.stream.path().clone() }),
-                Err(error) => return Err(error.into_error(&work)),
+                Err(error) if *sdk_source(&error) == StreamError::NotFound => (0, CommitCondition::Absent { path: mailbox.stream.path().clone() }),
+                Err(error) => return Err(sdk_error(error, &work)),
             };
             if let Some(observer) = work.as_deref_mut() { observer.hashed_bytes(bytes.len() as u64)?; }
             let location = MailLocation { sender, recipient, message_id: message,
@@ -406,7 +407,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             if let Some(condition) = owner_condition { request.push_condition(condition)?; }
             request.append(mailbox.stream.path().clone(), bytes.clone())?;
             request.append(intent.stream.path().clone(), location_bytes)?;
-            let (outcome, retained) = crate::distributed::commit_prepared(&self.stream, request, message, None, None, None).await?;
+            let (outcome, retained) = request.commit(&self.stream, Some(message), None, None, None).await?;
             let committed = matches!(&outcome, CommitOutcome::Committed(_));
             drop(outcome);
             if let Some(observer) = work.as_deref_mut() { observer.release_owned(retained)?; }
@@ -451,8 +452,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let location = operations::stream_text_with_work(&self.stream, intent_path(sender, message, &mut text), &mut work)?;
         let mut records = match operations::read_records_with_work(&self.stream, &location.stream, 0, 2, &mut work).await? {
             Ok(records) => records,
-            Err(error) if *error.source() == StreamError::NotFound => return Ok(false),
-            Err(error) => return Err(error.into_error(&work)),
+            Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(false),
+            Err(error) => return Err(sdk_error(error, &work)),
         };
         let record = records.next(&mut work).await?.ok_or_else(|| boundary(io,
             crate::wire::ErrorCode::Storage, "mail location must contain one record"))?;
@@ -474,7 +475,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mut originals = match operations::read_records_with_work(&self.stream, &mailbox.stream,
             retained.sequence, 1, &mut work).await? {
             Ok(records) => records,
-            Err(error) => return Err(error.into_error(&work)),
+            Err(error) => return Err(sdk_error(error, &work)),
         };
         let original = originals.next(&mut work).await?.ok_or_else(|| boundary(io,
             crate::wire::ErrorCode::Storage, "mail location source is absent"))?;

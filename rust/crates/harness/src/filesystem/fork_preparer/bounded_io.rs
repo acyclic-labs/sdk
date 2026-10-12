@@ -696,16 +696,16 @@ impl PreparationIo {
         if self.uses_native_work() {
             let diagnostics = self.reserve_decode(crate::contract::sdk_json_diagnostic_bytes())?;
             let result = if canonical {
-                crate::contract::canonical_json_bytes_bounded_native_trusted(value, bounds, crate::wire::ErrorCode::Invalid, &mut charge)
+                crate::contract::canonical_json_bytes_bounded(value, bounds, Some(crate::wire::ErrorCode::Invalid), &mut charge)
             } else {
-                crate::contract::json_bytes_bounded_native_trusted(value, bounds, crate::wire::ErrorCode::Invalid, &mut charge)
+                crate::contract::json_bytes_bounded(value, bounds, Some(crate::wire::ErrorCode::Invalid), &mut charge)
             };
             return source_bytes_from_vec(finish_encoding(diagnostics, result)?, Some(self));
         }
         let bytes = if canonical {
-            crate::contract::canonical_json_bytes_bounded(value, bounds, &mut charge)
+            crate::contract::canonical_json_bytes_bounded(value, bounds, None, &mut charge)
         } else {
-            crate::contract::json_bytes_bounded_trusted(value, bounds, &mut charge)
+            crate::contract::json_bytes_bounded(value, bounds, None, &mut charge)
         }?;
         source_bytes_from_vec(bytes, Some(self))
     }
@@ -886,8 +886,8 @@ impl PreparationIo {
         self.retain_owned(root)?;
         let root_hold = self.guard_owned(root)?;
         let diagnostics = self.reserve_decode(crate::contract::sdk_json_diagnostic_bytes())?;
-        let result = crate::contract::json_value_bounded_native_trusted(
-            source, bounds, crate::wire::ErrorCode::Invalid,
+        let result = crate::contract::json_value_bounded(
+            source, bounds, Some(crate::wire::ErrorCode::Invalid),
             &mut |next| self.codec_charge(next, false),
         );
         let value = finish_encoding(diagnostics, result)?;

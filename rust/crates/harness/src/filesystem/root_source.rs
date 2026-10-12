@@ -315,7 +315,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         work.remaining()?;
-        if proof.owner != self.owner || proof.root != self.graph_root
+        if proof.owner() != &self.owner || proof.witness.binding().original_task() != self.graph_root
             || proof.request.volume.class() != VolumeClass::Project || !Arc::ptr_eq(&proof.host, &self.host)
         {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
@@ -369,7 +369,7 @@ where
             let admission = super::PreparationIo::from_budget(
                 source_budget(context.maximum_work, context.maximum_bytes)?, context.cancellation)?;
             let bounds = JsonBounds { maximum_bytes: context.maximum_bytes, maximum_items: context.maximum_work, maximum_depth: 32 };
-            let encoded = canonical_json_bytes_bounded(&snapshot.project, bounds, &mut |charge| admission.codec_charge(charge, true))?;
+            let encoded = canonical_json_bytes_bounded(&snapshot.project, bounds, None, &mut |charge| admission.codec_charge(charge, true))?;
             let encoded_owned = encoded.len() as u64;
             admission.charge(WorkCounters { bytes_hashed: encoded_owned, ..WorkCounters::default() })?;
             let digest = blake3::hash(&encoded).to_hex();
@@ -404,7 +404,7 @@ where
                 if lazy.workspace_id() != opened.value.id() {
                     return Err(Error::Unauthorized("native source names another original workspace".into()));
                 }
-                let encoded = canonical_json_bytes_bounded(value, bounds, &mut |charge| admission.codec_charge(charge, true))?;
+                let encoded = canonical_json_bytes_bounded(value, bounds, None, &mut |charge| admission.codec_charge(charge, true))?;
                 let owned = encoded.len() as u64;
                 let frozen = LazySnapshotRef::deserialize(value)
                     .map_err(|_| Error::Invalid("native source is not a lazy snapshot reference".into()))?;
@@ -561,8 +561,8 @@ fn native_source_json<T: serde::Serialize>(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<acyclic_stream::OwnedBytes> {
     let diagnostic = work.retain_owned(crate::contract::sdk_json_diagnostic_bytes())?;
-    let bytes = crate::contract::canonical_json_bytes_bounded_native_trusted(
-        value, bounds, crate::wire::ErrorCode::Invalid,
+    let bytes = crate::contract::canonical_json_bytes_bounded(
+        value, bounds, Some(crate::wire::ErrorCode::Invalid),
         &mut |charge| io.codec_charge(charge, true),
     ).map_err(|error| match error {
         Error::NativeEncode { code, source, custody: None } =>

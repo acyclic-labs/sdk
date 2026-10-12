@@ -17,8 +17,8 @@ type References = BTreeMap<[u8; 32], FileRef>;
 
 pub(super) fn summary_keys(key: &IdempotencyKey, io: Option<&PreparationIo>) -> Result<[IdempotencyKey; 2]> {
     Ok([
-        IdempotencyKey::new(fork_preparer_io::format_text(format_args!("{}:summary-payloads", key.as_str()), io)?)?,
-        IdempotencyKey::new(fork_preparer_io::format_text(format_args!("{}:summary-context", key.as_str()), io)?)?,
+        IdempotencyKey::new(crate::contract::preparation_format(format_args!("{}:summary-payloads", key.as_str()), io)?)?,
+        IdempotencyKey::new(crate::contract::preparation_format(format_args!("{}:summary-context", key.as_str()), io)?)?,
     ])
 }
 
@@ -132,8 +132,8 @@ fn copy_references(payloads: &References, child: &VolumeRef, generation: &str, i
     for (key, source) in payloads {
         fork_preparer_io::item(io, std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
         let encoded = fork_preparer_io::hex_key(key, io)?;
-        let path = fork_preparer_io::format_text(format_args!(".system/inherited-conversation/summary-payloads/{encoded}"), io)?;
-        copies.insert(*key, fork_preparer_io::file_ref(child, &path, generation, source.descriptor(), source.display_name(), io)?);
+        let path = crate::contract::preparation_format(format_args!(".system/inherited-conversation/summary-payloads/{encoded}"), io)?;
+        copies.insert(*key, crate::conversation::FileRef::new_with_io(child, &path, generation, source.descriptor(), source.display_name(), io)?);
     }
     Ok(copies)
 }
@@ -308,7 +308,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         }
         let planned_capture = SummaryForkCapture {
             selection: clone_selection(prepared.selection(), io)?,
-            context: fork_preparer_io::file_ref(child_private, ".system/inherited-conversation/summary-context.json",
+            context: crate::conversation::FileRef::new_with_io(child_private, ".system/inherited-conversation/summary-context.json",
                 ZERO_VERSION, &descriptor(&planned_bytes, io)?, "summary-context.json", io)?,
             payloads: into_files(planned, io)?,
             references: cloned_files(&references, io)?,
@@ -364,7 +364,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 file.descriptor().verify_with_io(&bytes, io)?;
                 let encoded = fork_preparer_io::hex_key(key, io)?;
                 writes.push(WorkspaceMutation::PutFile {
-                    path: fork_preparer_io::format_text(format_args!("/.system/inherited-conversation/summary-payloads/{encoded}"), io)?,
+                    path: crate::contract::preparation_format(format_args!("/.system/inherited-conversation/summary-payloads/{encoded}"), io)?,
                     bytes,
                 });
             }
@@ -402,7 +402,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             ).await?
         };
         let context_version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
-        let context = fork_preparer_io::file_ref(child_private,
+        let context = crate::conversation::FileRef::new_with_io(child_private,
             ".system/inherited-conversation/summary-context.json",
             &context_version, &descriptor(&bytes, io)?,
             "summary-context.json", io)?;

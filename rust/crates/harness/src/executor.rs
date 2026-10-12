@@ -79,7 +79,7 @@ impl TurnInput {
                 Error::Invalid("selected context must end with a user message".into())
             })?;
         input.validate_user_input()?;
-        selected_context.validate_for_input(&input)?;
+        selected_context.validate_for_input(&input, None)?;
         Ok(Self {
             operation_id,
             input,
@@ -3026,7 +3026,7 @@ impl StockExecution<'_> {
         let scope = self.original_context().map(crate::runtime::TaskContext::scope);
         validate_model_content_scope_with_io(&input.input, self.limits, scope, self.io())?;
         if let Some(selected) = &input.selected_context {
-            selected.validate_for_input_with_io(&input.input, self.io())?;
+            selected.validate_for_input(&input.input, self.io())?;
             if selected.messages.len() > self.limits.context_messages {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid,
                     "selected context exceeds configured message limit"));

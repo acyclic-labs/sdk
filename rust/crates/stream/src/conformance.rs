@@ -1,6 +1,5 @@
 //! Reusable black-box qualification of the complete public Stream contract.
 
-use bytes::Bytes;
 use crate::OwnedBytes;
 use futures::StreamExt as _;
 
@@ -320,8 +319,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     Ok(())
 }
 
-/// A stale tail condition changes nothing, and a fork mutation extends
-/// its new path with records in the same commit.
+/// A stale tail condition changes nothing, and a fork mutation extends its new path with records in the same commit.
 async fn verify_commit_forks(
     provider: &dyn StreamProvider,
     source: StreamPath,
@@ -370,8 +368,7 @@ async fn verify_stale_tail_condition(
     Ok(())
 }
 
-/// A fork mutation appends its records after the inherited prefix, in the
-/// same commit, and its committed fact carries them.
+/// A fork mutation appends its records after the inherited prefix, in the same commit, and its committed fact carries them.
 async fn verify_fork_with_records(
     provider: &dyn StreamProvider,
     source: StreamPath,
@@ -459,7 +456,7 @@ fn path(value: &str) -> Result<StreamPath, String> {
 }
 
 fn key(value: &'static [u8]) -> Result<IdempotencyKey, String> {
-    IdempotencyKey::new(Bytes::from_static(value)).map_err(|err| error(&err))
+    IdempotencyKey::new(OwnedBytes::from_static(value)).map_err(|err| error(&err))
 }
 
 fn error(error: &impl ToString) -> String {

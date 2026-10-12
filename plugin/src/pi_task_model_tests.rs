@@ -1,5 +1,4 @@
 //! Bounded checkpoint exploration of the production registered Pi machine.
-//! Storage atomicity, provider execution and lease freshness are separate gates.
 
 use super::*;
 use acyclic_harness::workflow::{MachineCheckpoint, MachineTransition};
