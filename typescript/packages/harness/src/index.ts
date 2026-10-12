@@ -73,12 +73,6 @@ export interface IdentityKindMap {
 }
 export type IdentityKind = keyof IdentityKindMap;
 
-/** Parses and canonicalizes a branded identity through the Rust contract. */
-export async function parseIdentity<Kind extends IdentityKind>(
-  kind: Kind, value: string,
-): Promise<IdentityKindMap[Kind]> {
-  return (await NativeContracts.create()).validateIdentity(kind, value);
-}
 export interface Authority<Kind extends AggregateKind = AggregateKind> {
   readonly kind: Kind;
   readonly id: string;
@@ -317,8 +311,7 @@ export class Harness {
   prepareForkRequest(request: ForkRequest, policy: ForkHistoryPolicy | null = null): ForkRequest {
     const prepared = this.#core.prepareForkRequest(request, policy);
     const summary = prepared.preparation.summary;
-    // Rust validates every limit within JavaScript's exact integer range. The
-    // native wire retains bigint; the public Limits boundary uses numbers.
+    // Public Limits use exact Numbers; native counters retain BigInt.
     const numericLimit = (value: bigint): number => {
       if (typeof value !== "bigint" || value <= 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
         throw new RangeError("native Summary limit is not an exact positive integer");

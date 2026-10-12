@@ -245,64 +245,15 @@ mod worker_context_tests {
     use std::time::Duration;
     use tracing_subscriber::{layer::Context, prelude::*};
 
-    type RecordedFields = Vec<(String, String, String)>;
+    use acyclic_grpc_observability::test_support::{Capture, Evidence};
 
-    #[derive(Default)]
-    struct Evidence {
-        records: RecordedFields,
-        closes: Vec<String>,
-        event_parent: Option<String>,
-        events: Vec<(Option<String>, RecordedFields)>,
-    }
-
-    struct Capture {
-        evidence: Arc<Mutex<Evidence>>,
-        closed: mpsc::Sender<()>,
-    }
-
-    struct Fields<'a>(&'a mut RecordedFields, String);
-    impl tracing::field::Visit for Fields<'_> {
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            self.0
-                .push((self.1.clone(), field.name().into(), format!("{value:?}")));
-        }
-    }
-
-    #[expect(
-        clippy::expect_used,
-        reason = "test callbacks cannot return errors; failed fixture invariants must fail the test"
-    )]
-    impl<S> tracing_subscriber::Layer<S> for Capture
-    where
-        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-    {
-        fn on_record(
-            &self,
-            id: &tracing::Id,
-            record: &tracing::span::Record<'_>,
-            ctx: Context<'_, S>,
-        ) {
-            let span = ctx.span(id).expect("recorded span exists");
-            let mut evidence = self.evidence.lock().expect("evidence poisoned");
-            record.record(&mut Fields(&mut evidence.records, span.name().into()));
-        }
-        fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
-            let parent = ctx.event_span(event).map(|span| span.name().into());
-            let mut fields = Vec::new();
-            event.record(&mut Fields(&mut fields, event.metadata().target().into()));
-            let mut evidence = self.evidence.lock().expect("evidence poisoned");
-            evidence.event_parent = parent.clone();
-            evidence.events.push((parent, fields));
-        }
+    struct NotifyClose(mpsc::Sender<()>);
+    #[expect(clippy::expect_used, reason = "test notification invariants must fail immediately")]
+    impl<S> tracing_subscriber::Layer<S> for NotifyClose
+    where S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a> {
         fn on_close(&self, id: tracing::Id, ctx: Context<'_, S>) {
-            let span = ctx.span(&id).expect("closing span exists");
-            self.evidence
-                .lock()
-                .expect("evidence poisoned")
-                .closes
-                .push(span.name().into());
-            if span.name() == "worker_operation" {
-                self.closed.send(()).expect("worker close observer is live");
+            if ctx.span(&id).expect("closing span exists").name() == "worker_operation" {
+                self.0.send(()).expect("worker close observer is live");
             }
         }
     }
@@ -313,14 +264,11 @@ mod worker_context_tests {
             for unwind in [false, true] {
                 let origin_seen = Arc::new(Mutex::new(Evidence::default()));
                 let foreign_seen = Arc::new(Mutex::new(Evidence::default()));
-                let (closed, _) = mpsc::channel();
+
                 let origin = tracing::Dispatch::new(
                     tracing_subscriber::registry()
                         .with(
-                            Capture {
-                                evidence: Arc::clone(&origin_seen),
-                                closed: closed.clone(),
-                            }
+                            Capture(Arc::clone(&origin_seen), Default::default())
                             .with_filter(
                                 tracing_subscriber::filter::filter_fn(move |metadata| {
                                     !filtered || metadata.name() != "drop_operation"
@@ -334,10 +282,7 @@ mod worker_context_tests {
                         }),
                 );
                 let foreign =
-                    tracing::Dispatch::new(tracing_subscriber::registry().with(Capture {
-                        evidence: Arc::clone(&foreign_seen),
-                        closed,
-                    }));
+                    tracing::Dispatch::new(tracing_subscriber::registry().with(Capture(Arc::clone(&foreign_seen), Default::default())));
                 let operation = tracing::dispatcher::with_default(&origin, || {
                     let root = tracing::info_span!("drop_root");
                     let caller = tracing::info_span!(parent: &root, "drop_caller");
@@ -411,13 +356,10 @@ mod worker_context_tests {
         use std::future::Future as _;
         for filtered in [false, true] {
             let seen = Arc::new(Mutex::new(Evidence::default()));
-            let (closed, _) = mpsc::channel();
+
             let origin = tracing::Dispatch::new(
                 tracing_subscriber::registry().with(
-                    Capture {
-                        evidence: Arc::clone(&seen),
-                        closed,
-                    }
+                    Capture(Arc::clone(&seen), Default::default())
                     .with_filter(tracing_subscriber::filter::filter_fn(
                         move |metadata| !filtered || metadata.name() != "frame_operation",
                     )),
@@ -468,17 +410,14 @@ mod worker_context_tests {
         let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         for visible in [false, true] {
             let evidence = Arc::new(Mutex::new(Evidence::default()));
-            let (closed, _) = mpsc::channel();
+
             let dispatch = tracing::Dispatch::new(
                 tracing_subscriber::registry()
                     .with(tracing_subscriber::filter::filter_fn(move |metadata| {
                         metadata.name() == "callback_parent"
                             || (visible && metadata.name() == "acyclic.fs.mount.filtered_callback")
                     }))
-                    .with(Capture {
-                        evidence: Arc::clone(&evidence),
-                        closed,
-                    }),
+                    .with(Capture(Arc::clone(&evidence), Default::default())),
             );
             let errno = tracing::dispatcher::with_default(&dispatch, || {
                 let parent = tracing::info_span!("callback_parent", errno = 77);
@@ -534,13 +473,10 @@ mod worker_context_tests {
         use tracing::{Instrument as _, instrument::WithSubscriber as _};
         let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         let evidence = Arc::new(Mutex::new(Evidence::default()));
-        let (closed, _) = mpsc::channel();
+
         let dispatch = tracing::Dispatch::new(
             tracing_subscriber::registry().with(
-                Capture {
-                    evidence: Arc::clone(&evidence),
-                    closed,
-                }
+                Capture(Arc::clone(&evidence), Default::default())
                 .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
                     metadata.name() == "ledger_caller" || metadata.target() == "acyclic.work"
                 })),
@@ -592,10 +528,7 @@ mod worker_context_tests {
         use tracing::instrument::WithSubscriber as _;
         let evidence = Arc::new(Mutex::new(Evidence::default()));
         let (closed_tx, closed_rx) = mpsc::channel();
-        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(Capture {
-            evidence: Arc::clone(&evidence),
-            closed: closed_tx,
-        }));
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(Capture(Arc::clone(&evidence), Default::default()).and_then(NotifyClose(closed_tx))));
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let (caller, operation) = tracing::dispatcher::with_default(&dispatch, || {

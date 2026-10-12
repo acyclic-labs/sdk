@@ -221,10 +221,10 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let original_history = history.reducer().conversation().map(|state| state.messages().to_vec());
     let original_revision = history.reducer().revision();
-    let workspace = fs.open_workspace(project.storage_name()?).await.map_err(|e| Error::Storage(e.to_string()))?;
-    ContentGrant::verify(&fixture.issuer.verifier(), &fixture.signed, &project, VolumeOperation::Write)?;
+    let workspace = fs.open_workspace(project.storage_name(&mut None)?).await.map_err(|e| Error::Storage(e.to_string()))?;
+    ContentGrant::verify(&fixture.issuer.verifier(), &fixture.signed, &project, VolumeOperation::Write, u64::MAX, &mut None)?;
     let restricted = fixture.issuer.issue("read-only", &Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]), Some(agent), None, &mut None).expect("scope proof");
-    assert!(ContentGrant::verify(&fixture.issuer.verifier(), &restricted, &project, VolumeOperation::Write).is_err());
+    assert!(ContentGrant::verify(&fixture.issuer.verifier(), &restricted, &project, VolumeOperation::Write, u64::MAX, &mut None).is_err());
     put(&fixture, &project, "src/a.txt", b"old", "restore-old").await?;
     let selected = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
     put(&fixture, &project, "src/a.txt", b"new", "restore-new").await?;
@@ -246,7 +246,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         WorkspaceRestore::Restored(_)));
     assert!(matches!(workspace.restore_generation(&saved, current.id(), restore_key).await.map_err(|e| Error::Storage(e.to_string()))?,
         WorkspaceRestore::AlreadyRestored(_)));
-    let selected_generation = fixture.filesystem.resolve(&crate::filesystem::workspace_ref(project.provider().clone(), &project.storage_name()?)?).await?.generation;
+    let selected_generation = fixture.filesystem.resolve(&crate::filesystem::workspace_ref(project.provider().clone(), &project.storage_name(&mut None)?)?).await?.generation;
     let inspection = runtime.inspect_source(task, task).await?;
     assert_eq!(inspection.read_path(&project, "", "src/a.txt", &selected_generation).await?.1.as_ref(), b"old");
     assert_eq!(inspection.read_path(&project, "", "concurrent.txt", &selected_generation).await?.1.as_ref(), b"user edit");
@@ -270,7 +270,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         selections: vec![
             ForkSelection { required: true, revision: ResourceRevision::Project { volume: project.clone(), generation: selected_generation.clone() } },
             ForkSelection { required: true, revision: ResourceRevision::PrivateVolume { volume: fixture.volume.clone(),
-                generation: fixture.filesystem.resolve(&crate::filesystem::workspace_ref(project.provider().clone(), &fixture.volume.storage_name()?)?).await?.generation,
+                generation: fixture.filesystem.resolve(&crate::filesystem::workspace_ref(project.provider().clone(), &fixture.volume.storage_name(&mut None)?)?).await?.generation,
                 paths: Vec::new() } },
             ForkSelection { required: true, revision: ResourceRevision::History(crate::resources::StreamRef::new(stream_provider,
                 authority.stream_path()?.into_bytes(), Some(original_revision.to_string()))?) },
@@ -288,7 +288,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     assert!(!seed.inherited_context.is_empty());
     assert_eq!(history.reducer().conversation().map(|state| state.messages().to_vec()), original_history);
     assert_eq!(child.reducer().conversation().and_then(|state| state.agent), Some(child_agent));
-    assert_eq!(fixture.filesystem.read(&crate::filesystem::workspace_ref(project.provider().clone(), &child_project.storage_name()?)?, None, "/src/a.txt", 128).await?.as_ref(), b"old");
+    assert_eq!(fixture.filesystem.read(&crate::filesystem::workspace_ref(project.provider().clone(), &child_project.storage_name(&mut None)?)?, None, "/src/a.txt", 128).await?.as_ref(), b"old");
     let reopened = self::runtime(&fixture).await?;
     let replay = reopened.stock_execution(task, LeaseFence::from(&lease.reservation), input.operation_id,
         Model::new("fixture", "headless", "1", json!({}))?, provider.clone(), ContextPipeline::default(), None).await?

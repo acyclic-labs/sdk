@@ -1,7 +1,7 @@
-import { copyBytes, copyOptionalBytes, requireIdentity } from "./binding-values.js";
+import { copyBytes, copyOptionalBytes, requireIdentity, requireWorkspaceName } from "./binding-values.js";
 import { createRequire } from "node:module";
 import { arch, platform } from "node:process";
-import type { WasmRawFs, WasmRawWorkspace, EngineCapabilities, FsGeneration, FsWorkspace, NativeBindings, NativeFsEngine, NativeFsWorkspace, NativeFsOptions, NativeRawFs, NativeRawCheckout, NativeRawTransactionOperation, NativeRawMergeConflict, NativeRawSourceResult, NativeRawWorkspace, NativeRawWorkspaceMount, NativeRawWatcher, NativeRawWatchBatch, NativeWatcher, NativeWatchBatch, NativeNamespacePath, CaptureResult, NativeWorkspaceMount, SourceResult, SourceStatus, WorkCounters, WorkspaceRebaseResult, JoinResult, TransactionOperation, GenerationExportManifest, ResolvableFsJoinPlan, NativeRawWorkspaceGraph, NativeRawWorkspaceLineageRecord, WasmRawJoinResult } from "./contracts.js";
+import type { WasmRawFs, WasmRawWorkspace, EngineCapabilities, FsGeneration, FsWorkspace, NativeBindings, NativeFsEngine, NativeFsWorkspace, NativeFsOptions, NativeRawFs, NativeRawCheckout, NativeRawTransactionOperation, NativeRawSourceResult, NativeRawWorkspace, NativeRawWatcher, NativeRawWatchBatch, NativeWatcher, NativeWatchBatch, NativeNamespacePath, CaptureResult, NativeWorkspaceMount, SourceResult, WorkCounters, TransactionOperation, GenerationExportManifest, NativeRawWorkspaceGraph, NativeRawWorkspaceLineageRecord } from "./contracts.js";
 import type {
   WorkspaceGraph,
   WorkspaceLineageRecord,
@@ -9,18 +9,9 @@ import type {
 
 import { createFilesystemAdapter } from "./filesystem-adapter.js";
 import { workCounterKeys } from "./workspace-copies.js";
-import { adaptResolvableJoinPlan } from "./workspace-operations.js";
 
-import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult } from "./workspace-results.js";
-
-type NativeAdapterScope = ReturnType<typeof createNativeAdapter>;
-const workspaceScopes = new WeakMap<FsWorkspace, NativeAdapterScope>();
+const workspaceScopes = new WeakMap<FsWorkspace, ReturnType<typeof createNativeAdapter>>();
 const nativeHandles = new WeakMap<object, object>();
-
-const decodeMergeConflict = (raw: unknown) => decodeSharedMergeConflict(
-  (raw as NativeRawMergeConflict),
-  "native merge",
-);
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
@@ -40,21 +31,13 @@ const TARGETS = new Set([
 let bindingPromise: Promise<NativeBindings> | undefined;
 const requireNativeCompanion = createRequire(import.meta.url);
 
-type NativeModuleNamespace = NativeBindings & {
-  readonly default?: NativeBindings;
-};
-
 async function bindings(): Promise<NativeBindings> {
   const target = `${platform}-${arch}`;
   if (!TARGETS.has(target)) {
     throw new Error(`@acyclic-labs/fs has no native companion for ${target}`);
   }
   bindingPromise ??= Promise.resolve().then((): NativeBindings => {
-    // N-API companions are Node native modules. `import()` asks the ESM loader
-    // to interpret the `.node` file and fails in both Node and Bun, while
-    // createRequire resolves the optional companion from this package's
-    // installed node_modules directory and delegates loading to Node-API.
-    const namespace = requireNativeCompanion(`@acyclic-labs/fs-${target}`) as NativeModuleNamespace;
+    const namespace = requireNativeCompanion(`@acyclic-labs/fs-${target}`) as NativeBindings & { readonly default?: NativeBindings };
     const candidate =
       typeof namespace.nativeCapabilities === "function" ? namespace : namespace.default;
     if (candidate === undefined) {
@@ -155,7 +138,7 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
     nativeWatchRootIdentityFencing: raw.capabilities.nativeWatchRootIdentityFencing,
     providerProcessIoObservable: raw.capabilities.providerProcessIoObservable,
   };
-  const engine: NativeFsEngine = {
+  return {
     ...(scope.adaptFs((normalizeNative(raw) as WasmRawFs), undefined, capabilities) as NativeFsEngine),
     async attachDirectory(
       name: string,
@@ -173,7 +156,6 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
       raw.cancel();
     },
   };
-  return engine;
 }
 
 function captureResult(value: { readonly examinedPaths: bigint; readonly changedPaths: bigint; readonly stagedFileBytes: bigint; readonly workJson: string }): CaptureResult {
@@ -223,9 +205,6 @@ function normalizeNative(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(normalizeNative);
   if (Object.getPrototypeOf(value) === Object.prototype &&
       !Object.values(value).some(field => typeof field === "function")) {
-    if (Reflect.get(value, "kind") === "sparse" && !Array.isArray(Reflect.get(value, "spans"))) {
-      throw new TypeError("native binding returned a malformed file extent plan");
-    }
     return Object.fromEntries(Object.entries(value).map(([key, field]) =>
       key === "workJson" ? ["work", parseWork(String(field))] : [key, normalizeNative(field)],
     ));
@@ -246,7 +225,9 @@ function normalizeNative(value: unknown): unknown {
         if (key === "applyTransaction" || key === "mutateLive") {
           args[0] = (args[0] as readonly TransactionOperation[]).map(nativeTransactionOperation);
         } else if (key === "exportGenerationBatch" || key === "importGenerationBatch" || key === "restoreVolume") {
-          args[0] = nativeManifest(args[0] as GenerationExportManifest);
+          const manifest = args[0] as GenerationExportManifest;
+          args[0] = { manifestBytes: manifest.manifestBytes, objects: manifest.objects,
+            workJson: JSON.stringify(manifest.work, (_key, field: unknown) => typeof field === "bigint" ? field.toString() : field) };
         } else if (key === "planPromotion") {
           const request = args[0] as import("./contracts.js").PromotionRequest;
           args = [request.operationId, request.acceptedTiers, request.residency, request.destinations];
@@ -300,19 +281,16 @@ function createNativeAdapter() {
           return parseSourceResult(await raw.rescanSource());
         },
         async seal(): Promise<FsGeneration> {
-          return scope.adaptGeneration((await raw.seal() as Parameters<typeof scope.adaptGeneration>[0]));
+          return scope.adaptGeneration(normalizeNative(await raw.seal()) as Parameters<typeof scope.adaptGeneration>[0]);
         },
         async mount(destination, options): Promise<NativeWorkspaceMount> {
           if (destination.length === 0) throw new RangeError("mount destination must be non-empty");
           if (options.subdirectory.length === 0) {
             throw new RangeError("mount subdirectory must be non-empty");
           }
-          return adaptWorkspaceMount(await raw.mount(destination, options));
+          return await raw.mount(destination, options) as unknown as NativeWorkspaceMount;
         },
       };
-    },
-    joinPlan(handle) {
-      return adaptJoinPlan((handle as import("./contracts.js").NativeRawJoinPlan));
     },
   });
   const scope = (adapter as Omit<typeof adapter, "adaptWorkspace"> & {
@@ -321,12 +299,8 @@ function createNativeAdapter() {
   return scope;
 }
 
-function nativeManifest(value: GenerationExportManifest) {
-  return { manifestBytes: value.manifestBytes, objects: value.objects, workJson: JSON.stringify(value.work, (_key, field: unknown) => typeof field === "bigint" ? field.toString() : field) };
-}
-
 function nativeTransactionOperation(value: TransactionOperation): NativeRawTransactionOperation {
-  const operation: NativeRawTransactionOperation = {
+  return {
     kind: value.kind,
     ...("path" in value ? { path: value.path } : {}),
     ...("source" in value ? { source: value.source } : {}),
@@ -350,7 +324,6 @@ function nativeTransactionOperation(value: TransactionOperation): NativeRawTrans
     ...("keepSize" in value ? { keepSize: value.keepSize } : {}),
     ...("canonicalBytes" in value ? { canonicalBytes: copyBytes(value.canonicalBytes) } : {}),
   };
-  return operation;
 }
 
 function rawWorkspace(workspace: FsWorkspace): NativeRawWorkspace {
@@ -358,17 +331,6 @@ function rawWorkspace(workspace: FsWorkspace): NativeRawWorkspace {
   if (scope === undefined) throw new TypeError("workspace belongs to another filesystem engine");
   return nativeHandles.get(scope.rawWorkspace(workspace)) as NativeRawWorkspace;
 }
-
-const parseJoinResult = (value: WasmRawJoinResult): JoinResult => parseSharedJoinResult(
-  value,
-  decodeMergeConflict,
-);
-const parseWorkspaceRebaseResult = (value: WasmRawJoinResult): WorkspaceRebaseResult => parseSharedWorkspaceRebaseResult(
-  value,
-  decodeMergeConflict,
-);
-const adaptJoinPlan = (raw: import("./contracts.js").NativeRawJoinPlan): ResolvableFsJoinPlan =>
-  adaptResolvableJoinPlan((raw as Parameters<typeof adaptResolvableJoinPlan>[0]), parseJoinResult);
 
 function parseSourceResult(value: NativeRawSourceResult): SourceResult {
   const { status } = value;
@@ -382,43 +344,15 @@ function parseSourceResult(value: NativeRawSourceResult): SourceResult {
   ) {
     throw new TypeError("native source has an invalid status");
   }
-  const typedStatus: SourceStatus = status;
   const reason = value.reason;
-  if (
-    reason !== undefined &&
-    reason !== "initial-snapshot-required" &&
-    reason !== "queue-overflow" &&
-    reason !== "native-rescan-required" &&
-    reason !== "backend-error" &&
-    reason !== "unrepresentable-path" &&
-    reason !== "ambiguous-rename" &&
-    reason !== "root-changed"
-  ) {
+  if (reason !== undefined && !isRescanReason(reason)) {
     throw new TypeError("native source has an invalid reason");
   }
   return {
-    status: typedStatus,
+    status,
     reason,
     generationId: value.generationId === undefined ? undefined : copyBytes(value.generationId),
   };
-}
-
-function adaptWorkspaceMount(raw: NativeRawWorkspaceMount): NativeWorkspaceMount {
-  return {
-    get path(): string {
-      return raw.path;
-    },
-    sync() {
-      return (raw.sync() as Promise<void>);
-    },
-    unmount() {
-      return (raw.unmount() as Promise<boolean>);
-    },
-  };
-}
-
-function requireWorkspaceName(name: string): void {
-  if (name.length === 0) throw new RangeError("workspace name must be non-empty");
 }
 
 function nativePlatform(value: string): "win32" | "linux" | "darwin" {
@@ -447,7 +381,7 @@ function nativeArchitecture(value: string): "x64" | "arm64" {
   }
 }
 
-/** Rust emits exact u64 counters; reject any that JSON numbers cannot hold losslessly. */
+/** Decodes exact counters from canonical decimal strings. */
 function parseWork(value: string): WorkCounters {
   const parsed: unknown = JSON.parse(value);
   if (typeof parsed !== "object" || parsed === null) {

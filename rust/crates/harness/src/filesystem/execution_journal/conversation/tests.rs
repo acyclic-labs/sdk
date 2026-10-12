@@ -132,7 +132,7 @@ async fn durable_ten_thousand_turns_reopen_and_replay_original_identity() -> Res
         if index == 113 || index == TURNS - 1 {
             let workspace = crate::filesystem::workspace_ref(
                 binding.journal.host.provider.clone(),
-                &binding.journal.volume.storage_name()?,
+                &binding.journal.volume.storage_name(&mut None)?,
             )?;
             for (path, expected_entries) in [
                 ("/.system/execution", 1),

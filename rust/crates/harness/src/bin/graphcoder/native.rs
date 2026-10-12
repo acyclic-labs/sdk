@@ -16,7 +16,7 @@ use acyclic_harness::{
         ForkPreparationMachine, MailboxModelMachine, StockTurnMachine,
         StreamHistoryForkVerifier, TaskWorkerAttempt, TaskWorkerOutcome},
     fork::{CompositeForkVerifier, ForkReport},
-    model::{Model, ModelContent, ModelMessage, ModelRole},
+    model::{ModelContent, ModelMessage, ModelRole},
     resources::ProviderRef,
     resource_preparation::ResourcePreparationRequest,
     runtime::{DurableTaskHost as _, RuntimeScope, RuntimeTask, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits},
@@ -47,7 +47,7 @@ pub struct AuthorityBinding {
 impl AuthorityBinding {
     pub(super) fn verifier(&self) -> Result<AuthorityVerifier> {
         let verifier = AuthorityIssuer::new(&self.issuer, self.key, self.authority.clone()).verifier(&mut None).expect("verifier copy");
-        verifier.verify(&self.scope)?;
+        verifier.verify(&self.scope, &mut None)?;
         Ok(verifier)
     }
 }
@@ -131,7 +131,7 @@ impl WorkflowContext {
             pipeline = pipeline.with(Arc::new(discovered.clone().stage(ContextPlacement::Prepend)?));
         }
         for attribute in &self.attributes {
-            attribute.validate()?;
+            attribute.validate(&mut None)?;
             let mode = self.attribute_mode.unwrap_or(ContextRenderMode::Prompt);
             let text = serde_json::to_string(attribute).map_err(|error| Error::Invalid(error.to_string()))?;
             pipeline = pipeline.with(Arc::new(SourceStage::new(
@@ -152,7 +152,6 @@ pub struct NativeSession {
     pub(super) files: Arc<Files>,
     pub(super) runtime: Arc<Runtime>,
     context: std::sync::RwLock<WorkflowContext>,
-    model: Model,
     model_provider: Arc<super::provider::Deterministic>,
 }
 
@@ -166,7 +165,7 @@ impl NativeSession {
         {
             return Err(Error::Invalid("native composition requires absolute paths and finite bounds".into()));
         }
-        config.limits.validate()?;
+        config.limits.validate(&mut None)?;
         if !cfg!(feature = "native-execution")
             && (!config.native_publications.is_empty() || !config.tools.commands.is_empty()) {
             return Err(Error::Unsupported("native providers require native-execution".into()));
@@ -177,8 +176,8 @@ impl NativeSession {
         }
         for source in &config.fork_sources {
             source.owner.verifier()?;
-            source.project.validate()?;
-            source.request.validate()?;
+            source.project.validate(&mut None)?;
+            source.request.validate(&mut None)?;
             if source.request.parent != source.owner.authority
                 || source.request.parent_revision != source.snapshot.revision
             {
@@ -230,9 +229,9 @@ impl NativeSession {
             }), serde_json::json!({"type":"object"}),
         )?.requires("host")?.requires("model")?)?;
         let mut machines = MachineRegistry::default();
-        machines.register(machine)?;
-        machines.register(preparation)?;
-        machines.register(mailbox)?;
+        machines.register(machine, &mut None)?;
+        machines.register(preparation, &mut None)?;
+        machines.register(mailbox, &mut None)?;
         let scope = RuntimeScope::new(config.owner.scope.capabilities().clone(), config.limits)?
             .with_run_limits(config.run_limits, &mut None)?;
         let creation = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), &AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()), #[cfg(not(target_arch = "wasm32"))] None)?);
@@ -243,7 +242,6 @@ impl NativeSession {
             Arc::new(acyclic_stream::SystemUnixMillisClock), None, vec![creation], toolset.resumable_tools,
         ).await?.with_recursive_source(source.clone()));
         source.bind_runtime(&runtime)?;
-        let model = super::provider::model(config.deterministic_delay_ms);
         let model_provider = Arc::new(super::provider::Deterministic::new(
             config.deterministic_delay_ms, &config.model_invocation_ledger,
         )?);
@@ -259,7 +257,7 @@ impl NativeSession {
         Ok(Self {
             context: std::sync::RwLock::new(context),
             config, stream, files, runtime,
-            model, model_provider,
+            model_provider,
         })
     }
 
@@ -375,7 +373,7 @@ impl NativeSession {
 
     pub async fn resume(&self, lease: WorkLease) -> Result<String> {
         let commands = self.runtime.commands().with_model(
-            self.model.clone(), self.model_provider.clone(),
+            super::provider::model(self.config.deterministic_delay_ms), self.model_provider.clone(),
             self.context.read().map_err(|_| Error::Storage("context lock poisoned".into()))?.pipeline()?,
             Default::default(),
         );
@@ -432,7 +430,7 @@ impl NativeSession {
         };
         let report: ForkReport = serde_json::from_value(value)
             .map_err(|error| Error::Invalid(format!("retained fork report: {error}")))?;
-        report.validate()?;
+        report.validate(&mut None)?;
         if input.child.parent != Some(caller)
             || serde_json::to_value(&report.request).map_err(|error| Error::Invalid(error.to_string()))? != input.payload
         {

@@ -39,16 +39,16 @@ impl Fixture {
         let machine = Arc::new(Passive { identity: MachineIdentity { name: "pi.mail.test".into(), version: "1".into(), digest: [73; 32] }, schema: json!({"type":"object"}) });
         let mut tasks = TaskRegistry::default();
         tasks.register(TaskDefinition::<Value, Value>::resumable(machine.clone(), json!({"type":"object"}), json!({}))?)?;
-        let mut machines = MachineRegistry::default(); machines.register(machine)?;
+        let mut machines = MachineRegistry::default(); machines.register(machine, &mut None)?;
         Ok(Self { stream: Arc::new(MemoryStream::default()), host, volume, issuer, signed, scope, tasks, machines })
     }
     async fn runtime(&self) -> Result<Arc<Runtime>> {
-        Ok(Arc::new(Runtime::open(self.stream.clone(), self.host.clone(), self.volume.clone(), self.issuer.verifier(),
+        Ok(Arc::new(Runtime::open(self.stream.clone(), self.host.clone(), self.volume.clone(), self.issuer.verifier(&mut None).unwrap(),
             self.signed.clone(), self.scope.clone(), self.tasks.clone(), self.machines.clone(), ToolRegistry::default(),
             SessionLimits { active_tasks:8, total_tasks:8, depth:4, model_steps:8 }, 8, 65_536).await?))
     }
     async fn file(&self, operation: OperationId, path: &str, bytes: &[u8]) -> Result<FileRef> {
-        let grant = ContentGrant::verify(&self.issuer.verifier(), &self.signed, &self.volume, VolumeOperation::Write)?;
+        let grant = ContentGrant::verify(&self.issuer.verifier(&mut None).unwrap(), &self.signed, &self.volume, VolumeOperation::Write)?;
         self.host.put_content(&self.volume, &grant, &format!("pi-inputs/{path}"), bytes,
             "application/json", path, 65_536, &acyclic_harness::IdempotencyKey::new(format!("mail:{operation}:{path}"))?).await
     }

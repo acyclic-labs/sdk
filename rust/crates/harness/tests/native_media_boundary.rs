@@ -1347,7 +1347,7 @@ where
     tasks.register(definition)?;
     let definition = tasks.get_version::<u64, u64>("fixture.native_replay", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     let stream = Arc::new(MemoryStream::default());
     let admission = OperationId::from_bytes([115; 16]);
     let task = TaskId::from_bytes(admission.into_bytes());

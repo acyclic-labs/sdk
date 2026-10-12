@@ -28,7 +28,7 @@ use crate::{
     model::{ModelContent, ModelEvent, ModelMessage},
     projection::{
         SelectedModelContext, select_model_context,
-        validate_model_context_selection_at_revision,
+        validate_model_context_selection,
     },
     resources::{ProviderRef, ResourceRef},
     runtime::{
@@ -229,241 +229,6 @@ struct WasmTaskAdmissionInput {
     extensions: Option<ExtensionAdmission>,
     #[tsify(type = "WasmExecutionPlacementWire | null")]
     execution: Option<crate::runtime::ExecutionPlacement>,
-}
-
-/// Tsify declarations for the provider-neutral model values.
-#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-#[allow(
-    dead_code,
-    reason = "declaration-only: the derive emits the TypeScript wire type"
-)]
-struct WasmModelWire {
-    provider: String,
-    name: String,
-    revision: String,
-    #[tsify(type = "WasmModelJsonValue")]
-    options: serde_json::Value,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
-#[serde(rename_all = "snake_case")]
-enum WasmModelRole {
-    System,
-    User,
-    Assistant,
-    Tool,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Tsify)]
-#[serde(rename_all = "snake_case")]
-enum WasmFileProjectionPolicy {
-    Reference,
-    BoundedFull,
-    Native(Box<WasmNativeMediaPolicyWire>),
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
-#[serde(rename_all = "snake_case")]
-enum WasmImageDetail {
-    Auto,
-    Low,
-    High,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Tsify)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum WasmNativeMediaIntent {
-    Image {
-        detail: WasmImageDetail,
-    },
-    Audio {
-        #[tsify(type = "number")]
-        maximum_duration_ms: u64,
-    },
-    Video {
-        #[tsify(type = "number")]
-        maximum_duration_ms: u64,
-        maximum_frames: u32,
-    },
-    Document {
-        maximum_pages: u32,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Tsify)]
-#[serde(deny_unknown_fields)]
-struct WasmNativeConfigurationBindingWire {
-    #[tsify(type = "WasmEventReferenceWire")]
-    source: crate::core::EventReference,
-    #[tsify(type = "WasmExtensionConfigurationWire")]
-    configuration: ExtensionConfiguration,
-    #[tsify(type = "readonly number[]")]
-    implementation_digest: [u8; 32],
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Tsify)]
-#[serde(deny_unknown_fields)]
-struct WasmNativeMediaPolicyWire {
-    intent: WasmNativeMediaIntent,
-    #[tsify(type = "number")]
-    maximum_bytes: u64,
-    #[tsify(type = "number")]
-    maximum_work: u64,
-    #[tsify(type = "WasmNativeConfigurationBindingWire | null")]
-    configuration: Option<WasmNativeConfigurationBindingWire>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum WasmModelDataPart {
-    Text {
-        text: String,
-    },
-    File {
-        #[tsify(type = "WasmFileRefWire")]
-        file: FileRef,
-        policy: WasmFileProjectionPolicy,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum WasmToolResultContent {
-    Json {
-        #[tsify(type = "WasmModelJsonValue")]
-        value: serde_json::Value,
-    },
-    Parts {
-        parts: Vec<WasmModelDataPart>,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum WasmModelContentPart {
-    Text {
-        text: String,
-    },
-    File {
-        #[tsify(type = "WasmFileRefWire")]
-        file: FileRef,
-        policy: WasmFileProjectionPolicy,
-    },
-    ToolCall {
-        #[serde(rename = "call_id", alias = "callId")]
-        call_id: String,
-        name: String,
-        #[tsify(type = "WasmModelJsonValue")]
-        arguments: serde_json::Value,
-    },
-    ToolResult {
-        #[serde(rename = "call_id", alias = "callId")]
-        call_id: String,
-        name: String,
-        content: WasmToolResultContent,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
-#[serde(untagged)]
-enum WasmModelContent {
-    Text(String),
-    Part(WasmModelContentPart),
-    Parts(Vec<WasmModelContentPart>),
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-#[allow(
-    dead_code,
-    reason = "declaration-only: the derive emits the TypeScript wire type"
-)]
-struct WasmModelMessageWire {
-    role: WasmModelRole,
-    content: WasmModelContent,
-}
-
-/// Public model-message input used by the runtime validator.
-#[allow(
-    dead_code,
-    reason = "the struct exists to emit the generated TypeScript input type"
-)]
-#[derive(Deserialize, Tsify)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-struct WasmModelMessageInput {
-    #[tsify(type = "WasmModelRole")]
-    role: WasmModelRole,
-    #[tsify(type = "WasmModelContentInput")]
-    content: WasmModelContent,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-#[allow(
-    dead_code,
-    reason = "declaration-only: the derive emits the TypeScript wire type"
-)]
-struct WasmModelToolDefinitionWire {
-    name: String,
-    revision: String,
-    description: String,
-    #[tsify(type = "WasmModelJsonSchema")]
-    input_schema: serde_json::Value,
-    #[tsify(type = "WasmModelJsonSchema")]
-    output_schema: serde_json::Value,
-    #[tsify(type = "WasmModelJsonSchema")]
-    projection_schema: serde_json::Value,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-#[allow(
-    dead_code,
-    reason = "declaration-only: the derive emits the TypeScript wire type"
-)]
-struct WasmModelRequestWire {
-    model: WasmModelWire,
-    messages: Vec<WasmModelMessageWire>,
-    tools: Vec<WasmModelToolDefinitionWire>,
-    max_output_tokens: Option<u32>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum WasmModelEvent {
-    Content {
-        delta: String,
-    },
-    Reasoning {
-        delta: String,
-    },
-    ToolCall {
-        #[serde(rename = "call_id", alias = "callId")]
-        call_id: String,
-        name: String,
-        #[tsify(type = "WasmModelJsonValue")]
-        arguments: serde_json::Value,
-    },
-    Completed {
-        #[tsify(type = "WasmModelJsonValue")]
-        metadata: serde_json::Value,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-#[allow(
-    dead_code,
-    reason = "declaration-only: the derive emits the TypeScript wire type"
-)]
-struct WasmModelAttemptWire {
-    #[tsify(type = "string")]
-    operation_id: OperationId,
-    step: u32,
-    #[tsify(type = "readonly number[]")]
-    request_digest: [u8; 32],
-    observed: Vec<WasmModelEvent>,
 }
 
 #[derive(Deserialize, Tsify)]
@@ -797,23 +562,24 @@ export interface WasmModelLimitsInput {
 }
 export type WasmModelToolResultContentInput =
     | Readonly<{ kind: "json"; value: unknown }>
-    | (Omit<Extract<WasmToolResultContent, { kind: "parts" }>, "parts">
-        & Readonly<{ parts: readonly WasmModelDataPart[] }>);
-type WasmModelCamelContentPart<Part extends WasmModelContentPart> =
+    | (Omit<Extract<ToolResultContent, { kind: "parts" }>, "parts">
+        & Readonly<{ parts: readonly ModelDataPart[] }>);
+type WasmModelCamelContentPart<Part extends ModelContentPart> =
     Part extends { readonly kind: "tool_call"; readonly call_id: string }
         ? Omit<Part, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
         : Part extends { readonly kind: "tool_result"; readonly call_id: string }
             ? Omit<Part, "call_id" | "content"> & Readonly<{ callId: string; content: WasmModelToolResultContentInput }>
             : Part;
-export type WasmModelContentPartInput = WasmModelCamelContentPart<WasmModelContentPart>;
+export type WasmModelContentPartInput = WasmModelCamelContentPart<ModelContentPart>;
 export type WasmModelContentInput = string | WasmModelContentPartInput | readonly WasmModelContentPartInput[];
-type WasmModelCamelEvent<Event extends WasmModelEvent> =
+export type WasmModelMessageInput = Omit<ModelMessage, "content"> & { content: WasmModelContentInput };
+type WasmModelCamelEvent<Event extends ModelEvent> =
     Event extends { readonly kind: "tool_call"; readonly call_id: string }
         ? Omit<Event, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
         : Event extends { readonly kind: "completed" }
             ? Omit<Event, "metadata"> & Readonly<{ metadata: unknown }>
         : Event;
-export type WasmModelEventInput = WasmModelCamelEvent<WasmModelEvent>;
+export type WasmModelEventInput = WasmModelCamelEvent<ModelEvent>;
 "#;
 
 /// Exact bytes captured by the owner-facing TypeScript adapter before Rust performs the canonical projection.
@@ -1191,7 +957,7 @@ pub fn decode_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
 #[wasm_bindgen(js_name = decodeExecutionEventJson, unchecked_return_type = "ExecutionEvent")]
 pub fn decode_execution_event_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let event: crate::executor::ExecutionEvent =
-        crate::executor::decode_json(bytes).map_err(js_error)?;
+        crate::executor::decode_json(bytes, None).map_err(js_error)?.into_retained();
     to_js_admitted(&event)
 }
 
@@ -1899,7 +1665,7 @@ pub fn validate_model_context_selection_wasm(
 ) -> Result<(), JsValue> {
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
-    validate_model_context_selection_at_revision(&conversation, &selection, selection.conversation_revision, None)
+    validate_model_context_selection(&conversation, &selection, selection.conversation_revision, &mut None)
     .map_err(js_error)
 }
 
@@ -2630,7 +2396,7 @@ pub fn json_tool_projection_schema(
 struct WasmModelContentInventoryWire<'a> {
     #[tsify(type = "readonly WasmFileRefWire[]")]
     files: Vec<&'a FileRef>,
-    #[tsify(type = "readonly WasmNativeConfigurationBindingWire[]")]
+    #[tsify(type = "readonly NativeConfigurationBinding[]")]
     native_configurations: Vec<&'a crate::model::NativeConfigurationBinding>,
 }
 
@@ -2740,7 +2506,7 @@ pub fn validate_threshold_compaction(
 /// Validates provider-owned counts against the exact canonical prepared request.
 #[wasm_bindgen(js_name = validateModelTokenCount)]
 pub fn validate_model_token_count(
-    #[wasm_bindgen(unchecked_param_type = "WasmModelRequestWire")] request: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "ModelRequest")] request: JsValue,
     #[wasm_bindgen(unchecked_param_type = "ModelTokenCount")] count: JsValue,
     limits: JsValue,
 ) -> Result<u64, JsValue> {
@@ -2913,7 +2679,7 @@ pub fn validate_context_selection(
     #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
 ) -> Result<(), JsValue> {
     let selection: crate::context::ContextSelection = from_js(selection)?;
-    selection.validate(from_js(limits)?).map_err(js_error)
+    selection.validate(from_js(limits)?, &mut None).map_err(js_error)
 }
 
 /// Applies a host renderer's output using the same native placement and bounds.
@@ -3010,7 +2776,7 @@ struct WasmModelEventAdmissionState {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
 struct WasmModelEventAdmission {
-    event: WasmModelEvent,
+    event: ModelEvent,
     state: WasmModelEventAdmissionState,
 }
 
@@ -3064,20 +2830,7 @@ pub fn admit_model_event(
         text_bytes,
     };
     let output = WasmModelEventAdmission {
-        event: match event {
-            ModelEvent::Content { delta } => WasmModelEvent::Content { delta },
-            ModelEvent::Reasoning { delta } => WasmModelEvent::Reasoning { delta },
-            ModelEvent::ToolCall {
-                call_id,
-                name,
-                arguments,
-            } => WasmModelEvent::ToolCall {
-                call_id,
-                name,
-                arguments,
-            },
-            ModelEvent::Completed { metadata } => WasmModelEvent::Completed { metadata },
-        },
+        event,
         state,
     };
     let js = to_js(&output)?;

@@ -48,12 +48,10 @@ type PiControlOperation = "SessionStart" | "TaskStatus" | "TaskCancel" | "SpawnP
   "TaskSend" | "TaskReceive" | "TaskWait" | "TaskSteer" | "TaskInspect" | "TaskDiff" | "TaskImport" | "TaskWriteback" | "TaskWritebackStatus" |
   "NativeBuiltinRead" | "NativeBuiltinWrite" | "NativeBuiltinEdit";
 
-const scopedPiControls: Record<string, true> = {
-  SpawnCommit: true, TaskInspect: true, TaskDiff: true, TaskImport: true,
-  TaskWriteback: true, TaskWritebackStatus: true,
-  TaskSend: true, TaskSteer: true, TaskReceive: true, TaskWait: true,
-  NativeBuiltinRead: true, NativeBuiltinWrite: true, NativeBuiltinEdit: true,
-};
+const scopedPiControls = new Set<string>([
+  "SpawnCommit", "TaskInspect", "TaskDiff", "TaskImport", "TaskWriteback", "TaskWritebackStatus", "TaskSend",
+  "TaskSteer", "TaskReceive", "TaskWait", "NativeBuiltinRead", "NativeBuiltinWrite", "NativeBuiltinEdit",
+]);
 
 /** Select the native history that produced this exact spawn invocation. */
 export function captureParentCut(
@@ -122,38 +120,6 @@ export function assertParentCutCurrent(
 const maximumContextEntries = 4096;
 const maximumContextBytes = 512 * 1024;
 
-interface NativeSessionFile {
-  native_session_id: string;
-  session_file: string;
-  cwd: string;
-}
-
-/** Parse bounded read-only bytes with the actual SDK; open() can migrate/write. */
-function readNativeSessionManager(source: NativeSessionFile, maximumBytes: number) {
-  if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) throw new Error("Pi native inbox requires a finite byte bound");
-  const file = openSync(source.session_file, "r");
-  let bytes: Buffer;
-  let used = 0;
-  try {
-    const metadata = fstatSync(file);
-    if (!metadata.isFile() || metadata.size === 0 || metadata.size > maximumBytes) throw new Error("Pi native inbox session file is empty, nonregular or exceeds its byte bound");
-    bytes = Buffer.alloc(maximumBytes + 1);
-    while (used < bytes.length) {
-      const count = readSync(file, bytes, used, bytes.length - used, null);
-      if (count === 0) break;
-      used += count;
-    }
-    if (used > maximumBytes) throw new Error("Pi native inbox session file exceeds its byte bound");
-  } finally {
-    closeSync(file);
-  }
-  const entries = parseSessionEntries(bytes.subarray(0, used).toString("utf8"));
-  const header = entries[0];
-  if (!header || header.type !== "session" || header.version !== 3 ||
-      header.id !== source.native_session_id || header.cwd !== source.cwd) throw new Error("Pi persisted inbox session differs from the actual native session");
-  return SessionManager.inMemory(source.cwd, undefined, entries);
-}
-
 /** Create one independent native session from a fresh or pinned caller context. */
 export function nativeChildSession(session: ExtensionContext["sessionManager"], childCwd: string, callerCut?: NativeSourceCut) {
   if (callerCut && (callerCut.mode !== "caller_tool" || callerCut.parentSessionId !== session.getSessionId() ||
@@ -206,18 +172,17 @@ export function nativeChildSession(session: ExtensionContext["sessionManager"], 
   };
 }
 
-const privateControlKeys: Record<string, true> = {
-  caller: true, callerproof: true, proof: true, environment: true,
-  tasklease: true, signer: true, runtime: true,
-  operator: true, operatorscope: true, operatorkey: true, bearer: true, authority: true,
-};
+const privateControlKeys = new Set<string>([
+  "caller", "callerproof", "proof", "environment", "tasklease", "signer", "runtime", "operator",
+  "operatorscope", "operatorkey", "bearer", "authority",
+]);
 
 /** Strip private protocol fields at every level, without rewriting text payloads. */
 export function visibleControlResult(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(visibleControlResult);
   if (value === null || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value).filter(([key]) =>
-    !Object.hasOwn(privateControlKeys, key.replaceAll("_", "").toLowerCase()),
+    !privateControlKeys.has(key.replaceAll("_", "").toLowerCase()),
   ).map(([key, entry]) => [key, visibleControlResult(entry)]));
 }
 
@@ -422,7 +387,7 @@ async function taskControl(
   let result: unknown;
   try { result = JSON.parse((await invocation).stdout); }
   catch { throw new PiControlAcknowledgementError(); }
-  const scoped = Object.hasOwn(scopedPiControls, operation);
+  const scoped = scopedPiControls.has(operation);
   if (typeof result !== "object" || result === null || !("session" in result)
     || !("native_session" in result) || result.native_session !== sessionId
     || typeof result.session !== "string" || ctx.sessionManager.getSessionId() !== sessionId
@@ -466,9 +431,27 @@ export function persistedPiInboxCursor(session: ExtensionContext["sessionManager
   if (!file) throw new Error("Pi inbox requires an actual persisted native session");
   let persisted: SessionManager;
   try {
-    persisted = readNativeSessionManager({
-      native_session_id: session.getSessionId(), session_file: file, cwd: session.getCwd(),
-    }, maximumContextBytes);
+    const nativeSession = session.getSessionId();
+    const cwd = session.getCwd();
+    const handle = openSync(file, "r");
+    let bytes: Buffer;
+    let used = 0;
+    try {
+      const metadata = fstatSync(handle);
+      if (!metadata.isFile() || metadata.size === 0 || metadata.size > maximumContextBytes) throw new Error("Pi native inbox session file is empty, nonregular or exceeds its byte bound");
+      bytes = Buffer.alloc(maximumContextBytes + 1);
+      while (used < bytes.length) {
+        const count = readSync(handle, bytes, used, bytes.length - used, null);
+        if (count === 0) break;
+        used += count;
+      }
+      if (used > maximumContextBytes) throw new Error("Pi native inbox session file exceeds its byte bound");
+    } finally { closeSync(handle); }
+    const entries = parseSessionEntries(bytes.subarray(0, used).toString("utf8"));
+    const header = entries[0];
+    if (!header || header.type !== "session" || header.version !== 3 ||
+        header.id !== nativeSession || header.cwd !== cwd) throw new Error("Pi persisted inbox session differs from the actual native session");
+    persisted = SessionManager.inMemory(cwd, undefined, entries);
   } catch (error) {
     // Pi buffers initial entries until the first assistant; absent bytes cannot acknowledge delivery.
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return 0;
@@ -555,11 +538,6 @@ function builtinPath(input: string, cwd: string) {
   const absolute = resolve(cwd, path);
   if (Buffer.byteLength(absolute) > 4096) throw new Error("Pi builtin expanded path exceeds its bound");
   return absolute;
-}
-
-interface BuiltinReadBytes {
-  bytes: Buffer;
-  digest: string;
 }
 
 function builtinBytes(result: Record<string, unknown>, operation: string) {
@@ -675,7 +653,7 @@ export default function acyclic(pi: ExtensionAPI) {
           !("root" in result) || result.root !== fields.root ||
           !("paths" in result) || JSON.stringify(result.paths) !== JSON.stringify(fields.paths)) throw new Error("Pi writeback status differs from its original Root task and prepared selection");
     }
-    if (Object.hasOwn(scopedPiControls, operation) && operation !== "TaskWritebackStatus") {
+    if (scopedPiControls.has(operation) && operation !== "TaskWritebackStatus") {
       signal?.throwIfAborted();
       if (!ownTask || !ownRootSession || ownNativeSession !== current ||
           result.session !== ownRootSession || result.native_session !== current ||
@@ -760,14 +738,13 @@ export default function acyclic(pi: ExtensionAPI) {
     inboxController?.abort();
     if (inboxWork) await inboxWork;
   });
-  const supportedModelTools: Record<string, true> = {
-    read: true, write: true, edit: true,
-    acyclic_spawn: true, acyclic_send: true, acyclic_steer: true, acyclic_wait: true,
-    acyclic_inspect: true, acyclic_diff: true, acyclic_import: true, acyclic_writeback: true,
-    acyclic_model: true, acyclic_context: true, acyclic_agents: true, acyclic_cancel: true,
-  };
+  const supportedModelTools = new Set<string>([
+    "read", "write", "edit", "acyclic_spawn", "acyclic_send", "acyclic_steer", "acyclic_wait",
+    "acyclic_inspect", "acyclic_diff", "acyclic_import", "acyclic_writeback", "acyclic_model",
+    "acyclic_context", "acyclic_agents", "acyclic_cancel",
+  ]);
   pi.on("tool_call", (event, ctx) => {
-    if (!Object.hasOwn(supportedModelTools, event.toolName)) {
+    if (!supportedModelTools.has(event.toolName)) {
       return { block: true, reason: "This Pi model tool has no original SDK-scoped IO adapter" };
     }
     if (!event.toolCallId || Buffer.byteLength(event.toolCallId) > 4096 ||
@@ -841,7 +818,7 @@ export default function acyclic(pi: ExtensionAPI) {
     async execute(operation, input, signal, update, ctx) {
       signal?.throwIfAborted();
       const path = builtinPath(input.path, ctx.cwd);
-      let original: BuiltinReadBytes | undefined;
+      let original: ReturnType<typeof builtinBytes> | undefined;
       const edit = createEditToolDefinition(ctx.cwd, { operations: {
         access: async () => {
           signal?.throwIfAborted();

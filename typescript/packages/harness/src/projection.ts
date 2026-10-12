@@ -1,5 +1,5 @@
 /** Explicit, ref-only selection from canonical conversation history into model context. */
-import { DEFAULT_LIMITS, verifyFileBytes,
+import { DEFAULT_LIMITS,
   type Attachment, type ConversationMessageId, type ConversationState, type FileRef, type Limits } from "./conversation.js";
 import type { ModelContent, ModelContentPart, ModelDataPart, ModelMessage } from "./model.js";
 import { NativeContracts, type NativeModelContent, type NativeModelContentPart, type NativeFileRef, type NativeSelectedModelContext } from "./native-contracts.js";
@@ -63,12 +63,13 @@ export function verifiedContentResolver(
   const verify = content.verify.bind(content);
   const read = content.read.bind(content);
   return async file => {
-    const reference = (await NativeContracts.create()).validate("file_ref", file);
+    const contracts = await NativeContracts.create();
+    const reference = contracts.validate("file_ref", file);
     validate(reference, limits);
     const bytes = await read(reference);
     if (!(bytes instanceof Uint8Array)) throw new TypeError("content provider returned invalid bytes");
     verify(reference, bytes);
-    await verifyFileBytes(reference, bytes);
+    await contracts.verifyFileBytes(reference, bytes);
     return Uint8Array.from(bytes);
   };
 }
@@ -77,7 +78,8 @@ export function verifiedContentResolver(
 export async function projectModelFile(
   part: Extract<ModelContentPart, { kind: "file" }>, options: FileProjectionOptions,
 ): Promise<string> {
-  const file = (await NativeContracts.create()).validate("file_ref", part.file);
+  const contracts = await NativeContracts.create();
+  const file = contracts.validate("file_ref", part.file);
   if (part.policy === "reference") {
     const hash = file.descriptor.sha256.map(byte => byte.toString(16).padStart(2, "0")).join("");
     return `[file: ${file.display_name}; ${file.descriptor.media_type}; sha256=${hash}; bytes=${file.descriptor.byte_length}]`;
@@ -96,7 +98,7 @@ export async function projectModelFile(
   if (!(bytes instanceof Uint8Array) || bytes.byteLength > limit) {
     throw new TypeError("resolved file exceeds projection byte limit");
   }
-  await verifyFileBytes(file, bytes);
+  await contracts.verifyFileBytes(file, bytes);
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
@@ -183,7 +185,7 @@ async function captureProjectionFiles(
       throw new TypeError(`${label} exceeds JSON byte limit`);
     }
     if (bytes.byteLength > limit) throw new TypeError(`${label} exceeds its rendering limit`);
-    await verifyFileBytes(reference, bytes);
+    await contracts.verifyFileBytes(reference, bytes);
     files.set(fileKey(reference), Uint8Array.from(bytes));
     return bytes;
   };

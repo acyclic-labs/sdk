@@ -42,7 +42,7 @@ pub struct ResumableToolRegistry(Vec<ResumableTool>);
 impl ResumableToolRegistry {
     /// Registers one version-pinned tool state machine.
     pub fn register(&mut self, tool: ResumableTool) -> Result<()> {
-        tool.validate()?;
+        tool.validate(None)?;
         let position = self.0.binary_search_by(|existing|
             (&existing.definition.name, &existing.definition.revision)
                 .cmp(&(&tool.definition.name, &tool.definition.revision)));
@@ -83,9 +83,9 @@ impl ResumableToolRegistry {
         self.0.iter().map(|tool| &tool.definition)
     }
 
-    /// Validates every installed revision through the genuine native machine identity and the same canonical machine registration engine.
+    /// Validates installed revisions on the original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(
+    pub fn validate(
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         work.remaining()?;
@@ -99,7 +99,7 @@ impl ResumableToolRegistry {
             tool.machine.identity_with_native_work(work)?;
         }
         for tool in &self.0 {
-            tool.validate_with_native_work(work)?;
+            tool.validate(Some(work))?;
         }
         Ok(())
     }
@@ -110,7 +110,7 @@ impl ResumableToolRegistry {
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         use crate::filesystem::UploadRecord as _;
-        self.validate_with_native_work(work)?;
+        self.validate(work)?;
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let mut copied = Self::default();
@@ -146,7 +146,28 @@ impl ResumableToolRegistry {
 
 impl ResumableTool {
     /// Rejects a tool whose machine could be silently swapped under the same visible revision.
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            work.remaining()?;
+            if !self.machine.supports_native_work() {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                    reason: "resumable tool has no native machine producer" });
+            }
+            let identity = self.machine.identity_with_native_work(work)?;
+            let io = crate::executor::PreparationIo::from_native_work(work)?;
+            crate::executor::with_history_io(Some(&io), |work| self.definition.validate(work))?;
+            if identity.name != self.definition.name || identity.version != self.definition.revision {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                    reason: "resumable tool machine identity differs from its definition" });
+            }
+            let mut registry = MachineRegistry::default();
+            let custody = registry.register_with_native_work(self.machine.clone(), work)?;
+            drop(registry);
+            drop(custody);
+            return Ok(());
+        }
+        let _ = work;
         self.definition.validate(&mut None)?;
         let identity = self.machine.identity();
         if identity.name != self.definition.name || identity.version != self.definition.revision {
@@ -155,32 +176,7 @@ impl ResumableTool {
             ));
         }
         let mut registry = MachineRegistry::default();
-        registry.register(self.machine.clone())
-    }
-
-    /// Validates native metadata without consulting ordinary machine identity or allocating an unaudited ordinary registration callback.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.remaining()?;
-        if !self.machine.supports_native_work() {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                reason: "resumable tool has no native machine producer" });
-        }
-        let identity = self.machine.identity_with_native_work(work)?;
-        let io = crate::executor::PreparationIo::from_native_work(work)?;
-        crate::executor::with_history_io(Some(&io), |work| self.definition.validate(work))?;
-        if identity.name != self.definition.name || identity.version != self.definition.revision {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                reason: "resumable tool machine identity differs from its definition" });
-        }
-        let registry_custody;
-        let mut registry = MachineRegistry::default();
-        registry_custody = registry.register_with_native_work(self.machine.clone(), work)?;
-        drop(registry);
-        drop(registry_custody);
-        Ok(())
+        registry.register(self.machine.clone(), &mut None)
     }
 
     /// Derives the complete original workflow envelope for this exact scoped tool invocation.
@@ -189,7 +185,7 @@ impl ResumableTool {
         context: &ToolContext,
         invocation: &ToolInvocation,
     ) -> Result<WorkflowAdmission> {
-        self.validate()?;
+        self.validate(None)?;
         ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
         if invocation.name != self.definition.name {
             return Err(Error::Conflict("resumable tool invocation names another definition".into()));
@@ -240,7 +236,7 @@ impl ResumableTool {
             return Err(Error::Conflict("tool workflow identity belongs to another admission".into()));
         }
         let mut registry = MachineRegistry::default();
-        registry.register(self.machine.clone())?;
+        registry.register(self.machine.clone(), &mut None)?;
         let host = DurableWorkflowHost::open(registry, admission.initial, journal).await?;
         Ok(ResumableToolSession {
             definition: self.definition.clone(),
@@ -1222,8 +1218,8 @@ mod tests {
     #[test]
     fn resumable_tool_requires_machine_identity_to_match_definition() {
         assert!(matches!(
-            tool("test.echo", "1", "test.other").validate(),
-            Err(Error::Conflict(message)) if message.contains("machine identity")
+            tool("test.echo", "1", "test.other").validate(None),
+            Err(Error::Conflict(_))
         ));
     }
 

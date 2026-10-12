@@ -37,10 +37,6 @@ impl<'a> StockExecution<'a> {
     pub(super) fn native_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> {
         self.io().and_then(PreparationIo::original_native_work)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn native_context(&self) -> Option<&Arc<crate::runtime::NativeTaskContext>> {
-        self.native.map(|native| native.context)
-    }
     pub(super) fn original_context(&self) -> Option<&crate::runtime::TaskContext> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = self.native { return Some(native.context.context()); }
@@ -690,12 +686,12 @@ impl StockExecutor {
     /// Summarizes with the same stock admission, accounting and recovery engine.
     pub async fn summarize(&self, journal: &dyn ExecutionJournal, operation: OperationId,
         source: crate::context::Context, instruction: ModelContent) -> Result<crate::context::ContextSummary> {
-        StockExecution::ordinary(self).summarize(journal, operation, source, instruction).await
+        StockExecution::ordinary(self).summarize(journal, None, operation, 0, source, instruction).await
     }
     /// Summarizes inside the parent's existing execution journal.
     pub async fn summarize_in_turn(&self, journal: &dyn ExecutionJournal, input: &TurnInput, step: u32,
         source: crate::context::Context, instruction: ModelContent) -> Result<crate::context::ContextSummary> {
-        StockExecution::ordinary(self).summarize_in_turn(journal, input, step, source, instruction).await
+        StockExecution::ordinary(self).summarize(journal, Some(input), input.operation_id, step, source, instruction).await
     }
     /// Executes a retained/reconciled/admitted model step through the stock engine.
     pub async fn model_step(&self, journal: &dyn ExecutionJournal, input: &TurnInput,
@@ -706,9 +702,6 @@ impl StockExecutor {
     pub async fn completed_tool_prefix(&self, journal: &dyn ExecutionJournal, input: &TurnInput,
         step: u32, call: Option<&str>) -> Result<crate::model::PreparedModelRequest> {
         StockExecution::ordinary(self).completed_tool_prefix(journal, input, step, call).await
-    }
-    pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
-        StockExecution::ordinary(self).verify_task_context_binding(operation)
     }
 
 }
@@ -808,23 +801,18 @@ pub(super) async fn stock_reconcile_tool(tool: &crate::tool::Tool,
     }
 }
 
-pub(super) fn stock_projection_content(definition: &crate::tool::ToolDefinition, value: &Value,
-    limits: Limits, io: Option<&PreparationIo>) -> Result<crate::model::ToolResultContent> {
-    definition.validate_projection(value, limits, io)
-}
-
 pub(super) fn stock_project_tool(tool: &crate::tool::Tool, invocation: &ToolInvocation, result: &ToolResult,
     limits: Limits, io: Option<&PreparationIo>) -> Result<(Value, crate::model::ToolResultContent)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io && let Some(work) = io.original_native_work() {
         let (value, custody) = tool.projection.project_with_native_work(invocation, result, work)?;
         io.absorb_native_custody(custody)?;
-        let content = stock_projection_content(&tool.definition, &value, limits, Some(io))?;
+        let content = tool.definition.validate_projection(&value, limits, Some(io))?;
         io.check_json_byte_bound(&value, limits.render_bytes)?;
         return Ok((value, content));
     }
     let value = tool.projection.project(invocation, result)?;
-    let content = stock_projection_content(&tool.definition, &value, limits, io)?;
+    let content = tool.definition.validate_projection(&value, limits, io)?;
     if crate::contract::canonical_json_bytes(&value)?.len() as u64 > limits.render_bytes {
         return Err(Error::Invalid("tool projection exceeds render limit".into()));
     }
@@ -1050,7 +1038,7 @@ pub(crate) fn completed_tool_projection_with_native_work<'a>(
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        let content = completed_tool_projection(journal, records, step, expected, tools, Some(limits), Some(&io)).await?;
+        let content = completed_tool_projection(journal, records, step, expected, tools, limits, Some(&io)).await?;
         let retained = content.logical_owned_bytes()?;
         work.remaining()?;
         Ok((content, io.into_native_custody(retained)?))

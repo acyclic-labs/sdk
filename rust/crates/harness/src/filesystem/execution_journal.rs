@@ -265,7 +265,7 @@ impl PreparationRecord for Observation {
 
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
-    stream: acyclic_stream::StreamClient<P>,
+    stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
@@ -1026,9 +1026,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let volume = volume.copy(&mut work)?;
-        let verifier = verifier.clone_with_work(&mut work)?;
-        let schemas = schemas.clone_with_work(&mut work)?;
-        let scope = scope.clone_with_work(&mut work)?;
+        let verifier = verifier.copy(&mut work)?;
+        let schemas = schemas.copy(&mut work)?;
+        let scope = scope.copy(&mut work)?;
         let interactions = match verifier.audience().kind {
             crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
                 stream.clone(), Arc::clone(&host), verifier.audience(), &verifier,
@@ -1042,7 +1042,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             .map(|io| io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| io.invalid("execution journal custody underflows"))?)).transpose()?;
         Ok(Self {
-            stream: acyclic_stream::StreamClient::new(stream),
+            stream,
             host,
             volume,
             verifier,
@@ -1405,7 +1405,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     "execution journal sequence or bound is invalid"));
             }
             let observation: Observation = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<Observation>(&record.value, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Observation>, &record.value, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&record.value)
                     .map_err(|error| Error::Storage(format!("execution journal record is invalid: {error}")))?,
             };
@@ -1547,7 +1547,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
                 model = Some(match io {
                     Some(io) => {
-                        let parsed = io.decode_preparation::<ModelEvent>(&bytes, crate::wire::ErrorCode::Storage)?;
+                        let parsed = io.decode(std::marker::PhantomData::<ModelEvent>, &bytes, crate::wire::ErrorCode::Storage)?;
                         let _canonical_hold;
                         let canonical = io.encode(&parsed.0, self.maximum_payload_bytes, true)?;
                         _canonical_hold = io.guard_bytes(&canonical)?;
@@ -1557,7 +1557,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         }
                         crate::filesystem::retain_decoded(parsed)
                     }
-                    None => decode_json(&bytes)?,
+                    None => decode_json(&bytes, None)?.into_retained(),
                 });
             }
         }

@@ -301,7 +301,7 @@ pub(crate) fn clone_base_messages(
 
 fn quota_vector<T>(capacity: usize, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<Vec<T>> {
     let mut values = Vec::new();
-    reserve_vector_with_work(&mut values, capacity, quota.work())?;
+    reserve_vector(&mut values, capacity, quota.work())?;
     quota.adopt((values.capacity() * std::mem::size_of::<T>()) as u64)?;
     Ok(values)
 }
@@ -453,7 +453,7 @@ fn compaction_error(work: &Option<&mut dyn crate::store::history::HistoryIo>, re
     Error::Invalid(reason.into())
 }
 
-pub(crate) fn reserve_vector_with_work<T>(
+pub(crate) fn reserve_vector<T>(
     values: &mut Vec<T>, capacity: usize,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
@@ -495,7 +495,6 @@ pub(crate) fn reserve_vector_with_work<T>(
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native {
     use super::*;
-    use crate::model::ModelMessage;
     use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
     use std::mem::size_of;
 
@@ -519,59 +518,6 @@ mod native {
         Ok((values, guard))
     }
 
-    pub(crate) fn clone_text_native(text: &str, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
-        work.admit(WorkCounters { bytes_copied: text.len() as u64,
-            allocation_operations: u64::from(!text.is_empty()), ..WorkCounters::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut guard = work.retain_owned(text.len() as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        work.charge(WorkCounters { allocation_operations: u64::from(!text.is_empty()),
-            ..WorkCounters::default() }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut copy = String::new();
-        copy.try_reserve_exact(text.len()).map_err(|cause| Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause), custody: None,
-        })?;
-        guard.resize_retained(copy.capacity() as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        work.charge(WorkCounters { bytes_copied: text.len() as u64, ..WorkCounters::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        copy.push_str(text);
-        Ok((copy, guard))
-    }
-
-    pub(crate) fn mandatory_positions_native(
-        context: &Context, covered: usize, retention: &CompactionRetention, work: &NativeMaterializationWork,
-    ) -> Result<(Vec<usize>, NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
-        let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
-        let (selected, pending) = mandatory_flags(context, covered, retention, &mut quota)?;
-        retire_vector(pending, &mut quota)?;
-        let mut positions = quota_vector(selected.iter().filter(|selected| **selected).count(), &mut quota)?;
-        positions.extend(selected.iter().enumerate().filter_map(|(position, selected)| selected.then_some(position)));
-        retire_vector(selected, &mut quota)?;
-        quota.transfer();
-        drop(quota);
-        drop(observed);
-        Ok((positions, io.into_custody()))
-    }
-
-    pub(crate) fn clone_messages_native(messages: &[ModelMessage], work: &NativeMaterializationWork) -> Result<(Vec<ModelMessage>, NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work).map_err(super::super::native_context_work_error)?;
-        let (copy, _) = clone_messages(messages, &mut Some(&mut io))?;
-        Ok((copy, io.into_custody()))
-    }
-    pub(crate) fn clone_context_native(context: &Context, work: &NativeMaterializationWork) -> Result<(Context, NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work).map_err(super::super::native_context_work_error)?;
-        let (copy, _) = clone_context(context, &mut Some(&mut io))?;
-        Ok((copy, io.into_custody()))
-    }
-    pub(crate) fn clone_context_prefix_native(
-        context: &Context, through: usize, work: &NativeMaterializationWork,
-    ) -> Result<(Context, NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work).map_err(super::super::native_context_work_error)?;
-        let (copy, _) = clone_context_prefix(context, through, &mut Some(&mut io))?;
-        Ok((copy, io.into_custody()))
-    }
     pub(crate) fn clone_retention_native(
         retention: &CompactionRetention, work: &NativeMaterializationWork,
     ) -> Result<(CompactionRetention, NativeAllocation)> {
@@ -590,7 +536,7 @@ mod native {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use native::{clone_context_native, clone_context_prefix_native, clone_messages_native, clone_retention_native, clone_text_native, mandatory_positions_native};
+pub(crate) use native::clone_retention_native;
 
 #[cfg(test)]
 mod tests {
@@ -690,9 +636,10 @@ mod tests {
         let custody = observer.into_custody();
         assert_eq!(custody.bytes(), 0, "failed partial payload drops before its quota releases");
         drop(custody);
+        let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
         cancellation.cancel();
         let before = work.receipt();
-        assert!(native::clone_messages_native(&messages, &work).is_err());
+        assert!(clone_messages(&messages, &mut Some(&mut observer)).is_err());
         assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
     }
 

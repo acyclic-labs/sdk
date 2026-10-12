@@ -152,7 +152,7 @@ fn decode<T: serde::de::DeserializeOwned>(
     bytes: &[u8], work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
     guarded_pi_decode(bytes, MAXIMUM_PI_MAIL_BYTES, std::mem::size_of::<T>() as u64,
-        acyclic_harness::JsonValueSchema::None, MAIL_DIAGNOSTIC_LABEL_BYTES, work)
+        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, MAIL_DIAGNOSTIC_LABEL_BYTES, work)
 }
 
 /// Passive polling acquires no reservation and charges no workflow task steps.

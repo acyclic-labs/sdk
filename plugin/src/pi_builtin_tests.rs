@@ -16,9 +16,7 @@ async fn original_native_actor(
         .await.unwrap();
     let owner = fixture.runtime.runtime.task_host().journal_owner_with_native_work(task, &fixture.fence, work)
         .await.unwrap().with_invocation_cancellation(work.cancellation()).into_native_shared(work).unwrap();
-    let context = crate::pi_root_provider::bind_root_output_context_with_native_work(
-        context, &owner, std::sync::Arc::clone(&fixture.owner), &fixture.resources,
-        std::sync::Arc::clone(&fixture.filesystem), fixture.stream.clone(), &fixture.root_request, work)
+    let context = crate::pi_root_provider::bind_root_output_context_with_native_work(context, &owner, std::sync::Arc::clone(&fixture.owner), &fixture.resources, std::sync::Arc::clone(&fixture.filesystem), fixture.stream.clone(), &(fixture.root_request).binding, &(fixture.root_request).root, work)
         .await.unwrap();
     (context, owner)
 }
@@ -176,7 +174,7 @@ async fn actual_child_result_identity_cannot_be_labeled_as_a_native_builtin_volu
         fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
         &fixture.resources, fixture.owner.clone(), &work).unwrap();
     let prepared = fixture.advance_with(&coordinator, context.context(), &owner, &fixture.fence,
-        &plan, fixture.source.clone(), work.remaining().unwrap(),
+        &plan, fixture.root_handle.workspace.clone(), work.remaining().unwrap(),
         cancellation).await.unwrap().unwrap();
     let binding = &prepared.binding;
     let temporary = tempfile::tempdir().unwrap();

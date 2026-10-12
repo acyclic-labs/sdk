@@ -98,7 +98,7 @@ where
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     let runtime_scope = RuntimeScope::new(scope.capabilities().clone(), Limits::default())?;
     let runtime = Runtime::open(
         stream,

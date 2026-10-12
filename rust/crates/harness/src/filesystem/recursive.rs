@@ -229,7 +229,7 @@ where
     let history = crate::store::HistoryReader::new(stream, parent.reducer().authority(), verifier.clone())?
         .fork_history(parent.reducer(), request.preparation.inherited_through_sequence, config.history_limits, &mut None).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().clone_with_work(&mut None)?, verifier, signed,
+    let preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().copy(&mut None)?, verifier, signed,
         source.project, stream_provider, resolver,
         Some(history), source_read, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
@@ -272,7 +272,7 @@ where
     let history = crate::store::HistoryReader::new(stream, parent.authority(), verifier.clone())?
         .fork_history(parent, request.preparation.inherited_through_sequence, history_limits, &mut None).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let preparer = FilesystemForkPreparer::new(filesystem, parent.clone_with_work(&mut None)?, verifier, signed,
+    let preparer = FilesystemForkPreparer::new(filesystem, parent.copy(&mut None)?, verifier, signed,
         caller_project, stream_provider, resolver,
         Some(history), source_read, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
@@ -318,8 +318,7 @@ where
                 reason: "restored source differs from immutable operation approval" });
         }
     }
-    let client = acyclic_stream::StreamClient::new(stream.clone());
-    let reader = crate::store::HistoryReader::new_with_native_work(&client, parent.authority(), verifier, work)?;
+    let reader = crate::store::HistoryReader::new_with_native_work(stream, parent.authority(), verifier, work)?;
     let retained_history = {
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
@@ -414,7 +413,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             grants.push(volume.capability(VolumeOperation::Write, &mut None)?);
         }
         for file in &input_files {
-            file.validate()?;
+            file.validate(&mut None)?;
             grants.push(file.read_capability()?);
         }
         child.grants = Capabilities::new(grants);
