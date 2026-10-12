@@ -297,7 +297,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             return Err(reject(crate::wire::ErrorCode::Invalid, "fork parent is not a conversation"));
         }
         this.verifier.verify_audience(this.parent.authority(), &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
-        this.verifier.verify_with_native_work(&this.scope, work)?;
+        this.verifier.verify(&this.scope, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         if this.scope.agent().is_none()
             || this.parent.conversation().and_then(|state| state.agent) != this.scope.agent()
         {
