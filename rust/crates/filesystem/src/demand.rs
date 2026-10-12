@@ -3422,7 +3422,7 @@ impl<D: DemandSource> FilteredDemandSource<D> {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 fn clone_source_change_with_ledger(
     change: &SourceChange, ledger: &mut crate::kernel::allocation::AllocationLedger,
     work: &mut WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
@@ -4412,7 +4412,7 @@ pub mod native {
                 let lease =
                     self.cursor_lease(source, directory, version(&metadata, &mut work)?, Some(cursor), 4096, &mut work)?;
                 let mut visited = 0;
-                let result = self.page_entries(&mut lease.state()?, 4096, &mut work, || {
+                let result = self.page_entries(&mut *lease.state()?, 4096, &mut work, || {
                     visited += 1;
                     if visited == 2 {
                         cancellation.cancel();
