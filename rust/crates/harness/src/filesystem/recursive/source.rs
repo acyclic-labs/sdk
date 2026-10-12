@@ -3,7 +3,7 @@ use crate::conversation::ContentResidencyVerifier;
 use crate::{
     conversation::{ContentGrant, VolumeOwner},
     core::{AuthorityVerifier, Reducer, Scope},
-    filesystem::{FilesystemHost, PreparationIo, fork_preparer_io},
+    filesystem::{FilesystemHost, PreparationIo},
     fork::{ForkHistoryPolicy, ForkPreparation, ForkSelection},
     resources::{ProviderRef, ResourceKind, ResourceRef, StreamRef},
     runtime::TaskContext,
@@ -127,32 +127,32 @@ where
     restore_recursive_fork_source(
         filesystem,
         stream,
-        parent.reducer(),
-        verifier,
-        signed,
-        source.project,
-        stream_provider,
+        (parent.reducer().copy(&mut None)?, None),
+        &verifier,
+        &signed,
+        &source.project,
+        &stream_provider,
         request,
         history_limits,
-        source_read,
+        source_read.as_ref(),
         resolver,
         cancellation,
     )
     .await
 }
 
-/// Restores the immutable request at its authenticated parent checkpoint.
+/// Restores the authenticated checkpoint, retaining transferred input custody with its parent.
 pub async fn restore_recursive_fork_source<P, A, O>(
     filesystem: Arc<FilesystemHost<A, O>>,
     stream: &Arc<P>,
-    parent: &Reducer,
-    verifier: AuthorityVerifier,
-    signed: Scope,
-    caller_project: VolumeRef,
-    stream_provider: ProviderRef,
+    parent: (Reducer, Option<PreparationIo>),
+    verifier: &AuthorityVerifier,
+    signed: &Scope,
+    caller_project: &VolumeRef,
+    stream_provider: &ProviderRef,
     request: ForkRequest,
     history_limits: HistoryReadLimits,
-    source_read: Option<ProjectSourceReadHandle>,
+    source_read: Option<&ProjectSourceReadHandle>,
     resolver: Arc<dyn ContentResidencyVerifier>,
     cancellation: &CancellationToken,
 ) -> Result<RetainedSourceBinding<A, O>>
@@ -161,56 +161,115 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    cancellation
-        .check()
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    request.validate(&mut None)?;
-    if request.parent != *parent.authority() || request.parent_revision != parent.revision() {
-        return Err(Error::Conflict(
-            "restored source differs from the original parent cut".into(),
+    #[cfg(not(target_arch = "wasm32"))]
+    let work = parent
+        .1
+        .as_ref()
+        .and_then(PreparationIo::original_native_work)
+        .cloned();
+    let io = parent.1.as_ref();
+    let check = || {
+        cancellation.check().map_err(|_| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.is_some() {
+                return Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled);
+            }
+            Error::Storage("fork source operation cancelled".into())
+        })?;
+        io.map_or(Ok(()), PreparationIo::check_cancellation)
+    };
+    check()?;
+    let mut history = io.map(PreparationIo::history_io);
+    let mut observer = history
+        .as_mut()
+        .map(|history| history as &mut dyn crate::store::history::HistoryIo);
+    request.validate(&mut observer)?;
+    if request.parent != *parent.0.authority() || request.parent_revision != parent.0.revision() {
+        return Err(crate::executor::stock_boundary(
+            io,
+            crate::wire::ErrorCode::Conflict,
+            "restored source differs from the original parent cut",
         ));
     }
-    verifier.verify_scope_for_with_work(parent.authority(), &signed, &mut None)?;
-    if request.authorized_source.as_ref()
-        != source_read
-            .as_ref()
-            .map(ProjectSourceReadHandle::authorization)
+    verifier.verify_scope_for_with_work(parent.0.authority(), signed, &mut observer)?;
+    if request.authorized_source.as_ref() != source_read.map(ProjectSourceReadHandle::authorization)
     {
-        return Err(Error::Unauthorized(
-            "restored source differs from its workspace approval".into(),
+        return Err(crate::executor::stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unauthorized,
+            "restored source differs from its workspace approval",
         ));
     }
-    cancellation
-        .check()
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let history = HistoryReader::new(stream, parent.authority(), &verifier, &mut None)?
+    let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+    let reader = HistoryReader::new(stream, parent.0.authority(), verifier, &mut observer)?;
+    let held = io
+        .map(|io| {
+            let bytes = io
+                .owned_bytes()?
+                .checked_sub(before)
+                .ok_or_else(|| io.invalid("history reader custody underflows"))?;
+            io.guard_owned(bytes)
+        })
+        .transpose()?;
+    let history_cut = reader
         .fork_history(
-            parent,
+            &parent.0,
             request.preparation.inherited_through_sequence,
             history_limits,
-            &mut None,
+            &mut observer,
         )
         .await?;
-    cancellation
-        .check()
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    drop(reader);
+    drop(held);
+    check()?;
+    let owned_verifier = verifier.copy(&mut observer)?;
+    let scope = signed.copy(&mut observer)?;
+    let project = caller_project.copy(&mut observer)?;
+    let selected = source_read
+        .map(|handle| {
+            let authorization = handle
+                .authorization()
+                .clone_with_work_and_custody(&mut observer)?
+                .0;
+            ProjectSourceReadHandle::seal(authorization, verifier, &mut observer)
+        })
+        .transpose()?;
+    drop(observer);
+    drop(history);
+    let provider = match io {
+        Some(io) => stream_provider.clone_with_io(io)?,
+        None => stream_provider.clone(),
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let custody = parent
+        .1
+        .filter(|_| work.is_some())
+        .map(|io| {
+            let retained = io.owned_bytes()?;
+            io.into_native_custody(retained)
+        })
+        .transpose()?;
     let preparer = FilesystemForkPreparer::new(
         filesystem,
-        parent.copy(&mut None)?,
-        verifier,
-        signed,
-        caller_project,
-        stream_provider,
+        parent.0,
+        owned_verifier,
+        scope,
+        project,
+        provider,
         resolver,
-        Some(history),
-        source_read,
+        Some(history_cut),
+        selected,
         #[cfg(not(target_arch = "wasm32"))]
-        None,
+        custody.zip(work.as_ref()),
     )?;
-    Ok(RetainedSourceBinding {
-        preparer: Arc::new(preparer),
-        request,
-    })
+    #[cfg(not(target_arch = "wasm32"))]
+    let preparer = match work.as_ref() {
+        Some(work) => preparer.into_native_shared(work)?,
+        None => Arc::new(preparer),
+    };
+    #[cfg(target_arch = "wasm32")]
+    let preparer = Arc::new(preparer);
+    Ok(RetainedSourceBinding { preparer, request })
 }
 
 pub(in crate::filesystem) fn fork_request(

@@ -134,14 +134,7 @@ pub fn source(
 }
 
 fn authority_binding(binding: &AuthorityBinding) -> ConfiguredRecursiveAuthorityBinding {
-    ConfiguredRecursiveAuthorityBinding::new(
-        acyclic_harness::core::AuthorityIssuer::new(
-            &binding.issuer,
-            binding.key,
-            binding.authority.clone(),
-        ),
-        binding.scope.clone(),
-    )
+    ConfiguredRecursiveAuthorityBinding { issuer: acyclic_harness::core::AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone()), scope: binding.scope.clone() }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
