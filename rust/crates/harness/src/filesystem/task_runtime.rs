@@ -428,7 +428,7 @@ where
         if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| io.invalid("native runtime configuration has no original work"))?;
             let io = super::PreparationIo::from_native_work(work)?;
-            volume.validate_with_native_work(work)?;
+            volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
             if maximum_payload_bytes == 0 {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "stock runtime requires a positive payload limit" });
@@ -553,7 +553,7 @@ where
             let work = io.original_native_work().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid, reason: "native runtime configuration has no original work",
             })?;
-            volume.validate_with_native_work(work)?;
+            volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
         } else { volume.validate(&mut None)?; }
         #[cfg(target_arch = "wasm32")]
         volume.validate()?;

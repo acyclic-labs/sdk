@@ -536,134 +536,42 @@ struct MemoryContentPublisher {
 }
 
 impl ContentPublisher for MemoryContentPublisher {
-    fn volume(&self) -> &VolumeRef {
-        self.files.volume()
-    }
+    fn volume(&self) -> &VolumeRef { self.files.volume() }
+    fn supports_stage(&self, io: Option<&super::PreparationIo>) -> Result<()> { self.files.supports_stage(io) }
 
-    fn stage_once<'a>(
-        &'a self,
-        operation_id: OperationId,
-        path: &'a str,
-        bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            let persisted = self
-                .files
-                .stage_once(operation_id, path, bytes, media_type, display_name)
-                .await?;
-            self.retain(persisted, bytes)
+    fn stage_once<'a>(&'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
+        media_type: &'a str, display_name: &'a str, io: Option<&'a super::PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, Option<crate::conversation::ContentHold<'a>>)>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let (file, hold) = self.files.stage_once(operation_id, path, bytes, media_type, display_name, io)?.await?;
+            let file = match io { Some(io) => { self.retain_with_io(&file, bytes, io)?; file }, None => self.retain(file, bytes)? };
+            Ok((file, hold))
         })
     }
 
-    fn observe_staged_once<'a>(
-        &'a self, operation_id: OperationId, maximum_bytes: u64,
-    ) -> BoxFuture<'a, Result<Option<FileRef>>> {
-        self.files.observe_staged_once(operation_id, maximum_bytes)
+    fn observe_staged_once<'a>(&'a self, operation_id: OperationId, maximum_bytes: u64,
+        io: Option<&'a super::PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, (Option<FileRef>, Option<crate::conversation::ContentHold<'a>>)>> {
+        self.files.observe_staged_once(operation_id, maximum_bytes, io)
     }
 
-    fn observe_staged_once_measured<'a>(
-        &'a self, operation_id: OperationId, maximum_bytes: u64,
-        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Option<FileRef>>, Error>> {
-        self.files.observe_staged_once_measured(operation_id, maximum_bytes, budget, cancellation)
-    }
-
-    #[allow(clippy::too_many_arguments, reason = "same immutable upload identity")]
-    fn stage_once_measured<'a>(
-        &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
-        media_type: &'a str, display_name: &'a str, budget: acyclic_fs::WorkBudget,
-        cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<FileRef>, Error>> {
-        Box::pin(async move {
-            let io = super::PreparationIo::from_budget(budget, cancellation)
-                .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = async {
-                let persisted = self.files.publish_once(
-                    operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await?;
-                self.retain_with_io(&persisted, bytes, &io)?;
-                Ok(persisted)
-            }.await;
-            match result {
-                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-            }
+    fn stage_at<'a>(&'a self, operation_id: OperationId, source: &'a FileRef, bytes: &'a [u8],
+        io: Option<&'a super::PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, Option<crate::conversation::ContentHold<'a>>)>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let (file, hold) = self.files.stage_at(operation_id, source, bytes, io)?.await?;
+            let file = match io { Some(io) => { self.retain_with_io(&file, bytes, io)?; file }, None => self.retain(file, bytes)? };
+            Ok((file, hold))
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_stage(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        self.files.supports_native_stage(work)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn stage_once_with_native_work<'a>(
-        &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
-        media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = super::PreparationIo::from_native_work(work)?;
-            let result: Result<FileRef> = async {
-                let persisted = self.files.publish_once(
-                    operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await?;
-                self.retain_with_io(&persisted, bytes, &io)?;
-                Ok(persisted)
-            }.await;
-            let persisted = result?;
-            let custody = io.into_native_custody(super::UploadRecord::logical_owned_bytes(&persisted)?)?;
-            Ok((persisted, custody))
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn stage_at_with_native_work<'a>(
-        &'a self, operation_id: OperationId, source: &'a FileRef, bytes: &'a [u8],
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = super::PreparationIo::from_native_work(work)?;
-            let persisted = self.files.replace(operation_id, source, bytes, Some(&io), None, None).await?;
-            self.retain_with_io(&persisted, bytes, &io)?;
-            let custody = io.into_native_custody(super::UploadRecord::logical_owned_bytes(&persisted)?)?;
-            Ok((persisted, custody))
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn observe_staged_once_with_native_work<'a>(
-        &'a self, operation_id: OperationId, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
-        self.files.observe_staged_once_with_native_work(operation_id, maximum_bytes, work)
-    }
-
-    fn stage_at<'a>(
-        &'a self,
-        operation_id: OperationId,
-        source: &'a FileRef,
-        bytes: &'a [u8],
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            let persisted = self.files.stage_at(operation_id, source, bytes).await?;
-            self.retain(persisted, bytes)
-        })
-    }
-
-    fn stage<'a>(
-        &'a self,
-        operation_id: OperationId,
-        path: &'a str,
-        bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            let persisted = self
-                .files
-                .stage(operation_id, path, bytes, media_type, display_name)
-                .await?;
-            self.retain(persisted, bytes)
+    fn stage<'a>(&'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
+        media_type: &'a str, display_name: &'a str, io: Option<&'a super::PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, Option<crate::conversation::ContentHold<'a>>)>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let (file, hold) = self.files.stage(operation_id, path, bytes, media_type, display_name, io)?.await?;
+            let file = match io { Some(io) => { self.retain_with_io(&file, bytes, io)?; file }, None => self.retain(file, bytes)? };
+            Ok((file, hold))
         })
     }
 }
