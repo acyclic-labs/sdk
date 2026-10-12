@@ -3123,6 +3123,7 @@ mod tests {
                 gate.release.notify_one();
                 result
             };
+            let mut declare_work = None;
             let (attempt, disturbance) = tokio::join!(
                 first.declare_operation(
                             &owner,
@@ -3131,7 +3132,7 @@ mod tests {
                             child.clone(),
                             IdempotencyKey::new("owned-child")?,
                             Some(fence.clone())
-                        , &mut None),
+                        , &mut declare_work),
                 disturbance
             );
             disturbance?;
@@ -3340,8 +3341,9 @@ mod tests {
                 gate.release.notify_one();
                 result
             };
+            let mut resume_work = None;
             let (attempt, disturbance) = tokio::join!(
-                first.resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected), &mut None),
+                first.resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected), &mut resume_work),
                 disturbance
             );
             disturbance?;
@@ -4766,15 +4768,17 @@ mod tests {
         let [one, two] = claims.as_slice() else {
             return Err(Error::Invalid("two budget claims required".into()));
         };
+        let mut left_work = None;
+        let mut right_work = None;
         let (left, right) = tokio::join!(
             first.apply(
                 IdempotencyKey::new("budget-one")?,
                 one.clone()
-            , &mut None),
+            , &mut left_work),
             second.apply(
                 IdempotencyKey::new("budget-two")?,
                 two.clone()
-            , &mut None)
+            , &mut right_work)
         );
         assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
         let (winner, key, loser) = if left.is_ok() {

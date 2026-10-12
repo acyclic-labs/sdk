@@ -4708,15 +4708,15 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
-                "effects",
+                "effects".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
-            )?,
-            "requests/request.json",
-            "generation-1",
+             &mut None)?,
+            "requests/request.json".into(),
+            "generation-1".into(),
             FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
-            "request.json",
-        )
+            "request.json".into(),
+         &mut None)
     }
     fn schema_file(schema: &Value) -> Result<FileRef> {
         use crate::conversation::FileDescriptor;
@@ -4724,11 +4724,11 @@ mod tests {
             serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?;
         FileRef::new(
             request_file(b"null")?.volume().clone(),
-            "schemas/result.json",
-            "generation-1",
+            "schemas/result.json".into(),
+            "generation-1".into(),
             FileDescriptor::from_bytes(&bytes, "application/schema+json", &mut None)?,
-            "result.json",
-        )
+            "result.json".into(),
+         &mut None)
     }
     fn issuer() -> AuthorityIssuer {
         AuthorityIssuer::new(
@@ -5213,9 +5213,9 @@ mod tests {
                 let effect = reducer.effect(effect_id).ok_or_else(|| Error::NotFound("effect".into()))?;
                 let invalid_result = issuer().attest_effect(effect_id, effect, first_attempt,
                     EffectStatus::Succeeded { result: FileRef::new(
-                        request_file(b"1")?.volume().clone(), "results/invalid.txt", "generation-1",
+                        request_file(b"1")?.volume().clone(), "results/invalid.txt".into(), "generation-1".into(),
                         crate::conversation::FileDescriptor::from_bytes(b"1", "text/plain", &mut None)?,
-                        "invalid.txt", &mut None,
+                        "invalid.txt".into(), &mut None,
                     )? }, &mut None)?;
                 assert!(matches!(reducer.apply(command(operation(32), 2,
                     Action::ResolveEffect { observation: invalid_result })), Err(Error::Invalid(_))));
@@ -5304,11 +5304,11 @@ mod tests {
         seed.child_agent = child_agent;
         seed.resources.rotate_right(1);
         let provider = seed.child_private_volume.provider().clone();
-        seed.child_private_volume = VolumeRef::new(provider.clone(), "child-private",
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent))?;
+        seed.child_private_volume = VolumeRef::new(provider.clone(), "child-private".into(),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent), &mut None)?;
         if let ResourceRevision::PrivateVolume { volume, .. } = &mut seed.resources[0].source {
-            *volume = VolumeRef::new(provider.clone(), "parent-private", VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])))?;
+            *volume = VolumeRef::new(provider.clone(), "parent-private".into(), VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])), &mut None)?;
         }
         if let ResourceRevision::PrivateVolume { volume, .. } = &mut seed.resources[0].revision {
             *volume = seed.child_private_volume.clone();
@@ -5422,11 +5422,11 @@ mod tests {
             let prefix_bytes = crate::contract::canonical_json_bytes(&prefix)?;
             let mut materialized = seed.clone();
             materialized.inherited_context.push(FileRef::new(
-                seed.child_private_volume.clone(), ".system/inherited-conversation/prefix.json", "generation-1",
+                seed.child_private_volume.clone(), ".system/inherited-conversation/prefix.json".into(), "generation-1".into(),
                 FileDescriptor::from_bytes(&prefix_bytes,
                     "application/vnd.acyclic.harness.inherited-conversation+json", &mut None)?,
-                "inherited-conversation.json",
-            )?);
+                "inherited-conversation.json".into(),
+             &mut None)?);
             reducer.validate_fork_reference_ownership_with_work(&materialized, &mut None)?;
             let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
             reducer.validate_fork_reference_ownership_with_work(&materialized, &mut Some(&mut work))?;
@@ -5606,17 +5606,17 @@ mod tests {
         let agent = crate::AgentId::from_bytes([9; 16]);
         let volume = VolumeRef::new(
             ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?,
-            "agent-9",
+            "agent-9".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
-        )?;
+         &mut None)?;
         let content = FileRef::new(
             volume,
-            "messages/one.txt",
-            "generation-1",
+            "messages/one.txt".into(),
+            "generation-1".into(),
             FileDescriptor::from_bytes(b"hello", "text/plain", &mut None)?,
-            "one.txt",
-        )?;
+            "one.txt".into(),
+         &mut None)?;
         let authority = Authority {
             kind: AggregateKind::Conversation,
             id: "conversation-1".into(),

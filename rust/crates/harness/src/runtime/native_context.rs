@@ -626,7 +626,7 @@ mod tests {
 
     fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializationWork> {
         NativeMaterializationWork::new(BUDGET, cancellation)
-            .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })
+            .map_err(|failure| Error::NativeWork { cause: failure.0, custody: None })
     }
 
     #[tokio::test]
@@ -798,15 +798,16 @@ mod tests {
         drop(unqualified);
         let owner = fixture.host.journal_owner_with_native_work(task, &fence, &original).await?
             .into_native_shared(&original)?;
-        let reader = super::content_residency_verifier(Arc::clone(&shared), Arc::clone(&owner),
-            Some(&crate::executor::PreparationIo::from_native_work(&original)?))?;
+        let io = crate::executor::PreparationIo::from_native_work(&original)?;
+        let reader = crate::runtime::content_residency_verifier(Arc::clone(&shared), Arc::clone(&owner),
+            Some(&io))?;
         let staged = shared.context().stage_file_once_with_native_work(
             crate::OperationId::from_bytes([118; 16]), "native/shared.txt",
             b"same issued context", "text/plain", "shared.txt", &original,
         ).await?;
         let before = original.live_allocation_bytes();
         let reads = original.receipt().backend_read_operations;
-        let bytes = reader.read_with_native_work(&staged.0, 65_536, &original)?.await?;
+        let bytes = reader.read(&staged.0, 65_536, Some(&io))?.await?;
         assert!(original.receipt().backend_read_operations > reads);
         assert_eq!(bytes.as_ref(), b"same issued context");
         assert!(bytes.matches_meter(&original.runtime_meter()));
@@ -821,15 +822,15 @@ mod tests {
         drop(shared_bytes);
         assert_eq!(original.live_allocation_bytes(), before);
         assert_eq!(original.receipt(), physical);
-        reader.verify_with_native_work(&staged.0, 65_536, &original)?.await?;
+        reader.verify(&staged.0, 65_536, Some(&io))?.await?;
 
         let root_fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
         let root_owner = fixture.host.journal_owner_with_native_work(
             fixture.root, &root_fence, &original,
         ).await?.into_native_shared(&original)?;
         let before = original.receipt();
-        let wrong_owner = super::content_residency_verifier(Arc::clone(&shared), Arc::clone(&root_owner),
-            Some(&crate::executor::PreparationIo::from_native_work(&original)?));
+        let wrong_owner = crate::runtime::content_residency_verifier(Arc::clone(&shared), Arc::clone(&root_owner),
+            Some(&io));
         assert!(matches!(wrong_owner, Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized, ..
         })));
@@ -837,7 +838,7 @@ mod tests {
 
         let unmeasured = Arc::new(fixture.host.journal_owner(task, fence.clone()).await?);
         let before = original.receipt();
-        let rejected = super::content_residency_verifier(Arc::clone(&shared), unmeasured, Some(&crate::executor::PreparationIo::from_native_work(&original)?));
+        let rejected = crate::runtime::content_residency_verifier(Arc::clone(&shared), unmeasured, Some(&io));
         assert!(matches!(rejected, Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized, ..
         })));
@@ -847,9 +848,9 @@ mod tests {
             fixture.root, fixture.root_lease.operation.operation_id, &original,
         ).await?;
         let root = root.into_native_shared(custody, &original)?;
-        let root_reader = super::content_residency_verifier(Arc::clone(&root), root_owner, Some(&crate::executor::PreparationIo::from_native_work(&original)?))?;
+        let root_reader = crate::runtime::content_residency_verifier(Arc::clone(&root), root_owner, Some(&io))?;
         let reads = original.receipt().backend_read_operations;
-        assert!(matches!(root_reader.read_with_native_work(&staged.0, 65_536, &original)?.await,
+        assert!(matches!(root_reader.read(&staged.0, 65_536, Some(&io))?.await,
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(original.receipt().backend_read_operations, reads);
 
@@ -861,7 +862,7 @@ mod tests {
             .expect("finite fixture allocation");
         let blocker = (buffer, quota);
         let reads = original.receipt().backend_read_operations;
-        let denied = reader.read_with_native_work(&staged.0, 65_536, &original);
+        let denied = reader.read(&staged.0, 65_536, Some(&io));
         assert!(matches!(denied, Err(Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(
                 acyclic_fs::WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }),
@@ -877,7 +878,7 @@ mod tests {
             Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
         assert!(matches!(mcp_tool.original_admission_with_native_work(&original),
             Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-        assert!(matches!(reader.read_with_native_work(&staged.0, 65_536, &original),
+        assert!(matches!(reader.read(&staged.0, 65_536, Some(&io)),
             Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
         assert_eq!(original.receipt(), before);
         Ok(())
@@ -974,8 +975,8 @@ mod tests {
             task, created.request.child.operation_id, &original,
         ).await?;
         let shared = context.into_native_shared(custody, &original)?;
-        let read = created.private.capability(crate::conversation::VolumeOperation::Read)?;
-        let write = created.private.capability(crate::conversation::VolumeOperation::Write)?;
+        let read = created.private.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+        let write = created.private.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
         assert!(shared.context().scope().grants().contains(&write));
         let limits = shared.context().scope().limits();
         let requested = RuntimeScope::new(crate::Capabilities::new([read.as_str()]), limits)?

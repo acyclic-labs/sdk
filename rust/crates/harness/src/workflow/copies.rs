@@ -4,7 +4,7 @@ use crate::{core::{copy_file, copy_text, copy_value, copy_vector}, wire_codec::C
 macro_rules! copy {
     ($kind:ty, $source:ident, $quota:ident, $body:expr) => {
         impl $kind {
-            pub(super) fn copy(&self, io: Option<&PreparationIo>) -> Result<Self> {
+            pub(crate) fn copy(&self, io: Option<&PreparationIo>) -> Result<Self> {
                 if io.is_none() { return Ok(self.clone()); }
                 with_history_io(io, |work| {
                     let mut quota = CodecQuota::new(work, 0)?;
