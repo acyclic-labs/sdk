@@ -1,6 +1,6 @@
 //! Sparse persistent extent mutation without file-body materialization.
 
-use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
+use super::allocation::{AllocationError, KernelAccounting, VisitedObjectSet};
 #[cfg(test)]
 use super::extent::extent_page_encoded_length;
 use super::persistent_point::{Owned, retire_allocation};
@@ -775,7 +775,7 @@ pub(crate) async fn put_extent_page_with_accounting<S: crate::AsyncObjectStore>(
 }
 
 pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
-    store: &S, kind: ObjectKind, mut encoded: Owned<Vec<u8>>,
+    store: &S, kind: ObjectKind, encoded: Owned<Vec<u8>>,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
 ) -> Result<ObjectId, FsError> {
     accounting.check()?;
@@ -784,9 +784,10 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
     })?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
+        let mut encoded = encoded;
         let allocation = match &mut encoded.allocation {
-            KernelOwnedAllocation::NativeOriginal(allocation) => allocation,
-            KernelOwnedAllocation::Standalone => return Err(extent_error(ExtentMutationError::AllocationFailed)),
+            super::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => allocation,
+            super::allocation::KernelOwnedAllocation::Standalone => return Err(extent_error(ExtentMutationError::AllocationFailed)),
         };
         let hashed = HashedObject::from_native_vec(kind, &mut encoded.value, allocation, original, cancellation)?;
         let object = hashed.object_id();

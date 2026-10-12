@@ -861,13 +861,13 @@ impl Cancelled<'_> {
                 if let Err(error) = meter.claim(waiter_bytes, 1) { return Poll::Ready(Err(error)); }
                 meter.waiter_bytes = waiter_bytes;
             }
-            let mut waiter_value = CancellationWaiter::default();
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                waiter_value._native_allocation = native_waiter_allocation;
-                *waiter_value.registry_lease.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner)
-                    = previous_lease.clone();
-            }
+            let waiter_value = CancellationWaiter {
+                #[cfg(not(target_arch = "wasm32"))]
+                _native_allocation: native_waiter_allocation,
+                #[cfg(not(target_arch = "wasm32"))]
+                registry_lease: std::sync::Mutex::new(previous_lease.clone()),
+                ..CancellationWaiter::default()
+            };
             let waiter = Arc::new(waiter_value);
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = native_original {
@@ -892,7 +892,7 @@ impl Cancelled<'_> {
                     }
                 } else { None };
                 let mut replacement = Vec::new();
-                if let Err(error) = replacement.try_reserve_exact(count) {
+                if let Err(_error) = replacement.try_reserve_exact(count) {
                     if let Some(meter) = &mut self.meter {
                         meter.release(new_bytes);
                         meter.pending_registry_bytes = 0;
@@ -900,7 +900,7 @@ impl Cancelled<'_> {
                     #[cfg(not(target_arch = "wasm32"))]
                     if native_original.is_some() {
                         return Poll::Ready(Err(CancellationWaitError::Native(
-                            crate::NativeTreeMaterializationError::AllocationFailed(error),
+                            crate::NativeTreeMaterializationError::AllocationFailed(_error),
                         )));
                     }
                     return Poll::Ready(Err(CancellationWaitError::AllocationFailed));
@@ -950,7 +950,7 @@ impl Cancelled<'_> {
                         allocation: parking_lot::Mutex::new(metadata),
                     }))
                 } else { None };
-                let copied_bytes = (waiters.len() * std::mem::size_of::<Option<Weak<CancellationWaiter>>>()) as u64;
+                let _copied_bytes = (waiters.len() * std::mem::size_of::<Option<Weak<CancellationWaiter>>>()) as u64;
                 replacement.append(&mut waiters);
                 let old_backing = std::mem::replace(&mut *waiters, replacement);
                 let generation = self.token.state.registry_generation.fetch_add(1, Ordering::AcqRel) + 1;
@@ -995,7 +995,7 @@ impl Cancelled<'_> {
                 {
                     let copied = native_original.map_or(Ok(()), |original|
                         original.record_admitted(crate::WorkCounters {
-                            bytes_copied: copied_bytes, ..crate::WorkCounters::UNCHARGED
+                            bytes_copied: _copied_bytes, ..crate::WorkCounters::UNCHARGED
                         }));
                     let retired = previous_lease.as_ref().map_or(Ok(()), |lease| lease.retire_backing());
                     if let Err(error) = copied.and(retired) { return Poll::Ready(Err(error.into())); }

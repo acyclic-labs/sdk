@@ -1167,11 +1167,15 @@ impl ProofGuard {
 
 impl Drop for ProofGuard {
     fn drop(&mut self) {
-        if let Self::Standalone { state, bytes } = self {
-            if *bytes != 0 {
-                state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .allocations.release(*bytes).expect("proof allocation ownership invariant");
+        match self {
+            Self::Standalone { state, bytes } => {
+                if *bytes != 0 {
+                    state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .allocations.release(*bytes).expect("proof allocation ownership invariant");
+                }
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native(_) => {}
         }
     }
 }

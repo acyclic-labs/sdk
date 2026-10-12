@@ -860,12 +860,12 @@ fn drop_source_chunk(chunk: OwnedSourceChunk, accounting: &mut KernelAccounting<
 
 fn hashed_blob_object(
     kind: ObjectKind, bytes: acyclic_stream::OwnedBytes, accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
+    _cancellation: &CancellationToken,
 ) -> Result<HashedObject, FsError> {
     accounting.check()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
-        return HashedObject::new_with_native_work(kind, bytes, original, cancellation).map_err(Into::into);
+        return HashedObject::new_with_native_work(kind, bytes, original, _cancellation).map_err(Into::into);
     }
     let hash = WorkCounters {
         bytes_hashed: usize_to_u64(bytes.len()).checked_add(crate::storage::OBJECT_DIGEST_ENVELOPE_BYTES)

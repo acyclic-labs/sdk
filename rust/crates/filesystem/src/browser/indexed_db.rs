@@ -338,7 +338,7 @@ impl IndexedDbAuthorityStore {
         maximum_payload_bytes: u64,
     ) -> Result<Self, IndexedDbOpenError> {
         let maximum_encoded = maximum_payload_bytes
-            .checked_add((COMMIT_PREFIX_BYTES as u64));
+            .checked_add(COMMIT_PREFIX_BYTES as u64);
         if database_name.is_empty()
             || maximum_payload_bytes == 0
             || maximum_encoded.is_none_or(|value| value > u64::from(u32::MAX))

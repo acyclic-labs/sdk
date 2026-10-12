@@ -180,9 +180,9 @@ fn native_completed_read_bytes(error: &acyclic_objects::v1::NativeObjectsError) 
     ].into_iter().try_fold(0_u64, |total, bytes| total.checked_add(bytes).ok_or(WorkError::Overflow))
 }
 
-fn read_retention(bytes: &OwnedBytes, accounting: &KernelAccounting<'_>) -> ObjectReadRetention {
+fn read_retention(bytes: &OwnedBytes, _accounting: &KernelAccounting<'_>) -> ObjectReadRetention {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = accounting.native_work() {
+    if let Some(work) = _accounting.native_work() {
         if bytes.matches_meter(&work.runtime_meter_owner()) {
             if let Some(capacity) = bytes.retained_capacity() {
                 return ObjectReadRetention::Owned { logical_bytes: capacity as u64 };
