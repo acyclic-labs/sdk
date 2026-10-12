@@ -3042,82 +3042,69 @@ impl DemandWork {
         self.cancellation_wait.native_io_failure.take()
     }
 
-    fn operation_counter(kind: NativeOperationKind)
-        -> (crate::materializer::NativeResourceCredit, fn(&mut WorkCounters) -> &mut u64) {
-        use crate::materializer::NativeResourceCredit as Credit;
-        match kind {
-            NativeOperationKind::Read => (Credit::ReadOperations, |work| &mut work.backend_read_operations),
-            NativeOperationKind::Write => (Credit::WriteOperations, |work| &mut work.backend_write_operations),
-            NativeOperationKind::Durability => (Credit::DurabilityOperations, |work| &mut work.durability_operations),
-        }
-    }
-
-    fn byte_counter(kind: NativeOperationKind)
+    fn native_counter(kind: NativeOperationKind, bytes: bool)
         -> Option<(crate::materializer::NativeResourceCredit, fn(&mut WorkCounters) -> &mut u64)> {
         use crate::materializer::NativeResourceCredit as Credit;
-        match kind {
-            NativeOperationKind::Read => Some((Credit::ReadBytes, |work| &mut work.source_bytes_read)),
-            NativeOperationKind::Write => Some((Credit::WriteBytes, |work| &mut work.output_bytes)),
-            NativeOperationKind::Durability => None,
-        }
+        Some(match (kind, bytes) {
+            (NativeOperationKind::Read, false) => (Credit::ReadOperations, |work| &mut work.backend_read_operations),
+            (NativeOperationKind::Write, false) => (Credit::WriteOperations, |work| &mut work.backend_write_operations),
+            (NativeOperationKind::Durability, false) => (Credit::DurabilityOperations, |work| &mut work.durability_operations),
+            (NativeOperationKind::Read, true) => (Credit::ReadBytes, |work| &mut work.source_bytes_read),
+            (NativeOperationKind::Write, true) => (Credit::WriteBytes, |work| &mut work.output_bytes),
+            (NativeOperationKind::Durability, true) => return None,
+        })
     }
 
-    pub(crate) fn reserve_native_operations(
-        &mut self, kind: acyclic_native_runtime::NativeOperationKind, count: u64,
-    ) -> std::io::Result<()> {
+    pub(crate) fn reserve(&mut self, kind: NativeOperationKind, maximum: u64, bytes: bool) -> std::io::Result<()> {
         if let Some(resource) = self.resource_scope() {
-            let credit = Self::operation_counter(kind).0;
-            let result = resource.reserve_credit(credit, count, || self.with_resource_scope(None,
-                |work| work.reserve_native_operations(kind, count).map_err(DemandError::Io)));
+            let credit = Self::native_counter(kind, bytes).ok_or(std::io::ErrorKind::Unsupported)?.0;
+            let result = resource.reserve_credit(credit, maximum, || self.with_resource_scope(None,
+                |work| work.reserve(kind, maximum, bytes).map_err(DemandError::Io)));
             return result.map_err(|error| self.record_native_io_failure(error));
         }
         self.check().map_err(|error| self.record_native_io_failure(error))?;
+        let (_, counter) = Self::native_counter(kind, bytes).ok_or(std::io::ErrorKind::Unsupported)?;
         let mut delta = WorkCounters::UNCHARGED;
-        *(Self::operation_counter(kind).1)(&mut delta) = count;
-        self.work.admit(&delta, &self.budget)
-            .map_err(|error| self.record_native_io_failure(error.into()))?;
-        if kind == acyclic_native_runtime::NativeOperationKind::Durability {
-            self.cancellation_wait.pending_native_durability += count;
+        *counter(&mut delta) = maximum;
+        self.work.admit(&delta, &self.budget).map_err(|error| self.record_native_io_failure(error.into()))?;
+        if !bytes && kind == NativeOperationKind::Durability {
+            self.cancellation_wait.pending_native_durability += maximum;
         }
-        let allowance = (Self::operation_counter(kind).1)(&mut self.budget);
-        *allowance -= count;
+        *counter(&mut self.budget) -= maximum;
         Ok(())
     }
 
-    pub(crate) fn cancel_reserved_native_operations(
-        &mut self, kind: acyclic_native_runtime::NativeOperationKind, count: u64,
-    ) {
+    pub(crate) fn refund(&mut self, kind: NativeOperationKind, maximum: u64, bytes: bool) {
         if let Some(resource) = self.resource_scope() {
-            self.with_resource_scope(None, |work| work.cancel_reserved_native_operations(kind, count));
-            if let Err(error) = resource.refund_credit(Self::operation_counter(kind).0, count) {
-                self.record_native_io_failure(error);
+            self.with_resource_scope(None, |work| work.refund(kind, maximum, bytes));
+            if let Some((credit, _)) = Self::native_counter(kind, bytes) {
+                if let Err(error) = resource.refund_credit(credit, maximum) { self.record_native_io_failure(error); }
             }
             return;
         }
-        if kind == acyclic_native_runtime::NativeOperationKind::Durability {
+        if !bytes && kind == NativeOperationKind::Durability {
             self.cancellation_wait.pending_native_durability = self.cancellation_wait.pending_native_durability
-                .checked_sub(count).expect("durability completion owns its original reservation");
+                .checked_sub(maximum).expect("durability completion owns its original reservation");
         }
-        let allowance = (Self::operation_counter(kind).1)(&mut self.budget);
-        *allowance = allowance.checked_add(count)
+        let allowance = (Self::native_counter(kind, bytes).expect("durability does not reserve bytes").1)(&mut self.budget);
+        *allowance = allowance.checked_add(maximum)
             .expect("unused native reservation restores only its own withheld allowance");
     }
 
-    pub(crate) fn record_reserved_native_operation(
-        &mut self, kind: acyclic_native_runtime::NativeOperationKind,
-    ) -> std::io::Result<()> {
+    pub(crate) fn complete(&mut self, kind: NativeOperationKind, maximum: u64, actual: u64, bytes: bool) -> std::io::Result<()> {
+        let (credit, counter) = Self::native_counter(kind, bytes).ok_or(std::io::ErrorKind::Unsupported)?;
         if let Some(resource) = self.resource_scope() {
-            let recorded = self.with_resource_scope(None, |work| work.record_reserved_native_operation(kind));
-            let resource = resource.complete_credit(Self::operation_counter(kind).0, 1, 1)
+            let recorded = self.with_resource_scope(None, |work| work.complete(kind, maximum, actual, bytes));
+            let resource = resource.complete_credit(credit, maximum, actual)
                 .map_err(|error| self.record_native_io_failure(error));
             return recorded.and(resource);
         }
-        self.cancel_reserved_native_operations(kind, 1);
+        self.refund(kind, maximum, bytes);
         let mut delta = WorkCounters::UNCHARGED;
-        *(Self::operation_counter(kind).1)(&mut delta) = 1;
-        self.work.try_add_assign(&delta)
-            .and_then(|()| self.work.verify(self.budget))
-            .map_err(|error| self.record_native_io_failure(error.into()))
+        *counter(&mut delta) = actual;
+        self.work.try_add_assign(&delta).map_err(|error| self.record_native_io_failure(error.into()))?;
+        if bytes && actual > maximum { return Err(self.record_native_io_failure(DemandError::InvalidRequest)); }
+        self.work.verify(self.budget).map_err(|error| self.record_native_io_failure(error.into()))
     }
 
     pub(crate) fn admit_native_write_bytes(&mut self, maximum: usize) -> std::io::Result<()> {
@@ -3129,64 +3116,6 @@ impl DemandWork {
         self.check().map_err(|error| self.record_native_io_failure(error))?;
         self.work.admit(&WorkCounters { output_bytes: maximum as u64, ..WorkCounters::UNCHARGED }, &self.budget)
             .map_err(|error| self.record_native_io_failure(error.into()))
-    }
-
-    pub(crate) fn reserve_native_bytes(
-        &mut self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64,
-    ) -> std::io::Result<()> {
-        if let Some(resource) = self.resource_scope() {
-            let credit = Self::byte_counter(kind).map(|(credit, _)| credit).ok_or(std::io::ErrorKind::Unsupported)?;
-            let result = resource.reserve_credit(credit, maximum, || self.with_resource_scope(None,
-                |work| work.reserve_native_bytes(kind, maximum).map_err(DemandError::Io)));
-            return result.map_err(|error| self.record_native_io_failure(error));
-        }
-        self.check().map_err(|error| self.record_native_io_failure(error))?;
-        let mut delta = WorkCounters::UNCHARGED;
-        *(Self::byte_counter(kind).ok_or(std::io::ErrorKind::Unsupported)?.1)(&mut delta) = maximum;
-        self.work.admit(&delta, &self.budget)
-            .map_err(|error| self.record_native_io_failure(error.into()))?;
-        let allowance = (Self::byte_counter(kind).expect("durability does not reserve bytes").1)(&mut self.budget);
-        *allowance -= maximum;
-        Ok(())
-    }
-
-    pub(crate) fn cancel_reserved_native_bytes(
-        &mut self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64,
-    ) {
-        if let Some(resource) = self.resource_scope() {
-            self.with_resource_scope(None, |work| work.cancel_reserved_native_bytes(kind, maximum));
-            if let Some(credit) = Self::byte_counter(kind).map(|(credit, _)| credit) {
-                if let Err(error) = resource.refund_credit(credit, maximum) { self.record_native_io_failure(error); }
-            }
-            return;
-        }
-        let allowance = (Self::byte_counter(kind).expect("durability does not reserve bytes").1)(&mut self.budget);
-        *allowance = allowance.checked_add(maximum)
-            .expect("unused native byte reservation restores only its withheld allowance");
-    }
-
-    pub(crate) fn record_reserved_native_bytes(
-        &mut self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64, actual: u64,
-    ) -> std::io::Result<()> {
-        if let Some(resource) = self.resource_scope() {
-            let credit = Self::byte_counter(kind).map(|(credit, _)| credit).ok_or(std::io::ErrorKind::Unsupported)?;
-            let recorded = self.with_resource_scope(None, |work| work.record_reserved_native_bytes(kind, maximum, actual));
-            let resource = resource.complete_credit(credit, maximum, actual)
-                .map_err(|error| self.record_native_io_failure(error));
-            return recorded.and(resource);
-        }
-        if kind == acyclic_native_runtime::NativeOperationKind::Durability {
-            return Err(std::io::ErrorKind::Unsupported.into());
-        }
-        self.cancel_reserved_native_bytes(kind, maximum);
-        let mut delta = WorkCounters::UNCHARGED;
-        *(Self::byte_counter(kind).ok_or(std::io::ErrorKind::Unsupported)?.1)(&mut delta) = actual;
-        self.work.try_add_assign(&delta)
-            .map_err(|error| self.record_native_io_failure(error.into()))?;
-        if actual > maximum {
-            return Err(self.record_native_io_failure(DemandError::InvalidRequest));
-        }
-        self.work.verify(self.budget).map_err(|error| self.record_native_io_failure(error.into()))
     }
 
     pub(crate) fn allocate(&mut self, bytes: u64) -> Result<(), DemandError> {
@@ -5229,12 +5158,11 @@ pub mod native {
             Ok(Self { prepared: Some(prepared) })
         }
 
-        fn finish(&mut self) -> Result<(), DemandError> {
+        fn finish(&mut self) {
             if let Some(mut prepared) = self.prepared.take() {
                 prepared.retire_waker();
                 drop(prepared);
             }
-            Ok(())
         }
     }
 
@@ -5250,8 +5178,28 @@ pub mod native {
 
     impl Drop for OriginalSourceCancelled {
         fn drop(&mut self) {
-            let _ = self.finish();
+            self.finish();
         }
+    }
+
+    async fn await_source_job<T, F, C>(
+        spawned: std::io::Result<F>, cancelled: &mut C, on_cancel: impl FnOnce(),
+    ) -> (Result<T, DemandError>, bool)
+    where F: Future<Output = std::io::Result<Result<T, DemandError>>> + Unpin,
+        C: Future<Output = ()> + Unpin {
+        let mut selected_cancellation = false;
+        let result = match spawned {
+            Ok(mut queued) => tokio::select! {
+                result = &mut queued => result.map_err(native_demand_error).and_then(std::convert::identity),
+                () = cancelled => {
+                    selected_cancellation = true;
+                    on_cancel();
+                    queued.await.map_err(native_demand_error).and_then(std::convert::identity)
+                },
+            },
+            Err(error) => Err(native_demand_error(error)),
+        };
+        (result, selected_cancellation)
     }
 
     impl NativeDemandSource {
@@ -5375,13 +5323,7 @@ pub mod native {
                 }),
                 task_meter,
             );
-            let result = match task {
-                Ok(mut task) => tokio::select! {
-                    result = &mut task => result.map_err(native_demand_error).and_then(std::convert::identity),
-                    () = &mut prepared => task.await.map_err(native_demand_error).and_then(std::convert::identity),
-                },
-                Err(error) => Err(native_demand_error(error)),
-            };
+            let (result, _) = await_source_job(task, &mut prepared, || {}).await;
             prepared.retire_waker();
             let original = OriginalDemandWork::from_meter(shared);
             let closed = original.with_original_leaf(|work| {
@@ -5420,24 +5362,13 @@ pub mod native {
                     Self::open_blocking(input, profile, limits, reference, observer, &mut work)
                 }), task_meter,
             );
-            let mut selected_cancellation = false;
-            let result = match spawned {
-                Ok(mut queued) => tokio::select! {
-                    result = &mut queued => result.map_err(native_demand_error).and_then(std::convert::identity),
-                    () = &mut cancelled => {
-                        selected_cancellation = true;
-                        queued.await.map_err(native_demand_error).and_then(std::convert::identity)
-                    },
-                },
-                Err(error) => Err(native_demand_error(error)),
-            };
-            let cleanup = cancelled.finish();
+            let (result, selected_cancellation) = await_source_job(spawned, &mut cancelled, || {}).await;
+            cancelled.finish();
             let native_failure = work.with_original_leaf(DemandWork::take_native_io_failure);
             match result {
                 Err(error) => Err(native_failure.unwrap_or(error)),
                 Ok(value) => {
                     if let Some(error) = native_failure { return Err(error); }
-                    cleanup?;
                     if selected_cancellation { return Err(DemandError::Cancelled); }
                     work.check()?;
                     Ok(value)
@@ -5652,7 +5583,7 @@ pub mod native {
             };
             let permit = match permit.and_then(|permit| work.check().map(|()| permit)) {
                 Ok(permit) => permit,
-                Err(error) => { cancelled.finish()?; return Err(error); }
+                Err(error) => { cancelled.finish(); return Err(error); }
             };
             let worker_work = original.clone();
             let task_meter = work.materialization_work()?.runtime_meter_owner();
@@ -5666,19 +5597,10 @@ pub mod native {
                     job(source, &path.path, &mut worker)
                 }), task_meter,
             );
-            let mut selected_cancellation = false;
-            let result = match spawned {
-                Ok(mut queued) => tokio::select! {
-                    result = &mut queued => result.map_err(native_demand_error).and_then(std::convert::identity),
-                    () = &mut cancelled => {
-                        selected_cancellation = true;
-                        stop_on_drop.0.stopped.store(true, Ordering::Release);
-                        queued.await.map_err(native_demand_error).and_then(std::convert::identity)
-                    },
-                },
-                Err(error) => Err(native_demand_error(error)),
-            };
-            cancelled.finish()?;
+            let (result, selected_cancellation) = await_source_job(spawned, &mut cancelled, || {
+                stop_on_drop.0.stopped.store(true, Ordering::Release);
+            }).await;
+            cancelled.finish();
             let native_failure = work.with_original_leaf(DemandWork::take_native_io_failure);
             drop(stop_on_drop);
             if let Some(error) = native_failure { return Err(error); }
@@ -5756,16 +5678,7 @@ pub mod native {
                     job(source, &mut held)
                 }), task_meter,
             );
-            let result = match spawned {
-                Ok(mut worker) => tokio::select! {
-                    result = &mut worker => result.map_err(native_demand_error).and_then(std::convert::identity),
-                    () = &mut prepared => {
-                        cancel_on_drop.0.cancel();
-                        worker.await.map_err(native_demand_error).and_then(std::convert::identity)
-                    },
-                },
-                Err(error) => Err(native_demand_error(error)),
-            };
+            let (result, _) = await_source_job(spawned, &mut prepared, || cancel_on_drop.0.cancel()).await;
             prepared.retire_waker();
             let original = OriginalDemandWork::from_meter(shared);
             let closed = original.with_original_leaf(|work| {
@@ -7019,7 +6932,7 @@ pub mod native {
         file: &SourceFile,
         work: &mut W,
     ) -> Result<HostStat, DemandError> {
-        file.with_measured(|file| provider.inner.root.stat_file_with_work(file, work))
+        file.with(|file| provider.inner.root.stat_file_with_work(file, work))
     }
 
     /// Stats the held `file` as its source root stats a name.
@@ -9267,15 +9180,15 @@ impl<T: NativeDemandReadWork + Send> acyclic_native_runtime::NativeReadMeter for
     fn reserve_operations(
         &self, kind: acyclic_native_runtime::NativeOperationKind, count: u64,
     ) -> std::io::Result<()> {
-        self.lock().as_work().reserve_native_operations(kind, count)
+        self.lock().as_work().reserve(kind, count, false)
     }
 
     fn cancel_reserved_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) {
-        self.lock().as_work().cancel_reserved_native_operations(kind, count);
+        self.lock().as_work().refund(kind, count, false);
     }
 
     fn record_reserved_operation(&self, kind: acyclic_native_runtime::NativeOperationKind) -> std::io::Result<()> {
-        self.lock().as_work().record_reserved_native_operation(kind)
+        self.lock().as_work().complete(kind, 1, 1, false)
     }
 
     fn admit_write_bytes(&self, maximum: usize) -> std::io::Result<()> {
@@ -9285,17 +9198,17 @@ impl<T: NativeDemandReadWork + Send> acyclic_native_runtime::NativeReadMeter for
     fn reserve_bytes(
         &self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64,
     ) -> std::io::Result<()> {
-        self.lock().as_work().reserve_native_bytes(kind, maximum)
+        self.lock().as_work().reserve(kind, maximum, true)
     }
 
     fn cancel_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64) {
-        self.lock().as_work().cancel_reserved_native_bytes(kind, maximum);
+        self.lock().as_work().refund(kind, maximum, true);
     }
 
     fn record_reserved_bytes(
         &self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64, actual: u64,
     ) -> std::io::Result<()> {
-        self.lock().as_work().record_reserved_native_bytes(kind, maximum, actual)
+        self.lock().as_work().complete(kind, maximum, actual, true)
     }
 
     fn admit_durability(&self) -> std::io::Result<()> {

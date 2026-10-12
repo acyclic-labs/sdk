@@ -166,12 +166,12 @@ impl NativeSession {
             LocalStream::open(&config.stream_root, Default::default()).await
                 .map_err(|error| Error::Storage(error.to_string()))?,
         ));
-        let source = super::native_tools::NativeToolSource::new(&config, stream.clone(), files.clone())?;
+        let source = super::native_tools::source(&config, stream.clone(), files.clone())?;
         if let Some(graph_root) = config.project_source_root {
             let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
                 files.clone(), config.owner.authority.clone(), graph_root,
             )?;
-            source.recursive_source().with_project_source_policy(
+            source.with_project_source_policy(
                 AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()),
                 Arc::new(policy),
             )?;
@@ -204,7 +204,7 @@ impl NativeSession {
             config.owner.scope.clone(), scope, tasks, machines, toolset.tools,
             config.session_limits, config.concurrency, MAX_FRAME_BYTES as u64,
             Arc::new(acyclic_stream::SystemUnixMillisClock), None, vec![creation], toolset.resumable_tools,
-        ).await?.with_recursive_source(source.recursive_source()));
+        ).await?.with_recursive_source(source.clone()));
         source.bind_runtime(&runtime)?;
         let model = super::provider::model(config.deterministic_delay_ms);
         let model_provider = Arc::new(super::provider::Deterministic::new(
@@ -215,8 +215,6 @@ impl NativeSession {
             model, model_provider,
         })
     }
-
-    pub fn config(&self) -> Config { self.config.clone() }
 
     pub fn start_cursor(&self) -> wire::ReplayCursor {
         wire::ReplayCursor {
@@ -294,18 +292,6 @@ impl NativeSession {
         let admission = self.runtime.task_host().observe_admission(task).await?;
         self.runtime.task_host().cancel(task).await?;
         Ok(format!("cancellation requested task={task} admission-operation={}; completion requires authoritative observation\n", admission.operation_id))
-    }
-
-    #[cfg(test)]
-    pub async fn run(&self, task: TaskId, worker: &Worker, output: &mut impl std::io::Write) -> Result<String> {
-        let lease = match self.claim(task, worker).await? {
-            WorkPull::Idle => return Ok(format!("worker idle task={task}\n")),
-            WorkPull::Claimed(lease) => lease,
-            WorkPull::Unresolved { lease, error } => return render_attempt(TaskWorkerAttempt::Unresolved { lease, error }),
-        };
-        writeln!(output, "worker-claim task={task} lease-json-hex={}", lease_hex(&lease)?)
-            .and_then(|()| output.flush()).map_err(|error| Error::Storage(error.to_string()))?;
-        self.resume(lease).await
     }
 
     pub async fn resume(&self, lease: WorkLease) -> Result<String> {

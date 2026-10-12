@@ -1082,7 +1082,7 @@ pub(super) fn native_output_payload_bytes(output: &TurnOutput) -> Result<u64> {
     let slots = (output.attachments.capacity() as u64).checked_mul(std::mem::size_of::<Attachment>() as u64)
         .ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "native attachment slots overflow"))?;
     let mut bytes = native_size_add(output.text.capacity() as u64, slots)?;
-    bytes = native_size_add(bytes, crate::model::model_value_owned_bytes(&output.metadata)?)?;
+    bytes = native_size_add(bytes, crate::contract::json_value_logical_owned_bytes(&output.metadata)?)?;
     for attachment in &output.attachments {
         bytes = native_size_add(bytes, attachment.file.logical_owned_bytes()?)?;
         if let Some(label) = &attachment.label { bytes = native_size_add(bytes, label.capacity() as u64)?; }

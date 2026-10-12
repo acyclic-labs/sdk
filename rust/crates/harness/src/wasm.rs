@@ -1907,11 +1907,7 @@ pub fn validate_model_context_selection_wasm(
 ) -> Result<(), JsValue> {
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
-    validate_model_context_selection_at_revision(
-        &conversation,
-        &selection,
-        selection.conversation_revision,
-    )
+    validate_model_context_selection_at_revision(&conversation, &selection, selection.conversation_revision, None)
     .map_err(js_error)
 }
 
@@ -2660,8 +2656,8 @@ pub fn model_content_inventory(
         .validate_limits(from_js(limits)?)
         .map_err(js_error)?;
     to_js_admitted(&WasmModelContentInventoryWire {
-        files: content.file_refs(),
-        native_configurations: content.native_configurations(),
+        files: content.file_refs().collect(),
+        native_configurations: content.native_configurations().collect(),
     })
 }
 

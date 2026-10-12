@@ -79,7 +79,7 @@ impl TurnInput {
                 Error::Invalid("selected context must end with a user message".into())
             })?;
         input.validate_user_input()?;
-        selected_context.validate_for_input(&input)?;
+        selected_context.validate_for_input(&input, None)?;
         Ok(Self {
             operation_id,
             input,
@@ -377,7 +377,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Verifies data and native option bindings without granting fresh execution.
     fn verify_model_content<'a>(&'a self, content: &'a ModelContent) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if !content.native_configurations().is_empty() {
+            if content.native_configurations().next().is_some() {
                 return Err(Error::Unsupported(
                     "original native option verification is unavailable".into(),
                 ));
@@ -2405,13 +2405,12 @@ impl StockExecution<'_> {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let continuation = if let Some(work) = self.native_work() {
                 let (continuation, custody) = self.provider.reconcile_with_native_work(
-                    crate::model::NativeModelAttempt {
+                    crate::model::ModelDispatch {
                         operation_id: purpose.attempt_operation_with_io(input.operation_id, self.io())?,
                         step,
                         request_digest,
-                        observed: &replayed_model,
                     },
-                    work,
+                    &replayed_model, work,
                 )?.await?;
                 io.expect("native stock session retains its original IO")
                     .absorb_native_custody(custody)?;
@@ -3026,7 +3025,7 @@ impl StockExecution<'_> {
         let scope = self.original_context().map(crate::runtime::TaskContext::scope);
         validate_model_content_scope_with_io(&input.input, self.limits, scope, self.io())?;
         if let Some(selected) = &input.selected_context {
-            selected.validate_for_input_with_io(&input.input, self.io())?;
+            selected.validate_for_input(&input.input, self.io())?;
             if selected.messages.len() > self.limits.context_messages {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid,
                     "selected context exceeds configured message limit"));
@@ -3491,8 +3490,8 @@ fn validate_model_content_scope_with_io(
             }
         }
     }
-    let bindings = content.native_configurations();
-    if !bindings.is_empty() {
+    let mut bindings = content.native_configurations().peekable();
+    if bindings.peek().is_some() {
         let scope = scope.ok_or_else(|| {
             Error::Unsupported("original native task scope is unavailable".into())
         })?;

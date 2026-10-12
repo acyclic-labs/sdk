@@ -604,13 +604,11 @@ fn record_view_change_with_carrier(
     if let Some(original) = carrier.original_native_work() {
         // Native map backing carries its real intrinsic allocation guard.
         // Borrowed service maps are not imported into this operation.
-        return ledger.record_with_native_work(
-            change, &original, &mut super::view_ledger::ViewLedgerAdmission::default(),
-        );
+        return ledger.record(change, &mut NativeDemandCarrier::Native(&super::NativeMountMeterWork::from_native_materialization_work(&original)), &mut super::view_ledger::ViewLedgerAdmission::default());
     }
     let (slot, mut admission) = carrier.with_work(|work| ledger.take_for_work(work))?;
     let recorded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        ledger.record_with_carrier(change, carrier, &mut admission)
+        ledger.record(change, carrier, &mut admission)
     }));
     carrier.with_work(|work| work.restore_view_ledger_admission(slot, admission));
     match recorded {
@@ -635,7 +633,7 @@ async fn native_node_if_bound_with_carrier<A: AsyncAuthorityStore, O: AsyncObjec
                 work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
             ))
         })?;
-        let inspected = checkout.inspector_measured(budget, cancellation);
+        let inspected = checkout.inspector(budget, cancellation);
         carrier.accept_with_prior_live(inspected, prior_live, mount_engine_error)?
     };
     let mut inspector = LookupObserverOwned::new_in(inspector, carrier.reborrow())?;
@@ -1541,7 +1539,7 @@ impl<A, O> DetachedMountState<A, O> {
             .mutation_epoch
             .checked_add(1)
             .ok_or(MountSourceError::Stale)?;
-        ledger.record(&ViewChange::Node(self.file.file_id()));
+        ledger.record(&ViewChange::Node(self.file.file_id()), &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()), &mut super::view_ledger::ViewLedgerAdmission::default()).expect("unbounded view recording");
         Ok(())
     }
 }
@@ -2854,7 +2852,7 @@ impl<A, O> SharedCheckout<A, O> {
                     claimed
                 };
                 drop(checkout);
-                self.apply_grouped_requests(requests, &cancellation).await;
+                self.apply_grouped_requests(requests, cancellation.clone()).await;
             }
         })
     }
@@ -3216,18 +3214,14 @@ impl<A, O> SharedCheckout<A, O> {
         ).await?;
         let times = ContentTimes::Stamp(content_change_time()?);
         let accepted = if let Some(original) = carrier.original_native_work() {
-            candidate.checkout.change_content_by_id_with_native_work(
-                file_id, change, times, &original, cancellation,
-            ).await.map_err(MountSourceError::Filesystem)
+            candidate.checkout.change_content_with_native_work(file_id, change, times, &original, cancellation).await.map_err(MountSourceError::Filesystem)
         } else {
             let (budget, prior_live) = carrier.with_work(|work| {
                 Ok::<_, MountSourceError>((
                     work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
-            let result = candidate.checkout.change_content_by_id(
-                file_id, change, times, budget, cancellation,
-            ).await;
+            let result = candidate.checkout.change_content(file_id, change, times, budget, cancellation).await;
             carrier.accept_with_prior_live(result, prior_live, mount_engine_error)
         };
         let installed = self.finish_native_phase_with_carrier(
@@ -3565,7 +3559,7 @@ impl<A, O> SharedCheckout<A, O> {
                     work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
-            let projected = checkout.checkout.private_candidate_measured(budget, cancellation);
+            let projected = checkout.checkout.private_candidate(budget, cancellation);
             carrier.accept_with_prior_live(projected, prior_live, mount_engine_error)?
         };
         let projection_custody = projection.private_control_custody();
@@ -3629,10 +3623,7 @@ impl<A, O> SharedCheckout<A, O> {
             let future = before_publication(work);
             async move { future.await.map_err(NativeSealError::Guard) }
         };
-        let result = original.checkout.retry_stale_commit_guarded_with_native_work(
-            operation, crate::PublicationPermit::Unrestricted, &native, cancellation,
-            &mut guarded, Some(&producer), operation_context, operation_evidence, original_fingerprint_permit,
-        ).await.map_err(|error| match error {
+        let result = original.checkout.retry_stale_commit_with_native_work(operation, crate::PublicationPermit::Unrestricted, &native, cancellation, &mut guarded, Some(&producer), operation_context, operation_evidence, original_fingerprint_permit).await.map_err(|error| match error {
             NativeSealError::Guard(error) => error,
             NativeSealError::Filesystem(error) => MountSourceError::Filesystem(error),
         });
@@ -3943,7 +3934,7 @@ impl<A, O> SharedCheckout<A, O> {
         }
         if let Some(stamp) = absent_since {
             let unchanged = self.view_gate.is_stable() && carrier.with_work(|work| {
-                self.ledger.binding_unchanged_since_measured(&pending.path, stamp, work)
+                self.ledger.binding_unchanged_since(&pending.path, stamp, work)
             })?;
             if !unchanged { return Ok(false); }
         }
@@ -3981,7 +3972,7 @@ impl<A, O> SharedCheckout<A, O> {
         let (slot, mut admission) = carrier.with_work(|work| self.ledger.take_for_work(work))?;
         let recorded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _origin = pending.origin.enter();
-            self.ledger.record_with_carrier(&ViewChange::Bound(&pending.path), carrier, &mut admission)
+            self.ledger.record(&ViewChange::Bound(&pending.path), carrier, &mut admission)
         }));
         carrier.with_work(|work| work.restore_view_ledger_admission(slot, admission));
         match recorded {
@@ -4416,7 +4407,7 @@ impl<A, O> SharedCheckout<A, O> {
             observation.observer_with_native_work(&original, cancellation).map_err(MountSourceError::Filesystem)?
         } else {
             let budget = carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-            let receipt = observation.observer_measured(budget, cancellation);
+            let receipt = observation.observer(budget, cancellation);
             carrier.with_work(|work| mount_accept(work, receipt, mount_engine_error))?
         };
         let observer = observer.into_owned();
@@ -4463,7 +4454,7 @@ impl<A, O> SharedCheckout<A, O> {
         file_id: Option<FileId>,
         stamp: ViewStamp,
     ) -> bool {
-        self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp)
+        self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 
     fn reported_unchanged_since(
@@ -4472,19 +4463,19 @@ impl<A, O> SharedCheckout<A, O> {
         file_id: Option<FileId>,
         stamp: ViewStamp,
     ) -> bool {
-        self.view_gate.is_stable() && self.ledger.reported_unchanged_since(path, file_id, stamp)
+        self.view_gate.is_stable() && self.ledger.reported_unchanged_since(path, file_id, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp)
+        self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 
     fn listing_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.listing_unchanged_since(path, stamp)
+        self.view_gate.is_stable() && self.ledger.listing_unchanged_since(path, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 
     fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.binding_unchanged_since(path, stamp)
+        self.view_gate.is_stable() && self.ledger.binding_unchanged_since(path, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 }
 
@@ -4604,8 +4595,8 @@ impl<A, O> SharedCheckoutState<A, O> {
     {
         self.ensure_publication_resolved()?;
         Ok(CheckoutCandidate {
-            base: self.private_candidate(),
-            checkout: self.private_candidate(),
+            base: self.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value,
+            checkout: self.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value,
         })
     }
 
@@ -4630,7 +4621,7 @@ impl<A, O> SharedCheckoutState<A, O> {
             }
             carrier.with_work(|work| {
                 let prior_live = work.live_allocation_bytes();
-                let result = self.private_candidate_measured(
+                let result = self.private_candidate(
                     work.remaining().map_err(mount_demand_error)?, cancellation,
                 );
                 let checkout = match result {
@@ -4682,7 +4673,7 @@ impl<A, O> SharedCheckoutState<A, O> {
     /// Records one change to the checkout's view. The exclusive guard keeps
     /// every lookup from overlapping the change it records.
     pub(super) fn record(&mut self, change: &ViewChange<'_>) {
-        self.ledger.record(change);
+        self.ledger.record(change, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()), &mut super::view_ledger::ViewLedgerAdmission::default()).expect("unbounded view recording");
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.recorded_view = self.checkout.root().file_table;
     }
@@ -4695,13 +4686,13 @@ impl<A, O> SharedCheckout<A, O> {
     fn apply_grouped_requests<'a>(
         &'a self,
         requests: Vec<GroupedRequest>,
-        cancellation: &'a CancellationToken,
+        cancellation: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
         Box::pin(async move {
-            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, cancellation);
+            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
             let _ = self.apply_grouped_requests_measured(
-                requests, &mut work, cancellation, None,
+                requests, &mut work, &cancellation, None,
             ).await;
         })
     }
@@ -5169,7 +5160,7 @@ impl InstalledCaptureAccounting<'_> {
         use super::lazy::{mount_accept, mount_demand_error, mount_engine_error};
         match self {
             Self::Ordinary(work) => {
-                let result = checkout.inspector().lookup_no_follow(
+                let result = checkout.inspector(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded inspector preserves a validated checkout").value.lookup_no_follow(
                     path, work.remaining().map_err(mount_demand_error)?, cancellation,
                 ).await;
                 Ok(mount_accept(work, result, mount_engine_error)?.record)
@@ -5924,7 +5915,7 @@ where
             let state = await_measured_lock_with_carrier(
                 self.state.lock(), &mut carrier, &cancellation, Some(&self.cancellation),
             ).await?;
-            let packet = state.file.read_named_attribute_owned_with_native_work(
+            let packet = state.file.read_named_attribute_with_native_work(
                 &name, &original, &cancellation,
             ).await.map_err(MountSourceError::Filesystem)?;
             original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
@@ -6135,7 +6126,7 @@ where
                 .file
                 .read_named_attribute(&name, boundary_budget(), &self.cancellation)
                 .await
-                .map(|receipt| receipt.value)
+                .map(|receipt| receipt.value.map(|chunk| chunk.bytes))
                 .map_err(engine_error)
         })
     }
@@ -6375,7 +6366,7 @@ where
         self.attached
             .checkout
             .ledger
-            .record(&ViewChange::Node(self.pending.file_id));
+            .record(&ViewChange::Node(self.pending.file_id), &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()), &mut super::view_ledger::ViewLedgerAdmission::default()).expect("unbounded view recording");
         self.attached
             .checkout
             .revision
@@ -6483,7 +6474,7 @@ where
                 if let Some(prepared) = prepared { drop(std::mem::replace(bytes, prepared)); }
                 if shared_truncate {
                     let PendingBytes::Shared { bytes, .. } = bytes else { unreachable!("original shared body"); };
-                    bytes.truncate(length);
+                    *bytes = bytes.slice(..length);
                 } else {
                     bytes.resize(length, 0);
                 }
@@ -6968,7 +6959,7 @@ where
             let name = owned_name.0;
             let (_view, mut observer) = self.measured_observer(NativeDemandCarrier::Native(work)).await?;
             let cancellation = meter.lock().cancellation().clone();
-            let accepted = observer.read_named_attribute_owned_by_id_with_native_work(
+            let accepted = observer.read_named_attribute_by_id_with_native_work(
                 self.file_id, &name,
                 &original, &cancellation,
             ).await.map_err(MountSourceError::Filesystem);
@@ -7170,7 +7161,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             let record = checkout
                 .read_file_record_by_id(self.file_id, boundary_budget(), &self.cancellation)
                 .await
@@ -7192,7 +7183,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .read_file_range_by_id(
                     self.file_id,
@@ -7213,7 +7204,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .read_file_up_to_by_id(
                     self.file_id,
@@ -7232,7 +7223,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .seek_file_extent_by_id(
                     self.file_id,
@@ -7290,7 +7281,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .read_named_attribute_by_id(
                     self.file_id,
@@ -7299,7 +7290,7 @@ where
                     &self.cancellation,
                 )
                 .await
-                .map(|receipt| receipt.value)
+                .map(|receipt| receipt.value.map(|chunk| chunk.bytes))
                 .map_err(engine_error)
         })
     }
@@ -7313,7 +7304,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             let receipt = checkout
                 .list_named_attributes_by_id(
                     self.file_id,
@@ -7844,7 +7835,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     /// this checkout. The caller holds that source's exclusive view, so no
     /// lookup through it overlaps the change.
     pub(super) fn record_projection_change(&self, change: &ViewChange<'_>) {
-        self.checkout.ledger.record(change);
+        self.checkout.ledger.record(change, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()), &mut super::view_ledger::ViewLedgerAdmission::default()).expect("unbounded view recording");
     }
 
     pub(super) fn record_projection_change_with_carrier(
@@ -7861,7 +7852,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         mut private_check: impl FnMut() -> Result<(), MountSourceError>,
     ) -> Result<(), MountSourceError> {
         private_check()?;
-        let recorded = self.checkout.ledger.record_with_native_work(change, original, view);
+        let recorded = self.checkout.ledger.record(change, &mut NativeDemandCarrier::Native(&super::NativeMountMeterWork::from_native_materialization_work(original)), view);
         // The canonical ledger records its real prefix before notifying.
         // A stop raised by an observer prevents subsequent source publication,
         // but cannot erase keys, notifications or work already performed.
@@ -7923,7 +7914,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 return Ok(Some(pending));
             }
             let observation = self.checkout.observe_as_is(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             let receipt = checkout
                 .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
                 .await
@@ -7966,7 +7957,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 let capacity = read.logical_owned_bytes();
                 crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity)
             }),
-            None => observer.read_symbolic_link_owned_with_native_work(
+            None => observer.read_symbolic_link_with_native_work(
                 &namespace, &original, &cancellation,
             ).await,
         };
@@ -8019,7 +8010,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     },
                     work: receipt.work,
                 }),
-            None => observer.read_symbolic_link_owned(&namespace, budget, &cancellation).await,
+            None => observer.read_symbolic_link(&namespace, budget, &cancellation).await,
         };
         let mut output = {
             let mut work = meter.lock();
@@ -8185,7 +8176,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 Some(cursor)
             } else { None }
         } else { None };
-        let page = MountDirectoryPage::with_native_allocation(entries, next_cursor, scratch.retain());
+        let page = MountDirectoryPage::new(entries, next_cursor, Some(scratch.retain()));
         original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         Ok(page)
@@ -8718,7 +8709,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
                 ))
             })?;
-            let inspected = checkout.inspector_measured(budget, cancellation);
+            let inspected = checkout.inspector(budget, cancellation);
             carrier.accept_with_prior_live(inspected, prior_live, mount_engine_error)?
         };
         let mut inspector = LookupObserverOwned::new_in(inspector, carrier.reborrow())?;
@@ -9238,7 +9229,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             ));
         }
         let budget = observer.work.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-        let result = observer.detached_from_record_measured(lookup.record, budget, &cancellation);
+        let result = observer.detached_from_record(lookup.record, budget, &cancellation);
         let (file, receipt) = match result {
             Ok(receipt) => (Some(receipt.value), Ok(crate::OperationReceipt {
                 value: (), work: receipt.work,
@@ -9357,7 +9348,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             checkout.observer_with_native_work(&original, &cancellation).map_err(mount_engine_error)?
         } else {
             let budget = carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-            let observed = checkout.observer_measured(budget, &cancellation);
+            let observed = checkout.observer(budget, &cancellation);
             carrier.with_work(|work| mount_accept(work, observed, mount_engine_error))?
         };
         let mut observer = LookupObserverOwned::new_in(observer, carrier.reborrow())?;
@@ -9390,7 +9381,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             checkout.inspector_with_native_work(&original, &cancellation).map_err(mount_engine_error)?
         } else {
             let budget = carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-            let inspected = checkout.inspector_measured(budget, &cancellation);
+            let inspected = checkout.inspector(budget, &cancellation);
             carrier.with_work(|work| mount_accept(work, inspected, mount_engine_error))?
         };
         let mut observer = LookupObserverOwned::new_in(observer, carrier.reborrow())?;
@@ -9467,7 +9458,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
             }).map_err(mount_demand_error)?;
             if !self.checkout.view_gate.is_stable() { return Ok(false); }
-            let unchanged = self.checkout.ledger.unchanged_since_measured(namespace, file_id, stamp, work)?;
+            let unchanged = self.checkout.ledger.unchanged_since(namespace, file_id, stamp, work)?;
             work.check().map_err(mount_demand_error)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             Ok(unchanged)
@@ -9484,7 +9475,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             let observation = self.checkout.observe(owner).await?;
             observation.ensure_publication_resolved()?;
             observation
-                .observer()
+                .observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value
                 .read_file_record_by_id(file_id, boundary_budget(), &self.cancellation)
                 .await
                 .map(|receipt| receipt.value)
@@ -9507,7 +9498,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .checkout
                 .observe(owner)
                 .await?
-                .detached_from_record(record))
+                .detached_from_record(record, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded detached hold preserves a validated record").value)
         })?;
         Ok(Arc::new(CheckoutDetachedFile {
             state: tokio::sync::Mutex::new(DetachedMountState {
@@ -9632,7 +9623,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .map_err(super::lazy::mount_engine_error)
         } else {
             self.detached_identity_create_with_carrier(carrier, cancellation, |budget| {
-                observation.detached_from_record_measured(record, budget, cancellation)
+                observation.detached_from_record(record, budget, cancellation)
             })
         }
     }
@@ -10453,7 +10444,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let result = crate::obs::in_span(&span, async move {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
-            let base = checkout.private_candidate();
+            let base = checkout.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value;
             let decision = checkout
                 .rebase_head(
                     self.limits.maximum_checkout_dependencies,
@@ -10490,7 +10481,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let result = crate::obs::in_span(&span, async move {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
-            let base = checkout.private_candidate();
+            let base = checkout.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value;
             checkout
                 .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
                 .await
@@ -11250,7 +11241,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let publication = self.checkout.finish_native_phase_with_commit(
             candidate, epoch, stamp, carrier, cancellation, Some(&self.cancellation),
             |carrier| self.with_capture_observer_dispatch(|| {
-                self.checkout.ledger.record_with_carrier(
+                self.checkout.ledger.record(
                     &ViewChange::Effect(&installed.value), carrier, view,
                 )
             }),
@@ -11296,7 +11287,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .map_err(MountSourceError::Filesystem)?
         } else {
             let mut work = meter.lock();
-            let data = checkout.proof_data_snapshot_measured(
+            let data = checkout.proof_data_snapshot(
                 work.remaining().map_err(mount_demand_error)?, cancellation,
             );
             mount_accept(&mut work, data, |error| engine_error(error))?
@@ -11807,11 +11798,11 @@ where
                 ViewGate::callback_owner(), name.carrier, &cancellation, Some(&self.cancellation),
             ).await?;
             let budget = name.carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-            let observed = observation.observer_measured(budget, &cancellation);
+            let observed = observation.observer(budget, &cancellation);
             let observed = name.carrier.with_work(|work| mount_accept(work, observed, mount_engine_error))?;
             let mut observer = LookupObserverOwned::new(observed, meter)?;
             let budget = name.carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-            let result = observer.read_named_attribute_owned(
+            let result = observer.read_named_attribute(
                 namespace.value.as_ref().expect("attribute namespace is live"),
                 name.value.as_ref().expect("attribute name is live"), budget, &cancellation,
             ).await;
@@ -11861,7 +11852,7 @@ where
                 ViewGate::callback_owner(), cursor.carrier, &cancellation, Some(&self.cancellation),
             ).await?;
             let budget = cursor.carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-            let observed = observation.observer_measured(budget, &cancellation);
+            let observed = observation.observer(budget, &cancellation);
             let observed = cursor.carrier.with_work(|work| mount_accept(work, observed, mount_engine_error))?;
             let mut observer = LookupObserverOwned::new(observed, meter)?;
             let budget = cursor.carrier.with_work(|work| work.remaining().map_err(mount_demand_error))?;
@@ -12150,7 +12141,7 @@ where
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         mount_items(&mut work, 1)?;
         let unchanged = if self.checkout.view_gate.is_stable() {
-            self.checkout.ledger.node_unchanged_since_measured(file_id, stamp, &mut work)?
+            self.checkout.ledger.node_unchanged_since(file_id, stamp, &mut work)?
         } else {
             false
         };
@@ -12178,7 +12169,7 @@ where
         carrier.with_work(|work| {
             mount_items(work, 1)?;
             let unchanged = if self.checkout.view_gate.is_stable() {
-                self.checkout.ledger.listing_unchanged_since_measured(namespace, stamp, work)?
+                self.checkout.ledger.listing_unchanged_since(namespace, stamp, work)?
             } else {
                 false
             };
@@ -12325,7 +12316,7 @@ where
         carrier.with_work(|work| {
             mount_items(work, 1)?;
             let unchanged = if self.checkout.view_gate.is_stable() {
-                self.checkout.ledger.reported_unchanged_since_measured(
+                self.checkout.ledger.reported_unchanged_since(
                     namespace, file_id, stamp, work,
                 )?
             } else {
@@ -12530,11 +12521,11 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .read_symbolic_link(&path, boundary_budget(), &self.cancellation)
                 .await
-                .map(|receipt| receipt.value)
+                .map(|receipt| receipt.value.bytes)
                 .map_err(engine_error)
         })
     }
@@ -12573,7 +12564,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .read_file_range(
                     &path,
@@ -12630,7 +12621,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             checkout
                 .seek_file_extent(
                     &path,
@@ -12659,7 +12650,7 @@ where
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
             let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             let receipt = checkout
                 .list_directory_records(
                     &path,
@@ -12688,7 +12679,7 @@ where
             let next_cursor = has_more
                 .then(|| entries.last().map(|entry| entry.name.clone()))
                 .flatten();
-            Ok(MountDirectoryPage::new(entries, next_cursor))
+            Ok(MountDirectoryPage::new(entries, next_cursor, None))
         })
     }
 
@@ -12915,7 +12906,7 @@ where
             let mut observer = LookupObserverOwned::new_in(observation.observer, carrier.reborrow())?;
             original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-            let result = observer.read_named_attribute_owned_with_native_work(
+            let result = observer.read_named_attribute_with_native_work(
                 &namespace, &name, &original, &cancellation,
             ).await;
             let completed = observer.finish();
@@ -14360,7 +14351,7 @@ mod tests {
             let (entries, next_cursor, ownership) = page.into_parts();
             let allocation = ownership.into_native_allocation().expect("native page retains intrinsic custody");
             assert_eq!(allocation.bytes(), expected);
-            MountDirectoryPage::with_native_allocation(entries, next_cursor, allocation)
+            MountDirectoryPage::new(entries, next_cursor, Some(allocation))
         };
         let first = verify_owned_page(first, page_capacities[0]);
         let second = verify_owned_page(second, page_capacities[1]);
@@ -14735,7 +14726,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut zero_candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() });
+            .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
         let zero_result = source.runtime.block_on(|| {
             capture_paths_batched_with_baseline(
                 &mut zero_candidate,
@@ -14754,7 +14745,7 @@ mod tests {
         assert!(!zero_candidate.has_pending_mutations());
         let mut candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() });
+            .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
         let single = source.runtime.block_on(|| {
             capture_paths_batched_with_baseline(
                 &mut candidate,
@@ -14771,7 +14762,7 @@ mod tests {
         budget.source_bytes_read = single.work.source_bytes_read;
         let mut candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() });
+            .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
         let paths = [first, second];
         let result = source.runtime.block_on(|| {
             capture_paths_batched_with_baseline(
@@ -14872,7 +14863,7 @@ mod tests {
         // not newly adopted wholesale by the following native invocation.
         let checkout = borrowed.runtime.block_on(|| async {
             let checkout = borrowed.checkout.lock().await;
-            checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)
+            checkout.private_candidate(WorkBudget::UNBOUNDED, &cancellation)
                 .map(|receipt| receipt.value).map_err(|failure| failure.error)
         })?;
         let original = crate::NativeMaterializationWork::new(boundary_budget(), &cancellation)
@@ -16708,7 +16699,7 @@ mod tests {
                         let finished = done.load(Ordering::Acquire);
                         let [first, second] = source.runtime.wait(|| async {
                             let observation = source.checkout.observe(owner).await?;
-                            let mut checkout = observation.observer();
+                            let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
                             let mut values = [0; 2];
                             for (value, path) in values.iter_mut().zip(&pair) {
                                 let range = ByteRange {
@@ -16744,13 +16735,7 @@ mod tests {
                 let mut checkout = source.checkout.lock().await;
                 for path in &pair {
                     checkout
-                        .write_file(
-                            path.clone(),
-                            0,
-                            Bytes::from(vec![round]),
-                            boundary_budget(),
-                            &source.cancellation,
-                        )
+                        .change_content(path.clone(), crate::ContentChange::Write { offset: 0, bytes: (Bytes::from(vec![round])).into() }, crate::ContentTimes::Preserve, boundary_budget(), &source.cancellation)
                         .await
                         .map_err(engine_error)?;
                     tokio::task::yield_now().await;
@@ -16787,15 +16772,9 @@ mod tests {
         let owner = ViewGate::callback_owner();
         let (write, refresh) = source.runtime.block_on(|| async {
             let observation = source.checkout.observe(owner).await?;
-            let mut observer = observation.observer();
+            let mut observer = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value;
             let write = observer
-                .write_file(
-                    path,
-                    0,
-                    Bytes::from_static(b"lost"),
-                    boundary_budget(),
-                    &source.cancellation,
-                )
+                .change_content(path, crate::ContentChange::Write { offset: 0, bytes: (Bytes::from_static(b"lost")).into() }, crate::ContentTimes::Preserve, boundary_budget(), &source.cancellation)
                 .await;
             let refresh = observer
                 .refresh_head(boundary_budget(), &source.cancellation)

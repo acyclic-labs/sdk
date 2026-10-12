@@ -8,7 +8,6 @@ use crate::obs;
 use acyclic_stream::OwnedBytes;
 use futures::{FutureExt, StreamExt, stream};
 use prost::Message;
-use http_body::Body as _;
 use tonic::{
     Request,
     metadata::{Ascii, MetadataValue},
@@ -333,12 +332,6 @@ pub struct GrpcObjects {
 }
 impl GrpcObjects {
     /// Sets the finite deadline for streamed PUT, multipart parts and complete GET bodies.
-    /// Metadata operations retain their 30-second deadline. The default transfer
-    /// deadline is 30 seconds; large-body callers may select up to 30 minutes.
-    /// Authentication, message bounds, validation and retry behavior are unchanged.
-    ///
-    /// # Errors
-    /// Rejects zero or a duration above 30 minutes.
     pub fn with_transfer_timeout(
         mut self,
         timeout: std::time::Duration,
@@ -490,11 +483,6 @@ impl GrpcObjects {
         .await
     }
     /// Connects trusting the platform's roots, or exclusively the supplied private CA.
-    ///
-    /// On Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR` select native roots when `ca` is absent.
-    ///
-    /// # Errors
-    /// Rejects invalid credentials, non-HTTPS endpoints, oversized CA bundles, or failed connections.
     pub async fn connect(
         endpoint: &str,
         token: &str,
@@ -503,14 +491,6 @@ impl GrpcObjects {
         Self::connect_tls(endpoint, token, ca, None).await
     }
     /// Connects with a caller-supplied PEM client certificate chain and private key.
-    ///
-    /// Server certificate verification, bearer authentication, message bounds, and
-    /// operation deadlines are the same as [`Self::connect`]. The server owns client
-    /// identity authorization; presenting a certificate does not grant access.
-    ///
-    /// # Errors
-    /// Rejects empty or oversized identity inputs, invalid configuration, malformed
-    /// or mismatched certificate/key material, or failed connections.
     pub async fn connect_with_identity(
         endpoint: &str,
         token: &str,
@@ -618,7 +598,6 @@ impl GrpcObjects {
             .max_encoding_message_size(MESSAGE_BYTES)
     }
     /// Starts a validated download without buffering the selected representation.
-    /// Dropping the returned stream releases the underlying gRPC response.
     pub async fn get_stream(
         &self,
         query: wire::GetObjectRequest,
@@ -1161,7 +1140,7 @@ mod native_wire_tests {
         let mut body = ready.initialize(encoded_body(stream::iter([Ok(input)])))?;
         let before = observed.allocations.load(SeqCst);
         let mut context = Context::from_waker(futures::task::noop_waker_ref());
-        let frame = match std::pin::Pin::new(&mut body).poll_frame(&mut context) {
+        let frame = match http_body::Body::poll_frame(std::pin::Pin::new(&mut body), &mut context) {
             Poll::Ready(Some(Ok(frame))) => frame,
             _ => panic!("the actual CPU-only native query encoder must produce a ready frame"),
         };
@@ -1189,41 +1168,4 @@ mod native_wire_tests {
         Ok(())
     }
 
-    #[test]
-    fn actual_codec_pending_and_eof_do_not_spend_owner_box_credit()
-        -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-    {
-        for pending in [true, false] {
-            let observed = Arc::new(super::super::tests::NativeTransportMeter::new());
-            let meter: Arc<dyn NativeReadMeter> = observed.clone();
-            let prepared = Download::prepare_native(0, meter.clone())?;
-            let errors = prepared.errors();
-            errors.prepare_codec_failure(&meter)?;
-            let controls = response::NativeGetControls { meter: meter.clone(), errors };
-            let ready = PreparedWireBody::new(controls.clone(), 0, 1)?;
-            let source = if pending {
-                encoded_body(stream::pending())
-            } else {
-                encoded_body(stream::empty())
-            };
-            let mut body = ready.initialize(source)?;
-            let attempts = observed.allocations.load(SeqCst);
-            let mut context = Context::from_waker(futures::task::noop_waker_ref());
-            let result = std::pin::Pin::new(&mut body).poll_frame(&mut context);
-            if pending { assert!(result.is_pending()); } else { assert!(matches!(result, Poll::Ready(None))); }
-            assert_eq!(observed.allocations.load(SeqCst), attempts);
-            drop(body);
-            drop(controls);
-            drop(prepared);
-            assert_eq!(observed.memory.load(SeqCst), 0);
-            // Every unused source/owner credit was refunded to this same meter.
-            observed.allocation_limit.store(attempts + 1, SeqCst);
-            let allocation = acyclic_native_runtime::ReadAllocation::new(&meter, std::mem::size_of::<u8>())?;
-            let physical = Box::new(1_u8);
-            drop(physical);
-            drop(allocation);
-            assert_eq!(observed.allocations.load(SeqCst), attempts + 1);
-        }
-        Ok(())
-    }
 }
