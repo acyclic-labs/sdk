@@ -660,24 +660,24 @@ async fn pi_root_output_context_preserves_actual_task_and_stages_only_original_s
         fixture.request.binding.task_id, fixture.request.binding.agent_id, &fixture.owner.policy().grants,
         &fixture.startup).unwrap();
     let verifier = authority.0.1.verifier_with_native_work(&fixture.startup).unwrap();
-    assert!(fixture.filesystem.native_root_output_source_with_native_work(current_owner,
+    assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, operation, &generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_ok());
-    assert!(fixture.filesystem.native_root_output_source_with_native_work(current_owner,
+    assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.owner.policy().journal, operation, &generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_err());
-    assert!(fixture.filesystem.native_root_output_source_with_native_work(current_owner,
+    assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, acyclic_fs::OperationId::from_bytes([199; 16]),
         &generation, &verifier.0, &authority.0.2, &fixture.startup).await.is_err());
     let foreign_generation = fixture.resources.fs.create_workspace_with_operation_with_native_work(
         "pi-root-output-foreign-generation", VolumeConfig::portable(Lifecycle::Durable),
         acyclic_fs::OperationId::from_bytes([198; 16]), &fixture.startup,
         fixture.startup.cancellation()).await.unwrap();
-    assert!(fixture.filesystem.native_root_output_source_with_native_work(current_owner,
+    assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, operation, &foreign_generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_err());
     fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id).await.unwrap();
-    assert!(fixture.filesystem.native_root_output_source_with_native_work(current_owner,
+    assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, operation, &generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_err());
     assert!(output.context().stage_file_once_with_native_work(OperationId::from_bytes([197; 16]),
