@@ -91,11 +91,11 @@ import type {
 } from "./contracts.js";
 import { secureServiceEndpoint } from "./endpoint.js";
 import { copyOptionalBytes } from "./binding-values.js";
-import { observeInterceptors, resolveObserver } from "./observe.js";
+import { observeInterceptors, resolveObserver } from "@acyclic-labs/actors/observe";
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
-export { performanceObserver } from "./observe.js";
+export { performanceObserver } from "@acyclic-labs/actors/observe";
 
 /** Local client failures plus the gRPC status names a hosted service can report. */
 export type HostedFsErrorCode =

@@ -354,7 +354,7 @@ const BUDGETS: &[Budget] = &[
 async fn lazy_view_callbacks_fit_their_stack_budgets() -> TestResult {
     let root = tempfile::tempdir()?;
     let (lazy, authored) = lazy_workspace(root.path()).await?;
-    let view = LazyMountSource::new(lazy, authored, "/".to_owned())?;
+    let view = { super::adapter::CallbackRuntime::create()?; let cancellation = authored.cancellation().clone(); let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation); LazyMountSource::new(lazy, authored, "/".to_owned(), super::adapter::NativeDemandCarrier::Borrowed(&mut work), None) }?;
     let mut measurements = Measurements::new("lazy", BUDGETS);
     measure_common(&view, &mut measurements)?;
     measurements.assert_within_budgets();

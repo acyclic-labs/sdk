@@ -543,7 +543,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             }
             Ok(reservation)
         }.await;
-        result.map_err(crate::facade::native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     /// Queries only the durable proof belonging to this exact operation.
@@ -565,7 +565,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             }
             Ok(reservation)
         }.await;
-        result.map_err(crate::facade::native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     /// Releases the retained original proof without adopting a newer head.
@@ -583,7 +583,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             self.authority().release_publication_with_native_work(reservation, original, cancellation)
                 .await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))
         }.await;
-        result.map_err(crate::facade::native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     /// Resolves an original committed generation without adopting the mutable
@@ -635,7 +635,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
         let mut observed = self.volume.fs.workspace_operation_generation(
             &self.volume, operation_id, &mut accounting, cancellation,
-        ).await.map_err(crate::facade::native_workspace_failure)?;
+        ).await.map_err(|error| (error, None))?;
         let id = observed.0.take().map(|(id, record)| { drop(record); id });
         drop(observed);
         Ok(id.map(|id| Generation {
@@ -656,7 +656,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
         let observed = self.volume.fs.workspace_operation_generation(
             &self.volume, operation_id, &mut accounting, cancellation,
-        ).await.map_err(crate::facade::native_workspace_failure)?;
+        ).await.map_err(|error| (error, None))?;
         let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = observed.1
             else { unreachable!("native operation retains its allocation"); };
         Ok((observed.0.map(|(id, record)| (
@@ -674,16 +674,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .fs
             .verify_workspace_join_commit(&self.volume, witness, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn verify_join_commit_with_native_work(
-        &self, witness: &crate::JoinCommitWitness,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<bool, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        self.volume.fs.verify_workspace_join_commit(
-            &self.volume, witness, original, cancellation,
-        ).await.map_err(crate::facade::native_workspace_failure)
     }
 
     /// Opens the same canonical checkout with exact success and failure work.
@@ -734,7 +724,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         cancellation: &crate::CancellationToken,
     ) -> Result<Generation<A, O>, (WorkspaceError, Option<crate::NativeAllocation>)> {
         self.head_with_native_work_value(original, cancellation).await
-            .map_err(crate::facade::native_workspace_failure)
+            .map_err(|error| (error, None))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -800,7 +790,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let checkout = self.volume.checkout_with_native_work(
             GenerationSelector::Exact(generation_id), CheckoutMode::read_only_pinned(),
             original, cancellation,
-        ).await.map_err(|error| crate::facade::native_workspace_failure(WorkspaceError::from(error)))?;
+        ).await.map_err(|error| (WorkspaceError::from(error), None))?;
         Ok(Generation {
             workspace: self.clone(), id: checkout.generation_id(), publication_closure: None,
         })
@@ -1302,42 +1292,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         })
     }
 
-    /// Creates an independent named workspace at one exact generation without
-    pub async fn fork(
-        &self,
-        destination: impl AsRef<str>,
-        options: ForkOptions<A, O>,
-    ) -> Result<Self, WorkspaceError> {
-        self.fork_measured(
-            destination,
-            options,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-    }
-
-    /// Forks one exact generation under caller-supplied work and cancellation
-    pub async fn fork_measured(
-        &self,
-        destination: impl AsRef<str>,
-        options: ForkOptions<A, O>,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<Self>, WorkspaceError> {
-        crate::heap_future::in_heap_measured(
-            |budget| self.fork_measured_inner::<
-                fn(crate::WorkBudget) -> std::future::Ready<crate::facade::FsResult<()>>,
-                std::future::Ready<crate::facade::FsResult<()>>,
-            >(destination, options, crate::PublicationPermit::Unrestricted, budget, cancellation, None),
-            budget, cancellation, WorkspaceError::Cancelled(crate::CancellationError), None,
-        ).await
-    }
-
-    /// Forks the supplied exact generation with the original owner guard at each destination seal.
-    pub async fn fork_measured_guarded<F, Fut>(
+    /// Forks one exact generation with bounded work and a publication guard.
+    pub async fn fork<F, Fut>(
         &self, destination: impl AsRef<str>, options: ForkOptions<A, O>,
         permit: crate::PublicationPermit, budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken, mut guard: F,
@@ -1346,68 +1302,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         F: FnMut(crate::WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::facade::FsResult<()>> + ProviderTask,
     {
-        crate::heap_future::in_heap_measured(
-            |budget| self.fork_measured_inner(destination, options, permit, budget, cancellation, Some(&mut guard)),
-            budget, cancellation, WorkspaceError::Cancelled(crate::CancellationError), None,
-        ).await
-    }
-
-    async fn fork_measured_inner<F, Fut>(
-        &self, destination: impl AsRef<str>, options: ForkOptions<A, O>,
-        permit: crate::PublicationPermit, budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken, guard: Option<&mut F>,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<Self>, WorkspaceError>
-    where
-        F: FnMut(crate::WorkBudget) -> Fut + ProviderTask,
-        Fut: Future<Output = crate::facade::FsResult<()>> + ProviderTask,
-    {
-        async move {
-                let mut prior = crate::WorkCounters::UNCHARGED;
-                let mut allocations = crate::kernel::allocation::AllocationLedger::default();
-                let path_bytes = if let Some(paths) = &options.paths {
-                    workspace_owned_strings_bytes(paths)
-                        .map_err(|error| crate::OperationFailure::new(error, prior))?
-                } else { 0 };
-                allocations.claim_bytes(path_bytes, 0, &mut prior, crate::WorkBudget::UNBOUNDED)
-                    .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), prior))?;
-                if options.generation.workspace.id != self.id {
-                    return Err(crate::OperationFailure::new(WorkspaceError::ForeignGeneration, prior));
-                }
-                cancellation.check().map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
-                prior.verify(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
-                let named_budget = workspace_remaining(prior, budget, allocations.live_bytes())
-                    .map_err(|error| crate::OperationFailure::new(error, prior))?;
-                let named = merge_workspace_backend(
-                    WorkspaceName::new_measured(destination, named_budget, cancellation),
-                    &mut prior, allocations.live_bytes(),
-                ).map_err(|error| crate::OperationFailure::new(error, prior))?;
-                prior.verify(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
-                allocations.release(path_bytes)
-                    .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), prior))?;
-                let remaining = prior.remaining(budget)
-                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), prior))?;
-                let permit = if guard.is_some() { permit } else { crate::PublicationPermit::Unrestricted };
-                let forked = self.volume.fs.fork_workspace(
-                    named.value, &options.generation, options.idempotency_key, options.paths,
-                    permit, remaining, cancellation, guard,
-                ).await.map_err(|failure| {
-                    let backend = *failure.work;
-                    match prior.checked_add(backend) {
-                        Ok(work) => crate::OperationFailure::new(failure.error, work),
-                        Err(error) => crate::OperationFailure::new(
-                            WorkspaceError::WorkMerge { prior, backend, error }, prior,
-                        ),
-                    }
-                })?;
-                let work = prior.checked_add(forked.work)
-                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::WorkMerge {
-                        prior, backend: forked.work, error,
-                    }, prior))?;
-                work.verify(budget)
-                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), work))?;
-                Ok(crate::OperationReceipt { value: forked.value, work })
+        crate::heap_future::in_heap_measured(|budget| async move {
+            let mut prior = crate::WorkCounters::UNCHARGED;
+            let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+            let path_bytes = options.paths.as_ref().map_or(Ok(0), |paths| workspace_owned_strings_bytes(paths))
+                .map_err(|error| crate::OperationFailure::new(error, prior))?;
+            allocations.claim_bytes(path_bytes, 0, &mut prior, crate::WorkBudget::UNBOUNDED)
+                .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), prior))?;
+            if options.generation.workspace.id != self.id {
+                return Err(crate::OperationFailure::new(WorkspaceError::ForeignGeneration, prior));
             }
-            .await
+            cancellation.check().map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
+            prior.verify(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
+            let named_budget = workspace_remaining(prior, budget, allocations.live_bytes())
+                .map_err(|error| crate::OperationFailure::new(error, prior))?;
+            let named = merge_workspace_backend(
+                WorkspaceName::new_measured(destination, named_budget, cancellation),
+                &mut prior, allocations.live_bytes(),
+            ).map_err(|error| crate::OperationFailure::new(error, prior))?;
+            prior.verify(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
+            allocations.release(path_bytes)
+                .map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), prior))?;
+            let remaining = prior.remaining(budget)
+                .map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), prior))?;
+            let forked = merge_workspace_backend(self.volume.fs.fork_workspace(
+                named.value, &options.generation, options.idempotency_key, options.paths,
+                permit, remaining, cancellation, Some(&mut guard),
+            ).await, &mut prior, 0).map_err(|error| crate::OperationFailure::new(error, prior))?;
+            prior.verify(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
+            Ok(crate::OperationReceipt { value: forked.value, work: prior })
+        }, budget, cancellation, WorkspaceError::Cancelled(crate::CancellationError), None).await
     }
 
     /// Forks the supplied immutable source on the invocation's original scope.
@@ -1429,7 +1353,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 original, cancellation, None,
             ).await
         }.await;
-        result.map_err(crate::facade::native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     /// Seals each real destination publication with the original native owner guard.
@@ -1527,7 +1451,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ) -> Result<Transaction<A, O>, (WorkspaceError, Option<crate::NativeAllocation>)> {
         let checkout = self.volume.checkout_with_native_work(
             GenerationSelector::Head, CheckoutMode::tracking_transaction(), original, cancellation,
-        ).await.map_err(|error| crate::facade::native_workspace_failure(WorkspaceError::from(error)))?;
+        ).await.map_err(|error| (WorkspaceError::from(error), None))?;
         Ok(Transaction::from_checkout(self, checkout, idempotency_key, false))
     }
 
@@ -1542,7 +1466,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ) -> Result<Transaction<A, O>, (WorkspaceError, Option<crate::NativeAllocation>)> {
         self.begin_pinned_transaction_with_native_work_value(
             generation, idempotency_key, original, cancellation,
-        ).await.map_err(crate::facade::native_workspace_failure)
+        ).await.map_err(|error| (error, None))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2593,7 +2517,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             path,
             &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation),
             cancellation,
-        ).await.map_err(crate::facade::native_workspace_failure)
+        ).await.map_err(|error| (error, None))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3076,7 +3000,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> Result<(), (WorkspaceError, Option<crate::NativeAllocation>)> {
         self.write_with_accounting(path, bytes,
             &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation), cancellation)
-            .await.map_err(crate::facade::native_workspace_failure)
+            .await.map_err(|error| (error, None))
     }
 
     /// Creates or replaces one complete file by concatenating already staged
@@ -4416,8 +4340,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
         let mut accounting = KernelAccounting::native(original, cancellation);
         match self.changed_paths_with_accounting(maximum_entries, &mut accounting, cancellation).await {
             Ok((value, KernelOwnedAllocation::NativeOriginal(allocation))) => Ok((value, allocation)),
-            Ok(_) => Err(crate::facade::native_workspace_failure(WorkspaceError::from(crate::NativeTreeMaterializationError::InvalidLayout))),
-            Err(error) => Err(crate::facade::native_workspace_failure(error)),
+            Ok(_) => Err((WorkspaceError::from(crate::NativeTreeMaterializationError::InvalidLayout), None)),
+            Err(error) => Err((error, None)),
         }
     }
 
@@ -4651,7 +4575,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
             crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => (plan, allocation),
             crate::kernel::allocation::KernelOwnedAllocation::Standalone =>
                 unreachable!("native planning retains original invocation custody"),
-        }).map_err(crate::facade::native_workspace_failure)
+        }).map_err(|error| (error, None))
     }
 
     async fn plan_at_with_accounting(
@@ -4823,7 +4747,7 @@ impl<A, O> JoinPlan<A, O> {
                 crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => (witness, allocation),
                 crate::kernel::allocation::KernelOwnedAllocation::Standalone =>
                     unreachable!("native witness retains original invocation custody"),
-            }).map_err(crate::facade::native_workspace_failure)
+            }).map_err(|error| (error, None))
     }
 
     fn commit_witness_with_accounting(
@@ -5048,7 +4972,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         let mut before_publication = |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
         self.apply_with_permit_guarded_with_native_work(
             options, permit, original, cancellation, &mut before_publication,
-        ).await.map_err(crate::facade::native_workspace_failure)
+        ).await.map_err(|error| (error, None))
     }
 
     /// Seals publication through the canonical native publisher before its CAS.
@@ -5077,48 +5001,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         self.typed_merge_plan(conflicts.to_vec(), truncated).await
     }
 
-    /// Runs registered immutable-input drivers for real join conflicts and
+    /// Resolves real join conflicts with registered immutable-input drivers.
     pub async fn apply_with_drivers<C: MergeResolutionCache>(
-        &self,
-        options: ApplyOptions,
-        registry: &MergeDriverRegistry,
-        cache: &mut C,
-        replanning: bool,
+        &self, options: ApplyOptions, registry: &MergeDriverRegistry,
+        cache: &mut C, replanning: bool,
     ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
-        self.apply_with_drivers_and_permit(
-            options,
-            registry,
-            cache,
-            replanning,
-            crate::PublicationPermit::Unrestricted,
-        )
-        .await
-    }
-
-    /// Runs merge drivers and publishes only while the supplied writer permit remains valid.
-    pub async fn apply_with_drivers_and_permit<C: MergeResolutionCache>(
-        &self,
-        options: ApplyOptions,
-        registry: &MergeDriverRegistry,
-        cache: &mut C,
-        replanning: bool,
-        permit: crate::PublicationPermit,
-    ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
-        async move {
-                let initial = self.apply_with_permit(options, permit).await?;
-                let JoinOutcome::Conflicted {
-                    conflicts,
-                    truncated,
-                } = initial
-                else {
-                    return Ok(initial);
-                };
-                let plan = self.typed_merge_plan(conflicts, truncated).await?;
-                let candidate = resolve_merge_plan(plan, registry, cache, replanning)?;
-                self.apply_candidate_with_permit(options, &candidate, permit)
-                    .await
-            }
-            .await
+        let initial = self.apply(options).await?;
+        let JoinOutcome::Conflicted { conflicts, truncated } = initial else { return Ok(initial); };
+        let plan = self.typed_merge_plan(conflicts, truncated).await?;
+        let candidate = resolve_merge_plan(plan, registry, cache, replanning)?;
+        self.apply_candidate(options, &candidate).await
     }
 
     /// Applies caller-selected immutable sides after validating that they
@@ -5931,7 +5823,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     ) -> Result<bool, (WorkspaceError, Option<crate::NativeAllocation>)> {
         self.workspace.volume.fs.verify_fork_selection_with_native_work(
             source, self, paths, original, cancellation,
-        ).await.map_err(crate::facade::native_workspace_failure)
+        ).await.map_err(|error| (error, None))
     }
 
     /// Computes the exact normalized second-parent identity that a merge of
@@ -5946,16 +5838,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             .fs
             .workspace_normalized_join_parent(self, target, &mut accounting, &cancellation)
             .await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn normalized_join_parent_for_with_native_work(
-        &self, target: &Generation<A, O>,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<GenerationId, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        self.workspace.volume.fs.workspace_normalized_join_parent(
-            self, target, &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation), cancellation,
-        ).await.map_err(crate::facade::native_workspace_failure)
     }
 
     /// Opens one cheap immutable reader pinned to this exact generation.
@@ -6022,7 +5904,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 crate::kernel::allocation::KernelOwnedAllocation::Standalone => Err(WorkspaceError::Filesystem(
                     FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout),
                 )),
-            }).map_err(crate::facade::native_workspace_failure)?;
+            }).map_err(|error| (error, None))?;
         Ok((ChangeSet {
             from: self.clone(),
             to: to.clone(),
@@ -6155,7 +6037,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         ).await.map(|(parents, allocation)| match allocation {
             crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => (parents, allocation),
             crate::kernel::allocation::KernelOwnedAllocation::Standalone => unreachable!("native root retains parent allocation"),
-        }).map_err(crate::facade::native_workspace_failure)
+        }).map_err(|error| (error, None))
     }
 
     /// Reads this exact immutable generation under complete operation bounds.
@@ -6187,7 +6069,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             ).await?;
             read_checkout_whole_with_accounting(&mut checkout.value, path, maximum_bytes, &mut accounting, cancellation).await
         }.await;
-        result.map_err(crate::facade::native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     /// Reads the same immutable range with intrinsic original-operation byte
@@ -6209,7 +6091,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 &path.value, crate::ByteRange { offset, length }, &mut accounting, cancellation,
             ).await.map(|read| read.bytes).map_err(WorkspaceError::from)
         }.await;
-        result.map_err(crate::facade::native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     /// Opens an immutable root carrier on the original native scope, without
@@ -6221,7 +6103,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     ) -> Result<crate::PinnedReader<A, O>, (WorkspaceError, Option<crate::NativeAllocation>)> {
         self.workspace.readonly_pinned_reader_with_native_work(
             self.id, original, cancellation,
-        ).await.map_err(crate::facade::native_workspace_failure)
+        ).await.map_err(|error| (error, None))
     }
 
     /// Performs the bounded read range operation.
@@ -6267,7 +6149,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             ).await?.ok_or(WorkspaceError::NotFound)?;
             workspace_stat_from_lookup(lookup)
         }.await;
-        result.map_err(crate::facade::native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     /// Resolves an ordered exact path batch while sharing authenticated directory and file-table
@@ -6360,7 +6242,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else { unreachable!() };
             Ok((page, allocation))
         }.await;
-        result.map_err(crate::facade::native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     /// Finds portable paths bound to one stable file identity in this generation.
@@ -6466,7 +6348,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             checkout.value.read_symbolic_link_with_accounting(&path.value, &mut accounting, cancellation)
                 .await.map(|read| read.bytes).map_err(WorkspaceError::from)
         }.await;
-        result.map_err(crate::facade::native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     /// Performs the bounded read symbolic link operation.
@@ -6534,7 +6416,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             ).await?;
             Ok((identity, self.clone()))
         }.await;
-        result.map_err(crate::facade::native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     /// Actual original publication payload still retained by this generation's shared slot.

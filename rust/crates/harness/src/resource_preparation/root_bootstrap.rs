@@ -42,7 +42,7 @@ impl RootBootstrapContentRequest {
             self.evidence.logical_owned_bytes()?)?;
         bytes = created_access_add(bytes, self.generation.logical_owned_bytes()?)?;
         if let Some(snapshot) = &self.native_snapshot {
-            let owned = crate::tool::value_owned_bytes(snapshot)?;
+            let owned = crate::core::value_owned_bytes(snapshot)?;
             bytes = created_access_add(bytes, owned - std::mem::size_of::<Value>() as u64)?;
         }
         Ok(bytes)
@@ -218,8 +218,7 @@ pub(crate) fn preflight_root_bootstrap_with_native_work(
     request.volume.validate(&mut io)?;
     request.evidence.validate_with_work(&mut io)?;
     request.generation.validate_with_work(&mut io)?;
-    if context.original_root.parent.is_some()
-        || request.root_operation != context.original_root.operation_id
+    if request.root_operation != context.original_root.operation_id
         || request.graph_root != context.original_root.task_id()
         || request.generation.as_resource().provider() != request.volume.provider()
         || request.evidence.provider() != request.volume.provider()
@@ -231,10 +230,11 @@ pub(crate) fn preflight_root_bootstrap_with_native_work(
     {
         return Err(root_denial("ROOT bootstrap request differs from original binding"));
     }
-    let (read, custody) = request.volume.capability_with_native_work(VolumeOperation::Read, work)?;
+    let read = request.volume.capability(VolumeOperation::Read, &mut io)?;
     let allowed = context.original_root.grants.contains(&read);
+    let retained = read.capacity() as u64;
     drop(read);
-    drop(custody);
+    io.as_deref_mut().expect("native observer").release_owned(retained)?;
     if !allowed {
         return Err(root_denial("ROOT bootstrap original admission lacks volume READ"));
     }
@@ -252,7 +252,7 @@ fn verify_receipt_identity(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     preflight_root_bootstrap_with_native_work(context, request, work)?;
-    preflight_root_bootstrap_with_native_work(context, actual, work)?;
+    inspect_snapshot(actual, work)?;
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
     io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: audience.id.len() as u64 }, false)?;
     if actual != request || audience != context.audience || agent != context.agent
@@ -261,8 +261,9 @@ fn verify_receipt_identity(
         return Err(root_denial("ROOT bootstrap receipt changed request, audience or agent"));
     }
     if writer.is_some() {
-        let (data, custody) = request.volume.capability_with_native_work(VolumeOperation::Write, work)?;
-        let label = (data, custody);
+        let label = request.volume.capability(VolumeOperation::Write, &mut Some(&mut io.history_io()))?;
+        let hold = io.guard_owned(label.capacity() as u64)?;
+        let label = (label, hold);
         if !context.original_root.grants.contains(&label.0) {
             return Err(root_denial("ROOT bootstrap writer exceeds original admission WRITE"));
         }
@@ -299,22 +300,23 @@ impl CreatedResourceAccess {
         if received.1.bytes() < source_owned {
             return Err(root_denial("ROOT bootstrap receipt lacks actual payload custody"));
         }
-        // This observer is created before all copied payloads, so unwinding drops those payloads before their original-ledger allocation guards.
+        // Declare the observer before the payloads so guards outlive them.
         let mut observer = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
-        let (data, custody) = request.volume.capability_with_native_work(VolumeOperation::Read, work)?;
-        let read = (data, custody);
+        let read = request.volume.capability(VolumeOperation::Read, &mut io)?;
+        let read_retained = read.capacity() as u64;
         let write = if received.0.binding.writer.is_some() {
-            let (data, custody) = request.volume.capability_with_native_work(VolumeOperation::Write, work)?;
-            Some((data, custody))
+            Some(request.volume.capability(VolumeOperation::Write, &mut io)?)
         } else { None };
-        let labels = [Some(read.0.as_str()), write.as_ref().map(|label| label.0.as_str())];
+        let write_retained = write.as_ref().map_or(0, |label| label.capacity() as u64);
+        let labels = [Some(read.as_str()), write.as_deref()];
         let (data, custody) = crate::Capabilities::new_with_native_work(
             labels.into_iter().flatten(), work,
         )?;
         let funded_grants = (data, custody);
         drop((read, write));
+        io.as_deref_mut().expect("native observer").release_owned(read_retained + write_retained)?;
         let mut content = Vec::new();
         created_access_reserve(&mut content, 1, &mut io)?;
         let volume = request.volume.copy(&mut io)?;
@@ -337,7 +339,7 @@ impl CreatedResourceAccess {
             native_custody: None,
         };
         drop(received);
-        // Source custody has physically retired; only actual final copied payload custody survives, with no provider-claim-to-query substitution.
+        // Retire source custody before transferring the copied payloads.
         if let Err(error) = io.as_deref_mut().expect("native observer").absorb_native_custody(funded_grants.1) {
             drop(access);
             return Err(error);
@@ -497,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn child_task_operation_and_private_owner_cannot_become_original_root() -> Result<()> {
+    fn request_identity_and_private_owner_match_original_root() -> Result<()> {
         let agent = AgentId::from_bytes([125; 16]);
         let owner = Authority { kind: AggregateKind::Task, id: "owner".into() };
         let audience = Authority { kind: AggregateKind::Conversation, id: "audience".into() };
@@ -505,9 +507,6 @@ mod tests {
         let admitted = admission(&original, true, false)?;
         let work = work(&CancellationToken::new(), 100_000)?;
         preflight_root_bootstrap_with_native_work(context(&admitted, &owner, &audience, agent), &original, &work)?;
-        let mut child = admitted.clone();
-        child.parent = Some(TaskId::from_bytes([126; 16]));
-        unauthorized(preflight_root_bootstrap_with_native_work(context(&child, &owner, &audience, agent), &original, &work));
         let mut changed = original.clone();
         changed.graph_root = TaskId::from_bytes([127; 16]);
         unauthorized(preflight_root_bootstrap_with_native_work(context(&admitted, &owner, &audience, agent), &changed, &work));

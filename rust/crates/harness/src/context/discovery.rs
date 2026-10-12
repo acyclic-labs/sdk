@@ -30,15 +30,12 @@ impl ContextRoot {
     fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         self.volume.validate(work)?;
         if !self.directory.is_empty() {
-            crate::conversation::validate_content_path_with_work(&self.directory, work)?;
+            crate::conversation::validate_content_path(&self.directory, work)?;
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-            let capability = self.volume.directory_read_capability_with_native_work(&self.directory, native)?;
-            drop(capability);
-            return Ok(());
-        }
-        self.volume.directory_read_capability(&self.directory)?;
+        let capability = self.volume.directory_read_capability(&self.directory, work)?;
+        let retained = capability.capacity() as u64;
+        drop(capability);
+        if let Some(io) = work.as_deref_mut() { io.release_owned(retained)?; }
         Ok(())
     }
 }
@@ -185,7 +182,7 @@ impl PinnedContextPath {
     fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         self.root.validate(work)?;
         self.generation.validate_with_work(work)?;
-        crate::conversation::validate_content_path_with_work(&self.path, work)?;
+        crate::conversation::validate_content_path(&self.path, work)?;
         if self.generation.as_resource().provider() != self.root.volume.provider()
             || (!self.root.directory.is_empty()
                 && !self
@@ -203,20 +200,21 @@ impl PinnedContextPath {
     /// Loads a body through the ordinary authorized pinned read, checking provider output.
     pub async fn read(&self, reader: &dyn ContentResidencyVerifier) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.validate(&mut None)?;
-        let (file, bytes) = reader
+        let (file, bytes, _hold) = reader
             .read_private_path(
                 &self.root.volume,
                 &self.root.directory,
                 &self.path,
                 Some(&self.generation),
-            )
+                crate::conversation::MAX_EXACT_JS_INTEGER, None,
+            )?
             .await?;
         if file.volume() != &self.root.volume || file.path() != self.path {
             return Err(Error::Storage(
                 "pinned path reader returned another file".into(),
             ));
         }
-        file.descriptor().verify(&bytes)?;
+        file.descriptor().verify(&bytes, &mut None)?;
         Ok((file, bytes))
     }
 }
@@ -575,7 +573,8 @@ impl DiscoveryWork {
                     pinned.as_ref(),
                     cursor.as_deref(),
                     remaining.min(128),
-                )
+                    None,
+                )?
                 .await?;
             page.validate()?;
             if page.generation.as_resource().provider() != root.volume.provider()
@@ -671,12 +670,13 @@ impl DiscoveredContext {
             let mut backing = super::reserve_context_vec_native(&mut messages.0, count, work)?;
             messages.1.absorb(&mut backing).map_err(discovery_work_error)?;
             for file in &self.instructions {
-                let mut file = file.clone_with_native_work(work)?;
-                messages.1.absorb(&mut file.1).map_err(discovery_work_error)?;
+                let file = file.copy(&mut Some(&mut observer))?;
+                let mut custody = observer.take_native_custody(file.logical_owned_bytes()?)?;
+                messages.1.absorb(&mut custody).map_err(discovery_work_error)?;
                 messages.0.push(ModelMessage {
                     role: ModelRole::System,
                     content: ModelContent::Part(ModelContentPart::File {
-                        file: file.0, policy: FileProjectionPolicy::BoundedFull,
+                        file, policy: FileProjectionPolicy::BoundedFull,
                     }),
                 });
             }
@@ -720,7 +720,7 @@ impl DiscoveredContext {
         limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ModelMessage>> {
-        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
+        crate::executor::with_history_io(io, |work| limits.validate(work))?;
         let count = self.instructions.len().checked_add(usize::from(!self.skills.is_empty()))
             .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
                 "discovered context count overflows"))?;
@@ -746,7 +746,7 @@ impl DiscoveredContext {
         for file in &self.instructions {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(native) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-                limits.validate_file_with_native_work(file, native)?;
+                limits.validate_file(file, &mut Some(&mut crate::store::history::native_work_io(native)?))?;
             } else {
                 limits.validate_file(file, &mut None)?;
             }
@@ -843,7 +843,8 @@ impl DiscoveredContext {
                                 limits.instruction_bytes.checked_add(1).ok_or_else(|| {
                                     Error::Invalid("instruction bound overflow".into())
                                 })?,
-                            )
+                                None,
+                            )?
                             .await?;
                         if prefix.len() as u64 > limits.instruction_bytes {
                             return Err(Error::Invalid("instruction exceeds byte bound".into()));
@@ -947,7 +948,8 @@ async fn discover_skills(
                     &source.path,
                     &generation,
                     u64::from(work.limits.header_bytes),
-                )
+                    None,
+                )?
                 .await?;
             if prefix.len() > work.limits.header_bytes as usize {
                 return Err(Error::Storage("prefix reader exceeded bound".into()));

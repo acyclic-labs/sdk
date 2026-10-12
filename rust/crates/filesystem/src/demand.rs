@@ -812,15 +812,15 @@ pub enum DemandError {
     /// A held Linux metadata mutation failed without losing its typed cause.
     #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
     #[error(transparent)]
-    LinuxMetadata(#[from] crate::native_host::LinuxMetadataError),
+    LinuxMetadata(#[from] crate::native_host::NativeMetadataError),
     /// A held macOS metadata mutation failed without losing its typed cause.
     #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
     #[error(transparent)]
-    MacMetadata(#[from] crate::native_host::MacMetadataError),
+    MacMetadata(#[from] crate::native_host::NativeMetadataError),
     /// A held Windows metadata mutation failed without losing its typed cause.
     #[cfg(all(windows, any(feature = "native-mount", test)))]
     #[error(transparent)]
-    WindowsMetadata(#[from] crate::native_host::WindowsMetadataError),
+    WindowsMetadata(#[from] crate::native_host::NativeMetadataError),
 }
 
 impl From<std::io::Error> for DemandError {
@@ -1172,6 +1172,38 @@ pub(crate) struct DemandCancellationRoots {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn grow_registry<T>(
+    entries: &mut Vec<T>, capacity: usize,
+    allocations: &mut crate::kernel::allocation::AllocationLedger,
+    work: &mut WorkCounters, budget: WorkBudget,
+) -> Result<(), DemandError> {
+    let width = std::mem::size_of::<T>();
+    let bytes = capacity.checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
+    let copied = WorkCounters { bytes_copied: entries.len().checked_mul(width)
+        .ok_or(crate::WorkError::Overflow)? as u64, ..WorkCounters::UNCHARGED };
+    work.admit(&copied, &budget)?;
+    allocations.claim_bytes(bytes, 1, work, budget)
+        .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+    let mut replacement = Vec::new();
+    if let Err(error) = replacement.try_reserve_exact(capacity) {
+        allocations.release(bytes).map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+        return Err(DemandError::Allocation(error));
+    }
+    let actual = replacement.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
+    let recorded = allocations.record_owned_bytes(actual - bytes, work)
+        .map_err(|error| error.into_work_or(DemandError::InvalidRequest));
+    replacement.append(entries);
+    std::mem::swap(entries, &mut replacement);
+    let old_bytes = replacement.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
+    drop(replacement);
+    allocations.release(old_bytes).map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+    work.try_add_assign(&copied)?;
+    recorded?;
+    work.verify(budget)?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl DemandCancellationRoots {
     fn owns_native_control(&self, token: &std::sync::Arc<crate::kernel::ProofDataCustody>) -> bool {
         let overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
@@ -1274,27 +1306,7 @@ impl DemandCancellationRoots {
         let mut overflow = self.observer_overflow.as_ref().expect("original overflow owner").lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if overflow.len() == overflow.capacity() {
             let capacity = overflow.capacity().max(1).checked_mul(2).ok_or(crate::WorkError::Overflow)?;
-            let width = std::mem::size_of::<DemandObserverCustody>();
-            let bytes = capacity.checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-            let copied = WorkCounters { bytes_copied: (overflow.len() * width) as u64, ..WorkCounters::UNCHARGED };
-            work.admit(&copied, &budget)?;
-            allocations.claim_bytes(bytes, 1, work, budget).map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-            let mut replacement = Vec::new();
-            if let Err(error) = replacement.try_reserve_exact(capacity) {
-                allocations.release(bytes).map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-                return Err(DemandError::Allocation(error));
-            }
-            let actual = replacement.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-            let recorded = allocations.record_owned_bytes(actual - bytes, work)
-                .map_err(|error| error.into_work_or(DemandError::InvalidRequest));
-            replacement.append(&mut overflow);
-            std::mem::swap(&mut *overflow, &mut replacement);
-            let old_bytes = replacement.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-            drop(replacement);
-            allocations.release(old_bytes).map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-            work.try_add_assign(&copied)?;
-            recorded?;
-            work.verify(budget)?;
+            grow_registry(&mut overflow, capacity, allocations, work, budget)?;
         }
         overflow.push(custody);
         Ok(true)
@@ -1399,29 +1411,20 @@ impl DemandCancellationRoots {
             self.inline[index] = Some(root);
             return Ok(&mut self.inline[index].as_mut().expect("inserted cancellation root").1);
         }
-        let old_bytes = (self.overflow.capacity() as u64)
-            .checked_mul(std::mem::size_of::<(CancellationToken, crate::cancellation::CancellationWaitAdmission)>() as u64)
-            .ok_or(crate::cancellation::CancellationWaitError::Work(crate::WorkError::Overflow))?;
         if self.overflow.len() == self.overflow.capacity() {
             let next = self.overflow.len().checked_add(1)
                 .ok_or(crate::cancellation::CancellationWaitError::Work(crate::WorkError::Overflow))?;
-            let bytes = (next as u64).checked_mul(std::mem::size_of::<(CancellationToken, crate::cancellation::CancellationWaitAdmission)>() as u64)
-                .ok_or(crate::cancellation::CancellationWaitError::Work(crate::WorkError::Overflow))?;
-            let copy = WorkCounters { bytes_copied: (self.overflow.len() * std::mem::size_of::<(CancellationToken, crate::cancellation::CancellationWaitAdmission)>()) as u64, ..WorkCounters::default() };
-            work.admit(&copy, &budget).map_err(crate::cancellation::CancellationWaitError::Work)?;
             let prior_peak = work.peak_allocation_bytes;
-            allocations.claim_bytes(bytes, 1, work, budget)
-                .map_err(|error| crate::cancellation::CancellationWaitError::Work(error.into_work_or(crate::WorkError::Overflow)))?;
-            let mut replacement = Vec::new();
-            if replacement.try_reserve_exact(next).is_err() {
-                allocations.release(bytes).map_err(|error| crate::cancellation::CancellationWaitError::Work(error.into_work_or(crate::WorkError::Overflow)))?;
-                work.peak_allocation_bytes = prior_peak;
-                return Err(crate::cancellation::CancellationWaitError::AllocationFailed);
+            if let Err(error) = grow_registry(&mut self.overflow, next, allocations, work, budget) {
+                return Err(match error {
+                    DemandError::Allocation(_) => {
+                        work.peak_allocation_bytes = prior_peak;
+                        crate::cancellation::CancellationWaitError::AllocationFailed
+                    }
+                    DemandError::Work(error) => crate::cancellation::CancellationWaitError::Work(error),
+                    _ => crate::cancellation::CancellationWaitError::Work(crate::WorkError::Overflow),
+                });
             }
-            replacement.append(&mut self.overflow);
-            work.charge(&copy, &budget).map_err(crate::cancellation::CancellationWaitError::Work)?;
-            self.overflow = replacement;
-            allocations.release(old_bytes).map_err(|error| crate::cancellation::CancellationWaitError::Work(error.into_work_or(crate::WorkError::Overflow)))?;
         }
         self.overflow.push(root);
         Ok(&mut self.overflow.last_mut().expect("inserted overflow cancellation root").1)
@@ -4540,7 +4543,7 @@ pub mod native {
         ) {
             let cancellation = CancellationToken::new();
             let _ = self
-                .run_blocking(DemandWork::new(WorkBudget::UNBOUNDED, &cancellation), move |_, work| {
+                .run_request(&NamespacePath::new(Vec::new(), self.inner.limits).expect("empty root path"), WorkBudget::UNBOUNDED, &cancellation, move |_, _, work| {
                     let _ = started.send(());
                     while work.check().is_ok() {
                         std::thread::yield_now();
@@ -4918,7 +4921,7 @@ pub mod native {
             path: &NamespacePath,
             budget: WorkBudget,
             cancellation: &CancellationToken,
-            job: impl FnOnce(Self, NamespacePath, &mut NativeSourceWork<'_>) -> Result<T, DemandError> + Send + 'static,
+            job: impl FnOnce(Self, &NamespacePath, &mut NativeSourceWork<'_>) -> Result<T, DemandError> + Send + 'static,
         ) -> DemandResult<T> {
             let mut work = DemandWork::new(budget, cancellation);
             let path = match work.charge(WorkCounters { source_path_components: path.depth() as u64, ..WorkCounters::default() })
@@ -4926,13 +4929,6 @@ pub mod native {
                 Ok(path) => path,
                 Err(error) => return work.finish(Err(error)),
             };
-            self.run_blocking(work, move |provider, work| job(provider, path, work)).await
-        }
-        async fn run_blocking<T: Send + 'static>(
-            &self,
-            mut work: DemandWork,
-            job: impl FnOnce(Self, &mut NativeSourceWork<'_>) -> Result<T, DemandError> + Send + 'static,
-        ) -> DemandResult<T> {
             if let Err(error) = work.check() { return work.finish(Err(error)); }
             let caller_cancellation = work.cancellation.clone();
             let mut prepared = match work.prepare_cancelled(&caller_cancellation) {
@@ -4980,7 +4976,7 @@ pub mod native {
                 crate::obs::in_context(context, move || {
                     let _permit = permit;
                     let mut held = NativeSourceWork::ordinary(&worker_work);
-                    job(source, &mut held)
+                    job(source, &path, &mut held)
                 }), Some((task_meter, false)),
             );
             let (result, _) = await_source_job(spawned, &mut prepared, || cancel_on_drop.0.cancel()).await;
@@ -6240,7 +6236,7 @@ pub mod native {
             cancellation: &CancellationToken,
         ) -> DemandResult<Option<SourceNode>> {
             self.run_request(path, budget, cancellation, move |provider, path, work| {
-                provider.lookup_with_work(source, &path, work)
+                provider.lookup_with_work(source, path, work)
             }).await
         }
 
@@ -6257,7 +6253,7 @@ pub mod native {
                 return Err(OperationFailure::before_work(DemandError::InvalidRequest));
             }
             self.run_request(directory, budget, cancellation, move |provider, directory, work| {
-                provider.list_page_with_work(source, &directory, cursor, maximum_entries, work)
+                provider.list_page_with_work(source, directory, cursor, maximum_entries, work)
             }).await
         }
 
@@ -6273,7 +6269,7 @@ pub mod native {
         ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
             check_read_range(offset, length).map_err(OperationFailure::before_work)?;
             self.run_request(path, budget, cancellation, move |provider, path, work| {
-                NativeDemandFile::open(provider, source, &path, expected, work)?.read(offset, length, work)
+                NativeDemandFile::open(provider, source, path, expected, work)?.read(offset, length, work)
             }).await
         }
 
@@ -6286,7 +6282,7 @@ pub mod native {
             cancellation: &CancellationToken,
         ) -> DemandResult<Box<dyn DemandFile>> {
             self.run_request(path, budget, cancellation, move |provider, path, work| {
-                NativeDemandFile::open_boxed(provider, source, &path, expected, work)
+                NativeDemandFile::open_boxed(provider, source, path, expected, work)
             }).await
         }
 
@@ -6299,7 +6295,7 @@ pub mod native {
             cancellation: &CancellationToken,
         ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
             self.run_request(path, budget, cancellation, move |provider, path, work| {
-                provider.read_link_with_work(source, &path, expected, u64::MAX, work)
+                provider.read_link_with_work(source, path, expected, u64::MAX, work)
             }).await
         }
 
@@ -8460,34 +8456,7 @@ impl NativeMountAllocationAdmissions {
         Ok(())
     }
 
-    fn reserve_slot(
-        &mut self, allocations: &mut crate::kernel::allocation::AllocationLedger,
-        counters: &mut crate::WorkCounters, budget: crate::WorkBudget,
-    ) -> Result<(), DemandError> {
-        if self.first.is_none() || self.more.len() < self.more.capacity() { return Ok(()); }
-        let width = std::mem::size_of::<NativeMountAllocationAdmission>();
-        let capacity = self.more.capacity().max(1).checked_mul(2)
-            .ok_or(crate::WorkError::Overflow)?;
-        let bytes = capacity.checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-        let old_bytes = self.more.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-        let copied = crate::WorkCounters {
-            bytes_copied: self.more.len().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64,
-            ..crate::WorkCounters::UNCHARGED
-        };
-        counters.admit(&copied, &budget)?;
-        allocations.claim_bytes(bytes, 1, counters, budget)
-            .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-        let mut vector = Vec::new();
-        if let Err(error) = vector.try_reserve_exact(capacity) {
-            allocations.release(bytes).map_err(|failure| failure.into_work_or(crate::WorkError::Overflow))?;
-            return Err(DemandError::Allocation(error));
-        }
-        vector.append(&mut self.more);
-        self.more = vector;
-        allocations.release(old_bytes).map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-        counters.charge(&copied, &budget)?;
-        Ok(())
-    }
+
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -8498,7 +8467,11 @@ impl NativeMountAllocationCustody {
         let keeper = original.as_ref().map(OriginalDemandWork::allocation_work);
         work.with_original_leaf(|work| {
             work.reconcile_cancellation_registry()?;
-            work.cancellation_wait.native_mount_admissions.reserve_slot(&mut work.allocations, &mut work.work, work.budget)?;
+            let admissions = &mut work.cancellation_wait.native_mount_admissions;
+            if admissions.first.is_some() && admissions.more.len() == admissions.more.capacity() {
+                let capacity = admissions.more.capacity().max(1).checked_mul(2).ok_or(crate::WorkError::Overflow)?;
+                grow_registry(&mut admissions.more, capacity, &mut work.allocations, &mut work.work, work.budget)?;
+            }
             let copied = WorkCounters {
                 bytes_copied: if work.cancellation_wait.native_mount_admissions.first.is_some() {
                     std::mem::size_of::<NativeMountAllocationAdmission>() as u64

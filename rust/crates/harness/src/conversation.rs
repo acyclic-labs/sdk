@@ -369,7 +369,7 @@ impl ContentGrant {
         if is_internal_path(file.path()) && !is_inherited_context_path(file.path()) {
             return Err(Error::Unauthorized("internal storage file is not public content".into()));
         }
-        verifier.verify(scope)?;
+        verifier.verify(scope, &mut None)?;
         if scope.capabilities().contains(&file.volume().capability(VolumeOperation::Read, &mut None)?) {
             return Self::verify(verifier, scope, file.volume(), VolumeOperation::Read, u64::MAX, &mut None);
         }
@@ -414,7 +414,7 @@ impl ContentGrant {
     pub(crate) fn authorize_volume(verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
         operation: VolumeOperation, maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
-        verifier.verify_with_work(scope, work)?;
+        verifier.verify(scope, work)?;
         if operation == VolumeOperation::Write { volume.require_writer(scope.agent(), work)?; }
         volume.validate(work)?;
         let digest = crate::contract::canonical_json_digest_with_work(volume, maximum_bytes, work)?;
@@ -428,7 +428,7 @@ impl ContentGrant {
     /// Verifies a signed private-directory or whole-volume read grant.
     pub fn verify_directory_read(verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
         prefix: &str, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<Self> {
-        verifier.verify_with_work(scope, work)?;
+        verifier.verify(scope, work)?;
         volume.validate(work)?;
         if !prefix.is_empty() { validate_content_path(prefix, work)?; }
         if is_internal_path(prefix) { return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "internal storage paths cannot be delegated")); }
@@ -451,7 +451,7 @@ impl ContentGrant {
         if is_internal_path(file.path()) && !is_inherited_context_path(file.path()) {
             return Err(Error::Unauthorized("internal storage file is not public content".into()));
         }
-        verifier.verify(scope)?;
+        verifier.verify(scope, &mut None)?;
         if !scope.capabilities().contains(&file.read_capability()?) {
             return Err(Error::Unauthorized("exact file read is not granted".into()));
         }
@@ -1323,7 +1323,7 @@ pub fn decode_attachment_manifest(
             .ok_or_else(|| io.invalid("manifest ownership overflow"))?;
         decoded.substitute_owned(actual)?;
         let encoded_hold;
-        let encoded = io.encode_json(&decoded.value, io.remaining()?.bytes_encoded, false)?;
+        let encoded = io.encode(&decoded.value, io.remaining()?.bytes_encoded, false)?;
         encoded_hold = io.guard_bytes(&encoded)?;
         if encoded.as_ref() != bytes {
             return Err(io.invalid("attachment manifest is not canonical or complete"));
@@ -1632,17 +1632,14 @@ impl FileRef {
         let volume = self.volume.clone_in_quota(quota)?;
         let path = crate::core::copy_text(&self.path, quota)?;
         let version = crate::core::copy_text(&self.version, quota)?;
-        let descriptor = FileDescriptor {
-            sha256: self.descriptor.sha256, byte_length: self.descriptor.byte_length,
-            media_type: crate::core::copy_text(&self.descriptor.media_type, quota)?,
-        };
-        descriptor.validate(quota.work())?;
-        let file = Self {
-            volume, path, version, descriptor,
+        Ok(Self {
+            volume, path, version,
+            descriptor: FileDescriptor {
+                sha256: self.descriptor.sha256, byte_length: self.descriptor.byte_length,
+                media_type: crate::core::copy_text(&self.descriptor.media_type, quota)?,
+            },
             display_name: crate::core::copy_text(&self.display_name, quota)?,
-        };
-        file.validate(quota.work())?;
-        Ok(file)
+        })
     }
 }
 
@@ -1729,7 +1726,7 @@ pub struct ConversationState {
 /// Only an issuer-authenticated reducer snapshot makes this a trusted prefix.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ArchivedConversationPrefix {
+pub(crate) struct ArchivedConversationPrefix {
     through_sequence: u64,
     history_digest: [u8; 32],
     checkpoint: FileRef,
@@ -1738,10 +1735,10 @@ struct ArchivedConversationPrefix {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConversationStateWire {
-    agent: Option<AgentId>,
-    messages: Vec<ConversationMessage>,
+    pub(crate) agent: Option<AgentId>,
+    pub(crate) messages: Vec<ConversationMessage>,
     #[serde(default)]
-    archived_prefix: Option<ArchivedConversationPrefix>,
+    pub(crate) archived_prefix: Option<ArchivedConversationPrefix>,
 }
 
 #[derive(Default)]
@@ -2456,15 +2453,6 @@ impl ConversationState {
         let retained = cache.retained();
         cache.transfer();
         Ok((state, retained))
-    }
-
-    pub(crate) fn selected_view(
-        messages: Vec<ConversationMessage>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Self, u64)> {
-        Self::from_wire(ConversationStateWire {
-            agent: None, messages, archived_prefix: None,
-        }, acyclic_stream::MAX_RECORD_BYTES as u64, work)
     }
 
     fn prepare_turn_index(
@@ -3232,13 +3220,13 @@ mod tests {
         let before = reopened.history_prefix_digest(10_001, &mut None)?;
         assert!(reopened.append(next, &mut None).is_err());
         assert_eq!(reopened.history_prefix_digest(10_001, &mut None)?, before);
-        let sparse = ConversationState::selected_view(vec![
+        let sparse = ConversationState::from_wire(ConversationStateWire { agent: None, archived_prefix: None, messages: vec![
             reopened
                 .messages()
                 .last()
                 .ok_or_else(|| Error::Invalid("fixture history is empty".into()))?
                 .clone(),
-        ], &mut None).map(|(state, _)| state)?;
+        ] }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?;
         assert!(sparse.history_prefix_digest(1, &mut None).is_err());
         assert!(state.history_prefix_digest(10_001, &mut None).is_err());
         Ok(())
@@ -3413,14 +3401,14 @@ mod tests {
             "write",
             crate::Capabilities::new([write.clone(), read.clone()]),
         );
-        ContentGrant::verify(&issuer.verifier(), &scope, &private, VolumeOperation::Write, u64::MAX, &mut None)?;
+        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &private, VolumeOperation::Write, u64::MAX, &mut None)?;
         let unsigned = issuer.root(
             "copied-capability",
             crate::Capabilities::new([write.clone()]),
         );
         assert!(
             ContentGrant::verify(
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &unsigned,
                 &private,
                 VolumeOperation::Write
@@ -3431,7 +3419,7 @@ mod tests {
             issuer.attenuate(&scope, "child", crate::Capabilities::new([write.clone()]))?;
         assert_eq!(inherited.agent(), Some(owner));
         ContentGrant::verify(
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &inherited,
             &private,
             VolumeOperation::Write,
@@ -3449,7 +3437,7 @@ mod tests {
             foreign_issuer.root_for_agent(attached, "copied", crate::Capabilities::new([write]));
         assert!(
             ContentGrant::verify(
-                &foreign_issuer.verifier(),
+                &foreign_issuer.verifier(&mut None).expect("verifier copy"),
                 &copied,
                 &private,
                 VolumeOperation::Write
@@ -3460,10 +3448,10 @@ mod tests {
         let delegated =
             issuer.delegate_private_file_read(&scope, attached, "attached-read", &exact_file)?;
         assert_eq!(delegated.agent(), Some(attached));
-        ContentGrant::verify_file_read(&issuer.verifier(), &delegated, &exact_file)?;
+        ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &delegated, &exact_file)?;
         let internal = file(owner, ".system/execution/state.json")?;
         assert!(matches!(
-            ContentGrant::verify_read(&issuer.verifier(), &scope, &internal),
+            ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &internal),
             Err(Error::Unauthorized(_))
         ));
         let internal_exact = issuer.root_for_agent(
@@ -3472,7 +3460,7 @@ mod tests {
             crate::Capabilities::new([internal.read_capability()?]),
         );
         assert!(matches!(
-            ContentGrant::verify_file_read(&issuer.verifier(), &internal_exact, &internal),
+            ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &internal_exact, &internal),
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
@@ -3480,7 +3468,7 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         let inherited_context = file(owner, ".system/inherited-conversation/prefix.json")?;
-        ContentGrant::verify_read(&issuer.verifier(), &scope, &inherited_context)?;
+        ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &inherited_context)?;
         let directory = issuer.delegate_private_directory_read(
             &scope,
             attached,
@@ -3489,7 +3477,7 @@ mod tests {
             "scratch",
         )?;
         let directory_grant = ContentGrant::verify_directory_read(
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &directory,
             &private,
             "scratch",
@@ -3810,7 +3798,7 @@ mod tests {
             "exact-member",
             crate::Capabilities::new([member.read_capability()?]),
         );
-        let grant = ContentGrant::verify_file_read(&issuer.verifier(), &scope, &member)?;
+        let grant = ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &member)?;
         let lazy = CompositeContentVerifier::new(vec![(manifest.volume().clone(), first)])?
             .with_mount_resolver(Arc::new(StaticMount {
                 volume: member.volume().clone(),

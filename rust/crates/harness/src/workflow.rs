@@ -1555,7 +1555,7 @@ mod tests {
         validate_workflow_commit(prior.revision, &record.idempotency_key, &record, None)?;
         validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record, None)?;
         validate_workflow_page(prior.revision, u32::MAX)?;
-        crate::executor::validate_execution_page(prior.revision, u32::MAX)?;
+        crate::executor::validate_execution_page(u32::MAX)?;
         record.transition.commands[0].operation_id = OperationId::from_bytes(1_u128.to_be_bytes());
         assert!(matches!(
             validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record, None),

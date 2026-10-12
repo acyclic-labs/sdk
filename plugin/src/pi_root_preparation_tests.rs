@@ -4,7 +4,7 @@ use crate::{pi_root_inputs::PiRootPreparation, pi_runtime::PiTaskRuntime};
 use acyclic_harness::{
     IdempotencyKey, OperationId, effect_host::TaskEffectPlan, workflow::WorkflowCommand,
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::sync::Arc;
 
 type Host = FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
@@ -26,11 +26,11 @@ struct Fixture {
 
 async fn open_runtime(session: &Path, owner: &PiOwnerConfig, filesystem: Arc<Host>,
     work: &acyclic_fs::NativeMaterializationWork) -> Runtime {
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(session.join("stream"), LocalStreamLimits::default())
             .await
             .unwrap(),
-    ));
+    );
     PiTaskRuntime::open_with_native_work(
         stream, filesystem, &owner.policy.journal,
         owner.authority_with_native_work(work).unwrap(), work,
@@ -188,14 +188,10 @@ impl Fixture {
     }
 
     async fn head(&self) -> acyclic_fs::GenerationId {
-        self.raw
-            .open_workspace(self.owner.policy.journal.storage_name().unwrap())
-            .await
-            .unwrap()
-            .head()
-            .await
-            .unwrap()
-            .id()
+        let observation = work();
+        self.raw.open_workspace_with_native_work(&self.owner.policy.journal.storage_name().unwrap(),
+            &observation, observation.cancellation()).await.unwrap()
+            .head_with_native_work(&observation, observation.cancellation()).await.unwrap().id()
     }
 
     async fn load(&self) -> Result<PiRootPreparation> {
@@ -277,7 +273,8 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
     .unwrap();
     assert_eq!(preparation.request(), &fixture.request);
     assert_eq!(preparation.command(), &fixture.command);
-    assert!(Arc::ptr_eq(preparation.native_context(), &context));
+    assert_eq!(preparation.native_context().context().durable_task_id(), context.context().durable_task_id());
+    assert_eq!(preparation.native_context().context().scope().grants(), context.context().scope().grants());
     owner.verify_dispatch().await.unwrap();
 
     let mut stale = fence.clone();
@@ -328,7 +325,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
         assert!(
             fixture
                 .raw
-                .open_workspace(volume.storage_name().unwrap())
+                .open_workspace_with_native_work(&volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
                 .await
                 .is_err()
         );
@@ -459,7 +456,8 @@ async fn pi_preparation_native_state_retains_original_root_and_shared_context() 
         &fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &state,
         Some(context.clone()), &fixture.work,
     ).await.unwrap();
-    assert!(Arc::ptr_eq(supplied.native_context(), &context));
+    assert_eq!(supplied.native_context().context().durable_task_id(), context.context().durable_task_id());
+    assert_eq!(supplied.native_context().context().scope().grants(), context.context().scope().grants());
     assert_eq!(supplied.request(), &fixture.request);
     state.roots.values_mut().next().unwrap().path.push("not-original");
     assert!(PiRootPreparation::load_native_from_state(

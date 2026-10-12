@@ -136,12 +136,10 @@ export type Capture =
   | Readonly<{ kind: "unsupported"; value: string }>
   | Readonly<{ kind: "in_flight" | "indeterminate"; value: OperationId }>;
 
-/** Parent-bound owner of an idempotent multi-resource preparation. */
-export interface ForkPreparer {
-  /** Exact parent projection captured at binding; later revisions need a new binding. */
-  parentSnapshot(): Readonly<{ parent: Authority<"conversation">; revision: bigint }>;
-  prepare(request: ForkRequest): Promise<ForkReport>;
-  reconcile(request: ForkRequest): Promise<ForkReport | null>;
+/** Exact parent projection bound to a publication provider. */
+export interface ForkParentSnapshot {
+  readonly parent: Authority<"conversation">;
+  readonly revision: bigint;
 }
 
 /** Trusted parent-owned publication boundary. The provider must authenticate

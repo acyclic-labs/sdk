@@ -94,17 +94,6 @@ pub struct ExtentMutationReceipt {
     pub work: WorkCounters,
 }
 
-/// Admission bounds shared by asynchronous extent mutation operations.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExtentMutationOptions {
-    /// Maximum accepted mutations in this ordered batch.
-    pub maximum_mutations: u32,
-    /// Canonical decode and authenticated-tree bounds.
-    pub limits: DecodeLimits,
-    /// Exact physical work ceiling.
-    pub budget: WorkBudget,
-}
-
 /// Extent mutation failure retaining spent work and safe orphan writes.
 pub type ExtentMutationFailure = OperationFailure<ExtentMutationError>;
 
@@ -119,7 +108,7 @@ struct Context<'a, 'b, S> {
 }
 
 /// Applies ordered extent mutations by rewriting only intersecting frontiers.
-pub fn apply_extent_mutations<S: crate::ImmediateObjectStore>(
+pub async fn apply_extent_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     old_logical_bytes: u64,
@@ -127,35 +116,12 @@ pub fn apply_extent_mutations<S: crate::ImmediateObjectStore>(
     maximum_mutations: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
-) -> Result<ExtentMutationReceipt, ExtentMutationFailure> {
-    let cancellation = CancellationToken::new();
-    crate::async_storage::poll_immediate(apply_extent_mutations_async(
-        store,
-        root,
-        old_logical_bytes,
-        mutations,
-        ExtentMutationOptions {
-            maximum_mutations,
-            limits,
-            budget,
-        },
-        &cancellation,
-    ))
-}
-
-/// Asynchronously applies ordered extent mutations without blocking an executor.
-pub async fn apply_extent_mutations_async<S: crate::AsyncObjectStore>(
-    store: &S,
-    root: ObjectId,
-    old_logical_bytes: u64,
-    mutations: &[ExtentMutation],
-    options: ExtentMutationOptions,
     cancellation: &CancellationToken,
 ) -> Result<ExtentMutationReceipt, ExtentMutationFailure> {
-    let mut accounting = KernelAccounting::standalone(options.budget, cancellation);
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
     apply_extent_mutations_with_accounting(
-        store, root, old_logical_bytes, mutations, options.maximum_mutations,
-        options.limits, &mut accounting, cancellation,
+        store, root, old_logical_bytes, mutations, maximum_mutations,
+        limits, &mut accounting, cancellation,
     ).await.map_err(|error| OperationFailure::new(project_extent_error(error), accounting.spent()))
 }
 

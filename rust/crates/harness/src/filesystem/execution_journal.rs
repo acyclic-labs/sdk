@@ -25,7 +25,7 @@ use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use super::fork_preparer_io::{PreparationIo, PreparationRecord, preparation_slot_bytes};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
+    AppendOutcome, IdempotencyKey as StreamKey, StreamError, StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -266,7 +266,7 @@ impl PreparationRecord for Observation {
 
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
-    stream: StreamClient<P>,
+    stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
@@ -667,7 +667,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             return Ok(());
         };
         let mut history = io.map(PreparationIo::history_io);
-        limits.validate_file_with_work(projection, &mut history.as_mut().map(
+        limits.validate_file(projection, &mut history.as_mut().map(
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let projection = crate::executor::load_json::<
             crate::executor::ResponseProjection>(self, projection, io).await?;
@@ -680,7 +680,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             return Ok(());
         };
         let mut history = io.map(PreparationIo::history_io);
-        limits.validate_file_with_work(reference, &mut history.as_mut().map(
+        limits.validate_file(reference, &mut history.as_mut().map(
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let envelope = crate::executor::load_json::<
             crate::context::CanonicalContextCheckpoint>(self, reference, io).await?;
@@ -734,7 +734,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let result = async {
             let mut history = io.map(PreparationIo::history_io);
-            limits.validate_with_work(&mut history.as_mut().map(
+            limits.validate(&mut history.as_mut().map(
                 |history| history as &mut dyn crate::store::history::HistoryIo))?;
             self.require_operation(envelope.operation_id, io)?;
             if self.execution.is_some() {
@@ -896,7 +896,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 crate::wire::ErrorCode::Conflict, "canonical summary has no admitted request"))?;
             verify_summary_prefix_with_io(&request, source, summary.source_messages, limits, io)?;
             let mut history = io.map(PreparationIo::history_io);
-            limits.validate_file_with_work(&summary.output, &mut history.as_mut().map(
+            limits.validate_file(&summary.output, &mut history.as_mut().map(
                 |history| history as &mut dyn crate::store::history::HistoryIo))?;
             let bytes = match io {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -991,7 +991,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     /// Binds the pinned extension registry with optional original preparation IO.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
+        stream: Arc<P>, host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
         verifier: &AuthorityVerifier, schemas: &SchemaRegistry, scope: &Scope,
         maximum_payload_bytes: u64, io: Option<&PreparationIo>,
     ) -> Result<Self> {
@@ -1124,8 +1124,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     {
-        self.stream
-            .stream(crate::distributed::execution_path(operation_id, &mut None)?.as_str())
+        acyclic_stream::Stream::new(Arc::clone(&self.stream),
+            crate::distributed::execution_path(operation_id, &mut None)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -1359,7 +1359,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             io.charge(copying)?;
             Some(hold)
         } else { None };
-        let stream = self.stream.stream(&path)
+        let stream = acyclic_stream::Stream::new(Arc::clone(&self.stream), &path)
             .map_err(|error| Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error))?;
         let _read_path_hold;
         _read_path_hold = if let Some(io) = io {
@@ -1538,7 +1538,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         .ok_or_else(|| super::fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "prepared model request custody underflow"))?)?),
                     _ => None,
                 };
-                if &prepared.manifest().request_digest != request_digest {
+                if &prepared.request_digest() != request_digest {
                     return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
                         "model start digest differs from its retained request"));
                 }
@@ -1601,7 +1601,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         "internal storage file is not public content"));
                 }
                 let mut work = io.history_io();
-                self.verifier.verify_with_work(&self.scope, &mut Some(&mut work))?;
+                self.verifier.verify(&self.scope, &mut Some(&mut work))?;
                 if !io.contains_capability(self.scope.capabilities(), reference, "file:read:")? {
                     return Err(canonical_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
                         "exact file read is not granted"));
@@ -1632,12 +1632,11 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     async fn verify_model_content_with_io(&self, content: &ModelContent, io: Option<&PreparationIo>) -> Result<()>
     {
         let mut count = 0_usize;
-        content.visit_file_bindings(|_, _| {
+        for _ in content.file_refs() {
             super::fork_preparer_io::item(io, 0)?;
             count = count.checked_add(1).ok_or_else(||
                 super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model reference count overflow"))?;
-            Ok(())
-        })?;
+        }
         let references_hold;
         let bytes = (count as u64).checked_mul(std::mem::size_of::<(&FileRef, Option<&crate::model::NativeConfigurationBinding>)>() as u64)
             .ok_or_else(|| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model reference ownership overflow"))?;
@@ -1649,7 +1648,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             references_hold = None;
         }
         let mut references = Vec::with_capacity(count);
-        content.visit_file_bindings(|file, binding| {
+        for (file, binding) in content.file_bindings() {
             if let Some((owner, _)) = &self.owner {
                 owner.validate_input_file(file, io)?;
             }
@@ -1657,8 +1656,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model content exceeds journal limit"));
             }
             references.push((file, binding));
-            Ok(())
-        })?;
+        }
         for (_, binding) in &references {
             if let Some(binding) = binding {
                 let (owner, _) = self.owner.as_ref().ok_or_else(|| canonical_boundary(
@@ -2161,7 +2159,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             loaded.push(message.ok_or_else(|| super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Storage, "committed selected message is missing at its cutoff"))?);
         }
-        let (historical, _) = crate::conversation::ConversationState::selected_view(loaded, &mut work)?;
+        let (historical, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: loaded, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut work)?;
         let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
             (crate::conversation::MAX_PORTABLE_COUNT, crate::conversation::MAX_PORTABLE_COUNT,
                 self.maximum_payload_bytes),
@@ -2322,78 +2320,34 @@ struct JournalSelectedResolver<'a, P, A, O> {
     maximum_attachments: usize,
 }
 
-impl<P, A, O> JournalSelectedResolver<'_, P, A, O>
-where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
-{
-    async fn manifest(&self, manifest: &FileRef, item_count: u32, io: Option<&PreparationIo>)
-        -> Result<Vec<crate::conversation::Attachment>> {
-        if item_count as usize > self.maximum_attachments {
-            return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
-                "selected manifest exceeds attachment limit"));
-        }
-        self.journal.authorize_selected_file_with_io(manifest, io)?;
-        let items = match io {
-            #[cfg(not(target_arch = "wasm32"))]
-            Some(io) => {
-                let work = io.original_native_work().expect("native manifest reader preserves its original ledger");
-                let (items, custody) = self.inner.load_manifest_with_native_work(manifest, item_count, work)?.await?;
-                io.absorb_native_custody(custody)?;
-                items
-            }
-            _ => self.inner.load_manifest(manifest, item_count).await?,
-        };
-        if items.len() != item_count as usize {
-            return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
-                "attachment manifest count is incomplete"));
-        }
-        for item in &items { self.journal.verify_input_file_with_io(&item.file, io).await?; }
-        Ok(items)
-    }
-}
-
 impl<P, A, O> crate::conversation::ContentResidencyVerifier for JournalSelectedResolver<'_, P, A, O>
 where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
 {
-    fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, crate::Result<()>> {
-        Box::pin(async { Err(crate::Error::Unsupported("projection-only reader".into())) })
+    fn supports_read(&self, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<bool> {
+        self.inner.supports_read(volume, io)
     }
 
-    fn load_manifest<'a>(
-        &'a self, manifest: &'a FileRef, item_count: u32,
-    ) -> BoxFuture<'a, Result<Vec<crate::conversation::Attachment>>> {
-        Box::pin(self.manifest(manifest, item_count, None))
+    fn verify<'a>(&'a self, _: &'a FileRef, _: u64, io: Option<&'a PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        Err(canonical_boundary(io, crate::wire::ErrorCode::Unsupported, "projection-only reader"))
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
-            self.journal.authorize_selected_file_with_io(file, None)?;
-            self.inner.read(file).await
+    fn read<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64, io: Option<&'a PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.journal.authorize_selected_file_with_io(file, io)?;
+            self.inner.read(file, maximum_bytes, io)?.await
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn load_manifest_with_native_work<'a>(
-        &'a self, manifest: &'a FileRef, item_count: u32,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<crate::conversation::Attachment>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let items = self.manifest(manifest, item_count, Some(&io)).await?;
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((items, custody))
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work<'a>(
-        &'a self, file: &'a FileRef, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.journal.authorize_selected_file_with_io(file, Some(&io))?;
-            self.inner.read_with_native_work(file, maximum_bytes, work)?.await
+    fn verify_manifest<'a>(&'a self, manifest: &'a FileRef, item_count: u32, limits: &'a Limits,
+        io: Option<&'a PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        if item_count as usize > self.maximum_attachments {
+            return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid, "selected manifest exceeds attachment limit"));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            crate::conversation::verified_attachment_manifest(self, manifest, item_count, limits, io).await?;
+            Ok(())
         })
     }
 }
@@ -2517,9 +2471,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
     }
     let mut borrowed = io.map(PreparationIo::history_io);
-    let (history, _) = crate::conversation::ConversationState::selected_view(
-        loaded, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo),
-    )?;
+    let (history, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: loaded, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo))?;
     let mut message_ids = Vec::new();
     for id in &selection.message_ids { crate::executor::stock_vec_push(&mut message_ids, *id, io)?; }
     let selection = crate::conversation::ModelContextSelection {
@@ -2588,13 +2540,13 @@ mod tests {
                 volume.capability(VolumeOperation::Write)?,
             ]),
         );
-        let stream = StreamClient::new(Arc::new(acyclic_stream::MemoryStream::default()));
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
         let open = |operation, turn| {
             FilesystemExecutionJournal::new(
                 stream.clone(),
                 host.clone(),
                 &volume,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &crate::core::SchemaRegistry::new(),
                 &scope,
                 4096,
@@ -2704,7 +2656,7 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<
             acyclic_stream::MemoryStream,
         >::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let fs_provider = ProviderRef::new("cold-canonical-source", "filesystem", "2")?;
         let host = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::memory(),
@@ -2736,21 +2688,21 @@ mod tests {
         );
         let content = Arc::new(super::super::FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             scope.clone(),
             4096,
         )?);
         let publisher = super::super::FilesystemContentPublisher::new(
             host.clone(),
             volume.clone(),
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             4096,
         )?;
         let mut aggregate = StreamAggregate::open(
             &client,
             authority.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(),
         )
         .await?
@@ -2922,7 +2874,7 @@ mod tests {
                 client.clone(),
                 host.clone(),
                 &volume,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &SchemaRegistry::new(),
                 &scope,
                 4096,

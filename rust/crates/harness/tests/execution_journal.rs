@@ -37,7 +37,7 @@ use acyclic_harness::{
         ToolResult,
     },
 };
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use futures::{
     future::BoxFuture,
     stream::{self, BoxStream},
@@ -51,7 +51,7 @@ use std::sync::{
 struct TextModel(AtomicUsize);
 
 async fn bind_conversation(
-    stream: &StreamClient<MemoryStream>,
+    stream: &std::sync::Arc<MemoryStream>,
     issuer: &AuthorityIssuer,
     id: &str,
     agent: AgentId,
@@ -62,7 +62,7 @@ async fn bind_conversation(
             kind: AggregateKind::Conversation,
             id: id.into(),
         },
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     )
     .await?;
@@ -394,17 +394,17 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             private.capability(VolumeOperation::Write)?,
         ]),
     );
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let journal_a = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
         private.clone(),
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
+        issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
         scope.clone(),
         4_096,
     )?;
     let journal_b =
-        FilesystemExecutionJournal::new(stream, host, private, issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(), scope, 4_096)?;
+        FilesystemExecutionJournal::new(stream, host, private, issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(), scope, 4_096)?;
     let operation = OperationId::from_bytes([56; 16]);
     journal_a
         .append(
@@ -496,7 +496,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
         Limits::default(),
         None,
     )?;
-    let request_digest = prepared.manifest().request_digest;
+    let request_digest = prepared.request_digest();
     let paged_request = journal_a
         .stage(
             paged,
@@ -616,10 +616,10 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         ]),
     );
     let journal = Arc::new(FilesystemExecutionJournal::new(
-        StreamClient::new(Arc::new(MemoryStream::default())),
+        Arc::new(MemoryStream::default()),
         host,
         private,
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
+        issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
         scope,
         4_096,
     )?);
@@ -1002,12 +1002,12 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
             private.capability(VolumeOperation::Write)?,
         ]),
     );
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host,
         private,
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
+        issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
         scope,
         4_096,
     )?;
@@ -1076,8 +1076,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     assert_eq!(model.0.load(Ordering::SeqCst), 1);
     let records = journal.replay(operation_id, 0, 64).await?;
     assert_eq!(records.len(), 5);
-    let stream = stream
-        .stream(format!("harness/v2/execution/{operation_id}"))
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/execution/{operation_id}"))
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     use futures::TryStreamExt as _;
     let raw = stream
@@ -1133,7 +1132,7 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
         ]),
     );
     let unauthorized = issuer.root("bystander", Capabilities::default());
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     bind_conversation(
         &stream,
         &issuer,
@@ -1148,7 +1147,7 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
             kind: AggregateKind::Conversation,
             id: "interaction-owner".into(),
         },
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
         scope.clone(),
         private.clone(),
@@ -1158,7 +1157,7 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
         stream.clone(),
         host,
         private,
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
+        issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
         scope,
         4_096,
     )?;
@@ -1228,8 +1227,7 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
             .await
             .is_err()
     );
-    let raw = stream
-        .stream("harness/v2/conversations/interaction-owner")
+    let raw = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v2/conversations/interaction-owner")
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
         .read(0, 3)
         .await
@@ -1286,7 +1284,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
             "interaction:open".to_owned(),
         ]),
     );
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     bind_conversation(
         &stream,
         &issuer,
@@ -1298,7 +1296,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         stream,
         host,
         private,
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
+        issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
         scope.clone(),
         4_096,
     )?;
@@ -1339,7 +1337,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
                 tool.clone(),
                 operation,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 approved_id,
                 &journal
             )
@@ -1362,7 +1360,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
                 tool.clone(),
                 operation,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 denied_id,
                 &journal
             )
@@ -1385,7 +1383,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
                 tool.clone(),
                 OperationId::from_bytes([17; 16]),
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 approved_id,
                 &journal
             )
@@ -1397,7 +1395,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
             tool,
             operation,
             &scope,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             approved_id,
             &journal,
         )
@@ -1451,7 +1449,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             project.capability(VolumeOperation::Write)?,
         ]),
     );
-    let grant = ContentGrant::verify(&issuer.verifier(), &scope, &project, VolumeOperation::Write)?;
+    let grant = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &project, VolumeOperation::Write)?;
     let file = host
         .put_content(
             &project,
@@ -1478,10 +1476,10 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         Capabilities::new([foreign.capability(VolumeOperation::Write)?]),
     );
     assert!(
-        ContentGrant::verify(&issuer.verifier(), &scope, &foreign, VolumeOperation::Write).is_err()
+        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &foreign, VolumeOperation::Write).is_err()
     );
     let foreign_grant = ContentGrant::verify(
-        &foreign_issuer.verifier(),
+        &foreign_issuer.verifier(&mut None).expect("verifier copy"),
         &foreign_scope,
         &foreign,
         VolumeOperation::Write,
@@ -1498,9 +1496,9 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             &IdempotencyKey::new("foreign-upload")?,
         )
         .await?;
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let journal =
-        FilesystemExecutionJournal::new(stream, host, private, issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(), scope, 4_096)?;
+        FilesystemExecutionJournal::new(stream, host, private, issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(), scope, 4_096)?;
     let model = Arc::new(CapturingModel::default());
     let executor = StockExecutor::new(
         Model::new("test", "capture", "1", Value::Null)?,
