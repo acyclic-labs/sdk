@@ -473,11 +473,11 @@ impl CreationFixture {
                 concurrency: Some(16), max_steps: Some(4), deadline_epoch_ms: None,
             })?;
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
-            filesystem.clone(), payload_volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed,
-            root_scope.limits().file_bytes,
+            filesystem.clone(), &payload_volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed,
+            root_scope.limits().file_bytes, None,
         )?);
         let reader = Arc::new(FilesystemContentVerifier::new(
-            filesystem.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(), root_scope.limits().file_bytes,
+            filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, root_scope.limits().file_bytes, None,
         )?);
         let schema = serde_json::json!({"type":"object"});
         let implementation = Arc::new(CreatedControlMachine {
@@ -806,7 +806,7 @@ impl CreationFixture {
             parent_private.capability(VolumeOperation::Read)?,
         ]));
         let resolver = Arc::new(FilesystemContentVerifier::new(
-            self.filesystem.clone(), fork_issuer.verifier(&mut None).expect("verifier copy"), fork_scope.clone(), 65_536,
+            self.filesystem.clone(), &fork_issuer.verifier(&mut None).expect("verifier copy"), &fork_scope, 65_536, None,
         )?);
         let fork_stream = self.host.stream.clone();
         let mut aggregate = StreamAggregate::open(
@@ -862,7 +862,7 @@ impl CreationFixture {
         )?.fork_history(
             aggregate.reducer(), 0,
             crate::store::HistoryReadLimits { maximum_events:2, maximum_bytes:65_536 },
-        ).await?;
+         &mut None).await?;
         let preparer = FilesystemForkPreparer::new(
             self.filesystem.clone(), aggregate.reducer().clone(), fork_issuer.verifier(&mut None).expect("verifier copy"),
             fork_scope.clone(), fork.selections.iter().find_map(|selection| match &selection.revision {
@@ -1100,8 +1100,8 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     let journal = FilesystemExecutionJournal::for_task(
         fixture.host.journal_owner(task, fence.clone()).await?, OperationId::from_bytes([103; 16]),
         OperationId::from_bytes([103; 16]),
-        fixture.filesystem.clone(), volume.clone(), fixture.host.verifier.clone(),
-        fixture.host.owner_scope.clone(), 65_536,
+        fixture.filesystem.clone(), &volume, &fixture.host.verifier,
+        &fixture.host.owner_scope, 65_536, None,
     )?;
     journal.verify_input_file(&command_payload).await?;
     let runtime = FilesystemTaskRuntime::open_with_creation_providers(
@@ -1122,7 +1122,7 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     ).await?;
     let commands = CreatedIoCommands { output:Mutex::new(None) };
     assert!(matches!(
-        runtime.resume_task(lease, &commands, 2).await,
+        runtime.resume_task(lease, &commands, 2, None).await,
         TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task:completed }) if completed == task
     ));
     let output = commands.output.lock().await.clone()

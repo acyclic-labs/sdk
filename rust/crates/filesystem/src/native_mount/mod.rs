@@ -3706,10 +3706,7 @@ impl MountDestinationGuard {
         let registry = self.registry_file.as_ref().ok_or_else(invalid)?;
         let name = self.cleanup_name.as_ref().ok_or_else(invalid)?;
         let credit = self.birth_cleanup.as_mut().ok_or_else(invalid)?;
-        let loan = match wait {
-            Some(wait) => credit.cleanup_loan(wait),
-            None => credit.accepted_cleanup_loan(),
-        };
+        let loan = credit.loan(wait);
         let mut work = NativeFenceReleaseWork { loan: &loan, pending: None };
         // A contended registry is a real pending control. Do not spend an
         // unbounded sequence of new lock attempts after cancellation.

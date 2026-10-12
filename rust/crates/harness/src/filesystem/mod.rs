@@ -112,7 +112,6 @@ pub use recursive::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use recursive::{
-    recursive_fork_source_with_native_work,
     restore_recursive_fork_source_with_native_work,
 };
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -420,6 +419,7 @@ impl<A, O> ContentResidencyVerifier for FilesystemContentVerifier<A, O>
 where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
 {
     fn supports_read(&self, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<bool> {
+        fork_preparer_io::item(io, 0)?;
         let mut history = io.map(PreparationIo::history_io);
         volume.validate(&mut history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?;
         Ok(volume.provider() == &self.host.provider)
@@ -434,6 +434,7 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             drop(self.read_file(reference, maximum_bytes, io).await?);
+            if let Some(io) = io { io.remaining()?; }
             Ok(())
         })
     }
@@ -465,8 +466,8 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                     .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
                 if stat.kind != FileKind::Regular { return Err(io.invalid("prefix requires a regular file")); }
                 let length = stat.logical_bytes.ok_or_else(|| io.invalid("file length is missing"))?;
-                return pinned.read_range_with_native_work(&path, 0, maximum_bytes.min(length), work, io.cancellation()).await
-                    .map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+                return pinned.read_range(&path, 0, maximum_bytes.min(length), work, io.cancellation()).await
+                    .map(|chunk| chunk.bytes).map_err(|source| Error::NativeWorkspace { source, custody: None });
             }
             let stat = io.receive(pinned.stat(&path, io.remaining()?, io.cancellation()).await)?;
             if stat.kind != FileKind::Regular { return Err(io.invalid("prefix requires a regular file")); }
@@ -487,8 +488,10 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         after: Option<&'a str>,
         maximum_entries: u32, io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, PrivateDirectoryPage>> {
+        if io.is_some() {
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Unsupported, "finite private directory discovery is unavailable"));
+        }
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            if io.is_some() { return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Unsupported, "directory listing requires its issued native owner")); }
             let after = after
                 .map(|name| {
                     LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
@@ -714,14 +717,7 @@ where
     }
 
     fn require_read(&self, reference: &FileRef, io: &PreparationIo) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            reference.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        } else {
-            reference.validate(&mut None)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        reference.validate()?;
+        reference.validate(&mut Some(&mut io.history_io()))?;
         let internal = crate::conversation::is_internal_path(reference.path());
         let inherited = crate::conversation::is_inherited_context_path(reference.path());
         let internal_owner = reference.path().starts_with(".system/") && !inherited;
@@ -751,17 +747,14 @@ where
                 &self.verifier,
                 &self.scope,
                 reference.volume(),
-                VolumeOperation::Read,
+                VolumeOperation::Read, self.maximum_bytes, &mut None,
             )
         } else {
             ContentGrant::verify_read(&self.verifier, &self.scope, reference)
         }
     }
 
-    async fn load_manifest(&self, reference: &FileRef, item_count: u32) -> Result<Vec<Attachment>> {
-        let bytes = self.read_file(reference, self.maximum_bytes, None).await?;
-        crate::conversation::decode_attachment_manifest(reference, &bytes, Some(item_count), None)
-    }
+
 }
 
 /// Filesystem portion of the fork-publication admission barrier.
@@ -2439,16 +2432,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         }
         if let Some(io) = io {
             for file in direct.values().chain(member.values().map(|(_, file)| file)) {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.original_native_work() {
-                    resolver.verify_with_native_work(file, maximum_bytes, work)?.await?;
-                } else {
-                    io.receive_content(resolver.verify_measured(file, maximum_bytes,
-                        io.remaining()?, io.cancellation()).await)?;
-                }
-                #[cfg(target_arch = "wasm32")]
-                io.receive_content(resolver.verify_measured(file, maximum_bytes,
-                    io.remaining()?, io.cancellation()).await)?;
+                resolver.verify(file, maximum_bytes, Some(io))?.await?;
             }
             io.claim(((attached_agents.len() + 1) * std::mem::size_of::<AgentId>()) as u64)?;
         }
@@ -4309,9 +4293,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let path = rendered.0;
             let opened = fork_preparer_io::open(self, &workspace, io).await?;
             let pinned = fork_preparer_io::generation(self, &opened, &generation, io).await?;
-            let bytes = pinned.read_with_native_work(
+            let bytes = pinned.read(
                 &path, maximum_bytes, original, io.cancellation(),
-            ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            ).await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             fork_preparer_io::retain(&pinned, Some(io)).await?;
             let hashed = acyclic_fs::WorkCounters {
                 bytes_hashed: bytes.len() as u64,
@@ -5233,7 +5217,7 @@ mod tests {
             sequence: 1,
             kind: MessageKind::User,
             content: file.clone(),
-            attachments: Vec::new().into(),
+            attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() },
             reply_to: None,
             tool_call_id: None,
             extensions: BTreeMap::new(),
@@ -5351,8 +5335,8 @@ async fn read_generation_with_io<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<acyclic_stream::OwnedBytes> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
-        return generation.read_with_native_work(path, maximum, original, io.cancellation()).await
-            .map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+        return generation.read(path, maximum, original, io.cancellation()).await
+            .map_err(|source| Error::NativeWorkspace { source, custody: None });
     }
     let bytes = io.receive(generation.read(path, maximum, io.remaining()?, io.cancellation()).await)?;
     let capacity = bytes.retained_capacity().ok_or_else(|| {

@@ -489,10 +489,8 @@ pub(super) enum ViewChange<'a> {
     Node(FileId),
     /// A name now resolves where nothing did.
     Bound(&'a NamespacePath),
-    /// A name no longer resolves to `FileId`, which may keep other names.
-    Unbound(&'a NamespacePath, FileId),
-    /// A name now resolves to an existing node under a second name.
-    Linked(&'a NamespacePath, FileId),
+    /// One binding and its node changed.
+    Entry(&'a NamespacePath, FileId),
     /// A node moved between names, possibly replacing another node.
     Moved {
         from: &'a NamespacePath,
@@ -508,7 +506,7 @@ pub(super) enum ViewChange<'a> {
     Unconfirmed,
 }
 
-/// One enumerated effect on the view: installing a candidate prepared from a copy of the checkout, as the generation diff between the two reports it, or changes the source reported having happened to it.
+/// Named and node effects of one source change.
 #[derive(Default)]
 pub(super) struct ViewEffect {
     pub(super) nodes: Vec<FileId>,
@@ -882,42 +880,21 @@ impl ViewLedger {
         drop(pending);
     }
 
-    pub(super) fn observe(&self, observer: Weak<dyn ViewObserver>) -> Result<(), super::MountSourceError> {
-        let custody = observer.upgrade().and_then(|observer| observer.allocation_custody());
-        let mut work = unbounded_view_work();
-        loop {
-            let mut join = self.prepare_join()?;
-            let mut hub = self.observers.lock().unwrap_or_else(PoisonError::into_inner);
-            if !join_matches(&hub, join.as_ref()) { drop(hub); drop(join); continue; }
-            let mut copy_credit = prepare_join_buffer(&mut hub, &mut work)?;
-            let (allocations, counters, budget, _) = work.allocation_parts();
-            self.add_locked(
-                &mut hub.observers, observer.clone(), custody.clone(), &mut None,
-                allocations, counters, budget,
-            )?;
-            append_join(&mut hub, &observer, &mut join, &mut work, &mut copy_credit)?;
-            drop(hub);
-            drop(join);
-            return Ok(());
-        }
-    }
-
-    pub(super) fn observe_measured_with_meter(
+    pub(super) fn observe(
         self: &Arc<Self>, observer: Weak<dyn ViewObserver>,
-        custody: Option<super::NativeMountAllocationCustody>,
-        original: &Arc<crate::demand::NativeDemandReadMeter>,
+        carrier: &mut super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<(), super::MountSourceError> {
         use super::lazy::mount_demand_error;
+        let custody = observer.upgrade().and_then(|observer| observer.allocation_custody());
         loop {
             let mut join = self.prepare_join()?;
-            let result = {
-                let mut work = original.lock();
+            let result = carrier.with_work(|work| -> Result<_, super::MountSourceError> {
                 work.check().map_err(mount_demand_error)?;
                 let mut hub = self.observers.lock().unwrap_or_else(PoisonError::into_inner);
                 if !join_matches(&hub, join.as_ref()) {
-                    None
+                    Ok(None)
                 } else {
-                    let mut copy_credit = prepare_join_buffer(&mut hub, &mut work)?;
+                    let mut copy_credit = prepare_join_buffer(&mut hub, work)?;
                     let admitted = (|| {
                         let (admissions, allocations, counters, budget) =
                             work.view_observer_admission_parts().map_err(mount_demand_error)?;
@@ -926,17 +903,17 @@ impl ViewLedger {
                             &mut hub.observers, observer.clone(), custody.clone(),
                             &mut entry.registry, allocations, counters, budget,
                         )?;
-                        append_join(&mut hub, &observer, &mut join, &mut work, &mut copy_credit)
+                        append_join(&mut hub, &observer, &mut join, work, &mut copy_credit)
                     })();
                     if copy_credit != 0 { work.refund(crate::materializer::NativeResourceCredit::Copy, copy_credit).expect("original reservation is balanced"); }
-                    Some(admitted)
+                    Ok(Some(admitted))
                 }
-            };
+            })?;
             drop(join);
             if let Some(result) = result { return result; }
-            original.lock().charge(crate::WorkCounters {
+            carrier.with_work(|work| work.charge(crate::WorkCounters {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
-            }).map_err(mount_demand_error)?;
+            })).map_err(mount_demand_error)?;
         }
     }
 
@@ -1076,7 +1053,7 @@ impl ViewLedger {
             match change {
                 ViewChange::Node(id) => self.node_changed(*id, position, work, owned)?,
                 ViewChange::Bound(path) => self.rebound(path, position, work, owned)?,
-                ViewChange::Unbound(path, id) | ViewChange::Linked(path, id) => {
+                ViewChange::Entry(path, id) => {
                     self.rebound(path, position, work, owned)?;
                     self.node_changed(*id, position, work, owned)?;
                 }
@@ -1234,7 +1211,6 @@ struct ChangePositions {
     floor: u64,
     slots: Vec<Option<(u64, u64)>>,
     length: usize,
-    allocation_generation: u64,
     // The physical map backing drops before this original allocation guard.
     native_allocation: Option<crate::NativeAllocation>,
 }
@@ -1406,7 +1382,7 @@ impl ChangeMap {
             let mut positions = self.0.write().unwrap_or_else(PoisonError::into_inner);
             if let Some(ordinary) = work.ordinary() {
                 if let Some((generation, _)) = owned.claim(kind)
-                    && generation != positions.allocation_generation
+                    && generation != self.1.load(Ordering::Acquire)
                     && let Some((_, bytes)) = owned.replace(kind, None)
                 {
                     ordinary.release(bytes).map_err(mount_demand_error)?;
@@ -1452,7 +1428,7 @@ impl ChangeMap {
                 continue;
             }
             let old_bytes = (positions.slots.capacity() * std::mem::size_of::<Option<(u64, u64)>>()) as u64;
-            let old_generation = positions.allocation_generation;
+            let old_generation = self.1.load(Ordering::Acquire);
             let next_generation = old_generation.checked_add(1)
                 .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
             let count = positions.slots.len().max(4).saturating_mul(2).min(MAXIMUM_TRACKED_KEYS * 2);
@@ -1479,7 +1455,7 @@ impl ChangeMap {
             }
             replacement.0.resize(count, None);
             let mut positions = self.0.write().unwrap_or_else(PoisonError::into_inner);
-            if positions.allocation_generation != old_generation {
+            if self.1.load(Ordering::Acquire) != old_generation {
                 drop(positions);
                 work.release_numeric(retire_buffer(replacement))?;
                 if borrowed_old { work.release_numeric(old_bytes)?; }
@@ -1517,7 +1493,6 @@ impl ChangeMap {
             let numeric = (values.capacity() * std::mem::size_of::<Option<(u64, u64)>>()) as u64;
             let old = std::mem::replace(&mut positions.slots, values);
             let old_guard = std::mem::replace(&mut positions.native_allocation, allocation);
-            positions.allocation_generation = next_generation;
             self.1.store(next_generation, Ordering::Release);
             if work.ordinary().is_some() {
                 let _ = owned.replace(kind, Some((next_generation, numeric)));
@@ -1709,6 +1684,11 @@ mod tests {
         }
     }
 
+    struct Panicking;
+    impl ViewObserver for Panicking {
+        fn view_changed(&self, _: ViewStamp, _: ViewOrigin) { panic!("observer failure"); }
+    }
+
     #[test]
     fn native_node_preadmission_denial_and_early_cancellation_leave_body_untouched()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1724,13 +1704,13 @@ mod tests {
             (crate::WorkBudget::UNBOUNDED, None),
         ];
         for (budget, counter) in cases {
-            let ledger = ViewLedger::new();
+            let ledger = Arc::new(ViewLedger::new());
             let file = FileId::from_bytes([112; 16]);
             ledger.record(&ViewChange::Node(file), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()), &mut ViewLedgerAdmission::default()).expect("unbounded view recording");
             let before = ledger.stamp();
             let counted = Arc::new(Counted::default());
             let observer: Arc<dyn ViewObserver> = counted.clone();
-            ledger.observe(Arc::downgrade(&observer))?;
+            ledger.observe(Arc::downgrade(&observer), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()))?;
             let cancellation = crate::CancellationToken::new();
             let original = crate::NativeMaterializationWork::new(
                 crate::WorkBudget::UNBOUNDED, &cancellation,
@@ -1812,7 +1792,7 @@ mod tests {
                 calls: std::sync::atomic::AtomicU64::new(0),
             });
             let observer: Arc<dyn ViewObserver> = observed.clone();
-            ledger.observe(Arc::downgrade(&observer))?;
+            ledger.observe(Arc::downgrade(&observer), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()))?;
             let cancellation = crate::CancellationToken::new();
             let root_budget = if scoped { crate::WorkBudget::UNBOUNDED } else {
                 crate::WorkBudget {
@@ -1858,14 +1838,10 @@ mod tests {
     #[test]
     fn aborting_native_node_permit_releases_only_physically_retired_buffers()
     -> Result<(), Box<dyn std::error::Error>> {
-        struct Observer;
-        impl ViewObserver for Observer {
-            fn view_changed(&self, _: ViewStamp, _: ViewOrigin) { panic!("aborted node notified"); }
-        }
-        let ledger = ViewLedger::new();
-        let observer: Arc<dyn ViewObserver> = Arc::new(Observer);
+        let ledger = Arc::new(ViewLedger::new());
+        let observer: Arc<dyn ViewObserver> = Arc::new(Panicking);
         let weak = Arc::downgrade(&observer);
-        ledger.observe(weak.clone())?;
+        ledger.observe(weak.clone(), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()))?;
         let cancellation = crate::CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED, &cancellation,
@@ -1902,14 +1878,10 @@ mod tests {
     #[test]
     fn panicking_native_node_observer_does_not_lose_node_or_backing_custody()
     -> Result<(), Box<dyn std::error::Error>> {
-        struct Observer;
-        impl ViewObserver for Observer {
-            fn view_changed(&self, _: ViewStamp, _: ViewOrigin) { panic!("observer failure"); }
-        }
-        let ledger = ViewLedger::new();
-        let observer: Arc<dyn ViewObserver> = Arc::new(Observer);
+        let ledger = Arc::new(ViewLedger::new());
+        let observer: Arc<dyn ViewObserver> = Arc::new(Panicking);
         let weak = Arc::downgrade(&observer);
-        ledger.observe(weak.clone())?;
+        ledger.observe(weak.clone(), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()))?;
         let cancellation = crate::CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED, &cancellation,
@@ -1977,7 +1949,7 @@ mod tests {
         let ledger = Arc::new(ViewLedger::new());
         let early: Arc<dyn ViewObserver> = Arc::new(Counted::default());
         let dead = Arc::downgrade(&early);
-        ledger.observe(dead.clone())?;
+        ledger.observe(dead.clone(), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()))?;
         let cancellation = crate::CancellationToken::new();
         let sync = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
             crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation),
@@ -1991,7 +1963,7 @@ mod tests {
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         );
         super::super::adapter::BorrowedNativeDemandMeter::new(&mut registration)?.run(|meter| {
-            ledger.observe_measured_with_meter(Arc::downgrade(&late), None, meter)
+            ledger.observe(Arc::downgrade(&late), &mut super::super::adapter::NativeDemandCarrier::Shared(meter))
         })?;
         let registration_prefix = registration.work;
         let sync_prefix = sync.lock().work.items_examined;
@@ -2007,10 +1979,6 @@ mod tests {
     #[test]
     fn denied_late_delivery_does_not_join_or_erase_original_publication()
     -> Result<(), Box<dyn std::error::Error>> {
-        struct Observer;
-        impl ViewObserver for Observer {
-            fn view_changed(&self, _: ViewStamp, _: ViewOrigin) {}
-        }
         let ledger = Arc::new(ViewLedger::new());
         let mut budget = crate::WorkBudget::UNBOUNDED;
         budget.items_examined = 0;
@@ -2018,14 +1986,14 @@ mod tests {
             crate::demand::DemandWork::new(budget, &crate::CancellationToken::new()),
         )));
         let prepared = ledger.prepare_everything_notification(&sync)?;
-        let observer: Arc<dyn ViewObserver> = Arc::new(Observer);
+        let observer: Arc<dyn ViewObserver> = Arc::new(Counted::default());
         let registration = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
             crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
         )));
-        assert!(ledger.observe_measured_with_meter(
-            Arc::downgrade(&observer), None, &registration,
+        assert!(ledger.observe(
+            Arc::downgrade(&observer), &mut super::super::adapter::NativeDemandCarrier::Shared(&registration),
         ).is_err());
-        let ordinary_error = ledger.observe(Arc::downgrade(&observer))
+        let ordinary_error = ledger.observe(Arc::downgrade(&observer), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()))
             .expect_err("ordinary registration must propagate the same original publication quota");
         assert!(matches!(ordinary_error.semantic_error(), super::super::MountSourceError::Work(_)));
         assert!(ledger.observers.lock().expect("same registry").observers.is_empty());
@@ -2111,7 +2079,7 @@ mod tests {
         for byte in 2..=8 {
             ledger.record(&ViewChange::Node(FileId::from_bytes([byte; 16])), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()), &mut ViewLedgerAdmission::default()).expect("unbounded view recording");
         }
-        assert!(ledger.nodes.0.read().expect("physical change map").allocation_generation > generation);
+        assert!(ledger.nodes.1.load(Ordering::Acquire) > generation);
         work.record(crate::WorkCounters::UNCHARGED)?;
         assert_eq!(work.live_allocation_bytes(), live - bytes);
         assert!(proof.lock().expect("same loaned proof")[super::AdmittedMap::Nodes as usize].is_none());
@@ -2364,10 +2332,10 @@ mod tests {
             }
         }
 
-        let ledger = ViewLedger::new();
+        let ledger = Arc::new(ViewLedger::new());
         let recorded = Arc::new(Recorded::default());
         let observer: std::sync::Weak<Recorded> = Arc::downgrade(&recorded);
-        ledger.observe(observer)?;
+        ledger.observe(observer, &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()))?;
         let origin = ViewOrigin::new();
         ledger.record(&ViewChange::Everything, &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()), &mut ViewLedgerAdmission::default()).expect("unbounded view recording");
         {

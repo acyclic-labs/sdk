@@ -181,9 +181,9 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         volume: created.private.clone(), generation: created.seed.child_private_generation.clone(), paths: Vec::new(),
     };
     let history = crate::history::HistoryReader::new(&fixture.stream, &fork.parent, parent_issuer.verifier(&mut None).expect("verifier copy"))?
-        .fork_history(parent.reducer(), 0, crate::history::HistoryReadLimits { maximum_events: 2, maximum_bytes: 65_536 }).await?;
+        .fork_history(parent.reducer(), 0, crate::history::HistoryReadLimits { maximum_events: 2, maximum_bytes: 65_536 }, &mut None).await?;
     let resolver = Arc::new(FilesystemContentVerifier::new(
-        fixture.filesystem.clone(), parent_issuer.verifier(&mut None).expect("verifier copy"), parent_scope.clone(), 65_536,
+        fixture.filesystem.clone(), &parent_issuer.verifier(&mut None).expect("verifier copy"), &parent_scope, 65_536, None,
     )?);
     let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), parent.reducer().clone(),
         parent_issuer.verifier(&mut None).expect("verifier copy"), parent_scope.clone(), created.project.clone(), stream_provider, resolver)?

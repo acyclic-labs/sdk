@@ -565,7 +565,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         let absolute = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
         let hold = io.guard_owned(absolute.capacity() as u64)?;
         let absolute = (absolute, hold);
-        let result = source.backing.read(snapshot, &absolute.0, maximum, io)?.await;
+        let future = source.backing.read(snapshot, &absolute.0, maximum, io)?;
+        let frame = match &future {
+            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => Some(io.guard_owned(*frame_bytes)?),
+            crate::store::history::HistoryContentFuture::Native(_) => None,
+        };
+        let result = future.await;
+        drop(frame);
         drop(absolute);
         result
     }
@@ -1648,8 +1654,8 @@ mod tests {
         drop(output);
         drop(staged);
         drop(staged_custody);
-        let policy = super::super::super::root_source::FsRootProjectSourceProvider::new_with_native_work(
-            fixture.filesystem.clone(), project.owner(), fixture.root, &work,
+        let policy = super::super::super::root_source::FsRootProjectSourceProvider::new(
+            fixture.filesystem.clone(), project.owner(), fixture.root, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?),
         )?.with_bootstrap_source_with_native_work(Arc::clone(project), &work)?;
         let selection = ProjectSourceSnapshot { project: project.request.volume.clone(),
             generation: project.request.generation.clone(), native_snapshot: None };
@@ -1743,8 +1749,8 @@ mod tests {
         let admission_custody;
         let (admission, custody) = owner.original_root_admission_with_native_work(&work).await?;
         admission_custody = custody;
-        let bare = super::super::super::root_source::FsRootProjectSourceProvider::new_with_native_work(
-            fixture.filesystem.clone(), creator.issuer.audience(), fixture.root, &work,
+        let bare = super::super::super::root_source::FsRootProjectSourceProvider::new(
+            fixture.filesystem.clone(), creator.issuer.audience(), fixture.root, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?),
         )?;
         let selection = ProjectSourceSnapshot { project: birth.volume.clone(),
             generation: GenerationRef::new(fixture.filesystem_provider.clone(),

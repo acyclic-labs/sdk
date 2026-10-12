@@ -251,7 +251,7 @@ impl<P: StreamProvider> ObservedEffectAggregate<P> {
         if let Some(effect) = self.aggregate.reducer().effect(effect_id) {
             return Ok(EffectStateRef::Resident(effect));
         }
-        let (effect, retained) = self.aggregate.effect_with_work(
+        let (effect, retained) = self.aggregate.effect(
             effect_id, self.history_limits, work,
         ).await?.ok_or_else(|| missing_effect(work))?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -811,8 +811,8 @@ mod native_metadata_controls {
             crate::resources::ProviderRef::new("effect-metadata-control", "filesystem", "2")?,
         )?);
         let content = Arc::new(crate::filesystem::FilesystemContentVerifier::new(
-            files, issuer.verifier(&mut None).expect("verifier copy"), scope.clone(),
-        ));
+            files, &issuer.verifier(&mut None).expect("verifier copy"), &scope, crate::conversation::Limits::default().file_bytes, None,
+        )?);
         ConversationEffectHost::new(
             Arc::new(MemoryStream::default()),
             authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(),

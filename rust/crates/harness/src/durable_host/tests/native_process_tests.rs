@@ -26,10 +26,10 @@ async fn result_storage_cannot_mutate_a_pinned_native_view() -> Result<()> {
     let mut authority = fixture.authority();
     authority.results = Arc::new(FilesystemContentPublisher::new(
         fixture.files.clone(),
-        fixture.destination.clone(),
+        &fixture.destination,
         &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &fixture.scope,
-        65_536,
+        65_536, None,
     )?);
     assert!(matches!(
         Process::new(
@@ -1216,9 +1216,9 @@ where
         .await?
         .generation;
     if mode == "review-test" {
-        let read = ContentGrant::verify(&issuer.verifier(), &scope, &source, VolumeOperation::Read)?;
+        let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &source, VolumeOperation::Read)?;
         for (volume, key) in [(&destination, "review-fork"), (&second_destination, "caller-fork")] {
-            let write = ContentGrant::verify(&issuer.verifier(), &scope, volume, VolumeOperation::Write)?;
+            let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, volume, VolumeOperation::Write)?;
             files.fork_volume(&source, &read, &source_generation, volume, &write, None, &IdempotencyKey::new(key)?).await?;
         }
     }
@@ -1381,7 +1381,7 @@ where
                 let mount = Arc::new(mount);
                 let snapshot = mount.snapshot_with_work(&volume_work, volume_work.cancellation())
                     .await?;
-                let native_source = crate::filesystem::FsRootNativeSource::from_lazy_with_native_work(
+                let native_source = crate::filesystem::FsRootNativeSource::from_lazy(
                     Arc::clone(&lazy), work,
                 )?;
                 let creator = crate::filesystem::FilesystemResourceCreationProvider::new_with_native_work(
@@ -1394,8 +1394,8 @@ where
                     operation, config, initial_generation, snapshot.authored_generation,
                     Some((&native_source, snapshot)), work,
                 )?.await?.into_native_shared(work)?;
-                project_policy = Some(crate::filesystem::FsRootProjectSourceProvider::new_with_native_work(
-                    Arc::clone(&files), issuer.audience(), task_id, work,
+                project_policy = Some(crate::filesystem::FsRootProjectSourceProvider::new(
+                    Arc::clone(&files), issuer.audience(), task_id, Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
                 )?.with_bootstrap_source_with_native_work(protected, work)?);
                 project_generation = Some(crate::resources::GenerationRef::new_with_native_work(
             borrowed[0].generation.as_resource().provider(), borrowed[0].generation.as_resource().key(),
@@ -1479,16 +1479,16 @@ where
     }
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope.clone(),
-        1_000_000,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        1_000_000, None,
     )?);
     let results = Arc::new(FilesystemContentPublisher::new(
         files.clone(),
-        result_volume.clone(),
+        &result_volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
-        1_000_000,
+        1_000_000, None,
     )?);
     let request_ref = results
         .stage(
@@ -1518,10 +1518,10 @@ where
     let approvals = Arc::new(FilesystemExecutionJournal::new(
         owner.stream(),
         files.clone(),
-        result_volume,
-        issuer.verifier(&mut None).expect("verifier copy"), crate::core::SchemaRegistry::new(),
-        scope.clone(),
-        1_000_000,
+        &result_volume,
+        &issuer.verifier(&mut None).expect("verifier copy"), &crate::core::SchemaRegistry::new(),
+        &scope,
+        1_000_000, None,
     )?);
     approvals
         .open_interaction(
@@ -2444,16 +2444,16 @@ async fn reopen_native(
     )?);
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        seed.scope.clone(),
-        1_000_000,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &seed.scope,
+        1_000_000, None,
     )?);
     let results = Arc::new(FilesystemContentPublisher::new(
         files.clone(),
-        seed.result_volume.clone(),
+        &seed.result_volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &seed.scope,
-        1_000_000,
+        1_000_000, None,
     )?);
     let reopened = Arc::new(
         acyclic_stream::LocalStream::open(storage.join("coordinator"), Default::default())
@@ -2477,10 +2477,10 @@ async fn reopen_native(
     let approvals = Arc::new(FilesystemExecutionJournal::new(
         owner.stream(),
         files.clone(),
-        seed.result_volume.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"), crate::core::SchemaRegistry::new(),
-        seed.scope.clone(),
-        1_000_000,
+        &seed.result_volume,
+        &issuer.verifier(&mut None).expect("verifier copy"), &crate::core::SchemaRegistry::new(),
+        &seed.scope,
+        1_000_000, None,
     )?);
     let process = Arc::new(
         LocalNativeProcess::recover(
@@ -3722,11 +3722,11 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
     assert!(fixture.files.read(&source, None, "/tests/generated.txt", 128).await.is_err());
     assert_eq!(fixture.files.read(&destination, None, "/tests/generated.txt", 128).await?.as_ref(), b"isolated test");
     let caller = workspace_ref(fixture.second_destination.provider().clone(), &fixture.second_destination.storage_name()?)?;
-    let caller_write = ContentGrant::verify(&fixture.issuer.verifier(), &fixture.scope, &fixture.second_destination, VolumeOperation::Write)?;
+    let caller_write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.second_destination, VolumeOperation::Write)?;
     fixture.files.put_content(&fixture.second_destination, &caller_write, "concurrent.txt", b"user edit", "text/plain", "concurrent.txt", 128,
         &IdempotencyKey::new("review-concurrent")?).await?;
     let review_head = fixture.files.resolve(&destination).await?.generation;
-    let review_read = ContentGrant::verify(&fixture.issuer.verifier(), &fixture.scope, &fixture.destination, VolumeOperation::Read)?;
+    let review_read = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.destination, VolumeOperation::Read)?;
     let import = fixture.files.prepare_volume_import(&fixture.destination, &review_read, &review_head,
         &fixture.second_destination, &caller_write).await?;
     let key = IdempotencyKey::new("review-import")?;

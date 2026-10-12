@@ -1668,27 +1668,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Reads the head through the canonical engine with exact failure work.
-    pub async fn read(
+    pub async fn read<W: crate::facade::FsWork>(
         &self,
         path: &str,
         maximum_bytes: u64,
-        budget: crate::WorkBudget,
+        work: W,
         cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<acyclic_stream::OwnedBytes>, WorkspaceError> {
-        self.read_selected(GenerationSelector::Head, path, maximum_bytes, budget, cancellation).await
+    ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
+        self.read_selected(GenerationSelector::Head, path, maximum_bytes, work, cancellation).await
     }
 
     /// Performs the bounded read range operation.
-    pub async fn read_range(
+    pub async fn read_range<W: crate::facade::FsWork>(
         &self,
         path: &str,
         offset: u64,
         length: u64,
-        budget: crate::WorkBudget,
+        work: W,
         cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::OwnedSourceChunk>, WorkspaceError> {
+    ) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
         read_generation_range(
-            self, GenerationSelector::Head, path, offset, length, budget, cancellation,
+            self, GenerationSelector::Head, path, offset, length, work, cancellation,
         ).await
     }
 
@@ -1810,14 +1810,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     /// Performs the bounded read symbolic link operation.
-    pub async fn read_symbolic_link(
+    pub async fn read_symbolic_link<W: crate::facade::FsWork>(
         &self,
         path: &str,
-        budget: crate::WorkBudget,
+        work: W,
         cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::OwnedSourceChunk>, WorkspaceError> {
+    ) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
         read_generation_symbolic_link(
-            self, GenerationSelector::Head, path, budget, cancellation,
+            self, GenerationSelector::Head, path, work, cancellation,
         ).await
     }
 
@@ -1881,22 +1881,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
     }
 
-    async fn read_selected(
+    async fn read_selected<W: crate::facade::FsWork>(
         &self,
         selector: GenerationSelector,
         path: &str,
         maximum_bytes: u64,
-        budget: crate::WorkBudget,
+        work: W,
         cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<acyclic_stream::OwnedBytes>, WorkspaceError> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
         let result = async {
             let mut checkout = self.open_checkout(selector, CheckoutMode::read_only_pinned(), &mut accounting, cancellation).await?;
             read_checkout_whole_with_accounting(&mut checkout.value, path, maximum_bytes, &mut accounting, cancellation).await
         }.await;
-        let work = accounting.spent();
-        result.map(|value| crate::OperationReceipt { value, work })
-            .map_err(|error| crate::OperationFailure::new(error, work))
+        work.finish(result, &accounting)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1962,16 +1960,16 @@ async fn read_checkout_whole_with_accounting<A: AsyncAuthorityStore, O: AsyncObj
 
 
 
-async fn read_generation_range<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn read_generation_range<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::facade::FsWork>(
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
     offset: u64,
     length: u64,
-    budget: crate::WorkBudget,
+    work: W,
     cancellation: &crate::CancellationToken,
-) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::OwnedSourceChunk>, WorkspaceError> {
-    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
+    let mut accounting = work.accounting(cancellation);
     let result = async {
         let (mut checkout, path) = workspace.open_read_path(selector, path, &mut accounting, cancellation).await?;
         checkout.value.read_file_range_with_accounting(
@@ -1981,9 +1979,7 @@ async fn read_generation_range<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             crate::kernel::OwnedSourceChunk::claimed(read.bytes, bytes)
         }).map_err(WorkspaceError::from)
     }.await;
-    let work = accounting.spent();
-    result.map(|value| crate::OperationReceipt { value, work })
-        .map_err(|error| crate::OperationFailure::new(error, work))
+    work.finish(result, &accounting)
 }
 
 
@@ -2097,22 +2093,20 @@ fn project_workspace_directory_with_accounting(
 
 
 
-async fn read_generation_symbolic_link<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn read_generation_symbolic_link<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::facade::FsWork>(
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
-    budget: crate::WorkBudget,
+    work: W,
     cancellation: &crate::CancellationToken,
-) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::OwnedSourceChunk>, WorkspaceError> {
-    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
+    let mut accounting = work.accounting(cancellation);
     let result = async {
         let (mut checkout, path) = workspace.open_read_path(selector, path, &mut accounting, cancellation).await?;
         checkout.value.read_symbolic_link_with_accounting(&path.value, &mut accounting, cancellation)
             .await.map_err(WorkspaceError::from)
     }.await;
-    let work = accounting.spent();
-    result.map(|value| crate::OperationReceipt { value, work })
-        .map_err(|error| crate::OperationFailure::new(error, work))
+    work.finish(result, &accounting)
 }
 
 async fn plan_generation_extents<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -2723,44 +2717,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         ).await.map_err(WorkspaceError::from)
     }
 
-    /// Streams bytes into immutable content without changing the transaction's
-    pub async fn stage_content<R: crate::kernel::AsyncBlobSource>(
-        &self,
-        source: &mut R,
-        maximum_source_bytes: u64,
-    ) -> Result<crate::StagedContent, WorkspaceError> {
-        self.stage_content_measured(
-            source,
-            maximum_source_bytes,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-    }
-
-    pub(crate) async fn stage_content_measured<R: crate::kernel::AsyncBlobSource>(&self,
-    source: &mut R,
-    maximum_source_bytes: u64,
-    budget: crate::WorkBudget,
-    cancellation: &crate::CancellationToken,) -> crate::MeasuredResult<crate::OperationReceipt<crate::StagedContent>, WorkspaceError> { self.checkout.stage_content(source, maximum_source_bytes, budget, cancellation).await.map(|receipt| crate::OperationReceipt { value: receipt.value, work: receipt.work }).map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from)) }
-
-    /// Stages through the same streaming content engine on the original scope.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn stage_content_with_native_work<R: crate::kernel::AsyncBlobSource>(
-        &self,
-        source: &mut R,
-        maximum_source_bytes: u64,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::StagedContent, WorkspaceError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(
-            original, cancellation,
-        );
-        self.checkout.stage_content_with_accounting(
+    /// Streams immutable content under the supplied work limits.
+    pub async fn stage_content<R: crate::kernel::AsyncBlobSource, W: crate::facade::FsWork>(
+        &self, source: &mut R, maximum_source_bytes: u64,
+        work: W, cancellation: &crate::CancellationToken,
+    ) -> W::Output<crate::StagedContent, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = self.checkout.stage_content_with_accounting(
             source, maximum_source_bytes, &mut accounting, cancellation,
-        ).await.map_err(WorkspaceError::from)
+        ).await.map_err(WorkspaceError::from);
+        work.finish(result, &accounting)
     }
 
     /// Creates or atomically replaces one complete UTF-8 file.
@@ -3873,13 +3839,13 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
     let limits = volume.config.limits;
     let generation = GenerationId::new(generation_root.digest);
     let cache_key = crate::path_index::cache_key(
-        generation, root.root_file_id, root.file_table, ids, accounting, cancellation,
+        generation, root.root_file_id, root.file_table, ids, accounting,
     )?;
-    let (bytes, allocation) = volume.fs.path_index().load(cache_key, accounting, cancellation)?;
+    let (bytes, allocation) = volume.fs.path_index().load(cache_key, accounting)?;
     let bytes = (bytes, allocation);
     if let Some(payload) = bytes.0.as_ref() {
         let (cached, allocation) = crate::path_index::decode(
-            payload, generation, ids, limits, accounting, cancellation,
+            payload, generation, ids, limits, accounting,
         )?;
         let mut cached = (cached, allocation);
         if let Some(paths) = cached.0.as_ref().filter(|paths| paths.len() <= maximum_entries as usize) {
@@ -4026,11 +3992,11 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
     reverse_drop(pending, pending_bytes, accounting)?;
     reverse_sort(&mut matches.0.records, accounting)?;
     let (bytes, allocation) = crate::path_index::encode_records(
-        generation, ids, &matches.0.records, accounting, cancellation,
+        generation, ids, &matches.0.records, accounting,
     )?;
     let bytes = (bytes, allocation);
     if let Some(payload) = &bytes.0 {
-        volume.fs.path_index().store(cache_key, payload, accounting, cancellation)?;
+        volume.fs.path_index().store(cache_key, payload, accounting)?;
     }
     let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
     reverse_drop(bytes, bytes_count, accounting)?;
@@ -5802,58 +5768,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Reads this exact immutable generation under complete operation bounds.
-    pub async fn read(
+    pub async fn read<W: crate::facade::FsWork>(
         &self,
         path: &str,
         maximum_bytes: u64,
-        budget: crate::WorkBudget,
+        work: W,
         cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<acyclic_stream::OwnedBytes>, WorkspaceError> {
+    ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
         self.workspace.read_selected(
-            GenerationSelector::Exact(self.id), path, maximum_bytes, budget, cancellation,
+            GenerationSelector::Exact(self.id), path, maximum_bytes, work, cancellation,
         ).await
     }
 
-    /// Reads the complete immutable file, rejecting rather than clipping its bound.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn read_with_native_work(
-        &self,
-        path: &str,
-        maximum_bytes: u64,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<acyclic_stream::OwnedBytes, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        let result = async {
-            let mut accounting = KernelAccounting::native(original, cancellation);
-            let mut checkout = self.workspace.open_checkout(
-                GenerationSelector::Exact(self.id), CheckoutMode::read_only_pinned(), &mut accounting, cancellation,
-            ).await?;
-            read_checkout_whole_with_accounting(&mut checkout.value, path, maximum_bytes, &mut accounting, cancellation).await
-        }.await;
-        result.map_err(|error| (error, None))
-    }
 
-    /// Reads the same immutable range with intrinsic original-operation byte
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn read_range_with_native_work(
-        &self,
-        path: &str,
-        offset: u64,
-        length: u64,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<acyclic_stream::OwnedBytes, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        let result = async {
-            let mut accounting = KernelAccounting::native(original, cancellation);
-            let (mut checkout, path) = self.workspace.open_read_path(
-                GenerationSelector::Exact(self.id), path, &mut accounting, cancellation,
-            ).await?;
-            checkout.value.read_file_range_with_accounting(
-                &path.value, crate::ByteRange { offset, length }, &mut accounting, cancellation,
-            ).await.map(|read| read.bytes).map_err(WorkspaceError::from)
-        }.await;
-        result.map_err(|error| (error, None))
-    }
 
     /// Opens an immutable root carrier on the original native scope, without
     #[cfg(not(target_arch = "wasm32"))]
@@ -5868,17 +5795,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Performs the bounded read range operation.
-    pub async fn read_range(
+    pub async fn read_range<W: crate::facade::FsWork>(
         &self,
         path: &str,
         offset: u64,
         length: u64,
-        budget: crate::WorkBudget,
+        work: W,
         cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::OwnedSourceChunk>, WorkspaceError> {
+    ) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
         read_generation_range(
             &self.workspace, GenerationSelector::Exact(self.id), path, offset, length,
-            budget, cancellation,
+            work, cancellation,
         ).await
     }
 
@@ -6093,34 +6020,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         result.map_err(WorkspaceError::from)
     }
 
-    /// Reads the exact opaque target with intrinsic original-scope byte custody.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn read_symbolic_link_with_native_work(
-        &self,
-        path: &str,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<acyclic_stream::OwnedBytes, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        let result = async {
-            let mut accounting = KernelAccounting::native(original, cancellation);
-            let (mut checkout, path) = self.workspace.open_read_path(
-                GenerationSelector::Exact(self.id), path, &mut accounting, cancellation,
-            ).await?;
-            checkout.value.read_symbolic_link_with_accounting(&path.value, &mut accounting, cancellation)
-                .await.map(|read| read.bytes).map_err(WorkspaceError::from)
-        }.await;
-        result.map_err(|error| (error, None))
-    }
 
     /// Performs the bounded read symbolic link operation.
-    pub async fn read_symbolic_link(
+    pub async fn read_symbolic_link<W: crate::facade::FsWork>(
         &self,
         path: &str,
-        budget: crate::WorkBudget,
+        work: W,
         cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::OwnedSourceChunk>, WorkspaceError> {
+    ) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
         read_generation_symbolic_link(
-            &self.workspace, GenerationSelector::Exact(self.id), path, budget, cancellation,
+            &self.workspace, GenerationSelector::Exact(self.id), path, work, cancellation,
         ).await
     }
 

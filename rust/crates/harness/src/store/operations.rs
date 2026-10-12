@@ -2129,7 +2129,7 @@ mod native_only_provider_tests {
         let native = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("finite original reader work");
         let mut io = native_work_io(&native).expect("original reader observer");
-        let cursor = reader.pin_with_work(0, Some(&mut io)).await?;
+        let cursor = reader.pin(0, Some(&mut io)).await?;
         assert_eq!(cursor.through_revision, 1);
         let page = reader.read_page_with_work(&cursor,
             HistoryReadLimits { maximum_events: 1, maximum_bytes: event_bytes }, true,
@@ -2172,7 +2172,7 @@ mod native_only_provider_tests {
             let native = NativeMaterializationWork::new(budget(), &cancellation)
                 .expect("separate finite denial work");
             let mut io = native_work_io(&native).expect("original denial observer");
-            let cursor = reader.pin_with_work(0, Some(&mut io)).await?;
+            let cursor = reader.pin(0, Some(&mut io)).await?;
             if maximum_bytes == 1 {
                 assert!(reader.read_page_with_work(&cursor,
                     HistoryReadLimits { maximum_events: 1, maximum_bytes }, false, Some(&mut io))

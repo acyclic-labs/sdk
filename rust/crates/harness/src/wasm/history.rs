@@ -85,7 +85,7 @@ impl WasmBrowserHistoryReader {
 
     /// Captures a committed traversal boundary; subsequent appends are excluded.
     pub async fn pin(&self, after_revision: u64) -> Result<JsValue, JsValue> {
-        to_js(&self.inner.pin(after_revision).await.map_err(js_error)?)
+        to_js(&self.inner.pin(after_revision, None).await.map_err(js_error)?)
     }
 
     /// Runs the same bounded page and attestation checks as the native reader.
@@ -124,8 +124,8 @@ impl WasmBrowserHistoryReader {
         to_js(
             &self
                 .inner
-                .operation_event(operation)
-                .await
+                .operation_event(operation, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None)
+                .await.map(|(event, _)| event)
                 .map_err(js_error)?,
         )
     }
