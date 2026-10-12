@@ -11,16 +11,11 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 
 #[cfg(feature = "filesystem")]
 pub(crate) const fn model_serde_diagnostic_label_bytes() -> u64 {
-    const LABEL_BYTES: u64 = {
-        let labels = ["ModelPrefix", "version", "parent", "binding_digest", "message_digest",
-            "total_messages", "messages", "ModelRequestManifest", "version", "request_digest",
-            "wire_bytes", "binding_digest", "message_digests"];
-        let mut bytes = crate::contract::preparation_serde_diagnostic_label_bytes();
-        let mut index = 0;
-        while index < labels.len() { bytes += labels[index].len() as u64 + 4; index += 1; }
-        bytes
-    };
-    LABEL_BYTES
+    crate::contract::preparation_serde_diagnostic_label_bytes() + concat!(
+        "ModelPrefix", "version", "parent", "binding_digest", "message_digest", "total_messages",
+        "messages", "ModelRequestManifest", "version", "request_digest", "wire_bytes",
+        "binding_digest", "message_digests",
+    ).len() as u64 + 13 * 4
 }
 
 #[cfg(feature = "filesystem")]
@@ -120,33 +115,24 @@ pub(crate) fn clone_file(
     file: &FileRef, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<FileRef> {
     model_step(io, 1)?;
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut observer = io.history_io();
-        let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
-        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+    crate::executor::with_history_io(io, |work| {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let file = crate::core::copy_file(file, &mut quota)?;
         quota.transfer();
-        return Ok(file);
-    }
-    Ok(file.clone())
+        Ok(file)
+    })
 }
 
 /// Copies the actual Value representation, including private/raw marker keys.
 pub(crate) fn clone_value(
     value: &Value, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Value> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut observer = io.history_io();
-        let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
-        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+    crate::executor::with_history_io(io, |work| {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let value = crate::core::copy_value(value, &mut quota)?;
         quota.transfer();
-        return Ok(value);
-    }
-    let _ = io;
-    Ok(value.clone())
+        Ok(value)
+    })
 }
 
 /// Copies the closed provider-neutral content graph on the original observer.
@@ -595,12 +581,11 @@ impl ModelContent {
             }
         }
         let mut references = 0usize;
-        self.visit_file_bindings(|_, _| {
+        for _ in self.file_refs() {
             model_history_step(work, 1)?;
             references = references.checked_add(1)
                 .ok_or_else(|| model_history_invalid(work, "model content reference count overflow"))?;
-            Ok(())
-        })?;
+        }
         if references > limits.attachments.saturating_add(1) {
             return Err(model_history_invalid(work, "model content reference count exceeds attachment limit"));
         }
@@ -1458,12 +1443,11 @@ impl PreparedModelRequest {
             let bytes = io.encode(message, io.remaining()?.bytes_encoded, false)?;
             _hold = io.guard_bytes(&bytes)?;
             let mut tokens = bytes.len() as u64;
-            message.content.visit_file_bindings(|file, _| {
+            for file in message.content.file_refs() {
                 model_step(Some(&io), 1)?;
                 tokens = tokens.checked_add(file.descriptor().byte_length())
                     .ok_or_else(|| Error::Invalid("deterministic token count overflows".into()))?;
-                Ok(())
-            })?;
+            }
             let tokens = u32::try_from(tokens)
                 .map_err(|_| Error::Invalid("deterministic token count exceeds u32".into()))?;
             crate::executor::stock_vec_push(&mut message_tokens, tokens, Some(&io))?;
@@ -1762,31 +1746,6 @@ pub struct ModelDispatch {
     pub request_digest: [u8; 32],
 }
 
-/// Durable identity and observed prefix of one interrupted model attempt.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ModelAttempt {
-    /// Owning turn execution.
-    pub operation_id: OperationId,
-    /// Zero-based stock-executor step.
-    pub step: u32,
-    /// Canonical digest of the complete model request.
-    pub request_digest: [u8; 32],
-    /// Durable event prefix already observed.
-    pub observed: Vec<ModelEvent>,
-}
-
-impl ModelAttempt {
-    /// Returns the same identity supplied when the attempt was first dispatched.
-    #[must_use]
-    pub const fn dispatch(&self) -> ModelDispatch {
-        ModelDispatch {
-            operation_id: self.operation_id,
-            step: self.step,
-            request_digest: self.request_digest,
-        }
-    }
-}
-
 /// An actual concrete stream box admitted before invoking its builder.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeModelStream<'a> {
@@ -1937,9 +1896,10 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
 
     /// Continues or reconciles an interrupted run without starting another model request.
     fn reconcile<'a>(
-        &'a self,
-        attempt: ModelAttempt,
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>>;
+        &'a self, _dispatch: ModelDispatch, _observed: &'a [ModelEvent],
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 #[cfg(test)]

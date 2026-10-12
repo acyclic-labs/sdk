@@ -320,24 +320,6 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn fence_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation)> {
-        if !self._native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "created publication lease differs from its original SDK metadata ledger" });
-        }
-        let fence = self.fence.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Conflict, reason: "created resource task has no execution reservation",
-        })?;
-        let mut io = crate::store::history::native_work_io(work)?;
-        crate::store::history::HistoryIo::retain_owned(&mut io,
-            std::mem::size_of::<crate::scheduler::LeaseFence>() as u64)?;
-        let fence = host_fence_with_work(fence, &mut Some(&mut io))?;
-        let custody = io.into_custody();
-        Ok((fence, custody))
-    }
 }
 
 /// Original root binding cache, shared by its issued read witnesses.
@@ -1429,7 +1411,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             #[cfg(target_arch = "wasm32")]
             self.verify(false, &mut None).await?;
             self.host.coordinator.lock().await.scheduler()
-                .session_limits(self.operation_id(), &mut None)?.validate_with_work(quota.work())?;
+                .session_limits(self.operation_id(), &mut None)?.validate(quota.work())?;
             let admission = self.host.admission_with_work(self.operation_id(), quota.work()).await?;
             if quota.work().is_some() {
                 let extent = (std::mem::size_of::<crate::runtime::TaskAdmissionRecord>() as u64)
@@ -4195,7 +4177,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     /// Requires these immutable shared ceilings for every root admitted by this host.
     pub fn with_session_limits(mut self, limits: crate::scheduler::SessionLimits) -> Result<Self> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         self.session_limits = Some(limits);
         Ok(self)
     }
@@ -4243,7 +4225,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 reason: "session configuration differs from original host work" });
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        limits.validate_with_work(&mut Some(&mut io.history_io()))?;
+        limits.validate(&mut Some(&mut io.history_io()))?;
         self.session_limits = Some(limits);
         Ok(self)
     }
@@ -5585,13 +5567,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             key
         };
-        let outcome = crate::distributed::append_keyed(
+        let outcome = crate::distributed::append(
             (stream, &self.stream),
-            OwnedBytes::copy_from_slice(bytes),
-            expected_tail,
+            [OwnedBytes::copy_from_slice(bytes)],
+            0, expected_tail,
             key,
             operation_id,
-            "control identity", &mut None
+            &mut None
         )
         .await?;
         match outcome {

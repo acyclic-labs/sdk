@@ -529,7 +529,7 @@ impl PiSelectedHost<'_> {
     owner.native_view_owner().verify_with_native_work(work).await?;
     destination_owner.native_view_owner().verify_with_native_work(work).await?;
     let completed = if let Some(mount) = &mount {
-        let result = mount.selected_import_snapshot_with_work(fs_operation, &publication_work.native_mount_work(), cancellation).await;
+        let result = mount.selected_import_snapshot_with_work(fs_operation, &publication_work, cancellation).await;
         if let Err(acyclic_fs::NativeMountError::Source(error)) = &result {
             if matches!(error.semantic_error(), acyclic_fs::MountSourceError::OriginalSnapshotUnavailable
                 | acyclic_fs::MountSourceError::Indeterminate) {
