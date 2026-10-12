@@ -5809,7 +5809,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let bytes = if output.is_intrinsic() { 0 } else { output.logical_owned_bytes };
         let mut output = NativeCarrierOwned { value: Some(output), carrier: &mut observer.work, bytes };
         if original.is_none() {
-            output.carrier.with_work(|work| work.record_adoption(bytes)).map_err(mount_demand_error)?;
+            output.carrier.with_work(|work| work.record_adoption(bytes, &None)).map_err(mount_demand_error)?;
         }
         completed?;
         if let Some(original) = original.as_ref() {
