@@ -1,7 +1,7 @@
 use super::*;
 
 impl HostRoot {
-    pub(crate) fn open_child<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn open_child<W: SourceDemandReadWork>(
         &self,
         name: &Path,
         work: &mut W,
@@ -10,14 +10,14 @@ impl HostRoot {
         let directory = open_unix_directory_path(&self.directory, name, false, work)?;
         #[cfg(windows)]
         let directory = { self.open_dir_held(name, work)? };
-        native_read(work)?;
+        work.started_io(READ)?;
         let identity = held_root_identity(&directory)?;
         Ok(HostRoot {
             directory,
             identity,
         })
     }
-    pub(crate) fn open_file_with<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn open_file_with<W: SourceDemandReadWork>(
         &self,
         name: &Path,
         options: &NativeOpenOptions,
@@ -25,7 +25,7 @@ impl HostRoot {
     ) -> Result<File, DemandError> {
         open_leaf(&self.directory, name, options, work)
     }
-    pub(crate) fn rename_to<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn rename_to<W: SourceDemandReadWork>(
         &self,
         name: &Path,
         destination: &Self,
@@ -69,13 +69,10 @@ impl HostRoot {
             })
         }
     }
-    pub(crate) fn sync<W: crate::demand::SourceDemandReadWork>(
-        &self,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
+    pub(crate) fn sync<W: SourceDemandReadWork>(&self, work: &mut W) -> Result<(), DemandError> {
         sync_directory_held(&self.directory, work)
     }
-    pub(crate) fn remove<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn remove<W: SourceDemandReadWork>(
         &self,
         name: &Path,
         work: &mut W,
@@ -87,10 +84,10 @@ impl HostRoot {
         };
         self.remove_identity(name, stat.identity()?, work)
     }
-    pub(crate) fn remove_identity<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn remove_identity<W: SourceDemandReadWork>(
         &self,
         name: &Path,
-        expected: crate::NativeRootIdentity,
+        expected: NativeRootIdentity,
         work: &mut W,
     ) -> Result<(), DemandError> {
         require_leaf(name)?;
@@ -139,10 +136,10 @@ impl HostRoot {
         }
     }
     #[cfg(windows)]
-    pub(super) fn remove_identity_wide<W: crate::demand::SourceDemandReadWork>(
+    pub(super) fn remove_identity_wide<W: SourceDemandReadWork>(
         &self,
         name: &[u16],
-        expected: crate::NativeRootIdentity,
+        expected: NativeRootIdentity,
         work: &mut W,
     ) -> Result<(), DemandError> {
         let root = self;

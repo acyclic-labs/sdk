@@ -1,29 +1,24 @@
 use super::*;
 
 /// A read failed because its file yielded to a rename or deletion.
-#[cfg(windows)]
 #[derive(Debug)]
 pub struct Yielded;
 
-#[cfg(windows)]
 impl std::fmt::Display for Yielded {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("the file gave way to a rename or delete")
     }
 }
 
-#[cfg(windows)]
 impl std::error::Error for Yielded {}
 
 /// A read handle that yields to rename or deletion when its oplock breaks.
-#[cfg(windows)]
 pub struct YieldingFile {
     held: std::sync::Arc<YieldingHeld>,
     /// The thread-pool wait that closes the handle once the oplock breaks.
     wait: Option<windows::Win32::Foundation::HANDLE>,
 }
 
-#[cfg(windows)]
 struct YieldingHeld {
     file: std::sync::Mutex<Option<std::sync::Arc<File>>>,
     // Pinned until kernel completion; null for an ordinary handle.
@@ -31,22 +26,17 @@ struct YieldingHeld {
 }
 
 // SAFETY: the kernel request stays pinned until completion; handle access is locked.
-#[cfg(windows)]
 unsafe impl Send for YieldingHeld {}
 
 // SAFETY: as for `Send`; the file is behind a lock.
-#[cfg(windows)]
 unsafe impl Sync for YieldingHeld {}
 
 // SAFETY: the wait handle is only unregistered, once, by the owner.
-#[cfg(windows)]
 unsafe impl Send for YieldingFile {}
 
 // SAFETY: shared access touches only the locked file.
-#[cfg(windows)]
 unsafe impl Sync for YieldingFile {}
 
-#[cfg(windows)]
 #[repr(C)]
 struct OplockRequest {
     overlapped: windows::Win32::System::IO::OVERLAPPED,
@@ -54,9 +44,8 @@ struct OplockRequest {
     output: windows::Win32::System::Ioctl::REQUEST_OPLOCK_OUTPUT_BUFFER,
 }
 
-#[cfg(windows)]
 impl YieldingFile {
-    pub(super) fn new<W: crate::demand::SourceDemandReadWork>(
+    pub(super) fn new<W: SourceDemandReadWork>(
         file: File,
         work: &mut W,
     ) -> Result<Self, DemandError> {
@@ -98,7 +87,7 @@ impl YieldingFile {
                 },
                 output: REQUEST_OPLOCK_OUTPUT_BUFFER::default(),
             }));
-            if let Err(error) = native_read(work) {
+            if let Err(error) = work.started_io(READ) {
                 unsafe {
                     let _ = CloseHandle(event);
                     drop(Box::from_raw(request));
@@ -157,7 +146,7 @@ impl YieldingFile {
         }
         Ok(yielding)
     }
-    pub(super) fn plain<W: crate::demand::SourceDemandReadWork>(
+    pub(super) fn plain<W: SourceDemandReadWork>(
         file: File,
         work: &mut W,
     ) -> Result<Self, DemandError> {
@@ -209,7 +198,7 @@ impl YieldingFile {
             None => Err(io::Error::other(Yielded).into()),
         }
     }
-    pub(crate) fn read_at<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn read_at<W: SourceDemandReadWork>(
         &self,
         offset: u64,
         destination: &mut [u8],
@@ -351,7 +340,6 @@ impl YieldingFile {
     }
 }
 
-#[cfg(windows)]
 impl Drop for YieldingFile {
     fn drop(&mut self) {
         use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
@@ -382,7 +370,6 @@ impl Drop for YieldingFile {
 
 /// Closes the handle whose oplock broke, which lets the rename or delete
 /// that broke it proceed.
-#[cfg(windows)]
 unsafe extern "system" fn yield_on_break(context: *mut std::ffi::c_void, _timed_out: bool) {
     // SAFETY: the context is the held state, alive until this wait is
     // unregistered, which waits for this callback.
