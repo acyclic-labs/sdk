@@ -11,7 +11,7 @@ use crate::{
     projection::SelectedModelContext,
     runtime::{DurableTaskHost, TaskContext, ToolContext},
     scheduler::LeaseFence,
-    tool::{ToolInvocation, validate_value},
+    tool::ToolInvocation,
     workflow::WorkflowCommand,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
@@ -897,9 +897,10 @@ where
                         Some(io), crate::wire::ErrorCode::Unsupported, "native tool wait requires original observer",
                     ))?;
                     let definition = self.runtime.tool_definition_with_native_work(&input.name, &input.revision, work)?;
-                    let invocation = tool_invocation_with_native_work(
-                        context, command.operation_id, definition, input.arguments, io, work,
-                    )?;
+                    let task = context.durable_task_id().ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized, reason: "tool has no original task" })?;
+                    let operation = super::task_runtime::execution_operation_with_native_work(task, command.operation_id, work)?;
+                    let invocation = tool_invocation(context, operation, definition, input.arguments, Some(io))?;
                     return self.runtime.tool_approval_ready_with_native_work(
                         context, definition, &invocation, work,
                     ).await;
@@ -907,8 +908,9 @@ where
                 let input: ToolTaskCommand = serde_json::from_value(payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 let definition = self.runtime.tool_definition(&input.name, &input.revision)?;
-                let invocation =
-                    tool_invocation(context, command.operation_id, &definition, input.arguments)?;
+                let task = context.durable_task_id().ok_or_else(|| Error::Unauthorized("tool has no task".into()))?;
+                let operation = super::task_runtime::execution_operation(task, command.operation_id);
+                let invocation = tool_invocation(context, operation, &definition, input.arguments, None)?;
                 Box::pin(
                     self.runtime
                         .tool_approval_ready(context, &definition, &invocation),
@@ -1175,7 +1177,7 @@ where
                 return mail::reconciled(Some(io));
             }
         }
-        let invocation = tool_invocation_with_native_operation(context.context(), operation, definition, input.arguments, io, work)?;
+        let invocation = tool_invocation(context.context(), operation, definition, input.arguments, Some(io))?;
         let tool_context = ToolContext::new_with_native_work(Arc::clone(&context), operation, &invocation.call_id, work)?;
         let tool_context = self.runtime.bind_native_tool_interactions(
             tool_context, task, fence, turn, Arc::clone(&journal), work,
@@ -1393,7 +1395,7 @@ where
             .bind_context_interactions(context, task, journal.clone())?;
         let operation = super::task_runtime::execution_operation(task, turn);
         if journal.replay(operation, 0, 1).await?.is_empty() {
-            let invocation = tool_invocation(&context, turn, &definition, input.arguments.clone())?;
+            let invocation = tool_invocation(&context, operation, &definition, input.arguments.clone(), None)?;
             match context
                 .authorize_tool_pending(&definition, &invocation)
                 .await
@@ -1428,32 +1430,28 @@ where
 }
 
 fn tool_invocation(
-    context: &TaskContext,
-    turn: OperationId,
-    definition: &crate::tool::ToolDefinition,
-    arguments: Value,
+    context: &TaskContext, operation: OperationId,
+    definition: &crate::tool::ToolDefinition, arguments: Value,
+    io: Option<&super::PreparationIo>,
 ) -> Result<ToolInvocation> {
-    if !context
-        .scope()
-        .grants()
-        .contains(&crate::contract::capability::tool_call(&definition.name))
-    {
-        return Err(Error::Unauthorized(
-            "task scope lacks tool call grant".into(),
-        ));
+    let grant_hold;
+    let grant = super::fork_preparer_io::format_text(format_args!("tool:call:{}", definition.name), io)?;
+    grant_hold = io.map(|io| io.guard_owned(grant.capacity() as u64)).transpose()?;
+    if !context.scope().grants().contains(&grant) {
+        return Err(super::task_runtime::observed::boundary(io,
+            crate::wire::ErrorCode::Unauthorized, "task scope lacks tool call grant"));
     }
-    validate_value(&definition.input_schema, &arguments, "tool input")?;
-    let task = context
-        .durable_task_id()
-        .ok_or_else(|| Error::Unauthorized("tool has no task".into()))?;
-    let operation = super::task_runtime::execution_operation(task, turn);
+    drop(grant);
+    drop(grant_hold);
+    crate::contract::validate_json_schema_value_with_io(&definition.input_schema, &arguments, "tool input", io)?;
+    if let Some(io) = io { io.retain_owned(std::mem::size_of::<ToolInvocation>() as u64)?; }
     let invocation = ToolInvocation {
         operation_id: operation,
-        call_id: operation.to_string(),
-        name: definition.name.clone(),
+        call_id: super::fork_preparer_io::format_text(format_args!("{operation}"), io)?,
+        name: super::fork_preparer_io::clone_text(&definition.name, io)?,
         arguments,
     };
-    invocation.validate()?;
+    ToolInvocation::validate_identity_with_io(&invocation.call_id, &invocation.name, io)?;
     Ok(invocation)
 }
 
@@ -1481,47 +1479,4 @@ fn child_operation(
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
     Ok(OperationId::from_bytes(bytes))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn tool_invocation_with_native_work(
-    context: &TaskContext,
-    turn: OperationId,
-    definition: &crate::tool::ToolDefinition,
-    arguments: Value,
-    io: &super::PreparationIo,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<ToolInvocation> {
-    let task = context.durable_task_id().ok_or(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Unauthorized,
-        reason: "tool has no original task",
-    })?;
-    let operation = super::task_runtime::execution_operation_with_native_work(task, turn, work)?;
-    tool_invocation_with_native_operation(context, operation, definition, arguments, io, work)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn tool_invocation_with_native_operation(
-    context: &TaskContext, operation: OperationId, definition: &crate::tool::ToolDefinition,
-    arguments: Value, io: &super::PreparationIo,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<ToolInvocation> {
-    let grant = work.display(&format_args!("tool:call:{}", definition.name))?;
-    if !context.scope().grants().contains(&grant.0) {
-        return Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "task scope lacks tool call grant",
-        });
-    }
-    drop(grant);
-    crate::contract::validate_json_schema_value_with_io(
-        &definition.input_schema, &arguments, "tool input", Some(io),
-    )?;
-    let (call_id, custody) = work.display(&operation)?;
-    io.absorb_native_custody(custody)?;
-    let (name, custody) = work.display(&definition.name)?;
-    io.absorb_native_custody(custody)?;
-    io.retain_owned(std::mem::size_of::<ToolInvocation>() as u64)?;
-    crate::tool::ToolInvocation::validate_call_id_with_native_work(&call_id, work)?;
-    Ok(ToolInvocation { operation_id: operation, call_id, name, arguments })
 }

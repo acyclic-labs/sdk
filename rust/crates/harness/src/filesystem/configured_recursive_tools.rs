@@ -354,12 +354,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         Ok(caller)
     }
 
-    fn bind_aggregate(&self, binding: &ConfiguredRecursiveAuthorityBinding,
-        aggregate: StreamAggregate<P>) -> Result<StreamAggregate<P>> {
-        self.bind_aggregate_reader(binding, &binding.scope, aggregate, None)
-    }
-
-    fn bind_aggregate_reader(
+    fn bind_aggregate(
         &self, binding: &ConfiguredRecursiveAuthorityBinding, scope: &Scope,
         aggregate: StreamAggregate<P>, content: Option<Arc<dyn crate::conversation::ContentResidencyVerifier>>,
     ) -> Result<StreamAggregate<P>> {
@@ -377,16 +372,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             .with_limits(self.limits)
     }
 
-    async fn aggregate(&self, binding: &ConfiguredRecursiveAuthorityBinding,
-        cancellation: &CancellationToken) -> Result<StreamAggregate<P>> {
-        cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        let aggregate = StreamAggregate::open_with_read_limits(&self.stream, binding.authority().clone(),
-            verifier(binding)?, SchemaRegistry::default(), self.config.history_limits).await?;
-        cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        self.bind_aggregate(binding, aggregate)
-    }
-
-    async fn publication_aggregate(
+    async fn aggregate(
         &self, binding: &ConfiguredRecursiveAuthorityBinding, scope: &Scope,
         content: Option<Arc<dyn crate::conversation::ContentResidencyVerifier>>,
         cancellation: &CancellationToken,
@@ -395,7 +381,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let aggregate = StreamAggregate::open_with_read_limits(&self.stream, binding.authority().clone(),
             verifier(binding)?, SchemaRegistry::default(), self.config.history_limits).await?;
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        self.bind_aggregate_reader(binding, scope, aggregate, content)
+        self.bind_aggregate(binding, scope, aggregate, content)
     }
 
     fn allocation(&self, caller: TaskId, arguments: &ForkToolArguments, io: Option<&super::PreparationIo>) -> Result<&ConfiguredRecursiveFork> {
@@ -463,7 +449,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             arguments.source.is_none_or(|source| Some(source) == context.durable_task_id())).await?;
         let allocation = self.allocation(caller.task, arguments, None)?;
         let runtime = self.runtime(None)?;
-        let parent = self.aggregate(&caller.owner, cancellation).await?;
+        let parent = self.aggregate(&caller.owner, &caller.owner.scope, None, cancellation).await?;
         let project = self.filesystem.resolve(&workspace_ref(caller.project.provider().clone(), &caller.project.storage_name()?)?).await?.generation;
         let private = self.filesystem.resolve(&workspace_ref(caller.private_volume.provider().clone(), &caller.private_volume.storage_name()?)?).await?.generation;
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
@@ -533,7 +519,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             verifier(&caller.owner)?, SchemaRegistry::default(), intent.request.parent_revision,
             self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?;
         let mut content_work = pinned.work;
-        let pinned = self.bind_aggregate(&caller.owner, pinned.value)?;
+        let pinned = self.bind_aggregate(&caller.owner, &caller.owner.scope, pinned.value, None)?;
         let source_read = self.restore_intent_source(context.task(), &intent.request, cancellation).await?;
         let pinned_source = restore_recursive_fork_source(self.filesystem.clone(), &self.stream, pinned.reducer(),
             verifier(&caller.owner)?, caller.owner.scope.clone(), caller.project.clone(), self.config.stream_provider.clone(),
@@ -582,9 +568,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         Ok(ForkBinding { source, source_checkpoint, child, child_message_pointer: allocation.child_message_pointer.clone(),
             child_message_file_pointer: allocation.child_message_file_pointer.clone(), input_files: allocation.input_files.clone(),
-            parent: self.publication_aggregate(&caller.owner, &caller.owner.scope,
+            parent: self.aggregate(&caller.owner, &caller.owner.scope,
                 Some(self.ordinary_resolver(context.task(), cancellation).await?), cancellation).await?,
-            child_conversation: self.publication_aggregate(&allocation.child, &child_scope, None, cancellation).await?,
+            child_conversation: self.aggregate(&allocation.child, &child_scope, None, cancellation).await?,
             parent_scope: caller.owner.scope.clone(), child_scope, limits: allocation.limits })
     }
 
@@ -630,7 +616,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         } else { None };
         context.read_file_measured(&notice.content, self.config.content_budget, cancellation)
             .await.map_err(|failure| failure.error)?;
-        Ok(MergeBinding { filesystem: self.filesystem.clone(), destination: self.publication_aggregate(
+        Ok(MergeBinding { filesystem: self.filesystem.clone(), destination: self.aggregate(
             &caller.owner, &caller.owner.scope, Some(self.ordinary_resolver(context.task(), cancellation).await?),
             cancellation).await?, verifier: verifier(&caller.owner)?,
             scope: caller.owner.scope.clone(), project: caller.project.clone(), source: source_owner.owner.authority().clone(), source_project: project,
@@ -1199,7 +1185,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let source_owner = self.caller(arguments.source, Some(&super::PreparationIo::from_native_work(work)?))?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let allocation = {
-            let mut history = io.history_io();
             let mut found = None;
             for merge in &self.config.merges {
                 io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 32, items: 1 }, true)?;
@@ -1214,7 +1199,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let runtime = self.runtime(Some(&super::PreparationIo::from_native_work(work)?))?;
         let snapshots = runtime.task_host().observe_volume_snapshots_with_native_work(arguments.source, work).await?;
         let selected = {
-            let mut history = io.history_io();
             let mut found = None;
             for snapshot in &snapshots.0 {
                 io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 }, true)?;
@@ -1288,10 +1272,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         };
         let aggregate = self.native_bind_aggregate(&caller.owner, &scope, destination.0,
             Some(self.native_resolver(context, Arc::clone(&owner), work)?), work)?;
-        {
-            let mut history = io.history_io();
-            history.absorb_native_custody(destination.1)?;
-        }
+        io.absorb_native_custody(destination.1)?;
         let source_read = match source_read {
             Some((handle, guard)) => {
                 io.absorb_native_custody(guard)?;
@@ -1478,7 +1459,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let admission = runtime.task_host().observe_admission_with_native_work(caller_task, work).await?;
         if admission.0.parent.is_some() {
             let snapshots = runtime.task_host().observe_volume_snapshots_with_native_work(caller_task, work).await?;
-            let mut history = io.history_io();
             let mut project = 0;
             let mut scratch = 0;
             for snapshot in &snapshots.0 {

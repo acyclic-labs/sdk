@@ -690,8 +690,8 @@ where
         Ok(Some(request))
     }
 
-    pub(crate) async fn read_answer_with_io(
-        &self, id: InteractionId, io: Option<&PreparationIo>,
+    pub(crate) async fn read_resolution_file(
+        &self, id: InteractionId, detail: bool, io: Option<&PreparationIo>,
     ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         let aggregate_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -702,33 +702,17 @@ where
         let Some((_, Some(resolution))) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
             return Ok(None);
         };
-        let InteractionOutcome::Answered { answer } = &resolution.outcome else { return Ok(None); };
-        let bytes = self.read_resolution_content_with_io(answer, io).await?;
-        drop(aggregate);
-        drop(aggregate_hold);
-        Ok(Some(bytes))
-    }
-
-    pub(crate) async fn read_decision_detail_with_io(
-        &self, id: InteractionId, io: Option<&PreparationIo>,
-    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
-        let aggregate_hold;
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let aggregate = self.aggregate(io).await?;
-        aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
-            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
-                "interaction aggregate custody underflows"))?)).transpose()?;
-        let Some((_, Some(resolution))) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
-            return Ok(None);
+        let reference = if detail { resolution.detail.as_ref() } else {
+            match &resolution.outcome { InteractionOutcome::Answered { answer } => Some(answer.as_ref()), _ => None }
         };
-        let Some(detail) = &resolution.detail else { return Ok(None); };
-        let bytes = self.read_resolution_content_with_io(detail, io).await?;
+        let Some(reference) = reference else { return Ok(None); };
+        let bytes = self.read_file(reference, io).await?;
         drop(aggregate);
         drop(aggregate_hold);
         Ok(Some(bytes))
     }
 
-    async fn read_resolution_content_with_io(
+    async fn read_file(
         &self, reference: &FileRef, io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         match io {
@@ -809,7 +793,7 @@ where
             |work| work as &mut dyn crate::store::history::HistoryIo);
         let bytes_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let bytes = self.read_resolution_content_with_io(&ticket.request, io).await?;
+        let bytes = self.read_file(&ticket.request, io).await?;
         bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "approval request bytes custody underflows"))?)).transpose()?;
@@ -835,7 +819,7 @@ where
             }
             let detail_bytes_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let bytes = self.read_resolution_content_with_io(detail, io).await?;
+            let bytes = self.read_file(detail, io).await?;
             detail_bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                     "approval decision bytes custody underflows"))?)).transpose()?;
