@@ -197,7 +197,14 @@ impl ContextStage for SourceStage {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             validate_projected_context(&context, limits, io)?;
             let loaded = self.source.load(input, limits, io)?.await?;
-            selection::place_messages_with_io(context, loaded, self.placement, limits, io)
+            selection::apply_context_projection(
+                context,
+                loaded,
+                selection::ContextRenderMode::Prompt,
+                self.placement,
+                limits,
+                io,
+            )
         })
     }
 

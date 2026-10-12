@@ -366,11 +366,68 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&PreparationIo>,
     ) -> Result<GenerationRef> {
         if let Some(io) = io {
-            return GenerationRef::from_hex_with_io(&self.provider, reference.version(), io);
+            let provider = &self.provider;
+            let encoded = reference.version();
+            let inspection = acyclic_fs::WorkCounters {
+                items_examined: encoded.len() as u64,
+                ..Default::default()
+            };
+            io.preflight(inspection)?;
+            io.charge(inspection)?;
+            if encoded.is_empty()
+                || encoded.len() % 2 != 0
+                || !encoded.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(io.invalid("file version is not a Filesystem generation"));
+            }
+            for part in [provider.namespace(), provider.family(), provider.version()] {
+                let inspection = acyclic_fs::WorkCounters {
+                    items_examined: part.len() as u64,
+                    ..Default::default()
+                };
+                io.preflight(inspection)?;
+                io.charge(inspection)?;
+            }
+            let provider_hold;
+            let provider = provider.clone_with_io(io)?;
+            provider_hold = io.guard_owned(provider.logical_owned_bytes()?)?;
+            let length = encoded.len() / 2;
+            io.retain_owned(length as u64)?;
+            let key_hold = io.guard_owned(length as u64)?;
+            let decoding = acyclic_fs::WorkCounters {
+                source_bytes_read: encoded.len() as u64,
+                bytes_copied: length as u64,
+                ..Default::default()
+            };
+            io.preflight(decoding)?;
+            io.allocation_attempt(length as u64)?;
+            let mut key = Vec::with_capacity(length);
+            for chunk in encoded.as_bytes().chunks(64) {
+                let mut decoded = [0_u8; 32];
+                let count = chunk.len() / 2;
+                hex::decode_to_slice(chunk, &mut decoded[..count])
+                    .map_err(|_| io.invalid("file version is not a Filesystem generation"))?;
+                key.extend_from_slice(&decoded[..count]);
+            }
+            io.charge(decoding)?;
+            let unused = (length as u64)
+                .checked_sub(key.capacity() as u64)
+                .ok_or_else(|| io.invalid("generation key exceeded admitted capacity"))?;
+            io.release(unused)?;
+            let value = crate::executor::with_history_io(Some(io), |work| {
+                GenerationRef::from_resource_with_work(
+                    crate::resources::ResourceRef::new(
+                        crate::resources::ResourceKind::Generation, provider, key, None, work,
+                    )?, work,
+                )
+            })?;
+            key_hold.into_retained();
+            provider_hold.into_retained();
+            return Ok(value);
         }
         let raw = hex::decode(reference.version())
             .map_err(|_| Error::Invalid("file version is not a Filesystem generation".into()))?;
-        GenerationRef::new(self.provider.clone(), raw.into(), None)
+        GenerationRef::new(&(self.provider), &(raw), None, None).map(|(value, _)| value)
     }
 }
 pub(in crate::filesystem) async fn read_generation<

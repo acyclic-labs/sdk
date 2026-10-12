@@ -308,9 +308,9 @@ where
         ));
     }
     let mut tools = ToolRegistry::default();
-    tools.register(crate::tool::files::read_file()?)?;
-    tools.register(crate::tool::files::write_file()?)?;
-    tools.register(crate::tool::files::edit_file()?)?;
+    tools.register((crate::tool::files::read_file()?, None), &mut None, None)?;
+    tools.register((crate::tool::files::write_file()?, None), &mut None, None)?;
+    tools.register((crate::tool::files::edit_file()?, None), &mut None, None)?;
     let mut resumable_tools = ResumableToolRegistry::default();
     for name in ["acyclic.fork", "acyclic.merge"] {
         let machine = Arc::new(RecursiveToolMachine::new(name, maximum_request_bytes));
@@ -320,7 +320,7 @@ where
             machine,
         };
         resumable_tools.register(durable.clone())?;
-        tools.register(Tool {
+        tools.register((Tool {
             definition,
             executor: Arc::new(RecursiveExecutor {
                 source: source.clone(),
@@ -328,7 +328,7 @@ where
                 maximum_request_bytes,
             }),
             projection: Arc::new(crate::tool::JsonToolProjection),
-        })?;
+        }, None), &mut None, None)?;
     }
     Ok(RecursiveDefaultToolset {
         tools,

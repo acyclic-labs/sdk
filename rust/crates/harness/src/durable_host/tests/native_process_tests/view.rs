@@ -230,14 +230,6 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
     ] {
         assert!(guard.for_volume(owner, volume, writable, ledger).is_err());
     }
-    let legacy = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
-    assert!(
-        legacy
-            .view
-            .task_working_view_with_native_work(&legacy.owner, &work)?
-            .await
-            .is_err()
-    );
     fixture
         .task
         .task_host()

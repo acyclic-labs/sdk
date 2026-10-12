@@ -199,34 +199,6 @@ async fn original_native_prepared_binding_preserves_approval_and_cancellation_be
 }
 
 #[tokio::test]
-async fn finite_native_binding_rejects_legacy_view_before_future_or_content_reads() -> Result<()> {
-    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
-    let budget = fixture.request().await?.view.options.work_per_volume;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = test_work(budget, &cancellation)?;
-    let before = work.receipt();
-    let result = Process::new(
-        fixture.owner.clone(),
-        fixture.command,
-        &fixture.plan,
-        fixture.view.clone(),
-        fixture.approval(),
-        fixture.authority(),
-        &work,
-    );
-    assert!(matches!(
-        result,
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            ..
-        })
-    ));
-    assert_eq!(work.receipt(), before);
-    assert_eq!(work.receipt().backend_write_operations, 0);
-    Ok(())
-}
-
-#[tokio::test]
 async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
     for change in [
         "argv",

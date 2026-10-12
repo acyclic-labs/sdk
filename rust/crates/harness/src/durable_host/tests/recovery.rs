@@ -112,9 +112,15 @@ async fn bounded_routing_ack_loss_redelivery_cancel_and_replacement() -> Result<
                                     host.coordinator
                                         .lock()
                                         .await
-                                        .release_lease(
-                                            &lease,
+                                        .apply(
                                             IdempotencyKey::new("routing-replace")?,
+                                            crate::scheduler::SchedulerEvent::LeaseReleased {
+                                                operation_id: lease.operation.operation_id,
+                                                fence: crate::scheduler::LeaseFence::from(
+                                                    &lease.reservation,
+                                                ),
+                                            },
+                                            &mut None,
                                         )
                                         .await?;
                                     let WorkPull::Claimed(replacement) = host
@@ -190,7 +196,14 @@ async fn recovery_after_pull_response_loss_keeps_original_reservation_without_wr
         host.coordinator
             .lock()
             .await
-            .release_lease(&previous, IdempotencyKey::new("recover-fixture-release")?)
+            .apply(
+                IdempotencyKey::new("recover-fixture-release")?,
+                crate::scheduler::SchedulerEvent::LeaseReleased {
+                    operation_id: previous.operation.operation_id,
+                    fence: crate::scheduler::LeaseFence::from(&previous.reservation),
+                },
+                &mut None,
+            )
             .await?;
         if mode == 1 {
             provider.lose_ack.store(true, Ordering::SeqCst);
@@ -381,7 +394,7 @@ async fn task_effect_dispatch_race_and_cancelled_settlement_use_one_owner() -> R
         request: Mutex::new(None),
     });
     let mut providers = EffectRegistry::default().with_result_resolver(payloads.clone());
-    providers.register(receipt.clone())?;
+    providers.register(receipt.clone(), None)?;
     let conversation = Authority {
         kind: AggregateKind::Conversation,
         id: "effect-conversation".into(),

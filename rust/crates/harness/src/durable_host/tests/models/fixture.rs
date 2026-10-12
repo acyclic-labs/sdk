@@ -551,7 +551,14 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
     host.coordinator
         .lock()
         .await
-        .release_lease(&lease, IdempotencyKey::new("model-release")?)
+        .apply(
+            IdempotencyKey::new("model-release")?,
+            crate::scheduler::SchedulerEvent::LeaseReleased {
+                operation_id: lease.operation.operation_id,
+                fence: crate::scheduler::LeaseFence::from(&lease.reservation),
+            },
+            &mut None,
+        )
         .await?;
     let worker = crate::distributed::Worker {
         id: "replacement-worker".into(),

@@ -41,13 +41,18 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
     let seed = ready
         .map_err(|error| Error::Storage(format!("native host did not reach launch: {error}")))?;
     tokio::time::sleep(std::time::Duration::from_millis(3200)).await;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = test_work(
+        acyclic_fs::performance::work_budget(1_000_000_000, 1_000_000_000),
+        &cancellation,
+    )?;
     let LocalNativeRecovery {
         files,
         task,
         owner,
         process,
         effects,
-    } = reopen_native(storage.path(), &seed).await?;
+    } = reopen_native(storage.path(), &seed, &work).await?;
     let attempt = crate::EffectAttemptId::from_bytes(
         task_effect_id(seed.task, seed.command, &mut None)?.into_bytes(),
     );
@@ -55,13 +60,14 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(
         effects
-            .run_task_effect(&owner, seed.command, seed.plan.clone())
-            .await?,
+            .run_task_effect_with_native_work(&owner, seed.command, &seed.plan, &work)
+            .await?
+            .0,
         EffectStatus::Indeterminate
     );
-    assert_eq!(process.output(attempt).await?, None);
+    assert!(process.output(attempt, &work).await?.is_none());
     let receipt = process
-        .receipt(attempt)
+        .receipt(attempt, &work, None)
         .await?
         .ok_or_else(|| Error::Storage("missing launch-only native receipt".into()))?;
     assert_native_receipt_binding(
@@ -86,11 +92,12 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
     assert!(owner.verify(true, &mut None).await.is_ok());
     assert_eq!(
         effects
-            .reconcile_task_effect(&owner, seed.command, &seed.plan)
-            .await?,
+            .reconcile_task_effect_with_native_work(&owner, seed.command, &seed.plan, &work)
+            .await?
+            .0,
         EffectStatus::Indeterminate
     );
-    assert_eq!(process.receipt(attempt).await?, Some(receipt));
+    assert_eq!(process.receipt(attempt, &work, None).await?, Some(receipt));
     assert_eq!(task.task_host().outcome(seed.task).await?, None);
     assert!(!output.exists());
     let destination = workspace_ref(

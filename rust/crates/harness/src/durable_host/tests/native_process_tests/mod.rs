@@ -194,12 +194,13 @@ where
             .into_native_shared(work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let project = self.source.clone_with_native_work(work)?;
-        let generation = crate::resources::GenerationRef::new_with_native_work(
+        let generation = crate::resources::GenerationRef::new(
             generation.as_resource().provider(),
             generation.as_resource().key(),
             generation.as_resource().version(),
-            work,
-        )?;
+            Some(work),
+        )
+        .map(|(value, custody)| (value, custody.expect("native generation custody")))?;
         let snapshot = (
             crate::source_authorization::ProjectSourceSnapshot {
                 project: project.0,
@@ -241,7 +242,7 @@ where
 
     fn effects(&self, process: Arc<Process<P>>) -> Result<ConversationEffectHost<P>> {
         let mut registry = EffectRegistry::default().with_result_resolver(self.content.clone());
-        registry.register(process)?;
+        registry.register(process, None)?;
         ConversationEffectHost::new(
             self.owner.stream(),
             self.issuer
@@ -256,7 +257,8 @@ where
             registry,
             None,
             None,
-        )
+        )?
+        .clone_with_native_work(self.view.work())
     }
 }
 

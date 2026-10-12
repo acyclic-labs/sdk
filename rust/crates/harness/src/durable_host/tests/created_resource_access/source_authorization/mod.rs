@@ -677,9 +677,13 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         .coordinator
         .lock()
         .await
-        .release_lease(
-            &fixture.root_lease,
+        .apply(
             IdempotencyKey::new("source-stale-owner")?,
+            crate::scheduler::SchedulerEvent::LeaseReleased {
+                operation_id: fixture.root_lease.operation.operation_id,
+                fence: crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation),
+            },
+            &mut None,
         )
         .await?;
     assert!(

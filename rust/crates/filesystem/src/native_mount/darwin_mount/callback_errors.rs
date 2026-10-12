@@ -37,8 +37,8 @@ fn source_errno(error: &MountSourceError) -> i32 {
             crate::native_mount::native_workspace_errno(source)
         }
         MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
-        MountSourceError::NativeWorkspaceCause(error) => {
-            crate::native_mount::native_workspace_errno(&error.source)
+        MountSourceError::NativeWorkspaceCause(error, _) => {
+            crate::native_mount::native_workspace_errno(error)
         }
         _ => libc::EIO,
     }
@@ -67,8 +67,8 @@ pub(super) fn fatal(error: &NativeMountError) -> bool {
                     crate::native_mount::native_workspace_failure_is_fatal(source)
                         || crate::native_mount::native_workspace_failure_is_fatal(accounting)
                 }
-                MountSourceError::NativeWorkspaceCause(error) => {
-                    crate::native_mount::native_workspace_failure_is_fatal(&error.source)
+                MountSourceError::NativeWorkspaceCause(error, _) => {
+                    crate::native_mount::native_workspace_failure_is_fatal(error)
                 }
                 MountSourceError::Cancelled
                 | MountSourceError::Work(_)

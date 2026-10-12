@@ -116,10 +116,12 @@ impl CreationFixture {
                 let initial_generation = initial.id();
                 let workspace = workspace_ref(filesystem_provider.clone(), &name)?;
                 let initial_ref = GenerationRef::new(
-                    filesystem_provider.clone(),
-                    initial_generation.digest().into_bytes().to_vec(),
+                    &(filesystem_provider),
+                    &(initial_generation.digest().into_bytes()),
                     None,
-                )?;
+                    None,
+                )?
+                .0;
                 let selected = filesystem
                     .apply(
                         &workspace,

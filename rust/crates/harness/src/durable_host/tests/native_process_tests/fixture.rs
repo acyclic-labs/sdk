@@ -1,15 +1,14 @@
 use super::*;
 
 pub(super) async fn process_fixture<P: StreamProvider + 'static>(
-    stream: std::sync::Arc<P>,
+    stream: Arc<P>,
     mode: &str,
     approve: bool,
     work: Option<&acyclic_fs::NativeMaterializationWork>,
 ) -> Result<ProcessFixture<P>> {
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     process_fixture_with_filesystems(
         stream,
-        directory,
+        tempfile::tempdir().map_err(|e| Error::Storage(e.to_string()))?,
         Fs::memory(),
         Fs::memory(),
         mode,
@@ -28,7 +27,7 @@ pub(super) fn initialize_issued_view_fixture_services() -> Result<()> {
 }
 
 pub(super) async fn process_fixture_with_filesystems<P, A, O>(
-    stream: std::sync::Arc<P>,
+    stream: Arc<P>,
     directory: tempfile::TempDir,
     filesystem: Fs<A, O>,
     auxiliary_filesystem: Fs<A, O>,
@@ -47,126 +46,92 @@ where
         "1".into(),
         &mut None,
     )?;
-    let files = FilesystemHost::new(filesystem.clone(), &provider, None)?;
-    let agent = AgentId::from_bytes([61; 16]);
     let auxiliary_provider = ProviderRef::new(
         "native-test-aux".into(),
         "filesystem".into(),
         "1".into(),
         &mut None,
     )?;
+    let files = FilesystemHost::new(filesystem.clone(), &provider, None)?;
     let auxiliary_host = FilesystemHost::new(auxiliary_filesystem, &auxiliary_provider, None)?;
+    let agent = AgentId::from_bytes([61; 16]);
+    let volume = |name: &str, project| {
+        VolumeRef::new(
+            provider.clone(),
+            name.into(),
+            if project {
+                VolumeClass::Project
+            } else {
+                VolumeClass::AgentPrivate
+            },
+            if project {
+                VolumeOwner::Project("fixture-project".into())
+            } else {
+                VolumeOwner::Agent(agent)
+            },
+            &mut None,
+        )
+    };
+    let source = volume(
+        "source",
+        matches!(mode, "mixed-issued-view" | "review-test"),
+    )?;
+    let destination = volume("destination", mode == "review-test")?;
+    let second_destination = volume("second-destination", mode == "review-test")?;
+    let result_volume = volume("results", false)?;
     let auxiliary = VolumeRef::new(
         auxiliary_provider,
-        "auxiliary",
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
-        &mut None,
-    )?;
-    let source = VolumeRef::new(
-        provider.clone(),
-        "source",
-        if mode == "mixed-issued-view" || mode == "review-test" {
-            VolumeClass::Project
-        } else {
-            VolumeClass::AgentPrivate
-        },
-        if mode == "mixed-issued-view" || mode == "review-test" {
-            VolumeOwner::Project("fixture-project".into())
-        } else {
-            VolumeOwner::Agent(agent)
-        },
-        &mut None,
-    )?;
-    let destination = VolumeRef::new(
-        provider.clone(),
-        "destination",
-        if mode == "review-test" {
-            VolumeClass::Project
-        } else {
-            VolumeClass::AgentPrivate
-        },
-        if mode == "review-test" {
-            source.owner().clone()
-        } else {
-            VolumeOwner::Agent(agent)
-        },
-        &mut None,
-    )?;
-    let second_destination = VolumeRef::new(
-        provider.clone(),
-        "second-destination",
-        if mode == "review-test" {
-            VolumeClass::Project
-        } else {
-            VolumeClass::AgentPrivate
-        },
-        if mode == "review-test" {
-            source.owner().clone()
-        } else {
-            VolumeOwner::Agent(agent)
-        },
-        &mut None,
-    )?;
-    let result_volume = VolumeRef::new(
-        provider,
-        "results",
+        "auxiliary".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
         &mut None,
     )?;
     let extra_sources = (0..if mode == "many-bash" { 16 } else { 0 })
-        .map(|index| {
-            VolumeRef::new(
-                source.provider().clone(),
-                format!("extra-{index}"),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(agent),
-                &mut None,
-            )
-        })
+        .map(|index| volume(&format!("extra-{index}"), false))
         .collect::<Result<Vec<_>>>()?;
     let command = OperationId::from_bytes([62; 16]);
-    let approval = task_interaction_id(TaskId::from_bytes([53; 16]), command);
-    let conversation = Authority {
-        kind: AggregateKind::Conversation,
-        id: "native-test-conversation".into(),
-    };
-    let issuer = AuthorityIssuer::new("native-test", [63; 32], conversation);
-    let grants = Capabilities::new(
-        [
-            "operation:declare".into(),
-            "operation:observe".into(),
-            "operation:cancel".into(),
-            "task:spawn:test.effect@1".into(),
-            source.capability(VolumeOperation::Read, &mut None)?,
-            auxiliary.capability(VolumeOperation::Read, &mut None)?,
-            destination.capability(VolumeOperation::Read, &mut None)?,
-            destination.capability(VolumeOperation::Write, &mut None)?,
-            second_destination.capability(VolumeOperation::Read, &mut None)?,
-            second_destination.capability(VolumeOperation::Write, &mut None)?,
-            result_volume.capability(VolumeOperation::Read, &mut None)?,
-            result_volume.capability(VolumeOperation::Write, &mut None)?,
-            "effect:plan".into(),
-            "effect:run".into(),
-            "effect:provider:test.native".into(),
-            "interaction:open".into(),
-            "interaction:resolve".into(),
-            capability::interaction_respond(approval),
-            "interaction:route".into(),
-            "conversation:bind".into(),
-        ]
-        .into_iter()
-        .chain(
-            extra_sources
-                .iter()
-                .map(|volume| volume.capability(VolumeOperation::Read, &mut None))
-                .collect::<Result<Vec<_>>>()?,
-        ),
+    let task_id = TaskId::from_bytes([53; 16]);
+    let approval = task_interaction_id(task_id, command);
+    let issuer = AuthorityIssuer::new(
+        "native-test",
+        [63; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "native-test-conversation".into(),
+        },
     );
-    let scope = issuer
-        .issue("owner", &grants, Some(agent), None, &mut None)
-        .expect("scope proof");
+    let verifier = issuer.verifier(&mut None)?;
+    let mut grants = vec![
+        "operation:declare".into(),
+        "operation:observe".into(),
+        "operation:cancel".into(),
+        "task:spawn:test.effect@1".into(),
+        "effect:plan".into(),
+        "effect:run".into(),
+        "effect:provider:test.native".into(),
+        "interaction:open".into(),
+        "interaction:resolve".into(),
+        capability::interaction_respond(approval),
+        "interaction:route".into(),
+        "conversation:bind".into(),
+    ];
+    for volume in [
+        &source,
+        &auxiliary,
+        &destination,
+        &second_destination,
+        &result_volume,
+    ]
+    .into_iter()
+    .chain(&extra_sources)
+    {
+        grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
+    }
+    for volume in [&destination, &second_destination, &result_volume] {
+        grants.push(volume.capability(VolumeOperation::Write, &mut None)?);
+    }
+    let grants = Capabilities::new(grants);
+    let scope = issuer.issue("owner", &grants, Some(agent), None, &mut None)?;
     let root_births = if mode == "mixed-issued-view" {
         let original = original_work.ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
@@ -211,8 +176,9 @@ where
         None
     };
     if mode != "review-test" {
-        files.create_volume(&destination).await?;
-        files.create_volume(&second_destination).await?;
+        for volume in [&destination, &second_destination] {
+            files.create_volume(volume).await?;
+        }
     }
     auxiliary_host.create_volume(&auxiliary).await?;
     for volume in &extra_sources {
@@ -227,7 +193,6 @@ where
         grants,
     )
     .await?;
-    let task_id = TaskId::from_bytes([53; 16]);
     let crate::distributed::WorkPull::Claimed(lease) = task
         .task_host()
         .pull_work(&crate::distributed::Worker {
@@ -241,18 +206,28 @@ where
     };
     task.task_host().start_task(&lease, None).await?;
     let owner_fence = crate::scheduler::LeaseFence::from(&lease.reservation);
-    let owner = match original_work {
-        Some(work) => task
-            .task_host()
-            .journal_owner_with_native_work(task_id, &owner_fence, work)
-            .await?
-            .into_native_shared(work)?,
-        None => Arc::new(
-            task.task_host()
-                .journal_owner(task_id, owner_fence.clone())
-                .await?,
-        ),
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let count = 3 + extra_sources.len() + usize::from(mode == "partial-publication");
+    let options = NativeViewOptions {
+        root: directory.path().join("view"),
+        maximum_volumes: count
+            .try_into()
+            .map_err(|e: std::num::TryFromIntError| Error::Invalid(e.to_string()))?,
+        work_per_volume: acyclic_fs::performance::work_budget(10_000_000, 10_000_000),
     };
+    let fallback_work;
+    let work = match original_work {
+        Some(work) => work,
+        None => {
+            fallback_work = test_work(options.budget_for_volume_count(count)?, &cancellation)?;
+            &fallback_work
+        }
+    };
+    let owner = task
+        .task_host()
+        .journal_owner_with_native_work(task_id, &owner_fence, work)
+        .await?
+        .into_native_shared(work)?;
     if let Some((_, _, _, scratch_operation, _)) = root_births {
         use crate::store::history::HistoryIo as _;
         let original = original_work.expect("protected Root births require original work");
@@ -315,103 +290,91 @@ where
             )
             .await?;
     }
-    let setup_scope = issuer
-        .issue(
-            "setup",
-            &Capabilities::new(
-                [
-                    source.capability(VolumeOperation::Write, &mut None)?,
-                    auxiliary.capability(VolumeOperation::Write, &mut None)?,
-                ]
-                .into_iter()
-                .chain(
-                    extra_sources
-                        .iter()
-                        .map(|volume| volume.capability(VolumeOperation::Write, &mut None))
-                        .collect::<Result<Vec<_>>>()?,
-                ),
-            ),
-            Some(agent),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
-    let setup_grant = ContentGrant::verify(
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &setup_scope,
-        &source,
-        VolumeOperation::Write,
+    let writes = [&source, &auxiliary]
+        .into_iter()
+        .chain(&extra_sources)
+        .map(|volume| volume.capability(VolumeOperation::Write, &mut None))
+        .collect::<Result<Vec<_>>>()?;
+    let setup_scope = issuer.issue(
+        "setup",
+        &Capabilities::new(writes),
+        Some(agent),
+        None,
+        &mut None,
     )?;
-    files
-        .put_content(
+    for (host, volume, bytes, key) in [
+        (
+            &files,
             &source,
-            &setup_grant,
-            "input.txt",
-            b"pinned input",
-            "text/plain",
-            "input.txt",
-            128,
-            &IdempotencyKey::new("source-setup")?,
-            None,
-            None,
-        )
-        .await?;
-    let auxiliary_grant = ContentGrant::verify(
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &setup_scope,
-        &auxiliary,
-        VolumeOperation::Write,
-    )?;
-    auxiliary_host
-        .put_content(
+            b"pinned input".as_slice(),
+            "source-setup".to_owned(),
+        ),
+        (
+            &auxiliary_host,
             &auxiliary,
-            &auxiliary_grant,
+            b"auxiliary input".as_slice(),
+            "auxiliary-setup".to_owned(),
+        ),
+    ]
+    .into_iter()
+    .chain(extra_sources.iter().enumerate().map(|(index, volume)| {
+        (
+            &files,
+            volume,
+            b"extra input".as_slice(),
+            format!("extra-source-{index}"),
+        )
+    })) {
+        let grant = ContentGrant::verify(
+            &verifier,
+            &setup_scope,
+            volume,
+            VolumeOperation::Write,
+            128,
+            &mut None,
+        )?;
+        host.put_content(
+            volume,
+            &grant,
             "input.txt",
-            b"auxiliary input",
+            bytes,
             "text/plain",
             "input.txt",
             128,
-            &IdempotencyKey::new("auxiliary-setup")?,
+            &IdempotencyKey::new(key)?,
             None,
             None,
         )
         .await?;
-    let auxiliary_generation = auxiliary_host
-        .resolve(&workspace_ref(
-            auxiliary.provider().clone(),
-            &auxiliary.storage_name(&mut None)?,
-        )?)
-        .await?
-        .generation;
-    let source_generation = files
-        .resolve(&workspace_ref(
-            source.provider().clone(),
-            &source.storage_name(&mut None)?,
-        )?)
-        .await?
-        .generation;
+    }
     if mode == "review-test" {
+        let workspace = workspace_ref(source.provider().clone(), &source.storage_name(&mut None)?)?;
+        let generation = files.resolve(&workspace).await?.generation;
         let read = ContentGrant::verify(
-            &issuer.verifier(&mut None).expect("verifier copy"),
+            &verifier,
             &scope,
             &source,
             VolumeOperation::Read,
+            128,
+            &mut None,
         )?;
         for (volume, key) in [
             (&destination, "review-fork"),
             (&second_destination, "caller-fork"),
         ] {
             let write = ContentGrant::verify(
-                &issuer.verifier(&mut None).expect("verifier copy"),
+                &verifier,
                 &scope,
                 volume,
                 VolumeOperation::Write,
+                128,
+                &mut None,
             )?;
             files
                 .fork_volume(
                     &source,
                     &read,
-                    &source_generation,
+                    &generation,
                     volume,
                     &write,
                     None,
@@ -420,138 +383,49 @@ where
                 .await?;
         }
     }
-    let destination_generation = files
-        .resolve(&workspace_ref(
-            destination.provider().clone(),
-            &destination.storage_name(&mut None)?,
-        )?)
-        .await?
-        .generation;
-    let second_generation = files
-        .resolve(&workspace_ref(
-            second_destination.provider().clone(),
-            &second_destination.storage_name(&mut None)?,
-        )?)
-        .await?
-        .generation;
+    let mut selections = vec![
+        (&files, &source, "src".to_owned(), false),
+        (&files, &destination, "dst".to_owned(), true),
+        (&auxiliary_host, &auxiliary, "aux".to_owned(), false),
+    ];
+    if mode == "partial-publication" {
+        selections.push((&files, &second_destination, "second-dst".into(), true));
+    }
+    selections.extend(
+        extra_sources
+            .iter()
+            .enumerate()
+            .map(|(index, volume)| (&files, volume, format!("extra-{index}"), false)),
+    );
+    let mut bindings = Vec::new();
+    for (host, volume, path, writable) in selections {
+        let workspace = workspace_ref(volume.provider().clone(), &volume.storage_name(&mut None)?)?;
+        bindings.push(PreparationSelection {
+            host: Arc::clone(host),
+            volume: volume.clone(),
+            generation: host.resolve(&workspace).await?.generation,
+            path,
+            writable,
+            verifier: verifier.clone(),
+            scope: scope.clone(),
+            publication: acyclic_fs::PublicationPermit::Unrestricted,
+        });
+    }
     let root = directory.path().join("view");
-    std::fs::create_dir(&root).map_err(|error| Error::Storage(error.to_string()))?;
-    let work = acyclic_fs::performance::work_budget(10_000_000, 10_000_000);
     let operation_directory = directory.path().join("preparation");
     for path in [
+        &root,
         &operation_directory,
         &operation_directory.join("target"),
         &operation_directory.join("backup"),
     ] {
-        std::fs::create_dir(path).map_err(|error| Error::Storage(error.to_string()))?;
+        std::fs::create_dir(path).map_err(|e| Error::Storage(e.to_string()))?;
     }
-    let mut bindings = vec![
-        PreparationSelection {
-            host: files.clone(),
-            volume: source.clone(),
-            generation: source_generation,
-            path: "src".into(),
-            writable: false,
-            verifier: issuer.verifier(&mut None).expect("verifier copy"),
-            scope: scope.clone(),
-            publication: acyclic_fs::PublicationPermit::Unrestricted,
-        },
-        PreparationSelection {
-            host: files.clone(),
-            volume: destination.clone(),
-            generation: destination_generation,
-            path: "dst".into(),
-            writable: true,
-            verifier: issuer.verifier(&mut None).expect("verifier copy"),
-            scope: scope.clone(),
-            publication: acyclic_fs::PublicationPermit::Unrestricted,
-        },
-        PreparationSelection {
-            host: auxiliary_host,
-            volume: auxiliary,
-            generation: auxiliary_generation,
-            path: "aux".into(),
-            writable: false,
-            verifier: issuer.verifier(&mut None).expect("verifier copy"),
-            scope: scope.clone(),
-            publication: acyclic_fs::PublicationPermit::Unrestricted,
-        },
-    ];
-    if mode == "partial-publication" {
-        bindings.push(PreparationSelection {
-            host: files.clone(),
-            volume: second_destination.clone(),
-            generation: second_generation,
-            path: "second-dst".into(),
-            writable: true,
-            verifier: issuer.verifier(&mut None).expect("verifier copy"),
-            scope: scope.clone(),
-            publication: acyclic_fs::PublicationPermit::Unrestricted,
-        });
-    }
-    for (index, volume) in extra_sources.into_iter().enumerate() {
-        let grant = ContentGrant::verify(
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &setup_scope,
-            &volume,
-            VolumeOperation::Write,
-        )?;
-        files
-            .put_content(
-                &volume,
-                &grant,
-                "input.txt",
-                b"extra input",
-                "text/plain",
-                "input.txt",
-                128,
-                &IdempotencyKey::new(format!("extra-source-{index}"))?,
-                None,
-                None,
-            )
-            .await?;
-        let generation = files
-            .resolve(&workspace_ref(
-                volume.provider().clone(),
-                &volume.storage_name(&mut None)?,
-            )?)
-            .await?
-            .generation;
-        bindings.push(PreparationSelection {
-            host: files.clone(),
-            volume,
-            generation,
-            path: format!("extra-{index}"),
-            writable: false,
-            verifier: issuer.verifier(&mut None).expect("verifier copy"),
-            scope: scope.clone(),
-            publication: acyclic_fs::PublicationPermit::Unrestricted,
-        });
-    }
-    let maximum_volumes =
-        u32::try_from(bindings.len()).map_err(|error| Error::Invalid(error.to_string()))?;
-    let options = NativeViewOptions {
-        root,
-        maximum_volumes,
-        work_per_volume: work,
-    };
     let borrowed = borrow_preparation_bindings(&bindings);
     let mut lazy_mount = None;
     let mut lazy_work = None;
     let mut project_policy = None;
     let mut project_generation = None;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let fallback_work;
-    let work = match original_work {
-        Some(work) => work,
-        None => {
-            fallback_work = test_work(
-                options.budget_for_volume_count(bindings.len())?,
-                &cancellation,
-            )?;
-            &fallback_work
-        }
-    };
     let (preparation_root, native_root_custody) =
         NativePreparationRoot::witness(&options.root, &operation_directory, work)?.await?;
     let native_root_custody = Some(native_root_custody);
@@ -679,12 +553,15 @@ where
                 )?
                 .with_bootstrap_source_with_native_work(protected, work)?,
             );
-            project_generation = Some(crate::resources::GenerationRef::new_with_native_work(
-                borrowed[0].generation.as_resource().provider(),
-                borrowed[0].generation.as_resource().key(),
-                borrowed[0].generation.as_resource().version(),
-                work,
-            )?);
+            project_generation = Some(
+                crate::resources::GenerationRef::new(
+                    borrowed[0].generation.as_resource().provider(),
+                    borrowed[0].generation.as_resource().key(),
+                    borrowed[0].generation.as_resource().version(),
+                    Some(work),
+                )
+                .map(|(value, custody)| (value, custody.expect("native generation custody")))?,
+            );
             let namespace = NativeVolumeNamespace::LazyMount { snapshot };
             let mut mixed_borrowed = borrowed;
             mixed_borrowed[0].namespace = &namespace;
@@ -777,17 +654,12 @@ where
             request.argv[3].push_str("; for index in {0..15}; do IFS= read -r value < extra-$index/input.txt; printf '%s|' \"$value\"; done > dst/many.txt");
         }
     }
-    let content = FilesystemContentVerifier::new(
-        files.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_000_000,
-        None,
-    )?;
+    let content =
+        FilesystemContentVerifier::new(files.clone(), &verifier, &scope, 1_000_000, None)?;
     let results = FilesystemContentPublisher::new(
         files.clone(),
         &result_volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
+        &verifier,
         &scope,
         1_000_000,
         None,
@@ -821,8 +693,8 @@ where
         owner.stream(),
         files.clone(),
         &result_volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &crate::core::SchemaRegistry::new(),
+        &verifier,
+        &SchemaRegistry::new(),
         &scope,
         1_000_000,
         None,
@@ -903,13 +775,13 @@ where
     let runtime = FilesystemTaskRuntime::open(
         stream,
         files,
-        volume,
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope.clone(),
-        runtime_scope.clone(),
-        tasks,
-        machines,
-        crate::tool::ToolRegistry::default(),
+        &volume,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        scope,
+        &runtime_scope,
+        &tasks,
+        &machines,
+        &crate::tool::ToolRegistry::default(),
         crate::scheduler::SessionLimits {
             active_tasks: 1,
             total_tasks: 1,
@@ -918,6 +790,11 @@ where
         },
         1,
         1_000_000,
+        Arc::new(SystemUnixMillisClock),
+        None,
+        &[],
+        &crate::durable_tool::ResumableToolRegistry::default(),
+        None,
     )
     .await?;
     runtime
@@ -1076,6 +953,7 @@ pub(super) async fn preparation_fixture_on<P: StreamProvider + 'static>(
 pub(super) async fn reopen_native(
     storage: &std::path::Path,
     seed: &NativeRestart,
+    work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<LocalNativeRecovery> {
     let issuer = AuthorityIssuer::new(
         "native-test",
@@ -1145,7 +1023,7 @@ pub(super) async fn reopen_native(
         LocalNativeProcess::recover(
             owner.clone(),
             seed.command,
-            seed.plan.clone(),
+            &seed.plan,
             task_interaction_id(seed.task, seed.command),
             NativeProcessAuthority {
                 verifier: issuer.verifier(&mut None).expect("verifier copy"),
@@ -1159,11 +1037,12 @@ pub(super) async fn reopen_native(
                 approvals,
                 authority_custody: None,
             },
+            work,
         )
         .await?,
     );
     let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
-    registry.register(process.clone())?;
+    registry.register(process.clone(), None)?;
     let effects = ConversationEffectHost::new(
         owner.stream(),
         issuer
@@ -1178,7 +1057,8 @@ pub(super) async fn reopen_native(
         registry,
         None,
         None,
-    )?;
+    )?
+    .clone_with_native_work(work)?;
     Ok(LocalNativeRecovery {
         files,
         task,

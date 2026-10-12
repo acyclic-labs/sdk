@@ -70,18 +70,13 @@ impl ProjFsSession {
         })?;
         let (root, mut allocation) = work.path(&request.destination, None)?;
         let bytes = size_of::<Runtime>()
-            + size_of::<HostRoot>()
             + size_of::<Projector>()
-            + size_of::<Mutex<HashMap<u128, OpenMetadataState>>>()
-            + size_of::<Mutex<HashMap<MountPath, ReadOnlyBinding>>>()
-            + size_of::<Mutex<HashMap<MountPath, usize>>>()
-            + size_of::<FileLocks>()
             + size_of::<Mutex<PostOperationFailures>>()
-            + 7 * 2 * size_of::<usize>()
+            + 3 * 2 * size_of::<usize>()
             + 64 * size_of::<Mutex<()>>();
-        let mut state_allocation = work.claim(bytes as u64, 8, crate::WorkCounters::UNCHARGED)?;
+        let mut state_allocation = work.claim(bytes as u64, 4, crate::WorkCounters::UNCHARGED)?;
         allocation.absorb(&mut state_allocation)?;
-        let metadata_root = Arc::new(HostRoot::open(&root, &mut { work })?);
+        let metadata_root = HostRoot::open(&root, &mut { work })?;
         let warm = retirement.as_ref().and_then(|packet| packet.warm_namespace);
         if warm.is_none() {
             reject_stale_projection(&root)?;
@@ -99,11 +94,11 @@ impl ProjFsSession {
             metadata_root,
             staging: Mutex::new(None),
             writable: request.writable,
-            metadata_baselines: Arc::new(Mutex::new(HashMap::new())),
-            projection: Arc::new(Mutex::new(HashMap::new())),
+            metadata_baselines: Mutex::new(HashMap::new()),
+            projection: Mutex::new(HashMap::new()),
             projector: Arc::new(Projector::new()),
-            metadata_probes: Arc::new(Mutex::new(HashMap::new())),
-            metadata_edits: Arc::new(FileLocks::default()),
+            metadata_probes: Mutex::new(HashMap::new()),
+            metadata_edits: FileLocks::default(),
             post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
             callbacks: CallbackGate::start()?,
             _allocation: allocation,
@@ -448,7 +443,7 @@ impl ProjFsSession {
             .split('/')
             .filter(|component| !component.is_empty())
             .collect::<PathBuf>();
-        lock_recover(runtime.projection.as_ref()).clear();
+        lock_recover(&runtime.projection).clear();
         if relative.as_os_str().is_empty() {
             return Ok(());
         }
