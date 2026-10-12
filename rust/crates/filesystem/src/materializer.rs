@@ -3698,7 +3698,7 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, std::sync::Arc<Nat
         let failure_slot = NativeStageUncertainty::<E>::new(&original)
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
         let state = std::sync::Mutex::new(Some(NativeStageJournal::<S::ActionCompletion<'_>>::Journal(journal)));
-        let reader = generation.workspace().readonly_pinned_reader_with_native_work(
+        let reader = generation.workspace().reader(
             generation.id(), &original, original.cancellation(),
         ).await.map_err(E::from)?;
         let mut control = |phase| {
