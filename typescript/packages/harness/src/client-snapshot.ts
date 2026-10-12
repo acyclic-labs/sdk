@@ -45,11 +45,8 @@ export class SnapshotStore<Value> implements ClientSnapshot<Value> {
       try { this.#detach = this.attach(this.publish); }
       catch (error) { this.#listeners.delete(registration); throw error; }
     }
-    let active = true;
     return () => {
-      if (!active) return;
-      active = false;
-      this.#listeners.delete(registration);
+      if (!this.#listeners.delete(registration)) return;
       if (this.#listeners.size === 0) {
         const detach = this.#detach;
         this.#detach = undefined;
