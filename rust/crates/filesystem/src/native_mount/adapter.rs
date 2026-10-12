@@ -8695,9 +8695,57 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut carrier = NativeDemandCarrier::Shared(meter);
         let mut owned = NativeCarrierOwned { value: None, carrier: &mut carrier, bytes: 0 };
         self.runtime.block_on_measured(|| async {
-            let output = self.open_file_async_with_carrier(
-                path, with_lookup, owner, owned.carrier,
-            ).await?;
+            let output = {
+                use super::lazy::{mount_accept, mount_demand_error, mount_engine_error};
+                let (namespace, cancellation) = owned.carrier.with_work(|work| {
+                    work.check().map_err(mount_demand_error)?;
+                    self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
+                    Ok::<_, MountSourceError>((
+                        self.namespace_path_with_work(path, work)?, work.cancellation().clone(),
+                    ))
+                })?;
+                let bytes = namespace.retained_bytes();
+                let mut input = NativeCarrierOwned { value: Some(namespace), carrier: &mut *owned.carrier, bytes };
+                let (namespace, carrier) = input.parts();
+                let observation = self.checkout.observe_owned_with_carrier(
+                    owner, carrier, &cancellation, Some(&self.cancellation),
+                ).await?;
+                let _view = observation._view;
+                let mut observer = LookupObserverOwned::new_in(observation.observer, carrier.reborrow())?;
+                let budget = observer.work.with_work(|work| work.remaining().map_err(mount_demand_error))?;
+                let accepted = if with_lookup {
+                    let result = observer.lookup_no_follow_with_metadata(namespace, budget, &cancellation).await;
+                    observer.work.with_work(|work| mount_accept(work, result, mount_engine_error))
+                        .map(|value| value.map(|value| (value.record, Some(value.metadata))))
+                } else {
+                    let result = observer.lookup_no_follow(namespace, budget, &cancellation).await;
+                    observer.work.with_work(|work| mount_accept(work, result, mount_engine_error))
+                        .map(|value| value.record.map(|record| (record, None)))
+                };
+                observer.receipt_delivered();
+                let finished = observer.finish();
+                let (record, metadata) = accepted?.ok_or(MountSourceError::NotFound)?;
+                finished?;
+                if record.kind != FileKind::Regular {
+                    return observer.work.with_work(|work| Err(native_name_error(MountSourceError::NativeStaticText {
+                        kind: super::NativeSourceTextKind::Invalid,
+                        text: "only regular files can own native file handles",
+                    }, work)));
+                }
+                let lookup = observer.work.with_work(|work| {
+                    if metadata.is_some() {
+                        work.charge(crate::WorkCounters {
+                            bytes_copied: std::mem::size_of::<MountLookup>() as u64,
+                            ..crate::WorkCounters::UNCHARGED
+                        }).map_err(mount_demand_error)?;
+                    }
+                    Ok::<_, MountSourceError>(metadata.map(|metadata| MountLookup {
+                        node: mount_node(record), metadata,
+                    }))
+                })?;
+                let handle = self.attached_from_id_with_carrier(record.file_id, &mut observer.work)?;
+                (handle, lookup)
+            };
             owned.bytes = output.0.1;
             owned.value = Some(output);
             Ok::<_, MountSourceError>(())
@@ -8705,66 +8753,6 @@ impl<A, O> CheckoutMountSource<A, O> {
         let output = owned.value.take().expect("native open result is live");
         owned.bytes = 0;
         Ok(output)
-    }
-
-    async fn open_file_async_with_carrier(
-        &self,
-        path: &MountPath,
-        with_lookup: bool,
-        owner: CallbackOwner,
-        carrier: &mut NativeDemandCarrier<'_>,
-    ) -> Result<((Arc<dyn MountOpenFile>, u64), Option<MountLookup>), MountSourceError>
-    where A: AsyncAuthorityStore + Send + Sync + 'static,
-          O: AsyncObjectStore + Send + Sync + 'static {
-        use super::lazy::{mount_accept, mount_demand_error, mount_engine_error};
-        let (namespace, cancellation) = carrier.with_work(|work| {
-            work.check().map_err(mount_demand_error)?;
-            self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-            Ok::<_, MountSourceError>((
-                self.namespace_path_with_work(path, work)?, work.cancellation().clone(),
-            ))
-        })?;
-        let bytes = namespace.retained_bytes();
-        let mut input = NativeCarrierOwned { value: Some(namespace), carrier, bytes };
-        let (namespace, carrier) = input.parts();
-        let observation = self.checkout.observe_owned_with_carrier(
-            owner, carrier, &cancellation, Some(&self.cancellation),
-        ).await?;
-        let _view = observation._view;
-        let mut observer = LookupObserverOwned::new_in(observation.observer, carrier.reborrow())?;
-        let budget = observer.work.with_work(|work| work.remaining().map_err(mount_demand_error))?;
-        let accepted = if with_lookup {
-            let result = observer.lookup_no_follow_with_metadata(namespace, budget, &cancellation).await;
-            observer.work.with_work(|work| mount_accept(work, result, mount_engine_error))
-                .map(|value| value.map(|value| (value.record, Some(value.metadata))))
-        } else {
-            let result = observer.lookup_no_follow(namespace, budget, &cancellation).await;
-            observer.work.with_work(|work| mount_accept(work, result, mount_engine_error))
-                .map(|value| value.record.map(|record| (record, None)))
-        };
-        observer.receipt_delivered();
-        let finished = observer.finish();
-        let (record, metadata) = accepted?.ok_or(MountSourceError::NotFound)?;
-        finished?;
-        if record.kind != FileKind::Regular {
-            return observer.work.with_work(|work| Err(native_name_error(MountSourceError::NativeStaticText {
-                kind: super::NativeSourceTextKind::Invalid,
-                text: "only regular files can own native file handles",
-            }, work)));
-        }
-        let lookup = observer.work.with_work(|work| {
-            if metadata.is_some() {
-                work.charge(crate::WorkCounters {
-                    bytes_copied: std::mem::size_of::<MountLookup>() as u64,
-                    ..crate::WorkCounters::UNCHARGED
-                }).map_err(mount_demand_error)?;
-            }
-            Ok::<_, MountSourceError>(metadata.map(|metadata| MountLookup {
-                node: mount_node(record), metadata,
-            }))
-        })?;
-        let handle = self.attached_from_id_with_carrier(record.file_id, &mut observer.work)?;
-        Ok((handle, lookup))
     }
 
     fn open_created_with_carrier(
