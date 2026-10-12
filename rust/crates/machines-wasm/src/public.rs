@@ -135,9 +135,9 @@ fn provider_error(error: ProviderError) -> JsValue {
         ProviderError::Invalid(_) => "invalid",
         ProviderError::Rejected(_) => "rejected",
         ProviderError::Unavailable => "unavailable",
-        ProviderError::Indeterminate(_) | ProviderError::OperationIndeterminate(_) => {
-            "indeterminate"
-        }
+        ProviderError::Indeterminate(_)
+        | ProviderError::OperationIndeterminate(_)
+        | ProviderError::CommandIndeterminate(_) => "indeterminate",
         ProviderError::Failed => "failed",
         ProviderError::Cancelled => "cancelled",
     };

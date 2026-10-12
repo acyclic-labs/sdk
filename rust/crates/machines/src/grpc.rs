@@ -263,6 +263,94 @@ impl MachinesProvider for GrpcProvider {
     }
 
     #[tracing::instrument(
+        name = "acyclic.machines.exec",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    async fn exec(
+        &self,
+        machine: MachineId,
+        command: ExecCommand,
+    ) -> Result<ExecStream, ProviderError> {
+        obs::finish(
+            async {
+                let timeout =
+                    Duration::from_millis(u64::from(command.timeout_ms)) + Duration::from_secs(1);
+                let deadline = tokio::time::Instant::now() + timeout;
+                let mut request = Request::new(wire::ExecRequest {
+                    protocol: Some(protocol()),
+                    machine: Some(encode_machine(machine)),
+                    argv: command.argv,
+                    timeout_ms: command.timeout_ms,
+                });
+                request.set_timeout(timeout);
+                let output = self
+                    .client()
+                    .exec(request)
+                    .await
+                    .map_err(|error| command_error(machine, &error))?
+                    .into_inner();
+                let output = stream::try_unfold(
+                    (output, false),
+                    move |(mut output, mut exited)| async move {
+                        let frame = if exited {
+                            output.message().await
+                        } else {
+                            tokio::time::timeout_at(deadline, output.message())
+                                .await
+                                .map_err(|_| ProviderError::CommandIndeterminate(machine))?
+                        }
+                        .map_err(|error| command_error(machine, &error))?;
+                        match frame {
+                            None if exited => Ok(None),
+                            None => Err(ProviderError::CommandIndeterminate(machine)),
+                            Some(frame) => {
+                                let frame = decode_exec_output(frame, machine, &mut exited)?;
+                                Ok(Some((frame, (output, exited))))
+                            }
+                        }
+                    },
+                );
+                Ok(Box::pin(output) as ExecStream)
+            }
+            .await,
+        )
+    }
+
+    #[tracing::instrument(
+        name = "acyclic.machines.read_output",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    async fn read_output(
+        &self,
+        machine: MachineId,
+        offset: u64,
+        limit: u32,
+    ) -> Result<MachineOutput, ProviderError> {
+        obs::finish(
+            async {
+                if !(1..=MAX_OUTPUT_READ_BYTES).contains(&limit) {
+                    return Err(ProviderError::Invalid("invalid console read limit".into()));
+                }
+                let value = self
+                    .client()
+                    .read_output(wire::ReadOutputRequest {
+                        protocol: Some(protocol()),
+                        machine: Some(encode_machine(machine)),
+                        offset,
+                        limit,
+                    })
+                    .await
+                    .map_err(|error| read_error(&error))?
+                    .into_inner();
+                decode_machine_output(value, machine, offset, limit)
+            }
+            .await,
+        )
+    }
+
+    #[tracing::instrument(
         name = "acyclic.machines.qualify_image",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
@@ -1716,6 +1804,65 @@ fn read_error(value: &tonic::Status) -> ProviderError {
     }
 }
 
+fn command_error(machine: MachineId, value: &tonic::Status) -> ProviderError {
+    obs::failed_rpc(value);
+    match value.code() {
+        tonic::Code::Unavailable
+        | tonic::Code::DeadlineExceeded
+        | tonic::Code::Cancelled
+        | tonic::Code::Unknown
+        | tonic::Code::Internal => ProviderError::CommandIndeterminate(machine),
+        tonic::Code::Unimplemented => ProviderError::Unsupported(value.message().into()),
+        _ => ProviderError::Rejected(value.message().into()),
+    }
+}
+
+fn decode_exec_output(
+    value: wire::ExecOutput,
+    machine: MachineId,
+    exited: &mut bool,
+) -> Result<ExecOutput, ProviderError> {
+    if decode_machine(value.machine.as_ref())? != machine || *exited {
+        return Err(ProviderError::Rejected(
+            "exec output identity or terminal order is invalid".into(),
+        ));
+    }
+    match value.output {
+        Some(wire::exec_output::Output::Data(data))
+            if !data.is_empty() && data.len() <= MAX_OUTPUT_READ_BYTES as usize =>
+        {
+            Ok(ExecOutput::Data(data))
+        }
+        Some(wire::exec_output::Output::ExitCode(code)) => {
+            *exited = true;
+            Ok(ExecOutput::ExitCode(code))
+        }
+        _ => Err(ProviderError::Rejected("invalid exec output frame".into())),
+    }
+}
+
+fn decode_machine_output(
+    value: wire::MachineOutput,
+    machine: MachineId,
+    offset: u64,
+    limit: u32,
+) -> Result<MachineOutput, ProviderError> {
+    if decode_machine(value.machine.as_ref())? != machine
+        || value.offset < offset
+        || value.data.len() > limit as usize
+        || value.offset.checked_add(value.data.len() as u64).is_none()
+    {
+        return Err(ProviderError::Rejected(
+            "invalid retained console output".into(),
+        ));
+    }
+    Ok(MachineOutput {
+        machine,
+        offset: value.offset,
+        data: value.data,
+    })
+}
+
 fn decode_usage_receipt(
     value: wire::UsageReceipt,
     machine: MachineId,
@@ -1751,6 +1898,7 @@ fn decode_usage_receipt(
 
 #[cfg(test)]
 mod tests {
+    mod guest_io;
     use super::*;
     use futures::stream;
     use tokio::net::TcpListener;
@@ -1773,6 +1921,7 @@ mod tests {
 
     #[derive(Clone)]
     struct OperationService {
+        guest: Option<Arc<guest_io::GuestIo>>,
         expected_key: IdempotencyKey,
         expected_operation: OperationId,
         recovered: wire::RecoveredAdmission,
@@ -1787,14 +1936,20 @@ mod tests {
 
         async fn exec(
             &self,
-            _request: Request<wire::ExecRequest>,
+            request: Request<wire::ExecRequest>,
         ) -> Result<Response<Self::ExecStream>, Status> {
+            if let Some(guest) = &self.guest {
+                return Ok(guest.exec(request));
+            }
             Err(Status::unimplemented("exec"))
         }
         async fn read_output(
             &self,
-            _request: Request<wire::ReadOutputRequest>,
+            request: Request<wire::ReadOutputRequest>,
         ) -> Result<Response<wire::MachineOutput>, Status> {
+            if let Some(guest) = &self.guest {
+                return Ok(guest.read_output(request));
+            }
             Err(Status::unimplemented("read_output"))
         }
         async fn qualify_image(
@@ -2044,6 +2199,7 @@ mod tests {
         let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
         let state = operation_state(operation, wire::OperationStatus::Succeeded);
         let service = OperationService {
+            guest: None,
             expected_key: key,
             expected_operation: operation,
             recovered: recovered_suspend(operation, operation, machine),
@@ -2167,6 +2323,7 @@ mod tests {
         let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
         let state = operation_state(operation, wire::OperationStatus::Succeeded);
         let service = OperationService {
+            guest: None,
             expected_key: key,
             expected_operation: operation,
             recovered: recovered_suspend(operation, operation, machine),
@@ -2255,6 +2412,7 @@ mod tests {
         let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
         let state = operation_state(operation, wire::OperationStatus::Succeeded);
         let service = OperationService {
+            guest: None,
             expected_key: key,
             expected_operation: operation,
             recovered: recovered_suspend(operation, operation, machine),
@@ -2385,6 +2543,7 @@ mod tests {
         let substituted = OperationId::parse("00000000-0000-0000-0000-000000000003")?;
         let machine = MachineId::parse("00000000-0000-0000-0000-000000000004")?;
         let service = OperationService {
+            guest: None,
             expected_key: key,
             expected_operation: operation,
             recovered: recovered_suspend(operation, substituted, machine),
@@ -2415,6 +2574,7 @@ mod tests {
         let pending = operation_state(operation, wire::OperationStatus::Pending);
         let succeeded = operation_state(operation, wire::OperationStatus::Succeeded);
         let service = OperationService {
+            guest: None,
             expected_key: key,
             expected_operation: operation,
             recovered: recovered_suspend(operation, operation, machine),
@@ -2505,6 +2665,7 @@ mod tests {
         let machine = MachineId::parse("00000000-0000-0000-0000-000000000033")?;
         let pending = operation_state(operation, wire::OperationStatus::Pending);
         let service = OperationService {
+            guest: None,
             expected_key: key,
             expected_operation: operation,
             recovered: recovered_suspend(operation, operation, machine),
@@ -2559,6 +2720,7 @@ mod tests {
         let machine = MachineId::parse("00000000-0000-0000-0000-000000000024")?;
         let substituted_state = operation_state(substituted, wire::OperationStatus::Pending);
         let service = OperationService {
+            guest: None,
             expected_key: key,
             expected_operation: operation,
             recovered: recovered_suspend(operation, operation, machine),
@@ -2594,6 +2756,7 @@ mod tests {
         let operation = OperationId::parse("00000000-0000-0000-0000-000000000032")?;
         let machine = MachineId::parse("00000000-0000-0000-0000-000000000033")?;
         let base = OperationService {
+            guest: None,
             expected_key: key,
             expected_operation: operation,
             recovered: recovered_suspend(operation, operation, machine),
@@ -2611,6 +2774,7 @@ mod tests {
 
         for code in [Code::Internal, Code::ResourceExhausted, Code::Unavailable] {
             let service = OperationService {
+                guest: None,
                 watch: WatchReply::Items(vec![
                     WatchItem::State(operation_state(operation, wire::OperationStatus::Pending)),
                     WatchItem::Error(code),
@@ -2633,6 +2797,7 @@ mod tests {
         }
 
         let service = OperationService {
+            guest: None,
             watch: WatchReply::Items(vec![WatchItem::State(operation_state(
                 operation,
                 wire::OperationStatus::Pending,
@@ -2787,6 +2952,7 @@ mod tests {
         let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
         let machine = MachineId::parse("00000000-0000-0000-0000-000000000043")?;
         let service = OperationService {
+            guest: None,
             expected_key: key,
             expected_operation: operation,
             recovered: recovered_suspend(operation, operation, machine),

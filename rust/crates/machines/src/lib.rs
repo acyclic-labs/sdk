@@ -525,6 +525,60 @@ pub struct OperationObservation {
 pub type OperationStream =
     Pin<Box<dyn Stream<Item = Result<OperationObservation, ProviderError>> + Send + 'static>>;
 
+/// One bounded guest command, dispatched once without an idempotency key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecCommand {
+    argv: Vec<String>,
+    timeout_ms: u32,
+}
+
+impl ExecCommand {
+    /// Checks the protocol's argv and 1..60000 millisecond deadline bounds.
+    pub fn new(argv: Vec<String>, timeout_ms: u32) -> Result<Self, ProviderError> {
+        if argv.is_empty()
+            || argv.len() > 64
+            || argv.first().is_none_or(String::is_empty)
+            || argv
+                .iter()
+                .any(|value| value.len() > 4096 || value.contains('\0'))
+            || argv.iter().map(String::len).sum::<usize>() > 32768
+            || !(1..=60000).contains(&timeout_ms)
+        {
+            return Err(ProviderError::Invalid("invalid guest command".into()));
+        }
+        Ok(Self { argv, timeout_ms })
+    }
+
+    #[must_use]
+    pub fn argv(&self) -> &[String] {
+        &self.argv
+    }
+
+    #[must_use]
+    pub fn timeout_ms(&self) -> u32 {
+        self.timeout_ms
+    }
+}
+
+/// Merged stdout/stderr bytes or the single terminal guest exit code.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecOutput {
+    Data(Vec<u8>),
+    ExitCode(i32),
+}
+
+/// Disposable guest output view. Dropping it cancels the RPC, never retries it.
+pub type ExecStream =
+    Pin<Box<dyn Stream<Item = Result<ExecOutput, ProviderError>> + Send + 'static>>;
+
+/// Bounded retained console bytes. A later offset exposes discarded bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MachineOutput {
+    pub machine: MachineId,
+    pub offset: u64,
+    pub data: Vec<u8>,
+}
+
 /// Provider-boundary failure.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ProviderError {
@@ -544,6 +598,8 @@ pub enum ProviderError {
     Indeterminate(IdempotencyKey),
     #[error("operation observation is indeterminate; inspect operation {0}")]
     OperationIndeterminate(OperationId),
+    #[error("guest command outcome is indeterminate on machine {0}")]
+    CommandIndeterminate(MachineId),
     #[error("operation failed")]
     Failed,
     #[error("operation cancelled")]
@@ -563,6 +619,7 @@ impl ProviderError {
             Self::Unavailable => "unavailable",
             Self::Indeterminate(_) => "indeterminate",
             Self::OperationIndeterminate(_) => "operation_indeterminate",
+            Self::CommandIndeterminate(_) => "command_indeterminate",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
         }
@@ -574,6 +631,19 @@ impl ProviderError {
 pub trait MachinesProvider: Send + Sync {
     /// Describes the provider's actual security/durability boundary.
     fn assurance(&self) -> ProviderAssurance;
+    /// Dispatches once. Lost replies and cancellation never authorize redispatch.
+    async fn exec(
+        &self,
+        machine: MachineId,
+        command: ExecCommand,
+    ) -> Result<ExecStream, ProviderError>;
+    /// Reads 1..65536 live console bytes without treating empty data as EOF.
+    async fn read_output(
+        &self,
+        machine: MachineId,
+        offset: u64,
+        limit: u32,
+    ) -> Result<MachineOutput, ProviderError>;
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError>;
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError>;
     async fn inspect_machine(
@@ -803,6 +873,25 @@ impl Machine {
     #[must_use]
     pub fn id(&self) -> MachineId {
         self.id
+    }
+    /// Executes a checked command once. An error does not prove it did not run.
+    /// Drop the returned stream to cancel its RPC; never retry automatically.
+    pub async fn exec(&self, command: ExecCommand) -> Result<ExecStream, ProviderError> {
+        self.machines.provider.exec(self.id, command).await
+    }
+    /// Reads the retained live console. Empty data means no newer bytes now.
+    pub async fn read_output(
+        &self,
+        offset: u64,
+        limit: u32,
+    ) -> Result<MachineOutput, ProviderError> {
+        if !(1..=MAX_OUTPUT_READ_BYTES).contains(&limit) {
+            return Err(ProviderError::Invalid("invalid console read limit".into()));
+        }
+        self.machines
+            .provider
+            .read_output(self.id, offset, limit)
+            .await
     }
     pub async fn inspect(&self) -> Result<MachineObservation, ProviderError> {
         self.machines.provider.inspect_machine(self.id).await
@@ -1195,6 +1284,25 @@ fn event(
 impl MachinesProvider for SimulatedMachines {
     fn assurance(&self) -> ProviderAssurance {
         ProviderAssurance::ProcessLocalSimulation
+    }
+    async fn exec(
+        &self,
+        _machine: MachineId,
+        _command: ExecCommand,
+    ) -> Result<ExecStream, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "the simulator does not execute a guest operating system".into(),
+        ))
+    }
+    async fn read_output(
+        &self,
+        _machine: MachineId,
+        _offset: u64,
+        _limit: u32,
+    ) -> Result<MachineOutput, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "the simulator has no guest console".into(),
+        ))
     }
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
         Ok(ImageQualification {

@@ -22,11 +22,11 @@ use std::{
 
 use acyclic_machines::{
     Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine, EventPage,
-    ForkFidelity, IdempotencyKey, Image, ImageQualification, MAX_EVENT_PAGE_SIZE,
-    MAX_FORK_CHILDREN, MAX_PAGE_SIZE, MachineContract, MachineId, MachineObservation, MachinePage,
-    MachineState, MachinesProvider, MutationOutcome, OperationId, OperationObservation,
-    OperationPhase, OperationStream, ProviderAssurance, ProviderError, SuspensionPolicy,
-    UsageReceipt,
+    ExecCommand, ExecStream, ForkFidelity, IdempotencyKey, Image, ImageQualification,
+    MAX_EVENT_PAGE_SIZE, MAX_FORK_CHILDREN, MAX_PAGE_SIZE, MachineContract, MachineId,
+    MachineObservation, MachineOutput, MachinePage, MachineState, MachinesProvider,
+    MutationOutcome, OperationId, OperationObservation, OperationPhase, OperationStream,
+    ProviderAssurance, ProviderError, SuspensionPolicy, UsageReceipt,
 };
 use async_trait::async_trait;
 use futures::StreamExt as _;
@@ -1046,6 +1046,25 @@ impl MachinesProvider for DaytonaProvider {
     fn assurance(&self) -> ProviderAssurance {
         ProviderAssurance::CustomerHosted
     }
+    async fn exec(
+        &self,
+        _machine: MachineId,
+        _command: ExecCommand,
+    ) -> Result<ExecStream, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "Daytona guest command streaming is not bound".into(),
+        ))
+    }
+    async fn read_output(
+        &self,
+        _machine: MachineId,
+        _offset: u64,
+        _limit: u32,
+    ) -> Result<MachineOutput, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "Daytona retained console reads are not bound".into(),
+        ))
+    }
 
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
         let snapshot = self.resolve_snapshot(&image)?;
@@ -1678,6 +1697,25 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[tokio::test]
+    async fn guest_io_is_unsupported_without_making_daytona_requests() {
+        let mock = mock::Mock::start(|_| async { (500, "unexpected request".into()) }).await;
+        let mut config = DaytonaConfig::new("fake");
+        config.api_url = mock.url.clone();
+        let provider = DaytonaProvider::new(config).unwrap();
+        let machine = MachineId::parse("00000000-0000-4000-8000-000000000001").unwrap();
+        let command = ExecCommand::new(vec!["echo".into()], 1).unwrap();
+        assert!(matches!(
+            provider.exec(machine, command).await,
+            Err(ProviderError::Unsupported(_))
+        ));
+        assert!(matches!(
+            provider.read_output(machine, 0, 1).await,
+            Err(ProviderError::Unsupported(_))
+        ));
+        assert!(mock.requests().is_empty());
+    }
 
     #[test]
     fn config_defaults_and_redaction() {
