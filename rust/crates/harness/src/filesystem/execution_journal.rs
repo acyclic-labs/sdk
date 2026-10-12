@@ -374,8 +374,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     ) -> Result<Self>
     {
         let io = PreparationIo::from_native_work(work)?;
-        owner.validate_storage_with_native_work(verifier, maximum_payload_bytes, work)?;
-        let stream = owner.stream_with_native_work(work)?.clone();
+        owner.validate_storage(verifier, maximum_payload_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        let stream = owner.stream();
         Self::validate_configuration(&host, volume, verifier, scope, maximum_payload_bytes, Some(&io))?;
         let volume = volume.clone_with_io(&io)?;
         let mut observer = io.history_io();
@@ -2056,7 +2056,7 @@ where
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let file = {
-                owner.verify_read_access_with_native_work(work).await?;
+                owner.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
                 let _identity_hold;
                 let before = io.owned_bytes()?;
                 let (key, path) = self.stage_identity_with_io(operation_id, idempotency_key, Some(&io))?;
@@ -2069,7 +2069,7 @@ where
                 ).await?.ok_or_else(|| canonical_boundary(
                     Some(&io), crate::wire::ErrorCode::NotFound,
                     "original staged payload was not published"))?;
-                owner.verify_read_access_with_native_work(work).await?;
+                owner.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
                 file
             };
             let retained = file.logical_owned_bytes()?;

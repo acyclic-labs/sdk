@@ -102,7 +102,7 @@ fn validate_task_plan<P: StreamProvider>(
 ) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-        owner.require_effect_grants_with_native_work(&plan.provider, planning, native)?;
+        owner.require_effect_grants(&plan.provider, planning, &mut Some(&mut crate::store::history::native_work_io(native)?))?;
         owner.validate_input_file(&plan.request, Some(&crate::filesystem::PreparationIo::from_native_work(native)?))?;
         return owner.validate_input_file(&plan.result_schema, Some(&crate::filesystem::PreparationIo::from_native_work(native)?));
     }

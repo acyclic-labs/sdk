@@ -213,10 +213,9 @@ where
         volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
         maximum_payload_bytes: u64, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        owner.validate_storage_with_native_work(verifier, maximum_payload_bytes, work)?;
-        let original_stream = owner.stream_with_native_work(work)?;
+        owner.validate_storage(verifier, maximum_payload_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        let stream = owner.stream();
         let io = PreparationIo::from_native_work(work)?;
-        let stream = original_stream.clone();
         ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Read, &io)?;
         ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Write, &io)?;
         let (verifier, verifier_custody) = verifier.clone_with_native_work(work)?;

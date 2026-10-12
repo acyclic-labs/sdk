@@ -272,7 +272,6 @@ async fn retained_preparation_decode_cancel_and_allocator_denial_precede_owned_d
     let cancelled = NativeMaterializationWork::new(creation_control_budget(), &cancellation)
         .expect("original cancellable invocation");
     let mut observer = crate::store::history::native_work_io(&cancelled)?;
-    let before = cancelled.receipt().allocation_operations;
     cancellation.cancel();
     assert!(matches!(ResourcePreparationRequest::from_borrowed_value_with_work(
         &input, &mut Some(&mut observer),
