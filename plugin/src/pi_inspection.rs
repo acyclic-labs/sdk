@@ -775,7 +775,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
         let absolute = native_work.display(&format_args!("/{path}")).map_err(native_error)?;
         let mut parsed = source.workspace.workspace().namespace_path_with_native_work(
             &absolute.0, native_work, cancellation,
-        ).map_err(native_workspace_error)?;
+        ).map_err(Error::from)?;
         requested.2.absorb(&mut parsed.1).map_err(native_error)?;
         requested.0.push(parsed.0);
     }
