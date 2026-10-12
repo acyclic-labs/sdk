@@ -4002,8 +4002,9 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager: 
             capture_custody: std::sync::Arc::clone(meter.custody.as_ref().expect("capture scope is live")),
         };
         let stage_cancellation = meter.native.cancellation().clone();
+        let mut accounting = crate::kernel::KernelAccounting::native(&meter.native, &stage_cancellation);
         let content = capture_sdk(
-            stager.stage(&mut bounded, range.length, &meter.native, &stage_cancellation),
+            stager.stage_content_with_accounting(&mut bounded, range.length, &mut accounting, &stage_cancellation),
             meter, &stage_cancellation,
         ).await;
         drop(bounded);

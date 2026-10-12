@@ -345,7 +345,7 @@ where
             let mut output = String::new();
             let mut admission = ModelEventAdmission::default();
             for record in &records {
-                crate::filesystem::fork_preparer_io::item(io, 0)?;
+                crate::model::charge_items(io, 1)?;
                 match &record.event {
                     ExecutionEvent::ContextPrepared { projection, .. } => {
                         prepared = Some(
@@ -546,7 +546,7 @@ where
 {
     let mut selected_ids = selection.message_ids.iter();
     for message in &loaded {
-        crate::filesystem::fork_preparer_io::item(io, 0)?;
+        crate::model::charge_items(io, 1)?;
         if matches!(
             message.kind,
             crate::conversation::MessageKind::System
@@ -573,14 +573,14 @@ where
     }
     if io.is_some() {
         for message in &loaded {
-            crate::filesystem::fork_preparer_io::item(io, 0)?;
+            crate::model::charge_items(io, 1)?;
             journal
                 .verify_input_file_with_io(&message.content, io)
                 .await?;
             match &message.attachments {
                 crate::conversation::ReferencedAttachments::Inline { items } => {
                     for item in items {
-                        crate::filesystem::fork_preparer_io::item(io, 0)?;
+                        crate::model::charge_items(io, 1)?;
                         journal.verify_input_file_with_io(&item.file, io).await?;
                     }
                 }

@@ -143,7 +143,7 @@ where
             });
         }
         let io = PreparationIo::from_native_work(work)?;
-        let mut published = super::fork_preparer_io::vector(self.volumes.len(), Some(&io))?;
+        let mut published = crate::model::vec_with_capacity(self.volumes.len(), Some(&io))?;
         let failure_slot = work.claim(
             std::mem::size_of::<NativeViewPublicationError>() as u64,
             1,

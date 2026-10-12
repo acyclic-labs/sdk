@@ -290,7 +290,7 @@ where
                 return Ok(owner);
             }
             if io.is_some() {
-                return Err(super::fork_preparer_io::failure(
+                return Err(crate::executor::stock_boundary(
                     io,
                     crate::wire::ErrorCode::Unsupported,
                     "finite recursive source requires original native work",
@@ -312,7 +312,7 @@ where
     ) -> Result<BoundedContentFuture<'a, RecursiveForkSourceIntent>> {
         BoundedContentFuture::new(io, || async move {
             if io.is_some_and(|io| io.original_native_work().is_none()) {
-                return Err(super::fork_preparer_io::failure(
+                return Err(crate::executor::stock_boundary(
                     io,
                     crate::wire::ErrorCode::Unsupported,
                     "finite recursive source requires original native work",
@@ -333,7 +333,7 @@ where
     ) -> Result<BoundedContentFuture<'a, RecursiveForkToolBinding<P, A, O>>> {
         BoundedContentFuture::new(io, || async move {
             if io.is_some_and(|io| io.original_native_work().is_none()) {
-                return Err(super::fork_preparer_io::failure(
+                return Err(crate::executor::stock_boundary(
                     io,
                     crate::wire::ErrorCode::Unsupported,
                     "finite recursive source requires original native work",
@@ -420,7 +420,7 @@ where
     ) -> Result<BoundedContentFuture<'a, RecursiveMergeToolBinding<P, A, O>>> {
         BoundedContentFuture::new(io, || async move {
             if io.is_some_and(|io| io.original_native_work().is_none()) {
-                return Err(super::fork_preparer_io::failure(
+                return Err(crate::executor::stock_boundary(
                     io,
                     crate::wire::ErrorCode::Unsupported,
                     "finite recursive source requires original native work",

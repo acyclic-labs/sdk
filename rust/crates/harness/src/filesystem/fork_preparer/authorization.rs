@@ -29,7 +29,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         task: Option<&'a TaskResourcePreparation>,
     ) -> Result<&'a ContentGrant> {
         let authorization = request.authorized_source.as_ref().ok_or_else(|| {
-            bounded_io::failure(
+            stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
                 "fork source has no sealed project read",
@@ -39,14 +39,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             .and_then(TaskResourcePreparation::project_source)
             .or(self.project_source.as_ref())
             .ok_or_else(|| {
-                bounded_io::failure(
+                stock_boundary(
                     io,
                     crate::wire::ErrorCode::Unauthorized,
                     "fork source descriptor has no sealed project read",
                 )
             })?;
         if handle.authorization() != authorization {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
                 "fork source descriptor differs from its sealed project read",
@@ -56,7 +56,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             && (request.preparation.inherited_through_sequence != 0
                 || request.preparation.summary.is_some())
         {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "foreign workspace source cannot inherit conversation history",
@@ -83,7 +83,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             self.require_native_projection_work(work)?;
         }
-        let reject = |code, reason| bounded_io::failure(io, code, reason);
+        let reject = |code, reason| stock_boundary(io, code, reason);
         let read_granted = |volume: &VolumeRef| -> Result<bool> {
             let parent = match io {
                 Some(io) => {
@@ -332,7 +332,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
         }
         let bound = self.summary.as_ref().ok_or_else(|| {
-            bounded_io::failure(
+            stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "summary fork owner-bound checkpoint provider is not installed",
@@ -341,7 +341,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if selection != bound.prepared.selection()
             || request.preparation.inherited_through_sequence != bound.prepared.through_sequence()
         {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "summary fork request differs from its original capture",
@@ -350,3 +350,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         Ok(Some(&bound.prepared))
     }
 }
+
+use crate::executor::stock_boundary;

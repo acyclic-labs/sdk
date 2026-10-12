@@ -44,9 +44,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         baseline: Option<NativeViewBaseline>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        work.native_read_meter()
-            .lock()
-            .check()
+        work.with_original_leaf(|leaf| leaf.check())
             .map_err(super::super::lazy::mount_demand_error)?;
         self.cancellation
             .check()

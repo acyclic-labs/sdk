@@ -27,7 +27,7 @@ impl NativePreparationCompletionTemplate {
         // Reserve the widest scalar encoding before the physical action.
         Self::set_work(&mut value, journal.revision, WorkCounters::UNBOUNDED)?;
         let largest = io.encode(&value, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
-        let mut output = super::super::fork_preparer_io::vector::<u8>(largest.len(), Some(&io))?;
+        let mut output = crate::model::vec_with_capacity::<u8>(largest.len(), Some(&io))?;
         if output.capacity() > acyclic_stream::MAX_RECORD_BYTES {
             return Err(invalid());
         }
