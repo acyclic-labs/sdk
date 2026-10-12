@@ -182,6 +182,7 @@ impl crate::filesystem::PreparationRecord for ToolResult {
 /// Model-visible tool definition with immutable schemas.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ToolDefinition {
     /// Stable bounded tool name; local names and explicit namespaces are both valid.
     pub name: String,
@@ -190,10 +191,13 @@ pub struct ToolDefinition {
     /// Model-visible description.
     pub description: String,
     /// JSON Schema for invocation arguments.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     pub input_schema: Value,
     /// JSON Schema for the canonical successful executor value.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     pub output_schema: Value,
     /// JSON Schema for the model-facing projection, independently of the result.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     pub projection_schema: Value,
 }
 

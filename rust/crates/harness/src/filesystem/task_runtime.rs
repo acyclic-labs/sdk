@@ -821,7 +821,7 @@ where
                             drop(projection);
                         }
                         _ => { crate::executor::completed_tool_projection(journal.as_ref(), &records, step,
-                            &invocation, &request.request().tools, None, io).await?; }
+                            &invocation, &request.request().tools, crate::conversation::Limits::default(), io).await?; }
                     }
                     continue;
                 }
