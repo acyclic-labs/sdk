@@ -268,21 +268,9 @@ where
             .map_err(|(cause, accounting)| (cause.into(), accounting))
     }
 
-    /// Publishes through the source's dedicated callback runtime.
-    pub fn sync_blocking(&self) -> Result<(), MountLifecycleError> {
-        flush_session_callbacks(&self.session)?;
-        self.source.sync().map_err(Into::into)
-    }
-
     /// Publishes and detaches, retaining the owner on any failure.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
-        self.retire(&crate::CancellationToken::new()).map(drop)
-    }
-
-    /// Publishes and detaches for foreign-runtime worker threads.
-    pub fn unmount_blocking(&self) -> Result<(), MountLifecycleError> {
-        self.sync_blocking()?;
         self.retire(&crate::CancellationToken::new()).map(drop)
     }
 

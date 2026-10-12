@@ -44,17 +44,21 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     assert_eq!(work.receipt().source_bytes_read, 0);
     assert_eq!(work.receipt().materializations, 0);
     assert!(work.receipt().backend_read_operations > 0);
+    let mut accounting = KernelAccounting::native(&fixture_work, &fixture_token);
     assert!(matches!(
-        lazy.lookup("/selected").await?,
+        &lazy.lookup("/selected", &mut accounting).await?.0,
         LazyLookup::Authored { .. }
     ));
     assert!(matches!(
-        lazy.lookup("/selected/cold.txt").await?,
-        LazyLookup::Source(_)
+        &lazy.lookup("/selected/cold.txt", &mut accounting).await?.0,
+        LazyLookup::Source { .. }
     ));
     assert!(matches!(
-        lazy.lookup("/unselected/cold.txt").await?,
-        LazyLookup::Source(_)
+        &lazy
+            .lookup("/unselected/cold.txt", &mut accounting)
+            .await?
+            .0,
+        LazyLookup::Source { .. }
     ));
     let pinned = head(lazy.workspace(), &fixture_work).await?;
     let denied_budget = crate::WorkBudget {
@@ -586,10 +590,22 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
             .await
             .is_err()
     );
-    lazy.write("/later.txt", bytes::Bytes::from_static(b"later"))
-        .await?;
-    lazy.write("/hot/conflict.txt", bytes::Bytes::from_static(b"parent"))
-        .await?;
+    lazy.write(
+        "/later.txt",
+        acyclic_stream::OwnedBytes::from_static(b"later"),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &fixture_token),
+    )
+    .await?;
+    lazy.write(
+        "/hot/conflict.txt",
+        acyclic_stream::OwnedBytes::from_static(b"parent"),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &fixture_token),
+    )
+    .await?;
     std::fs::write(working.join("hot/conflict.txt"), b"child")?;
     working_set
         .capture_host_subtree(&MountPath::root(), &default_work)
@@ -739,6 +755,10 @@ pub(super) async fn native_lazy_source(
         name,
         Arc::new(demand),
         MemoryLazyWorkspaceStore::default(),
+        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+        crate::OperationId::new(),
+        &mut KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, cancellation),
     )
-    .await?)
+    .await?
+    .0)
 }

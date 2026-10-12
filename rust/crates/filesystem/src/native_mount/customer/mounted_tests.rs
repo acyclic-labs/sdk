@@ -146,7 +146,15 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     assert!(published.snapshot().is_lazy());
     assert_eq!(published.snapshot().workspace_id(), lazy.workspace().id());
     assert_eq!(
-        lazy.read_range("/authored.txt", 0, 32).await?.as_ref(),
+        lazy.read_range(
+            "/authored.txt",
+            0,
+            32,
+            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation)
+        )
+        .await?
+        .bytes()
+        .as_ref(),
         b"native edit"
     );
 
@@ -239,10 +247,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     ));
     assert_eq!(head(lazy.workspace(), &setup).await?, imported_head);
     let (plan, custody) = prepare().await?;
-    let imported = import(plan, custody, &selected_work, |_| {
-        ready(Ok::<(), MountLifecycleError>(()))
-    })
-    .await?;
+    let imported = import(plan, custody, &selected_work, allow).await?;
     assert_eq!(
         imported.authored_generation,
         head(lazy.workspace(), &setup).await?
@@ -255,13 +260,27 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         Some(imported)
     );
     assert_eq!(
-        lazy.read_range("/selected-import.txt", 0, 32)
-            .await?
-            .as_ref(),
+        lazy.read_range(
+            "/selected-import.txt",
+            0,
+            32,
+            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation)
+        )
+        .await?
+        .bytes()
+        .as_ref(),
         b"selected SDK import"
     );
     assert_eq!(
-        lazy.read_range("/source.txt", 0, 32).await?.as_ref(),
+        lazy.read_range(
+            "/source.txt",
+            0,
+            32,
+            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation)
+        )
+        .await?
+        .bytes()
+        .as_ref(),
         b"source"
     );
 
