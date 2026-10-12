@@ -1155,7 +1155,7 @@ where
             let empty = records.0.is_empty();
             drop(records);
             if empty {
-                match tool_context.authorize_tool_pending_with_native_work(definition, &invocation, work).await {
+                match tool_context.authorize_tool(definition, &invocation, work).await {
                     Ok(Some(_)) => return Ok(TaskCommandProgress::Pending),
                     Ok(None) => {}
                     Err(error) if error.is_native_failure() => return Err(error),
@@ -1391,7 +1391,7 @@ where
         if journal.replay(operation, 0, 1).await?.is_empty() {
             let invocation = tool_invocation(&context, operation, &definition, input.arguments.clone(), None)?;
             match context
-                .authorize_tool_pending(&definition, &invocation)
+                .authorize_tool(&definition, &invocation)
                 .await
             {
                 Ok(Some(_)) => return Ok(TaskCommandProgress::Pending),

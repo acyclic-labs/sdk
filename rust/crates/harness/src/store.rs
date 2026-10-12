@@ -664,29 +664,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(())
     }
 
-    /// Opens from an authenticated checkpoint and bounded suffix.
-    #[cfg(feature = "filesystem")]
-    pub async fn open_measured(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Self>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            let aggregate = Self::open(
-                client,
-                authority,
-                authority_verifier,
-                schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut Some(&mut work)).await?;
-            Ok(aggregate)
-        }.await;
-        work.finish(result)
-    }
-
     /// Restores the same authenticated checkpoint and suffix on the original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn open_with_native_work(
@@ -711,15 +688,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.reducer
     }
 
-    /// Restores the same exact historical cut with one cumulative finite SDK-boundary receipt.
+    /// Restores a bounded committed cut with a finite work receipt.
     #[cfg(feature = "filesystem")]
     #[allow(clippy::too_many_arguments, reason = "original exact-cut open arguments plus the cumulative work receipt")]
-    pub async fn open_at_revision_measured(
+    pub async fn open_measured(
         client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
-        original_revision: u64,
+        original_revision: Option<u64>,
         limits: HistoryReadLimits,
         budget: acyclic_fs::WorkBudget,
         cancellation: &acyclic_fs::CancellationToken,
@@ -727,12 +704,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut work = history::HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            let aggregate = Self::open(
+            Self::open(
                 client,
                 authority,
                 authority_verifier,
-                schemas, None, limits, DEFAULT_TERMINAL_EFFECTS, Some(original_revision), &mut Some(&mut work)).await?;
-            Ok(aggregate)
+                schemas, None, limits, DEFAULT_TERMINAL_EFFECTS, original_revision, &mut Some(&mut work)).await
         }.await;
         work.finish(result)
     }

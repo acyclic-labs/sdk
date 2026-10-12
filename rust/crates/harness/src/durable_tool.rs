@@ -231,7 +231,9 @@ impl ResumableTool {
         journal: Arc<dyn WorkflowJournal>,
     ) -> Result<ResumableToolSession> {
         let admission = self.workflow_admission(&context, &invocation)?;
-        context.task().authorize_tool(&self.definition, &invocation).await?;
+        if let Some(operation) = context.task().authorize_tool(&self.definition, &invocation).await? {
+            return Err(Error::Indeterminate(operation));
+        }
         if journal.admit(admission.clone()).await? != admission {
             return Err(Error::Conflict("tool workflow identity belongs to another admission".into()));
         }
@@ -335,7 +337,9 @@ impl ResumableTool {
         crate::NativeFutureBundle::new(work, || async move {
             let io = crate::executor::PreparationIo::from_native_work(work)?;
             let built = self.build_native_admission(context, invocation, identity, &io, work)?;
-            context.authorize_tool_with_native_work(&self.definition, invocation, work).await?;
+            if let Some(operation) = context.authorize_tool(&self.definition, invocation, work).await? {
+                return Err(Error::Indeterminate(operation));
+            }
             let copied_custody;
             let (copied, hold) = clone_admission_with_native_work(&built.admission.value, work)?;
             copied_custody = hold;
@@ -905,7 +909,10 @@ impl DurableToolRunner {
             tool.executor.authorize_with_native_context(context, invocation, work)?;
             drop(grant);
             drop(grant_hold);
-            return context.authorize_tool_with_native_work(definition, invocation, work).await;
+            return match context.authorize_tool(definition, invocation, work).await? {
+                Some(operation) => Err(Error::Indeterminate(operation)),
+                None => Ok(()),
+            };
         }
         let required = capability::tool_call(&definition.name);
         if !scope.grants().contains(&required) {
@@ -913,7 +920,10 @@ impl DurableToolRunner {
         }
         validate_value(&definition.input_schema, &invocation.arguments, "tool input", None)?;
         tool.executor.authorize_with_context(context, invocation)?;
-        context.task().authorize_tool(definition, invocation).await
+        match context.task().authorize_tool(definition, invocation).await? {
+            Some(operation) => Err(Error::Indeterminate(operation)),
+            None => Ok(()),
+        }
     }
 
     async fn replay(

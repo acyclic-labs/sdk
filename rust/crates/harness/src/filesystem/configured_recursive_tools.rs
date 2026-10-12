@@ -514,8 +514,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(Error::Unauthorized("configured fork retry changed its retained original plan".into()));
             }
         }
-        let pinned = StreamAggregate::open_at_revision_measured(&self.stream, caller.owner.authority().clone(),
-            verifier(&caller.owner)?, SchemaRegistry::default(), intent.request.parent_revision,
+        let pinned = StreamAggregate::open_measured(&self.stream, caller.owner.authority().clone(),
+            verifier(&caller.owner)?, SchemaRegistry::default(), Some(intent.request.parent_revision),
             self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?;
         let mut content_work = pinned.work;
         let pinned = self.bind_aggregate(&caller.owner, &caller.owner.scope, pinned.value, None)?;
@@ -673,8 +673,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             restored = self.restore_snapshot(&binding.owner, &request, original.snapshot.copy(&mut None)?, cancellation).await?;
             &restored
         } else {
-            aggregate = StreamAggregate::open_at_revision_measured(&self.stream, binding.owner.authority().clone(),
-                verifier(&binding.owner)?, SchemaRegistry::default(), request.parent_revision,
+            aggregate = StreamAggregate::open_measured(&self.stream, binding.owner.authority().clone(),
+                verifier(&binding.owner)?, SchemaRegistry::default(), Some(request.parent_revision),
                 self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?.value;
             aggregate.reducer()
         };
