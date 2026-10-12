@@ -2469,8 +2469,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         &mut self, operations: Vec<AuthoredMutation>, allocation: crate::NativeAllocation,
         original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        self.checkout.apply_authored_bulk_transaction_with_native_work(
-            operations, allocation, original, cancellation,
+        self.checkout.apply_authored_bulk_transaction_with_accounting(
+            crate::kernel::Owned { value: operations, bytes: allocation.bytes(), allocation: KernelOwnedAllocation::NativeOriginal(allocation) },
+            &mut KernelAccounting::native(original, cancellation), cancellation,
         ).await.map_err(WorkspaceError::from)
     }
 

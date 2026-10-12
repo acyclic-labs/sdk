@@ -9674,33 +9674,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(crate::kernel::Owned::new(authored, allocation, bytes))
     }
 
-    /// Applies authored inputs on their original invocation. The incoming guard
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn apply_authored_transaction_with_native_work(
-        &mut self,
-        authored: Vec<AuthoredMutation>,
-        authored_allocation: crate::NativeAllocation,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(AuthoredTransactionResult, crate::NativeAllocation), FsError> {
-        let input = (authored, authored_allocation);
-        self.validate_native_work(original)?;
-        let bytes = authored_input_owned_bytes(&input.0, input.0.capacity())?;
-        if input.1.bytes() < bytes || !input.1.work().shares_ledger(original) {
-            return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
-        }
-        let bytes = input.1.bytes();
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        let output = self.apply_authored_transaction_with_accounting(
-            crate::kernel::Owned::new(input.0, crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(input.1), bytes),
-            &mut accounting, cancellation,
-        ).await?;
-        let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = output.allocation else {
-            unreachable!("native authored result retains original custody")
-        };
-        Ok((output.value, allocation))
-    }
-
     /// Borrows producer-owned authored paths and opaque payloads on the original
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn apply_borrowed_authored_transaction_with_native_work(
@@ -9727,12 +9700,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok((output.value, allocation))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn validate_authored_input(
+        &self, input: &crate::kernel::Owned<Vec<AuthoredMutation>>, accounting: &KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
+        if let Some(original) = accounting.native_work() {
+            self.validate_native_work(original)?;
+            let bytes = authored_input_owned_bytes(&input.value, input.value.capacity())?;
+            let KernelOwnedAllocation::NativeOriginal(guard) = &input.allocation else {
+                return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
+            };
+            if guard.bytes() < bytes || !guard.work().shares_ledger(original) {
+                return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn apply_authored_transaction_with_accounting(
         &mut self,
         input: crate::kernel::Owned<Vec<AuthoredMutation>>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<crate::kernel::Owned<AuthoredTransactionResult>, FsError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.validate_authored_input(&input, accounting)?;
         let capacity = input.value.capacity();
         self.apply_authored_transaction_input_with_accounting(
             AuthoredTransactionInput::Owned {
@@ -9796,29 +9788,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(Owned::new(AuthoredTransactionResult { created_file_ids: created.value }, created.allocation, created.bytes))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    /// Runs bounded authored batches in a guarded private candidate, installing
-    pub(crate) async fn apply_authored_bulk_transaction_with_native_work(
-        &mut self,
-        authored: Vec<AuthoredMutation>,
-        authored_allocation: crate::NativeAllocation,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(), FsError> {
-        let input = (authored, authored_allocation);
-        self.validate_native_work(original)?;
-        let bytes = authored_input_owned_bytes(&input.0, input.0.capacity())?;
-        if input.1.bytes() < bytes || !input.1.work().shares_ledger(original) {
-            return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
-        }
-        let bytes = input.1.bytes();
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        self.apply_authored_bulk_transaction_with_accounting(
-            crate::kernel::Owned::new(input.0, crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(input.1), bytes),
-            &mut accounting, cancellation,
-        ).await
-    }
-
     pub(crate) async fn apply_authored_bulk_transaction_with_accounting(
         &mut self,
         input: crate::kernel::Owned<Vec<AuthoredMutation>>,
@@ -9827,6 +9796,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> Result<(), FsError> {
         use crate::kernel::{Owned, retire_allocation, split_allocation};
         use crate::kernel::allocation::KernelOwnedAllocation;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.validate_authored_input(&input, accounting)?;
         accounting.check()?;
         let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch).unwrap_or(usize::MAX);
         if maximum == 0 { return Err(FsError::TooManyPendingMutations); }
