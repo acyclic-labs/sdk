@@ -7,7 +7,8 @@ impl StreamProvider for Client {
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         let response = self
-            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, 
+            .unary(
+                OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::InspectIdempotencyRequest {
                     idempotency_key: Bytes::copy_from_slice(idempotency_key.as_bytes()),
                 },
@@ -16,22 +17,28 @@ impl StreamProvider for Client {
                 },
             )
             .await?;
-        decode_response(response, |response| bind_observation(&idempotency_key, response.observation))
+        decode_response(response, |response| {
+            bind_observation(&idempotency_key, response.observation)
+        })
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        let response = self.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
-            wire::TailRequest {
-                path: path.to_string(),
-            },
-            |mut service, request| Box::pin(async move { service.tail(request).await }),
-        )
-        .await?;
+        let response = self
+            .unary(
+                OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+                wire::TailRequest {
+                    path: path.to_string(),
+                },
+                |mut service, request| Box::pin(async move { service.tail(request).await }),
+            )
+            .await?;
         decode_response(response, |response| Ok(response.tail))
     }
 
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        Ok(StreamBounds { tail: self.tail(path).await? })
+        Ok(StreamBounds {
+            tail: self.tail(path).await?,
+        })
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -40,7 +47,8 @@ impl StreamProvider for Client {
             |key| Bytes::copy_from_slice(key.as_bytes()),
         );
         let response = self
-            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, 
+            .unary(
+                OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::AppendRequest {
                     path: request.path.to_string(),
                     records: request.records.into_iter().map(Bytes::from_owner).collect(),
@@ -59,7 +67,8 @@ impl StreamProvider for Client {
             |key| Bytes::copy_from_slice(key.as_bytes()),
         );
         let receipt = self
-            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, 
+            .unary(
+                OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::ForkRequest {
                     source: request.source.to_string(),
                     destination: request.destination.to_string(),
@@ -97,9 +106,11 @@ impl StreamProvider for Client {
         let mut last = None;
         for _ in 0..self.channels.len() {
             let response = self
-                .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, body.clone(), |mut service, request| {
-                    Box::pin(async move { service.children(request).await })
-                })
+                .unary(
+                    OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+                    body.clone(),
+                    |mut service, request| Box::pin(async move { service.children(request).await }),
+                )
                 .await?;
             let (response, _, mut completion) = response;
             let mut response = completion.span.scope(response);
@@ -139,7 +150,8 @@ impl StreamProvider for Client {
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
         let response = self
-            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, 
+            .unary(
+                OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::ChildrenPageRequest {
                     parent: request.parent.map(|path| path.to_string()),
                     after: request.after.map(|path| path.to_string()),
@@ -172,7 +184,8 @@ impl StreamProvider for Client {
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let response = self
-            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, 
+            .unary(
+                OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::CommitRequest {
                     conditions: request.conditions.into_iter().map(condition_wire).collect(),
                     mutations: request.mutations.into_iter().map(mutation_wire).collect(),
@@ -191,7 +204,8 @@ impl StreamProvider for Client {
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
         let response = self
-            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, 
+            .unary(
+                OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::CommitRequest {
                     conditions: request.conditions.into_iter().map(condition_wire).collect(),
                     mutations: request.mutations.into_iter().map(mutation_wire).collect(),
@@ -206,7 +220,8 @@ impl StreamProvider for Client {
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let envelope = self
-            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, 
+            .unary(
+                OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::ReadCommitRequest {
                     commit_id: Bytes::copy_from_slice(commit_id.as_bytes()),
                 },

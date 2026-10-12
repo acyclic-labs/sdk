@@ -87,7 +87,7 @@ impl CodexProcess {
         }
         command.envs(launch.env);
         let mut child =
-            acyclic_native_runtime::spawn_process_tree(&mut command).map_err(|error| {
+            acyclic_native_runtime::ProcessTree::spawn(&mut command).map_err(|error| {
                 Error::Unsupported(format!(
                     "cannot start codex at {}: {error}",
                     launch.binary.display()

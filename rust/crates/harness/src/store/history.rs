@@ -423,7 +423,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     }
 
     /// Authenticates the original publication and initial child binding only.
-    pub(crate) async fn verify_published_child_with_work(
+    pub async fn verify_published_child_with_work(
         &self, parent: &Self, seed: &crate::fork::ForkSeed,
         limits: HistoryReadLimits, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {

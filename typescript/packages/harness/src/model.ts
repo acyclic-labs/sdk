@@ -1,7 +1,7 @@
-import type { ToolContext } from "./runtime.js";
-import type { Attachment, FileRef } from "./conversation.js";
+import type { ToolContext } from "./task-context.js";
+import type { FileRef } from "./conversation.js";
 import type { SelectedModelContext } from "./projection.js";
-import type { MachineIdentityWire } from "./native-contracts.js";
+import type { WasmMachineIdentityWire } from "./native-contracts.js";
 import type {
   ModelContextCapacity as ModelContextCapacityWire,
   ModelTokenCount as ModelTokenCountWire,
@@ -142,7 +142,7 @@ declare const toolRefBrand: unique symbol;
 export interface ToolRef<Input, Output> {
   readonly definition: ModelToolDefinition;
   /** Pinned owner-host machine for a durable-only resumable tool. */
-  readonly machine?: MachineIdentityWire;
+  readonly machine?: WasmMachineIdentityWire;
   readonly [toolRefBrand]: (input: Input) => Output;
 }
 export async function defineTool<Input, Output>(definition: Omit<ToolDefinition<Input, Output>, "handler">, handler: (context: ToolContext, input: Input) => Output | Promise<Output>): Promise<ToolDefinition<Input, Output>> {
@@ -160,4 +160,3 @@ export interface ContextBuilder { build(input: RuntimeAgentInput, messages: read
 export interface AgentInput { readonly prompt: string; readonly content?: readonly UserContentPart[] }
 /** Runtime input after an owning conversation has committed a context selection. */
 export interface RuntimeAgentInput extends AgentInput { readonly selectedContext?: SelectedModelContext }
-export interface AgentOutput { readonly text: string; readonly content?: readonly unknown[]; readonly artifacts?: readonly unknown[]; readonly attachments?: readonly Attachment[] }

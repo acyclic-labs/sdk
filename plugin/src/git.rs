@@ -49,7 +49,13 @@ impl PluginGitExecutor<'_> {
         &self,
         workspace_id: acyclic_fs::WorkspaceId,
     ) -> Result<LocalWorkspace, PluginGitError> {
-        WorkspaceGraph::new(self.store.clone()).workspace(self.fs, workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        WorkspaceGraph::new(self.store.clone())
+            .workspace(
+                self.fs,
+                workspace_id,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
             .map_err(display)
             .map_err(PluginGitError)
@@ -88,8 +94,14 @@ impl PluginGitExecutor<'_> {
                         lazy.workspace(),
                         &self
                             .fs
-                            .open_workspace(&destination)
+                            .open_workspace(
+                                &destination,
+                                acyclic_fs::WorkBudget::UNBOUNDED,
+                                &acyclic_fs::CancellationToken::new(),
+                            )
                             .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| failure.error)
                             .map_err(display)?,
                         snapshot.authored_generation,
                     )
@@ -161,7 +173,17 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 }
                 let workspace_generation = self.exact(*workspace_tree, "commit").await?;
                 if self.current.id() != workspace_generation.workspace_id
-                    || self.current.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?.id()
+                    || self
+                        .current
+                        .head(
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .map_err(display)?
+                        .id()
                         != workspace_generation.generation
                 {
                     return Err(Self::error("Git commit workspace changed before capture"));
@@ -174,11 +196,27 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                             self.exact(*previous_capture, "incremental commit").await?;
                         let previous_live = self
                             .workspace(previous_live.workspace_id)
-                            .await?.generation(previous_live.generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                            .await?
+                            .generation(
+                                previous_live.generation,
+                                acyclic_fs::WorkBudget::UNBOUNDED,
+                                &acyclic_fs::CancellationToken::new(),
+                            )
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| failure.error)
                             .map_err(display)?;
                         let previous_capture = self
                             .workspace(previous_capture.workspace_id)
-                            .await?.generation(previous_capture.generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                            .await?
+                            .generation(
+                                previous_capture.generation,
+                                acyclic_fs::WorkBudget::UNBOUNDED,
+                                &acyclic_fs::CancellationToken::new(),
+                            )
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| failure.error)
                             .map_err(display)?;
                         capture_git_compatible_generation_incremental(
                             &self.current,
@@ -223,10 +261,28 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 let source_matches = match source_tree {
                     GitTreeRef::Exact(source) => {
                         self.current.id() == source.workspace_id
-                            && self.current.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?.id() == source.generation
+                            && self
+                                .current
+                                .head(
+                                    acyclic_fs::WorkBudget::UNBOUNDED,
+                                    &acyclic_fs::CancellationToken::new(),
+                                )
+                                .await
+                                .map(|receipt| receipt.value)
+                                .map_err(|failure| failure.error)
+                                .map_err(display)?
+                                .id()
+                                == source.generation
                     }
                     GitTreeRef::Lazy(source) => {
-                        self.lazy_current.snapshot().await.map_err(display)? == *source
+                        self.lazy_current
+                            .snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
+                                WorkBudget::UNBOUNDED,
+                                &CancellationToken::new(),
+                            ))
+                            .await
+                            .map_err(display)?
+                            == *source
                     }
                 };
                 if !source_matches {
@@ -241,7 +297,14 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 );
                 let fork_generation = self
                     .lazy_current
-                    .workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                    .workspace()
+                    .head(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
                     .map_err(display)?
                     .id();
                 let workspace = self
@@ -278,7 +341,15 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     .open_related(workspace.clone())
                     .await
                     .map_err(display)?;
-                let tree = GitTreeRef::Lazy(lazy_workspace.snapshot().await.map_err(display)?);
+                let tree = GitTreeRef::Lazy(
+                    lazy_workspace
+                        .snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
+                            WorkBudget::UNBOUNDED,
+                            &CancellationToken::new(),
+                        ))
+                        .await
+                        .map_err(display)?,
+                );
                 *self
                     .switched
                     .lock()
@@ -297,15 +368,27 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 let to = self.exact(*to, "diff").await?;
                 let to_workspace = self.workspace(to.workspace_id).await?;
                 let to = to_workspace
-                    .generation(to.generation)
+                    .generation(
+                        to.generation,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
                     .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
                     .map_err(display)?;
                 let value = if let Some(from) = from {
                     let from = self.exact(*from, "diff").await?;
                     let from_workspace = self.workspace(from.workspace_id).await?;
                     let from = from_workspace
-                        .generation(from.generation)
+                        .generation(
+                            from.generation,
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                        )
                         .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
                         .map_err(display)?;
                     let diff = git_compatible_diff_counts(
                         &from,
@@ -336,11 +419,26 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
             }
             GitFilesystemAction::RestoreGeneration { tree, paths } => {
                 let source_ref = self.exact(*tree, "restore").await?;
-                let current = self.current.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?;
+                let current = self
+                    .current
+                    .head(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(display)?;
                 let source_workspace = self.workspace(source_ref.workspace_id).await?;
                 let source = source_workspace
-                    .generation(source_ref.generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                    .generation(
+                        source_ref.generation,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
                     .map_err(display)?;
                 let generation = if let Some(paths) = paths {
                     match self
@@ -350,9 +448,21 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                             &paths.iter().cloned().collect::<Vec<_>>(),
                             current.id(),
                             IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                            self.permit, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) },
+                            self.permit,
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                            |_| async {
+                                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                                    acyclic_fs::OperationReceipt {
+                                        value: (),
+                                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                                    },
+                                )
+                            },
                         )
-                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
                         .map_err(display)?
                     {
                         TransactionCommit::Committed(generation)
@@ -409,11 +519,26 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
             }
             GitFilesystemAction::RestorePaths { tree, paths } => {
                 let source_ref = self.exact(*tree, "restore").await?;
-                let current = self.current.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?;
+                let current = self
+                    .current
+                    .head(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(display)?;
                 let source_workspace = self.workspace(source_ref.workspace_id).await?;
                 let source = source_workspace
-                    .generation(source_ref.generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                    .generation(
+                        source_ref.generation,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
                     .map_err(display)?;
                 let outcome = self
                     .current
@@ -422,9 +547,21 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                         paths,
                         current.id(),
                         IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                        self.permit, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) },
+                        self.permit,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                        |_| async {
+                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                                acyclic_fs::OperationReceipt {
+                                    value: (),
+                                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                                },
+                            )
+                        },
                     )
-                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
                     .map_err(display)?;
                 let generation = match outcome {
                     TransactionCommit::Committed(generation)
@@ -462,10 +599,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
                 };
-                let initial = plan
-                    .apply(options, self.permit)
-                    .await
-                    .map_err(display)?;
+                let initial = plan.apply(options, self.permit).await.map_err(display)?;
                 let mut projected_conflicts = None;
                 let outcome = if let JoinOutcome::Conflicted {
                     conflicts,
@@ -552,7 +686,15 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     (Some(base), Some(workspace)) => {
                         let base = self.exact(*base, "apply commit").await?;
                         Some(
-                            workspace.generation(base.generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                            workspace
+                                .generation(
+                                    base.generation,
+                                    acyclic_fs::WorkBudget::UNBOUNDED,
+                                    &acyclic_fs::CancellationToken::new(),
+                                )
+                                .await
+                                .map(|receipt| receipt.value)
+                                .map_err(|failure| failure.error)
                                 .map_err(display)?,
                         )
                     }
@@ -569,13 +711,30 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     (Some(source), Some(workspace)) => {
                         let source = self.exact(*source, "apply commit").await?;
                         Some(
-                            workspace.generation(source.generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                            workspace
+                                .generation(
+                                    source.generation,
+                                    acyclic_fs::WorkBudget::UNBOUNDED,
+                                    &acyclic_fs::CancellationToken::new(),
+                                )
+                                .await
+                                .map(|receipt| receipt.value)
+                                .map_err(|failure| failure.error)
                                 .map_err(display)?,
                         )
                     }
                     _ => None,
                 };
-                let current = self.current.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?;
+                let current = self
+                    .current
+                    .head(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(display)?;
                 let outcome = self
                     .current
                     .apply_paths_from(
@@ -630,7 +789,15 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
             GitFilesystemAction::Archive { tree } => {
                 let reference = self.exact(*tree, "archive").await?;
                 let workspace = self.workspace(reference.workspace_id).await?;
-                let generation = workspace.generation(reference.generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                let generation = workspace
+                    .generation(
+                        reference.generation,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
                     .map_err(display)?;
                 let entries = walk_git_tree(&generation, None, 100_000)
                     .await
@@ -651,7 +818,15 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
             } => {
                 let reference = self.exact(*tree, "grep").await?;
                 let workspace = self.workspace(reference.workspace_id).await?;
-                let generation = workspace.generation(reference.generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                let generation = workspace
+                    .generation(
+                        reference.generation,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
                     .map_err(display)?;
                 let result = grep_git_generation(
                     &generation,
@@ -673,7 +848,15 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 for commit in commits {
                     let reference = self.exact(commit.tree, "blame").await?;
                     let workspace = self.workspace(reference.workspace_id).await?;
-                    let generation = workspace.generation(reference.generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                    let generation = workspace
+                        .generation(
+                            reference.generation,
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
                         .map_err(display)?;
                     history.push((commit.clone(), generation));
                 }
@@ -698,8 +881,14 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 }
                 let generation = self
                     .current
-                    .generation(reference.generation)
+                    .generation(
+                        reference.generation,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
                     .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
                     .map_err(display)?;
                 let entries = walk_git_tree(&generation, None, 100_000)
                     .await
@@ -720,15 +909,46 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     });
                 }
                 let mut transaction = self
-                    .current.begin_transaction(IdempotencyKey::from_bytes(operation_id.into_bytes()), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                    .current
+                    .begin_transaction(
+                        IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
                     .map_err(display)?;
                 for path in &candidates {
                     transaction
-                        .remove(&format!("/{path}"))
+                        .remove(
+                            &format!("/{path}"),
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                        )
                         .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
                         .map_err(display)?;
                 }
-                let generation = match transaction.commit(None, self.permit, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                let generation = match transaction
+                    .commit(
+                        None,
+                        self.permit,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                        |_| async {
+                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                                acyclic_fs::OperationReceipt {
+                                    value: (),
+                                    work: acyclic_fs::WorkCounters::default(),
+                                },
+                            )
+                        },
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
                     .map_err(display)?
                 {
                     TransactionCommit::Committed(generation)
@@ -747,7 +967,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 })
             }
             GitFilesystemAction::ApplyPatch { patch } => {
-                let generation = match apply_git_patch_with_permit(
+                let generation = match apply_git_patch(
                     &self.current,
                     patch,
                     IdempotencyKey::from_bytes(operation_id.into_bytes()),
@@ -780,7 +1000,18 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
             GitFilesystemAction::CheckIgnore { paths, tree } => {
                 let reference = self.exact(*tree, "check-ignore").await?;
                 if reference.workspace_id != self.current.id()
-                    || self.current.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?.id() != reference.generation
+                    || self
+                        .current
+                        .head(
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .map_err(display)?
+                        .id()
+                        != reference.generation
                 {
                     return Err(Self::error(
                         "Git check-ignore live generation changed before inspection",
@@ -824,7 +1055,16 @@ impl RootMaterializingGitExecutor<'_> {
             || self.inner.current.clone(),
             |lazy| lazy.workspace().clone(),
         );
-        let to = target.head().await.map_err(display)?.id();
+        let to = target
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+            .map_err(display)?
+            .id();
         if from.id() == to {
             return Ok(());
         }
@@ -832,12 +1072,21 @@ impl RootMaterializingGitExecutor<'_> {
             root_materialization_directory(self.root, operation_id).map_err(PluginGitError)?;
         let options = MaterializeOptions {
             destination: operation_directory.join("target"),
+            expected_root_identity: None,
             maximum_directory_entries: 4_096,
             maximum_extent_spans: 65_536,
             transfer_bytes: 8 * 1024 * 1024,
         };
         let cancellation = CancellationToken::new();
-        let to_generation = target.head().await.map_err(display)?;
+        let to_generation = target
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+            .map_err(display)?;
         acyclic_fs::publish_native_generation_transition(
             &from,
             &to_generation,
@@ -854,13 +1103,16 @@ impl RootMaterializingGitExecutor<'_> {
                 budget: WorkBudget::UNBOUNDED,
                 cancellation: &cancellation,
             },
+            acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(cause, _)| display(cause))?,
+            || std::future::ready(Ok(())),
         )
         .await
-        .map_err(display)?;
+        .map_err(|(cause, _)| display(cause))?;
         self.store
             .remove_materialization_async(operation_id)
             .await
-            .map_err(display)?;
+            .map_err(|(cause, _)| display(cause))?;
         remove_tree_checked(
             &root_materialization_root(self.root).map_err(PluginGitError)?,
             &operation_directory,
@@ -878,7 +1130,17 @@ impl GitFilesystemExecutor for RootMaterializingGitExecutor<'_> {
         operation_id: OperationId,
         action: &GitFilesystemAction,
     ) -> Result<GitFilesystemResult, Self::Error> {
-        let from = self.inner.current.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?;
+        let from = self
+            .inner
+            .current
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+            .map_err(display)?;
         let result = self.inner.execute(operation_id, action).await;
         // Conflict projection is an intentional state transition: the join
         // executor leaves the Git transition pending and returns an error so
@@ -954,7 +1216,9 @@ pub(crate) async fn git_apply_patch(
         );
     }
     let patch_path = workspace_path_argument(root, patch_path)?;
-    workspace.read(&patch_path, 16 * 1024 * 1024, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+    workspace
+        .read(&patch_path, 16 * 1024 * 1024)
+        .await
         .map(|bytes| Some(bytes.to_vec()))
         .map_err(display)
 }
@@ -966,28 +1230,26 @@ pub(crate) async fn git_workspace_tree(
 ) -> Result<GitTreeRef, String> {
     if !git_requires_exact_workspace(argv) {
         return workspace
-            .snapshot()
+            .snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            ))
             .await
             .map(GitTreeRef::Lazy)
             .map_err(display);
     }
-    let exact = match permit {
-        Some(permit) => {
-            workspace
-                .exactify_with_permit(WorkBudget::UNBOUNDED, &CancellationToken::new(), permit)
-                .await
-        }
-        None => {
-            workspace
-                .exactify(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-        }
-    }
-    .map_err(display)?;
-    Ok(GitTreeRef::exact(
-        workspace.workspace().id(),
-        exact.value.id(),
-    ))
+    let exact = workspace
+        .exactify(
+            "/",
+            permit.unwrap_or(PublicationPermit::Unrestricted),
+            &acyclic_fs::lazy_workspace::LazyTreapWork::new(
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            ),
+        )
+        .await
+        .map_err(display)?;
+    Ok(GitTreeRef::exact(workspace.workspace().id(), exact.id()))
 }
 
 pub(crate) async fn git_policy(
@@ -1002,7 +1264,7 @@ pub(crate) async fn git_policy(
 pub(crate) async fn git_ignore_policy(
     workspace: &LocalLazyWorkspace,
 ) -> Result<GitIgnorePolicy, String> {
-    let ignore_text = match workspace.read("/.gitignore", 1024 * 1024, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
+    let ignore_text = match workspace.read("/.gitignore", 1024 * 1024).await {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(acyclic_fs::LazyWorkspaceError::NotFound) => String::new(),
         Err(error) => return Err(display(error)),

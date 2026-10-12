@@ -23,7 +23,7 @@ async fn admit(runtime: &Runtime, fixture: &Fixture, id: u8, grants: Capabilitie
 async fn put(fixture: &Fixture, volume: &VolumeRef, path: &str, bytes: &[u8], key: &str) -> Result<FileRef> {
     let grant = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, volume, VolumeOperation::Write, u64::MAX, &mut None)?;
     fixture.filesystem.put_content(volume, &grant, path, bytes, "text/plain", path.rsplit('/').next().unwrap_or(path),
-        65_536, &IdempotencyKey::new(key)?).await
+        65_536, &IdempotencyKey::new(key)?, None, None).await
 }
 
 #[tokio::test]
@@ -203,10 +203,10 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let signed = issuer.issue("owner", &Capabilities::new(
         fixture.signed.capabilities().iter().chain(["conversation:bind", "conversation:append", "fork:publish"]),
     ), Some(agent), None, &mut None).expect("scope proof");
-    let reader = Arc::new(FilesystemContentVerifier::new(fixture.filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?);
+    let reader = FilesystemContentVerifier::new(fixture.filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
     let stream_provider = ProviderRef::new("restore".into(), "stream".into(), "2".into(), &mut None)?;
     let forks = Arc::new(CompositeForkVerifier::new(&[
-        Arc::new(FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536)?),
+        FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536, None, None)?,
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?);
     let mut history = StreamAggregate::open(&fixture.stream, authority.clone(), issuer.verifier(&mut None)?, SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?

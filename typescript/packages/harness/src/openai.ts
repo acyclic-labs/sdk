@@ -1,4 +1,4 @@
-import type { ModelAttempt, ModelEvent, ModelProvider, ModelRequest } from "./runtime.js";
+import type { ModelAttempt, ModelEvent, ModelProvider, ModelRequest } from "./model.js";
 import type { ModelContentPart } from "./model.js";
 import type { FileRef } from "./conversation.js";
 import { projectModelFile } from "./projection.js";

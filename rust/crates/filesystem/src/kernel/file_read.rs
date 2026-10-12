@@ -1,12 +1,12 @@
 //! Composed bounded regular-file reads across inline and sparse representations.
 
+use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation};
 use super::{BlobReadError, DecodeLimits, ExtentKind, ExtentRangeRequest, ExtentReadError,
     FileKind, FilePayload, FileRecord};
-use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation};
 use crate::AsyncObjectStore;
+use crate::FsError;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::FsError;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::ByteRange;
 use thiserror::Error;
@@ -96,7 +96,8 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
             output.value.resize(length, 0);
             accounting.record_completed(zeroed)?;
             for span in &plan.value.spans {
-                let ExtentKind::Content { object, object_offset } = span.kind else { continue };
+                let ExtentKind::Content { object, object_offset } = span.kind else { continue;
+                };
                 let nested = super::blob::read_blob_range_for_copy_with_accounting(
                     store, object, ByteRange { offset: object_offset, length: span.length },
                     request.limits, accounting, cancellation,
@@ -192,7 +193,9 @@ pub(crate) fn absorb_read_custody(
     match incoming {
         KernelOwnedAllocation::Standalone => {}
         KernelOwnedAllocation::NativeOriginal(mut incoming) => match target {
-            KernelOwnedAllocation::Standalone => *target = KernelOwnedAllocation::NativeOriginal(incoming),
+            KernelOwnedAllocation::Standalone => {
+                *target = KernelOwnedAllocation::NativeOriginal(incoming)
+            }
             KernelOwnedAllocation::NativeOriginal(target) => target.absorb(&mut incoming)?,
         },
     }
@@ -218,7 +221,9 @@ pub(crate) fn owned_read_bytes(owner: ReadOwned<Vec<u8>>) -> Result<acyclic_stre
         return acyclic_stream::OwnedBytes::from_vec_with_guard(
             owner.value, owner.custody, original.runtime_meter(),
         ).map_err(|failure| match failure.into_error() {
-            acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                original.runtime_error(error).into()
+            }
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
             => {
                 crate::NativeTreeMaterializationError::InvalidLayout.into()
@@ -235,11 +240,25 @@ pub(crate) async fn read_object_with_accounting<S: AsyncObjectStore>(
     accounting.check()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
-        return store.read_with_native_work(object, maximum, original, cancellation).await
-            .map(|read| (read, 0))
+        return {
+            let __object_args = (object, maximum, original, cancellation);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_result
+        }
+        .map(|read| (read, 0))
             .map_err(read_store_error);
     }
-    let result = store.read(object, maximum, accounting.remaining()?, cancellation).await;
+    let result = {
+        let __object_args = (object, maximum, accounting.remaining()?, cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    };
     accept_standalone_object_read(result, accounting)
 }
 
@@ -303,14 +322,30 @@ pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
     cancellation.check()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
-        return store.read_many_with_native_work(requests, original, cancellation).await
-            .map(|batch| {
+        return {
+            let __object_args = (requests, original, cancellation);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+            let __object_result = store
+                .read_many(__object_args.0, &mut __object_work)
+                .await
+                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
+            __object_result
+        }
+        .map(|batch| {
                 let (value, custody) = batch;
                 ReadOwned { value, custody: KernelOwnedAllocation::NativeOriginal(custody) }
             })
             .map_err(read_store_error);
     }
-    let result = store.read_many(requests, accounting.remaining()?, cancellation).await;
+    let result = {
+        let __object_args = (requests, accounting.remaining()?, cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = store
+            .read_many(__object_args.0, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    };
     let completed = match &result {
         Ok(receipt) => receipt.work,
         Err(failure) => *failure.work,
@@ -479,7 +514,8 @@ pub(crate) fn cache_decoded_read<S: AsyncObjectStore, T: std::any::Any + Send + 
     let controls = page_control.checked_add(guard_control).ok_or(WorkError::Overflow)?;
     let controls_custody = accounting.claim_owned(usize_to_u64(controls), 1 + u64::from(guard_control != 0))?;
     absorb_read_custody(&mut owner.custody, controls_custody)?;
-    let logical_bytes = owner.value.1.checked_add(usize_to_u64(controls)).ok_or(WorkError::Overflow)?;
+    let logical_bytes = owner.value.1
+        .checked_add(usize_to_u64(controls)).ok_or(WorkError::Overflow)?;
     let value = std::sync::Arc::new(owner.value.0);
     #[cfg(not(target_arch = "wasm32"))]
     let native_custody = match owner.custody {
@@ -493,7 +529,14 @@ pub(crate) fn cache_decoded_read<S: AsyncObjectStore, T: std::any::Any + Send + 
     };
     #[cfg(not(target_arch = "wasm32"))]
     let admitted = if let Some(original) = accounting.native_work() {
-        store.decoded_cache_admit_with_native_work(key, value, original)
+        {
+            let __decoded_args = (key, value, original);
+            __decoded_args
+                .2
+                .remaining()
+                .map_err(crate::ObjectStoreError::from)
+                .and_then(|_| store.decoded_cache_admit(__decoded_args.0, __decoded_args.1))
+        }
     } else { store.decoded_cache_admit(key, value) };
     #[cfg(target_arch = "wasm32")]
     let admitted = store.decoded_cache_admit(key, value);

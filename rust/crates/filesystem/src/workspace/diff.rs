@@ -80,7 +80,6 @@ impl<A, O> ChangeSet<A, O> {
     pub const fn work(&self) -> crate::WorkCounters {
         self.work
     }
-
     /// Actual retained diff buffers, excluding shared immutable endpoints.
     pub fn retained_bytes(&self) -> u64 {
         workspace_vec_bytes(&self.changes.files)
@@ -194,44 +193,23 @@ fn merge_binding_endpoint(
     Ok(())
 }
 
-// Query tuples drop their data before the allocation guard.
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
-    /// Resolves changed paths under one cumulative budget and cancellation token.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one bounded resolution of changed paths shares a single cumulative work budget"
-    )]
-    pub async fn changed_paths(
-        &self,
-        maximum_entries: u32,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<Vec<ChangedPath>>, WorkspaceError> {
-        let mut work = self.work;
-        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+    /// Resolves changed paths while retaining their actual result allocation.
+    pub async fn changed_paths<W: crate::facade::FsWork>(
+        &self, maximum_entries: u32, work: W, cancellation: &CancellationToken,
+    ) -> W::Output<(Vec<ChangedPath>, crate::AuthorityAllocation), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
         let result = async {
-            work.verify(budget)?;
-            // Only ordinary resolution continues the retained diff's original span.
-            allocations.claim_bytes(self.retained_bytes(), 0, &mut work, budget)
-                .map_err(workspace_allocation_error)?;
-            let mut accounting = KernelAccounting::borrowed_standalone(&mut allocations, &mut work, budget, cancellation);
-            self.changed_paths_with_accounting(maximum_entries, &mut accounting, cancellation).await.map(|owned| owned.0)
+            if let Some((allocations, spent, budget, _)) = accounting.standalone_parts() {
+                *spent = self.work;
+                spent.verify(budget)?;
+                allocations.claim_bytes(self.retained_bytes(), 0, spent, budget).map_err(workspace_allocation_error)?;
+            }
+            let (paths, allocation) = self.changed_paths_with_accounting(maximum_entries, &mut accounting, cancellation).await?;
+            let allocation = workspace_allocation(allocation, &accounting)?;
+            Ok::<_, WorkspaceError>((paths, allocation))
         }.await;
-        result.map(|value| crate::OperationReceipt { value, work })
-            .map_err(|error| crate::OperationFailure::new(error, work))
-    }
-
-    /// Borrows this exact delta while resolving paths on the original native invocation.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn changed_paths_with_native_work(
-        &self, maximum_entries: u32, original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<(Vec<ChangedPath>, crate::NativeAllocation), WorkspaceError> {
-        let mut accounting = KernelAccounting::native(original, cancellation);
-        match self.changed_paths_with_accounting(maximum_entries, &mut accounting, cancellation).await? {
-            (value, KernelOwnedAllocation::NativeOriginal(allocation)) => Ok((value, allocation)),
-            _ => Err(WorkspaceError::from(crate::NativeTreeMaterializationError::InvalidLayout)),
-        }
+        work.finish(result, &accounting)
     }
 
     async fn changed_paths_with_accounting(
@@ -330,50 +308,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
-    /// Computes a semantic delta under explicit work and cancellation limits.
-    pub async fn diff_to(
-        &self,
-        to: &Generation<A, O>,
-        maximum_changes: u32,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<ChangeSet<A, O>, WorkspaceError> {
-        let receipt = self
-            .workspace
-            .volume
-            .fs
-            .workspace_join_changes(self.id, to, maximum_changes, budget, cancellation)
-            .await.map(|receipt| crate::FsReceipt { value: receipt.value.0, work: receipt.work })?;
-        Ok(ChangeSet {
-            from: self.clone(),
-            to: to.clone(),
-            changes: receipt.value,
-            work: receipt.work,
-        })
-    }
-
-    /// Computes the same semantic delta under the caller's original native work.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn diff_to_with_native_work(
-        &self,
-        to: &Generation<A, O>,
-        maximum_changes: u32,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<(ChangeSet<A, O>, crate::NativeAllocation), WorkspaceError> {
-        let (changes, allocation) = self.workspace.volume.fs
-            .workspace_join_changes(self.id, to, maximum_changes, original, cancellation)
-            .await.and_then(|(diff, allocation)| match allocation {
-                crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => Ok((diff, allocation)),
-                crate::kernel::allocation::KernelOwnedAllocation::Standalone => Err(WorkspaceError::Filesystem(
-                    FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout),
-                )),
-            })?;
-        Ok((ChangeSet {
-            from: self.clone(),
-            to: to.clone(),
-            changes,
-            work: original.receipt(),
-        }, allocation))
+    /// Computes a bounded semantic delta retaining its actual result allocation.
+    pub async fn diff_to<W: crate::facade::FsWork>(
+        &self, to: &Generation<A, O>, maximum_changes: u32, work: W, cancellation: &CancellationToken,
+    ) -> W::Output<(ChangeSet<A, O>, crate::AuthorityAllocation), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let (changes, allocation) = match &mut accounting {
+                #[cfg(not(target_arch = "wasm32"))]
+                KernelAccounting::NativeOriginal { work: original, .. } => self.workspace.volume.fs
+                    .workspace_join_changes(self.id, to, maximum_changes, *original, cancellation).await?,
+                _ => {
+                    let result = self.workspace.volume.fs.workspace_join_changes(self.id, to, maximum_changes, accounting.remaining()?, cancellation).await;
+                    let (_, spent, _, _) = accounting.standalone_parts().ok_or(crate::WorkError::Overflow)?;
+                    merge_workspace_backend(result, spent, 0)?.value
+                }
+            };
+            let allocation = workspace_allocation(allocation, &accounting)?;
+            Ok::<_, WorkspaceError>((ChangeSet { from: self.clone(), to: to.clone(), changes, work: accounting.spent() }, allocation))
+        }.await;
+        work.finish(result, &accounting)
     }
 }
