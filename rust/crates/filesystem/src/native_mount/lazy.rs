@@ -4727,7 +4727,7 @@ where
             work.items(1)?;
             let mut namespace = work.namespace_buffer(path, candidate.volume_config())?;
             let lookup = if let Some(original) = work.meter.original_native_work() {
-                candidate.lookup_no_follow_with_metadata(
+                candidate.lookup_no_follow_with_metadata_with_native_work(
                     namespace.value.as_ref().expect("original removal namespace"), &original, cancellation,
                 ).await.map_err(mount_engine_error)?
             } else {
@@ -4778,7 +4778,7 @@ where
             let (file_id, record, _, _) = dirty[index];
             work.items(1)?;
             let result = if let Some(original) = work.meter.original_native_work() {
-                candidate.read_file_record_by_id(file_id, &original, cancellation)
+                candidate.read_file_record_by_id_with_native_work(file_id, &original, cancellation)
                     .await.map_err(mount_engine_error)
             } else {
                 let (budget, prior_live) = work.sdk_scope()?;
@@ -5746,7 +5746,7 @@ where
                     .map_err(native_lazy_error)?;
                 let mut page = self.lazy.list_directory_in_state_with_native_work(
                     state.as_state(), &text, cursor.take(), DIRECTORY_PROMOTION_PAGE,
-                    &original, cancellation, Some(&mut observation.observer()),
+                    &original, cancellation, Some(&mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value),
                     Some((&removed, opaque)), None,
                 ).await.map_err(native_lazy_error)?;
                 for entry in &page.entries {
@@ -6107,7 +6107,7 @@ where
                 observation.ensure_publication_resolved()?;
                 self.lazy
                     .list_directory_in_checkout(
-                        &mut observation.observer(),
+                        &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value,
                         &text,
                         cursor,
                         maximum_entries,
@@ -6251,7 +6251,7 @@ where
                 .map_err(directory_lazy_error)?;
             let page = self.lazy.list_directory_in_state_with_native_work(
                 state.as_state(), &text, cursor, maximum_entries, original, &caller,
-                Some(&mut observation.observer()), Some((&removed_children, opaque)), None,
+                Some(&mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value), Some((&removed_children, opaque)), None,
             ).await.map_err(directory_lazy_error)?;
             (page, state)
         };
@@ -10907,7 +10907,7 @@ mod tests {
                 .observe(SourceViewGate::callback_owner()).await?;
             observation.ensure_publication_resolved()?;
             view.lazy.list_directory_in_checkout(
-                &mut observation.observer(), "/dir", None, 1, None,
+                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None,
             ).await.map(|(_, state)| state).map_err(lazy_error)
         })?;
         let caller = crate::CancellationToken::new();
@@ -11069,7 +11069,7 @@ mod tests {
                 .observe(SourceViewGate::callback_owner()).await?;
             observation.ensure_publication_resolved()?;
             view.lazy.list_directory_in_checkout(
-                &mut observation.observer(), "/dir", None, 1, None,
+                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None,
             ).await.map(|(_, state)| state).map_err(lazy_error)
         })?;
         let caller = crate::CancellationToken::new();

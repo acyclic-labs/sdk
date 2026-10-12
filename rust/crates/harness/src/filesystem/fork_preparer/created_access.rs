@@ -187,7 +187,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, FilesystemRootBootstrapAllocation<A, O>>> {
         volume.validate_with_native_work(work)?;
-        let agent = owner.authenticated_binding_agent_with_native_work(work)?;
+        let agent = owner.authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
         if owner.root_bootstrap_owner() != self.issuer.audience() || volume.provider() != &self.host.provider
             || !match role {
                 crate::resource_preparation::RootBootstrapContentRole::Project =>
@@ -1351,7 +1351,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             });
             let mut receipt_custody = work.retain_owned((std::mem::size_of::<RootBootstrapContentReceipt>()
                 - std::mem::size_of::<crate::resource_preparation::RootBootstrapContentRequest>()) as u64)?;
-            let (request, mut request_custody) = request.clone_with_native_work(work)?;
+            let (request, mut request_custody) = request.copy(work)?;
             receipt_custody.absorb(&mut request_custody).map_err(|cause| Error::NativeWork {
                 cause, custody: Some(request_custody),
             })?;
@@ -1789,7 +1789,7 @@ mod tests {
     ) -> Result<crate::durable_host::TaskJournalOwner<acyclic_stream::MemoryStream>> {
         let owner = fixture.host.journal_owner(fixture.root,
             (&fixture.root_lease.reservation).into()).await?;
-        let agent = owner.authenticated_binding_agent_with_native_work(work)?.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "fixture has no original Root actor"))?;
+        let agent = owner.authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(work)?))?.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "fixture has no original Root actor"))?;
         let authority_custody;
         let (authority, custody) = original_root_fixture_authority(agent, work)?;
         authority_custody = custody;
@@ -1930,7 +1930,7 @@ mod tests {
             &owner, &admission, token.witness.binding(), &work,
         ).await?;
         for control in 0..5 {
-            let (mut request, request_custody) = token.request().clone_with_native_work(&work)?;
+            let (mut request, request_custody) = token.request().copy(&work)?;
             match control {
                 0 => request.graph_root = TaskId::from_bytes([181; 16]),
                 1 => request.root_operation = OperationId::from_bytes([182; 16]),

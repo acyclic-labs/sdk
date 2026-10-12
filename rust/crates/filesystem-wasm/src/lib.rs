@@ -4895,7 +4895,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .set_metadata_by_id(file_id, metadata, boundary_budget(), &cancellation)
+                    .set_attributes_by_id(file_id, metadata, None, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4991,7 +4991,7 @@ mod bindings {
             });
             ts(BrowserNamedAttributeResult {
                 exists: receipt.value.is_some(),
-                bytes: receipt.value.map(|value| value.to_vec().into()),
+                bytes: receipt.value.map(|value| value.bytes.to_vec().into()),
                 work: browser_work(receipt.work),
             })
         }
@@ -5472,7 +5472,7 @@ mod bindings {
                     .map_err(js_error)?,
             };
             ts(BrowserFileReadResult {
-                bytes: receipt.value.to_vec(),
+                bytes: receipt.value.bytes.to_vec(),
                 work: browser_work(receipt.work),
             })
         }
@@ -5864,15 +5864,15 @@ mod bindings {
             let bytes = bytes::Bytes::from(bytes);
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .write_file(path, offset, bytes, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .write_file(path, offset, bytes, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .write_file(path, offset, bytes, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5900,7 +5900,7 @@ mod bindings {
             let bytes = bytes::Bytes::from(bytes);
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .write_file_by_id(file_id, offset, bytes, boundary_budget(), &cancellation)
+                    .change_content(file_id, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -6040,15 +6040,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .resize_file(path, logical_bytes, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .resize_file(path, logical_bytes, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .resize_file(path, logical_bytes, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6071,7 +6071,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .resize_file_by_id(file_id, logical_bytes, boundary_budget(), &cancellation)
+                    .change_content(file_id, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -6097,36 +6097,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .zero_file_range(
-                        path,
-                        ByteRange { offset, length },
-                        allocated,
-                        extend,
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .zero_file_range(
-                        path,
-                        ByteRange { offset, length },
-                        allocated,
-                        extend,
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .zero_file_range(
-                        path,
-                        ByteRange { offset, length },
-                        allocated,
-                        extend,
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6152,14 +6131,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .zero_file_range_by_id(
-                        file_id,
-                        ByteRange { offset, length },
-                        allocated,
-                        extend,
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .change_content(file_id, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -6184,33 +6156,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .preallocate_file(
-                        path,
-                        ByteRange { offset, length },
-                        keep_size,
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .preallocate_file(
-                        path,
-                        ByteRange { offset, length },
-                        keep_size,
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .preallocate_file(
-                        path,
-                        ByteRange { offset, length },
-                        keep_size,
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6235,13 +6189,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .preallocate_file_by_id(
-                        file_id,
-                        ByteRange { offset, length },
-                        keep_size,
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .change_content(file_id, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -6273,15 +6221,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .clone_file_range(request, boundary_budget(), &cancellation)
+                    .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .clone_file_range(request, boundary_budget(), &cancellation)
+                    .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .clone_file_range(request, boundary_budget(), &cancellation)
+                    .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6308,15 +6256,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .clone_file_range_by_id(
-                        source_file_id,
-                        source_offset,
-                        destination_file_id,
-                        destination_offset,
-                        length,
-                        boundary_budget(),
-                        &cancellation,
-                    )
+                    .change_content(destination_file_id, acyclic_fs::ContentChange::CloneFrom { source: source_file_id, source_offset: source_offset, offset: destination_offset, length: length }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -6341,15 +6281,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .commit_with_permit(operation_id, permit, boundary_budget(), &cancellation)
+                    .commit(operation_id, None, None, None, permit, boundary_budget(), &cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .commit_with_permit(operation_id, permit, boundary_budget(), &cancellation)
+                    .commit(operation_id, None, None, None, permit, boundary_budget(), &cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .commit_with_permit(operation_id, permit, boundary_budget(), &cancellation)
+                    .commit(operation_id, None, None, None, permit, boundary_budget(), &cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
                     .await
                     .map_err(js_error)?,
             };

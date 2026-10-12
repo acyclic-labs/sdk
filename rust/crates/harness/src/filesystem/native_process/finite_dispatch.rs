@@ -266,7 +266,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
     }
 }
 
-async fn append_receipt_original<P: StreamProvider>(
+async fn append_receipt<P: StreamProvider>(
     owner: &TaskJournalOwner<P>, path: &StreamPath, tail: u64,
     receipt: &ReceiptWrite<'_, '_>, write: JournalWrite,
     work: &NativeMaterializationWork,
@@ -279,6 +279,6 @@ async fn append_receipt_original<P: StreamProvider>(
         key_bytes, key_custody, work.runtime_meter_owner(),
     ).map_err(|failure| super::super::native_execution::native_owned_bytes_failure(failure, work))?;
     let key = acyclic_stream::IdempotencyKey::new(key_bytes)?;
-    owner.append_with_native_work(path.clone(), tail, &key, bytes, write, work).await
+    owner.append(path.clone(), tail, &key, bytes, write,
+        &mut Some(&mut crate::store::history::native_work_io(work)?)).await
 }
-

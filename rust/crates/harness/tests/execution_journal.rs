@@ -74,7 +74,7 @@ async fn bind_conversation(
             scope: issuer.root("owner", Capabilities::new(["conversation:bind"])),
             causal_parent: None,
             action: Action::BindConversation { agent },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     Ok(())
 }

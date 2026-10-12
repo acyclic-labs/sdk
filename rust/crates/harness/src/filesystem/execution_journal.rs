@@ -1349,7 +1349,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 | (InteractionOutcome::Declined, InteractionResponse::Approval { approved: false, .. }) => {
                     let bytes_hold;
                     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                    let bytes = host.read_decision_detail_with_io(id, io).await?.ok_or_else(||
+                    let bytes = host.read_resolution_file(id, true, io).await?.ok_or_else(||
                         super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Storage,
                             "admitted approval detail is missing"))?;
                     bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -1373,7 +1373,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 (InteractionOutcome::Answered { .. }, _) => {
                     let bytes_hold;
                     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                    let bytes = host.read_answer_with_io(id, io).await?.ok_or_else(||
+                    let bytes = host.read_resolution_file(id, false, io).await?.ok_or_else(||
                         super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Storage,
                             "admitted answer is missing"))?;
                     bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -1876,10 +1876,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut references = Vec::with_capacity(count);
         content.visit_file_bindings(|file, binding| {
             if let Some((owner, _)) = &self.owner {
-                match io {
-                    Some(io) => owner.validate_input_file_with_io(file, io)?,
-                    None => owner.validate_input_file(file)?,
-                }
+                owner.validate_input_file(file, io)?;
             }
             if file.descriptor().byte_length() > self.maximum_payload_bytes {
                 return Err(super::fork_preparer_io::invalid(io, "model content exceeds journal limit"));
@@ -1891,20 +1888,14 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             if let Some(binding) = binding {
                 let (owner, _) = self.owner.as_ref().ok_or_else(|| canonical_boundary(
                     io, crate::wire::ErrorCode::Unsupported, "native options require an original task owner"))?;
-                match io {
-                    Some(io) => { owner.validate_native_configuration_with_io(binding, io)?; }
-                    None => { owner.validate_native_configuration(binding)?; }
-                }
+                owner.validate_native_configuration(binding, io)?;
             }
         }
         for (_, binding) in &references {
             if let Some(binding) = binding {
                 let (owner, _) = self.owner.as_ref().ok_or_else(|| canonical_boundary(
                     io, crate::wire::ErrorCode::Unsupported, "native options require an original task owner"))?;
-                match io {
-                    Some(io) => owner.verify_native_configuration_with_io(binding, io).await?,
-                    None => owner.verify_native_configuration(binding).await?,
-                }
+                owner.verify_native_configuration(binding, io).await?;
             }
         }
         for (file, _) in &references {
@@ -2480,10 +2471,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn authorize_selected_file_with_io(&self, file: &FileRef, io: Option<&PreparationIo>) -> Result<()> {
         if let Some((owner, _)) = &self.owner {
-            match io {
-                Some(io) => owner.validate_input_file_with_io(file, io),
-                None => owner.validate_input_file(file),
-            }
+            owner.validate_input_file(file, io)
         } else {
             let mut borrowed = io.map(PreparationIo::history_io);
             file.validate_with_work(&mut borrowed.as_mut().map(

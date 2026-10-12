@@ -5582,7 +5582,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             }) {
                 let lookup_cancellation = capture_meter(meter).leaf(|work| work.cancellation().clone());
                 let prior = capture_sdk_in_heap_with_meter(
-                    |native| checkout.read_metadata_by_id(record.file_id, native, &lookup_cancellation),
+                    |native| checkout.read_metadata_by_id_with_native_work(record.file_id, native, &lookup_cancellation),
                     meter, &lookup_cancellation,
                 ).await?;
                 receipt.work = prior.work;
