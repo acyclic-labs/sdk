@@ -24,7 +24,7 @@ use crate::{
     },
 };
 use acyclic_fs::{
-    Fs, MemoryAuthorityBackend, MemoryObjectBackend, WorkspaceDirectoryPage,
+    Fs, MemoryAuthorityBackend, MemoryObjectBackend, DirectoryPage,
     kernel::{FileKind, LogicalName, NameEncoding},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
@@ -106,7 +106,7 @@ struct ListFilesPageWire<'a> {
     next_after: Option<&'a str>,
 }
 
-struct ListFilesEntries<'a>(&'a [acyclic_fs::WorkspaceDirectoryEntry]);
+struct ListFilesEntries<'a>(&'a [acyclic_fs::TreeEntry]);
 
 impl serde::Serialize for ListFilesEntries<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
@@ -139,7 +139,7 @@ impl serde::Serialize for ListFilesEntries<'_> {
 
 fn list_files_page_wire<'a>(
     generation: &'a GenerationRef,
-    page: &'a WorkspaceDirectoryPage,
+    page: &'a DirectoryPage,
 ) -> Result<ListFilesPageWire<'a>> {
     for entry in &page.entries {
         if entry.name.encoding() != NameEncoding::Utf8
@@ -193,7 +193,7 @@ struct NativeListFilesInput {
 #[cfg(not(target_arch = "wasm32"))]
 struct NativeListFilesPage {
     generation: GenerationRef,
-    page: WorkspaceDirectoryPage,
+    page: DirectoryPage,
     _custody: acyclic_fs::NativeAllocation,
 }
 
@@ -856,7 +856,7 @@ impl MemoryHarnessStorage {
         expected_generation: Option<&GenerationRef>,
         after: Option<&LogicalName>,
         maximum_entries: u32,
-    ) -> Result<(GenerationRef, WorkspaceDirectoryPage)> {
+    ) -> Result<(GenerationRef, DirectoryPage)> {
         let page = self
             .content_verifier
             .list_private_directory(
@@ -920,7 +920,7 @@ impl MemoryHarnessStorage {
         expected_generation: Option<&GenerationRef>,
         after: Option<&LogicalName>,
         maximum_entries: u32,
-    ) -> Result<(GenerationRef, WorkspaceDirectoryPage)> {
+    ) -> Result<(GenerationRef, DirectoryPage)> {
         self.delegated_reader(scope)?
             .list_private_directory(
                 &self.volume,
