@@ -158,7 +158,7 @@ async fn b15_replacement_rejects_stale_publications() -> Result<()> {
             attempt,
             0,
             [7; 32],
-            old.task_binding().1,
+            old.task_binding().1.clone(),
         )
         .await?;
     let replacement = f.replace(1).await?;
@@ -169,7 +169,7 @@ async fn b15_replacement_rejects_stale_publications() -> Result<()> {
                 attempt,
                 0,
                 [7; 32],
-                old.task_binding().1
+                old.task_binding().1.clone()
             )
             .await
             .is_err()
@@ -315,6 +315,7 @@ async fn b17_seventy_event_replay_and_completion() -> Result<()> {
     .await?;
     let owner = f.running(1).await?;
     let (task, fence) = owner.task_binding();
+    let fence = fence.clone();
     let attempt = OperationId::from_bytes([2; 16]);
     let request = crate::model::PreparedModelRequest::prepare(
         crate::model::ModelRequest {

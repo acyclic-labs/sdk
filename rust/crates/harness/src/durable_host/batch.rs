@@ -3,18 +3,22 @@ use super::*;
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub(super) fn batch_stream(&self, batch_id: BatchId) -> Result<acyclic_stream::Stream<P>> {
-        self.stream
-            .stream(format!("harness/v2/batches/{batch_id}"))
-            .map_err(|error| Error::Invalid(error.to_string()))
+        acyclic_stream::Stream::new(
+            self.stream.clone(),
+            format!("harness/v2/batches/{batch_id}"),
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))
     }
 
     pub(super) fn batch_cancellation_stream(
         &self,
         batch_id: BatchId,
     ) -> Result<acyclic_stream::Stream<P>> {
-        self.stream
-            .stream(format!("harness/v2/batch-cancellations/{batch_id}"))
-            .map_err(|error| Error::Invalid(error.to_string()))
+        acyclic_stream::Stream::new(
+            self.stream.clone(),
+            format!("harness/v2/batch-cancellations/{batch_id}"),
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))
     }
 
     pub(super) async fn retained_batch_cancellation(
@@ -116,7 +120,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let operation_id = OperationId::from_bytes(request.batch_id.into_bytes());
         let key = format!("batch-request:{}", request.batch_id);
-        let reference = self.payloads.stage(operation_id, &key, &bytes).await?;
+        let reference = self
+            .payloads
+            .stage(operation_id, &key, &bytes, None)?
+            .await?;
         reference.descriptor().verify(&bytes, &mut None)?;
         if self.read_json(&reference).await? != canonical {
             return Err(Error::Storage("staged batch request changed".into()));
@@ -139,13 +146,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     pub(super) fn validate_batch(&self, request: &DurableBatchRequest) -> Result<()> {
-        request.validate(&mut None)?;
+        request.validate()?;
         if request.execution.is_some()
             || request.policy != self.policy.as_ref().map(|policy| policy.identity())
             || request.machine.name != request.task.name
             || request.machine.version != request.task.version
             || request.machine.digest == [0; 32]
-            || self.machines.resolve(&request.machine).is_none()
+            || self
+                .machines
+                .resolve(&request.machine, &mut None)?
+                .is_none()
         {
             return Err(Error::Invalid(
                 "batch implementation or policy is invalid".into(),
@@ -170,8 +180,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "batch extensions differ from owner bindings".into(),
             ));
         }
-        validate_task_schemas(&request.input_schema, &request.output_schema, true)?;
-        let input = crate::contract::compile_json_schema(&request.input_schema, "batch input")?;
+        validate_task_schemas(
+            &request.input_schema,
+            &request.output_schema,
+            true,
+            &mut None,
+        )?;
+        let input =
+            crate::contract::compile_json_schema(&request.input_schema, "batch input", &mut None)?;
         for value in &request.inputs {
             input.validate(value).map_err(|error| {
                 Error::Invalid(format!("batch input failed validation: {error}"))

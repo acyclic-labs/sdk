@@ -76,7 +76,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         if let Some((execution, tail)) = idle_execution {
             coordinator
-                .suspend_if_execution_idle(key, event, execution, tail)
+                .apply_if_execution_quiescent(key, event, execution, tail, None, &mut None)
                 .await?;
         } else {
             coordinator.apply(key, event, &mut None).await?;
@@ -146,7 +146,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut tasks = BTreeSet::new();
         for event in events {
             if !matches!(
-                event.event,
+                event,
                 crate::scheduler::SchedulerEvent::WorkflowSuspended {
                     waiting_command: Some(_),
                     ..
@@ -156,7 +156,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             let operation = coordinator
                 .scheduler()
-                .operation(event.operation_id)
+                .operation(event.operation_id())
                 .ok_or_else(|| Error::Storage("wake event operation is absent".into()))?;
             if operation.spec.owner.authority() != &self.owner {
                 continue;
@@ -166,7 +166,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     &self.owner,
                     &self.owner_scope,
                     &self.verifier,
-                    event.operation_id,
+                    event.operation_id(),
                     &mut None,
                 )?
                 .clone();
@@ -177,7 +177,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     .as_ref()
                     .is_some_and(|slot| slot.waiting_command.is_some())
             {
-                tasks.insert(TaskId::from_bytes(event.operation_id.into_bytes()));
+                tasks.insert(TaskId::from_bytes(event.operation_id().into_bytes()));
             }
         }
         Ok(WorkflowWaitPage {
@@ -228,7 +228,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let operation = OperationId::from_bytes(task.into_bytes());
         let key = format!("task-command-wake:{task}:{revision}:{waiting}");
-        let input = self.payloads.stage(operation, &key, b"null").await?;
+        let input = self.payloads.stage(operation, &key, b"null", None)?.await?;
         let admission = self.admission(operation).await?;
         admission.limits.validate_file(&input, &mut None)?;
         if !read_granted(&admission.grants, &input)? {
@@ -240,7 +240,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .resume_command(
+            .resume_workflow(
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
@@ -248,7 +248,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 revision,
                 input,
                 IdempotencyKey::new(key)?,
-                waiting,
+                Some(waiting),
+                &mut None,
             )
             .await?;
         Ok(())
@@ -282,6 +283,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 revision,
                 input,
                 key,
+                None,
+                &mut None,
             )
             .await?;
         Ok(())
@@ -308,7 +311,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     &mut None,
                 )?
                 .clone();
-            crate::scheduler::require_execution_owner(&operation, fence, false)?;
+            crate::scheduler::require_execution_owner(&operation, fence, false, &mut None)?;
             operation.workflow
         };
         let Some(slot) = slot else { return Ok(None) };

@@ -7,7 +7,6 @@ use crate::{
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
     distributed::{DistributedCoordinator, SchedulerPayloadStore},
-    executor::ExecutionJournal,
     interaction::{Interaction, InteractionOutcome},
     registry::ComponentIdentity,
     runtime::{
@@ -41,6 +40,7 @@ use tokio::sync::Mutex;
 #[serde(deny_unknown_fields)]
 struct MailEvent {
     sender: TaskId,
+    recipient: TaskId,
     message_id: OperationId,
     payload: FileRef,
 }
@@ -121,17 +121,9 @@ pub struct CoordinatorTaskHost<P> {
 #[cfg(feature = "filesystem")]
 pub struct TaskJournalOwner<P> {
     host: Arc<CoordinatorTaskHost<P>>,
-    stream: Arc<P>,
-    task_id: TaskId,
     fence: crate::scheduler::LeaseFence,
     workflow: crate::workflow::WorkflowAdmission,
-    maximum_payload_bytes: u64,
-    output_schema: Value,
-    input_grants: crate::Capabilities,
-    input_limits: crate::conversation::Limits,
-    extensions: Option<crate::core::ExtensionAdmission>,
-    extension_schemas: Option<crate::core::SchemaRegistry>,
-    extension_runtime: Option<Arc<crate::extension::ExtensionRuntime>>,
+    admission: Arc<TaskAdmissionRecord>,
 }
 
 mod admission;

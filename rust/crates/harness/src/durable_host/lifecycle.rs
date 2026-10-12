@@ -10,7 +10,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .pull_owned(&self.owner, &self.owner_scope, &self.verifier, worker)
+            .pull_owned(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                worker,
+                None,
+                &mut None,
+            )
             .await
     }
 
@@ -23,12 +30,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .pull_owned_operation(
+            .pull_owned(
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
                 worker,
-                operation_id,
+                Some(operation_id),
+                &mut None,
             )
             .await
     }
@@ -102,7 +110,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         if operation.phase == crate::scheduler::OperationPhase::Running {
-            return crate::scheduler::require_execution_owner(&operation, &fence, false);
+            return crate::scheduler::require_execution_owner(&operation, &fence, false, &mut None);
         }
         let event = if operation.phase == crate::scheduler::OperationPhase::Reconciling {
             crate::scheduler::SchedulerEvent::ReconciliationResumed {
@@ -168,7 +176,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 }
                 Outcome::Succeeded(
                     self.payloads
-                        .stage(operation_id, key.as_str(), &bytes)
+                        .stage(operation_id, key.as_str(), &bytes, None)?
                         .await?,
                 )
             }
@@ -210,7 +218,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 &mut None,
             )?
             .clone();
-        crate::scheduler::require_execution_owner(&operation, fence, settlement)
+        crate::scheduler::require_execution_owner(&operation, fence, settlement, &mut None)
     }
 
     /// Binds journal publications to the authenticated task's exact current lease.
@@ -225,7 +233,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .await?;
         let machine = self
             .machines
-            .resolve(&admission.machine)
+            .resolve(&admission.machine, &mut None)?
             .ok_or_else(|| Error::Unsupported("pinned task machine is unavailable".into()))?;
         let workflow = crate::workflow::WorkflowAdmission {
             operation_id: admission.operation_id,
@@ -241,20 +249,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             },
         };
         self.machines.validate_checkpoint(&workflow.initial, None)?;
-        let stream = self.stream.clone();
         let owner = TaskJournalOwner {
             host: self.clone(),
-            stream,
-            task_id,
             fence,
             workflow,
-            maximum_payload_bytes: admission.limits.file_bytes,
-            output_schema: admission.output_schema,
-            input_grants: admission.grants,
-            input_limits: admission.limits,
-            extensions: admission.extensions,
-            extension_schemas: self.root_scope.extension_schema_registry(),
-            extension_runtime: self.root_scope.extension_runtime(),
+            admission: Arc::new(admission),
         };
         owner.verify(true, &mut None).await?;
         Ok(owner)
@@ -299,13 +298,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             key
         };
-        let outcome = crate::distributed::append_keyed(
+        let outcome = crate::distributed::append(
             (stream, &self.stream),
-            OwnedBytes::copy_from_slice(bytes),
+            [OwnedBytes::copy_from_slice(bytes)],
+            0,
             expected_tail,
             key,
             operation_id,
-            "control identity",
+            &mut None,
         )
         .await?;
         match outcome {

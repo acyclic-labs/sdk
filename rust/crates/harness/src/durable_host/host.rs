@@ -49,7 +49,9 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 )?
                 .clone();
             crate::scheduler::require_execution_owner(&operation, &fence, false, &mut None)?;
-            let session = coordinator.scheduler().session_limits(operation_id)?;
+            let session = coordinator
+                .scheduler()
+                .session_limits(operation_id, &mut None)?;
             let ceiling = (scope.limits().model_steps as u64)
                 .min(
                     scope
@@ -345,15 +347,18 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
             let observed = {
                 let mut coordinator = self.coordinator.lock().await;
                 coordinator.refresh(&mut None).await?;
-                coordinator.observe_operation(
-                    &self.owner,
-                    &self.owner_scope,
-                    &self.verifier,
-                    operation_id,
-                    &mut None,
-                )?
+                coordinator
+                    .observe_operation(
+                        &self.owner,
+                        &self.owner_scope,
+                        &self.verifier,
+                        operation_id,
+                        &mut None,
+                    )?
+                    .outcome
+                    .clone()
             };
-            match observed.outcome {
+            match observed {
                 Some(Outcome::Succeeded(reference)) => {
                     Ok(Some(Outcome::Succeeded(self.read_json(&reference).await?)))
                 }
@@ -380,6 +385,8 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
                     operation_id,
                     IdempotencyKey::new(format!("task-cancel:{operation_id}"))?,
                     true,
+                    None,
+                    &mut None,
                 )
                 .await?;
             Ok(())
@@ -397,19 +404,8 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
             let bytes = self
                 .mail_bytes(sender, recipient, message_id, payload)
                 .await?;
-            let mailbox = self.mailbox(recipient)?.clone();
-            loop {
-                let (tail, found) = self.mail_state(recipient, message_id, &bytes).await?;
-                if found {
-                    return Ok(());
-                }
-                if self
-                    .publish_control_at(&mailbox, "mail", recipient, message_id, &bytes, Some(tail))
-                    .await?
-                {
-                    return Ok(());
-                }
-            }
+            self.publish_mail(sender, recipient, message_id, &bytes, None)
+                .await
         })
     }
 
@@ -467,6 +463,11 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
                 }
                 let event: MailEvent = serde_json::from_value(value)
                     .map_err(|error| Error::Storage(error.to_string()))?;
+                if event.recipient != task_id {
+                    return Err(Error::Unauthorized(
+                        "mail recipient differs from its mailbox".into(),
+                    ));
+                }
                 event.payload.validate(&mut None)?;
                 recipient_admission
                     .limits

@@ -115,7 +115,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if machine.name != identity.name
             || machine.version != identity.version
             || machine.digest == [0; 32]
-            || self.machines.resolve(&machine).is_none()
+            || self.machines.resolve(&machine, &mut None)?.is_none()
         {
             return Err(Error::Invalid(
                 "task and machine identities disagree".into(),
@@ -145,7 +145,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 }
                 (retained.state, retained.owner_scope)
             } else {
-                let state = self.payloads.stage(operation_id, &key, &bytes).await?;
+                let state = self
+                    .payloads
+                    .stage(operation_id, &key, &bytes, None)?
+                    .await?;
                 state.descriptor().verify(&bytes, &mut None)?;
                 if self.read_json(&state).await? != canonical {
                     return Err(Error::Storage(
@@ -237,7 +240,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     /// Pins the policy enforced by this owner, independently of caller contexts.
     pub fn with_policy(mut self, policy: Arc<dyn ToolPolicy>) -> Result<Self> {
-        validate_policy_identity(&policy.identity())?;
+        validate_policy_identity(&policy.identity(), None)?;
         self.policy = Some(policy);
         Ok(self)
     }
@@ -261,7 +264,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         reference.descriptor().verify(&bytes, &mut None)?;
         let value: Value = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        if crate::contract::canonical_json_bytes(&value)? != bytes {
+        if crate::contract::canonical_json_bytes(&value)?.as_slice() != bytes.as_ref() {
             return Err(Error::Invalid(
                 "durable task payload is not canonical JSON".into(),
             ));
@@ -281,6 +284,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &self.verifier,
             operation_id,
             &declaration_key,
+            &mut None,
         )
         .await?;
         if indexed.is_some() {
@@ -299,7 +303,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 operation_id,
                 &mut None,
             ) {
-                Ok(operation) => Ok(Some(operation.spec)),
+                Ok(operation) => Ok(Some(operation.spec.clone())),
                 Err(Error::NotFound(_)) => Ok(None),
                 Err(error) => Err(error),
             }
@@ -328,10 +332,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             // Session configuration and parent links are immutable. A cached
             // hierarchy can check these pinned ceilings without refreshing
             // unrelated lifecycle events; unknown descendants still bootstrap.
-            let retained = match coordinator.scheduler().session_limits(operation_id) {
+            let retained = match coordinator
+                .scheduler()
+                .session_limits(operation_id, &mut None)
+            {
                 Err(Error::NotFound(_)) => {
                     coordinator.refresh(&mut None).await?;
-                    coordinator.scheduler().session_limits(operation_id)?
+                    coordinator
+                        .scheduler()
+                        .session_limits(operation_id, &mut None)?
                 }
                 other => other?,
             };
@@ -371,7 +380,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 })
             || admission.machine.name != admission.task.name
             || admission.machine.version != admission.task.version
-            || self.machines.resolve(&admission.machine).is_none()
+            || self
+                .machines
+                .resolve(&admission.machine, &mut None)?
+                .is_none()
         {
             return Err(Error::Conflict(
                 "durable task admission disagrees with its declaration".into(),
