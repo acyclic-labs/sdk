@@ -817,7 +817,7 @@ impl MemoryHarnessStorage {
                 stream.clone(),
                 Arc::clone(&host),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(), crate::core::SchemaRegistry::new(),
                 scope.clone(),
                 maximum_file_bytes,
             )?

@@ -235,68 +235,50 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         }
     }
 
-    /// Selects the model provider, context pipeline and compaction policy used by stock commands.
-    #[must_use]
+    /// Copies the selected model configuration with optional native accounting.
     pub fn with_model(
-        mut self,
-        model: Model,
-        provider: Arc<dyn ModelProvider>,
-        context: ContextPipeline,
-        compaction: crate::context::CompactionPolicy,
-    ) -> Self {
-        self.model = Some(ModelBinding {
-            model,
-            provider,
-            context,
-            compaction,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None,
-        });
-        self
-    }
-
-    /// Copies the original selected model configuration on its native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_model_with_native_work(
         mut self, model: &Model, provider: Arc<dyn ModelProvider>,
         context: &ContextPipeline, compaction: &crate::context::CompactionPolicy,
-        work: &acyclic_fs::NativeMaterializationWork,
+        io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
-        if let Some(custody) = &self.native_custody
-            && !custody.matches_work(work)
-        {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "command configuration belongs to another original work" });
-        }
-        let io = super::PreparationIo::from_native_work(work)?;
-        let self_bytes = if self.native_custody.is_none() {
-            std::mem::size_of::<Self>() as u64
-        } else { 0 };
-        io.retain_owned(self_bytes)?;
-        io.retain_owned(std::mem::size_of::<ModelBinding>() as u64)?;
-        let model = crate::model::model_model_clone_with_io(model, Some(&io))?;
-        let context = context.clone_with_native_work(work)?;
-        io.absorb_native_custody(context.1)?;
-        let compaction = match compaction {
-            crate::context::CompactionPolicy::Disabled => crate::context::CompactionPolicy::Disabled,
-            crate::context::CompactionPolicy::Threshold(policy) => {
-                let (retention, custody) = crate::context::clone_retention_native(&policy.retention, work)?;
-                io.absorb_native_custody(custody)?;
-                crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
-                    response_reserve_tokens: policy.response_reserve_tokens, recent_tokens: policy.recent_tokens, retention,
-                })
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
+                Some(io), crate::wire::ErrorCode::Unsupported, "model configuration requires original native work"))?;
+            if self.native_custody.as_ref().is_some_and(|custody| !custody.matches_work(work)) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "command configuration belongs to another original work" });
             }
-        };
-        let binding_bytes = io.owned_bytes()?.checked_sub(self_bytes)
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "native model configuration custody underflows" })?;
-        let custody = io.take_native_custody(binding_bytes)?;
-        self.model = Some(ModelBinding {
-            model, provider, context: context.0, compaction, native_custody: Some(custody),
-        });
-        if self_bytes != 0 {
-            self.native_custody = Some(io.take_native_custody(self_bytes)?);
+            let before = io.owned_bytes()?;
+            let self_bytes = if self.native_custody.is_none() { std::mem::size_of::<Self>() as u64 } else { 0 };
+            io.retain_owned(self_bytes)?;
+            io.retain_owned(std::mem::size_of::<ModelBinding>() as u64)?;
+            let model = crate::model::model_model_clone_with_io(model, Some(io))?;
+            let context = context.clone_with_native_work(work)?;
+            io.absorb_native_custody(context.1)?;
+            let compaction = match compaction {
+                crate::context::CompactionPolicy::Disabled => crate::context::CompactionPolicy::Disabled,
+                crate::context::CompactionPolicy::Threshold(policy) => {
+                    let (retention, custody) = crate::context::clone_retention_native(&policy.retention, work)?;
+                    io.absorb_native_custody(custody)?;
+                    crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
+                        response_reserve_tokens: policy.response_reserve_tokens, recent_tokens: policy.recent_tokens, retention,
+                    })
+                }
+            };
+            let binding_bytes = io.owned_bytes()?.checked_sub(before).and_then(|bytes| bytes.checked_sub(self_bytes))
+                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "native model configuration custody underflows" })?;
+            self.model = Some(ModelBinding { model, provider, context: context.0, compaction,
+                native_custody: Some(io.take_native_custody(binding_bytes)?) });
+            if self_bytes != 0 { self.native_custody = Some(io.take_native_custody(self_bytes)?); }
+            return Ok(self);
         }
+        let _ = io;
+        self.model = Some(ModelBinding {
+            model: model.clone(), provider, context: context.clone(), compaction: compaction.clone(),
+            #[cfg(not(target_arch = "wasm32"))] native_custody: None,
+        });
         Ok(self)
     }
 
@@ -1337,7 +1319,7 @@ where
         {
             return Err(boundary(io, ErrorCode::Unauthorized, "model is not in the committed steering outbox"));
         }
-        let previous = journal.observe_transition_with_io(latest.prior.revision, io).await?;
+        let previous = journal.observe_transition(latest.prior.revision, io).await?;
         let [receive] = previous.transition.commands.as_slice() else {
             return Err(boundary(io, ErrorCode::Unauthorized, "steering requires one committed receive"));
         };
@@ -1443,7 +1425,7 @@ fn tool_invocation(
     }
     drop(grant);
     drop(grant_hold);
-    crate::contract::validate_json_schema_value_with_io(&definition.input_schema, &arguments, "tool input", io)?;
+    crate::contract::validate_json_schema_value(&definition.input_schema, &arguments, "tool input", io)?;
     if let Some(io) = io { io.retain_owned(std::mem::size_of::<ToolInvocation>() as u64)?; }
     let invocation = ToolInvocation {
         operation_id: operation,

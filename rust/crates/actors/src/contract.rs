@@ -134,10 +134,10 @@ mod fallible_producer_tests {
         family = "actors_ingress",
         messages(IngressProto, ChildProto, EnvelopeProto)
     )]
-    pub struct FallibleFile;
+    pub(crate) struct FallibleFile;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct IngressError;
+    pub(crate) struct IngressError;
 
     impl std::fmt::Display for IngressError {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -159,21 +159,21 @@ mod fallible_producer_tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[acyclic_contract_derive::message(error = IngressError, file = FallibleFile)]
-    pub struct Ingress {
+    pub(crate) struct Ingress {
         #[wire(string, tag = 1, from = parse_actor_id)]
         actor_id: String,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[acyclic_contract_derive::message(error = IngressError, file = FallibleFile)]
-    pub struct Child {
+    pub(crate) struct Child {
         #[wire(string, tag = 1)]
         value: String,
     }
 
     #[acyclic_contract_derive::oneof(error = IngressError, file = FallibleFile)]
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum Selector {
+    pub(crate) enum Selector {
         #[wire(tag = 1)]
         Cursor(u64),
         #[wire(tag = 2)]
@@ -182,7 +182,7 @@ mod fallible_producer_tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[acyclic_contract_derive::message(error = IngressError, file = FallibleFile)]
-    pub struct Envelope {
+    pub(crate) struct Envelope {
         #[wire(message, tag = 3)]
         child: Option<Child>,
         #[wire(message, tag = 4)]

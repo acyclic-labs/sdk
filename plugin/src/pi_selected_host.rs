@@ -2,7 +2,7 @@
 use crate::{AdapterState, PiTaskBinding, PluginTaskBinding, ServiceResources,
     pi_native_host::{PiNativeCommandHost, PiNativeFilesystem, PiNativeRuntime},
     pi_owner::PiOwnerConfig, pi_root_provider::PiRootHandle,
-    pi_task::{PiTaskExecution, PiTaskInput}, pi_root_inputs::PiRootRequest,
+    pi_task::{PiTaskExecution, PiTaskInput},
     pi_fork::{PiForkCoordinator, original_operation, derived}, pi_inspection::*};
 use acyclic_fs::{CancellationToken, LazySnapshotRef, WorkCounters};
 use acyclic_harness::{Error, Result, TaskId, OperationId, durable_host::TaskJournalOwner,
@@ -15,8 +15,7 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use base64::Engine as _;
 
-/// Public metadata from the original Root observe-source command ACK. This
-/// deliberately cannot carry a Root context, owner, grant, signer or lease.
+/// Public metadata from the original Root observe-source command ACK.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiRootSourceCut {
@@ -68,47 +67,26 @@ pub(crate) struct PiSelectedHost<'a> {
     roots: &'a BTreeMap<String, PiRootHandle>,
     native: Arc<PiNativeCommandHost>,
     root_source_cut: Option<&'a PiRootSourceCut>,
-    cancellation: Option<CancellationToken>,
-    work: Option<acyclic_fs::NativeMaterializationWork>,
+    work: acyclic_fs::NativeMaterializationWork,
 }
 
 impl<'a> PiSelectedHost<'a> {
-    #[allow(clippy::too_many_arguments, reason = "original providers, catalog and creator handles are independent")]
-    pub(crate) fn new(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
-        stream: StreamClient<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
-        retained: &'a AdapterState, roots: &'a BTreeMap<String, PiRootHandle>,
-        native: Arc<PiNativeCommandHost>) -> Result<Self> {
-        runtime.verify_owner(&protected)?;
-        Ok(Self { runtime, filesystem, stream, resources, protected, retained, roots, native,
-            root_source_cut: None, cancellation: None, work: None })
-    }
     #[allow(clippy::too_many_arguments, reason = "original providers and invocation work are independent")]
-    pub(crate) fn new_with_native_work(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
+    pub(crate) fn new(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
         stream: StreamClient<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
         retained: &'a AdapterState, roots: &'a BTreeMap<String, PiRootHandle>,
         native: Arc<PiNativeCommandHost>, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         runtime.verify_owner_with_native_work(&protected, work)?;
         Ok(Self { runtime, filesystem, stream, resources, protected, retained, roots, native,
-            root_source_cut: None, cancellation: Some(work.cancellation().clone()), work: Some(work.clone()) })
+            root_source_cut: None, work: work.clone() })
     }
     pub(crate) fn with_root_source_cut(mut self, cut: Option<&'a PiRootSourceCut>) -> Self {
         self.root_source_cut = cut; self
     }
-    pub(crate) fn with_invocation_cancellation(mut self, token: &CancellationToken) -> Self {
-        self.cancellation = Some(token.clone()); self
-    }
-    pub(crate) fn with_work(mut self, work: acyclic_fs::NativeMaterializationWork) -> Self {
-        self.cancellation = Some(work.cancellation().clone());
-        self.work = Some(work);
-        self
-    }
     fn coordinator(&self) -> Result<PiForkCoordinator> {
-        match &self.work {
-            Some(work) => PiForkCoordinator::new_with_native_work(self.runtime.clone(), self.filesystem.clone(),
-                self.stream.clone(), self.resources, Arc::clone(&self.protected), work),
-            None => PiForkCoordinator::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-                self.resources.clone(), Arc::clone(&self.protected)),
-        }
+        let work = &self.work;
+        PiForkCoordinator::new(self.runtime.clone(), self.filesystem.clone(),
+            self.stream.clone(), self.resources, Arc::clone(&self.protected), work)
     }
     fn root_binding(&self) -> Result<&PiTaskBinding> {
         match &self.retained.task_binding {
@@ -124,20 +102,6 @@ impl<'a> PiSelectedHost<'a> {
             None => Err(invalid("select an explicit root when the source does not have exactly one project")),
         }
     }
-    async fn context(&self, context: TaskContext, fence: LeaseFence, cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork) -> Result<(TaskContext, Arc<TaskJournalOwner<LocalStream>>, PiTaskInput, acyclic_fs::NativeAllocation)> { let task = context.durable_task_id().ok_or_else(|| denied("selected control has no original caller"))?;
-    let owner = Arc::new(self.runtime.runtime.task_host().journal_owner(task, fence).await?
-        .with_invocation_cancellation(cancellation));
-    owner.native_view_owner().verify_with_native_work(work).await?;
-    let decoded = self.admission_input(task, work).await?;
-    let input = &decoded.0;
-    if input.binding.task_id != task { return Err(denied("selected admission changed the original caller")); }
-    let context = if task == self.protected.policy().root_task {
-        let PiTaskExecution::Host { root, .. } = &input.execution else { return Err(denied("selected Root became a child")); };
-        let request = PiRootRequest { binding: input.binding.clone(), root: root.clone() };
-        consume_root(work, crate::pi_root_provider::bind_root_output_context(context, &owner, self.protected.clone(),
-            self.resources.clone(), self.filesystem.clone(), self.stream.clone(), &request, work.remaining().map_err(native_error)?, cancellation).await)?
-    } else { context.with_output_volume(&input.binding.scratch.volume)? };
-    Ok((context, owner, decoded.0, decoded.1)) }
     async fn native_caller(&self, context: &TaskContext, fence: LeaseFence,
         work: &acyclic_fs::NativeMaterializationWork)
         -> Result<(Arc<TaskJournalOwner<LocalStream>>, PiTaskInput, acyclic_fs::NativeAllocation)> {
@@ -181,7 +145,7 @@ impl<'a> PiSelectedHost<'a> {
         drop(encoded);
         result
     }
-    pub(crate) async fn selected(&self, context: &TaskContext, native_context: Option<&Arc<NativeTaskContext>>, owner: &Arc<TaskJournalOwner<LocalStream>>,
+    pub(crate) async fn selected(&self, context: &TaskContext, native_context: &Arc<NativeTaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         task: TaskId, requested: Option<&str>, pinned: Option<LazySnapshotRef>, operation: OperationId, cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork) -> Result<(String, VolumeRef, Arc<crate::LocalLazyWorkspace>, LazySnapshotRef,
         TaskSourceInspection<LocalStream, crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
         (acyclic_fs::NativeAllocation, Option<acyclic_fs::NativeAllocation>))> { authorize_selected_source(&self.runtime.runtime, self.protected.policy().root_task,
@@ -196,7 +160,7 @@ impl<'a> PiSelectedHost<'a> {
     let frozen_custody = if let Some(pinned) = pinned { (pinned, None) } else if task == self.protected.policy().root_task {
         let actual = self.roots.get(&key.0).ok_or_else(|| denied("selected Root allocation unavailable"))?;
         if owner.task_id() == task {
-            let shared = native_context.ok_or_else(|| denied("Root capture requires its actual native command context"))?;
+            let shared = native_context;
             let (snapshot, custody) = crate::pi_fork_host::freeze_created_root_source(
                 Arc::clone(&self.protected), self.resources, Arc::clone(&self.filesystem),
                 self.stream.clone(), shared, owner, input, &key.0, actual, work).await?;
@@ -222,7 +186,7 @@ impl<'a> PiSelectedHost<'a> {
         project: &'a VolumeRef, generation: Generation<'a>, native_snapshot: &'a LazySnapshotRef,
     }
     let maximum = self.protected.policy().maximum_payload_bytes;
-    let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(&Selection {
+    let bytes = crate::pi_root_provider::canonical_pi_value(&Selection {
         project, generation: Generation { kind: acyclic_harness::resources::ResourceKind::Generation,
             provider: project.provider(), key: frozen.authored_generation.digest().as_bytes(), version: None },
         native_snapshot: &frozen,
@@ -248,34 +212,14 @@ impl<'a> PiSelectedHost<'a> {
     drop(selection.0.native_snapshot);
     selection.1.absorb(&mut key.1).map_err(native_error)?;
     Ok((key.0, volume, workspace, frozen, inspection, (selection.1, frozen_custody.1))) }
-    async fn run(&self, context: TaskContext, fence: LeaseFence, command: WorkflowCommand,
-        payload: Value, reconcile: bool) -> Result<TaskCommandProgress> {
-        let current = context.durable_task_id().ok_or_else(|| denied("selected control lacks its actual caller context"))?;
-        let cancellation = if current == self.protected.policy().root_task {
-            self.cancellation.clone()
-        } else { self.native.invocation_cancellation(current)? }
-            .ok_or_else(|| denied("selected control lacks its original invocation cancellation"))?;
-        let cancellation = &cancellation;
-        let work = if current == self.protected.policy().root_task {
-            self.work.as_ref().cloned().ok_or_else(|| denied("Root selected control lacks its ORIGINAL command work ledger"))?
-        } else { self.native.invocation_work(current).await? };
-        let work = &work;
-        let caller_custody = self.context(context, fence, cancellation, work).await?;
-        let (context, owner, caller, _) = &caller_custody;
-        self.run_bound(context, None, owner, caller, command, payload, reconcile, cancellation, work).await
-    }
-    async fn run_native(&self, context: Arc<NativeTaskContext>, fence: LeaseFence,
+    async fn run(&self, context: Arc<NativeTaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value, reconcile: bool,
         work: &acyclic_fs::NativeMaterializationWork) -> Result<TaskCommandProgress> {
         let caller_custody = self.native_caller(context.context(), fence, work).await?;
         let (owner, caller, _) = &caller_custody;
-        self.run_bound(context.context(), Some(&context), owner, caller, command, payload, reconcile,
-            work.cancellation(), work).await
-    }
-    async fn run_bound(&self, context: &TaskContext, native_context: Option<&Arc<NativeTaskContext>>, owner: &Arc<TaskJournalOwner<LocalStream>>,
-        caller: &PiTaskInput, command: WorkflowCommand, payload: Value, reconcile: bool,
-        cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork)
-        -> Result<TaskCommandProgress> {
+        let native_context = &context;
+        let context = context.context();
+        let cancellation = work.cancellation();
         let encoded = crate::pi_root_provider::guarded_pi_bytes(&payload,
             crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)?;
         drop(payload);
@@ -330,7 +274,7 @@ impl<'a> PiSelectedHost<'a> {
                     Some(PageCursor::Inspect(cursor)) => Some(cursor), None => None,
                     _ => return Err(denied("diff continuation used for inspection")),
                 };
-                let page = consume_root(work, selected.inspect(&context, &owner, &input.directory, continuation, maximum, cancellation, work).await)?;
+                let page = selected.inspect(&context, &owner, &input.directory, continuation, maximum, cancellation, work).await?;
                 let continuation = page.cursor.as_ref().map(|cursor| self.cursor(input, &key, &command.kind, PageCursorRef::Inspect(cursor), cancellation, work)).transpose()?;
                 ready(&PiPageResponse { source: input.source, root: &key, volume: Some(&volume),
                     before_root: None, before_snapshot: None, snapshot: *frozen, directory: &page.directory,
@@ -349,7 +293,7 @@ impl<'a> PiSelectedHost<'a> {
                     Some(PageCursor::Diff(cursor)) => Some(cursor), None => None,
                     _ => return Err(denied("inspection continuation used for diff")),
                 };
-                let page = consume_root(work, diff_native(&before, &selected, &context, &owner, &input.directory, continuation, maximum, cancellation, work).await)?;
+                let page = diff_native(&before, &selected, &context, &owner, &input.directory, continuation, maximum, cancellation, work).await?;
                 let continuation = page.cursor.as_ref().map(|cursor| self.cursor(input, &key, &command.kind, PageCursorRef::Diff(cursor), cancellation, work)).transpose()?;
                 ready(&PiPageResponse { source: input.source, root: &key, volume: None,
                     before_root: Some(before_key), before_snapshot: Some(*before_frozen), snapshot: *frozen,
@@ -467,8 +411,7 @@ impl<'a> From<&'a SelectedImportIntent> for SelectedImportIntentRef<'a> {
     }
 }
 
-/// Metadata from a completed canonical SDK selected import, retained under the
-/// original immutable Pi input operation; never a replacement publication grant.
+/// Metadata from a completed canonical SDK selected import, retained under the original immutable Pi input operation; never a replacement publication grant.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiSelectedImportReceipt {
@@ -506,18 +449,14 @@ impl<'a> From<&'a PiSelectedImportReceipt> for PiSelectedImportReceiptRef<'a> {
 }
 
 impl PiSelectedHost<'_> {
-    async fn publish_selection(&self, context: &TaskContext, native_context: Option<&Arc<NativeTaskContext>>, owner: &Arc<TaskJournalOwner<LocalStream>>,
+    async fn publish_selection(&self, context: &TaskContext, native_context: &Arc<NativeTaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         binding: &PiTaskBinding, input: &PiSelectedCommand, key: &str,
         selected: &PiNativeSelectedSource<'_, crate::LocalAuthorityBackend, crate::LocalObjectBackend,
             crate::LocalLazySource, crate::LocalCoreStateStore>,
         operation: OperationId, writeback: bool, reconcile: bool, cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork) -> Result<TaskCommandProgress> { if writeback && (input.caller != self.protected.policy().root_task || input.source == input.caller) {
         return Err(denied("writeback requires the ORIGINAL Root caller and a separately selected child"));
     }
-    if writeback && native_context.is_none() {
-        return Err(denied("original-root writeback requires the original native command context"));
-    }
-    let caller_native = native_context
-        .ok_or_else(|| denied("selected import requires its original issued native command context"))?;
+    let caller_native = native_context;
     if input.import_operation.is_some() {
         return Err(invalid("writeback imports under the same original SDK operation; external import keys are not accepted"));
     }
@@ -597,7 +536,7 @@ impl PiSelectedHost<'_> {
         if reconcile { return Ok(TaskCommandProgress::Pending); }
         let destination_cut = if destination == self.protected.policy().root_task {
             let root = self.roots.get(key).ok_or_else(|| denied("actual original Root unavailable"))?;
-            let shared = native_context.ok_or_else(|| denied("Root import capture requires its actual native command context"))?;
+            let shared = native_context;
             let root_input = self.admission_input(input.caller, work).await?;
             let (snapshot, custody) = crate::pi_fork_host::freeze_created_root_source(
                 Arc::clone(&self.protected), self.resources, Arc::clone(&self.filesystem),
@@ -613,7 +552,7 @@ impl PiSelectedHost<'_> {
         let intent = SelectedImportIntentRef { caller: input.caller, source: input.source, root: key,
             destination: volume, source_snapshot: selected.snapshot(), destination_snapshot: destination_cut.0,
             paths: &input.paths, operation: import_operation, writeback };
-        let staged = crate::pi_root_provider::stage_pi_input_with_native_work(&self.protected,
+        let staged = crate::pi_root_provider::stage_pi_input(&self.protected,
             &self.filesystem, import_operation, "selected-import-intent", &intent, work).await?;
         drop(staged);
         (intent, Some(destination_cut))
@@ -646,11 +585,11 @@ impl PiSelectedHost<'_> {
     };
     let imported = if let Some(imported) = completed { imported } else {
         if reconcile || resuming_import { return Ok(TaskCommandProgress::Pending); }
-        let result = consume_root(work, import_native_project(selected, caller_native, owner, destination_native, destination_owner,
+        let result = import_native_project(selected, caller_native, owner, destination_native, destination_owner,
             &workspace, mount.as_deref(), source_write_guard, volume,
             intent.destination_snapshot, &verifier.0, scope, intent.paths, import_operation, publication,
             acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE, self.protected.policy().limits.file_bytes,
-            cancellation, &publication_work).await);
+            cancellation, &publication_work).await;
         if let Err(Error::NativeSource { source, .. }) = &result {
             if matches!(source.semantic_error(), acyclic_fs::LazyWorkspaceError::SelectedImportIndeterminate { operation } if *operation == fs_operation) {
                 return Ok(TaskCommandProgress::Pending);
@@ -666,7 +605,7 @@ impl PiSelectedHost<'_> {
     };
     owner.native_view_owner().verify_with_native_work(work).await?;
     destination_owner.native_view_owner().verify_with_native_work(work).await?;
-    let staged = crate::pi_root_provider::stage_pi_input_with_native_work(&self.protected,
+    let staged = crate::pi_root_provider::stage_pi_input(&self.protected,
         &self.filesystem, import_operation, "selected-import-receipt", &import_receipt, work).await?;
     drop(staged);
     owner.native_view_owner().verify_with_native_work(work).await?;
@@ -674,7 +613,7 @@ impl PiSelectedHost<'_> {
         return ready(&PiImportResponse { status: "imported", source: input.source, destination,
             root: key, operation: &input.sdk_operation, original_operation: import_operation, snapshot: imported }, work);
     }
-    self.writeback(context, native_context.ok_or_else(|| denied("writeback lost its original native command context"))?,
+    self.writeback(context, native_context,
         owner, input, key, volume, selected.volume(), imported, operation, publication,
         &verifier.0, scope, import_receipt, reconcile, cancellation, work).await }
     async fn read_import_intent(&self, context: &TaskContext, operation: OperationId, _cancellation: &CancellationToken,
@@ -733,9 +672,9 @@ impl PiSelectedHost<'_> {
         Arc::clone(&self.protected), self.resources, Arc::clone(&self.filesystem),
         self.stream.clone(), Arc::clone(native_context), Arc::clone(owner),
         (original_request, root_input.1), key, root.identity, work).await?;
-    let generations = consume_root(work, build_writeback_generations(&root, native_context, owner, verifier, scope, &self.protected,
+    let generations = build_writeback_generations(&root, native_context, owner, verifier, scope, &self.protected,
         &self.filesystem, actual, original, &candidate, &input.paths, operation, publication,
-        acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE, cancellation, work, publication_guard).await)?;
+        acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE, cancellation, work, publication_guard).await?;
     if reconcile {
         let store = self.resources.store.materialization_with_work(work.clone());
         let journal = acyclic_fs::MaterializationJournalStore::load(&store, fs_operation).await
@@ -769,8 +708,8 @@ impl PiSelectedHost<'_> {
         }
         return Ok(TaskCommandProgress::Pending);
     }
-    let prepared = consume_root(work, prepare_writeback(&root, context, owner, verifier, scope, &generations, &self.resources.store,
-        acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE, &options, &[".git"], cancellation, work).await)?;
+    let prepared = prepare_writeback(&root, context, owner, verifier, scope, &generations, &self.resources.store,
+        acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE, &options, &[".git"], cancellation, work).await?;
     let root_binding = self.root_binding()?;
     let root_display = work.display(&format_args!("{}", root.path.display())).map_err(native_error)?;
     let source_display = self.native.with_selected_project_path(input.source, source_volume,
@@ -798,8 +737,8 @@ impl PiSelectedHost<'_> {
         return Err(denied("user approval does not match this exact prepared original-root plan"));
     }
     crate::pi_operator_host::require_resolved_approval(&self.filesystem, &self.stream, &self.protected, descriptor, work).await?;
-    let published = consume_root(work, publish_writeback(&prepared, &root, context, owner, verifier, scope, &generations,
-        &self.resources.store, approval, true, &options, &[".git"], cancellation, work).await)?;
+    let published = publish_writeback(&prepared, &root, context, owner, verifier, scope, &generations,
+        &self.resources.store, approval, true, &options, &[".git"], cancellation, work).await?;
     if published.phase != acyclic_fs::MaterializationPhase::Applied { return Ok(TaskCommandProgress::Pending); }
     owner.native_view_owner().verify_with_native_work(work).await?;
     ready(&PiWritebackResponse { status: "published", source: input.source, root: key,
@@ -809,7 +748,6 @@ impl PiSelectedHost<'_> {
 }
 
 /// Passive operator evidence reads the genuine immutable Root candidate only.
-/// The descriptor is an original protected prepared input, not caller JSON.
 pub(crate) async fn read_imported_selected_files(
     protected: &PiOwnerConfig, retained: &AdapterState,
     roots: &BTreeMap<String, PiRootHandle>, descriptor: &crate::pi_operator::PiPreparedApproval,
@@ -952,20 +890,17 @@ pub(crate) async fn read_imported_selected_files(
 }
 
 impl TaskCommandHost for PiSelectedHost<'_> {
-    fn execute<'a>(&'a self, context: TaskContext, fence: LeaseFence, command: WorkflowCommand,
-        payload: Value) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        Box::pin(self.run(context, fence, command, payload, false))
-    }
-    fn reconcile<'a>(&'a self, context: TaskContext, fence: LeaseFence, command: WorkflowCommand,
-        payload: Value) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        Box::pin(self.run(context, fence, command, payload, true))
+    fn execute<'a>(&'a self, _context: TaskContext, _fence: LeaseFence, _command: WorkflowCommand,
+        _payload: Value) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
+        Box::pin(async { Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported,
+            reason: "Pi selected controls require their original native command context" }) })
     }
     fn execute_with_native_work<'a>(&'a self, context: Arc<NativeTaskContext>,
         fence: LeaseFence, command: WorkflowCommand, payload: Value,
         work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<acyclic_harness::NativeFutureBundle<'a, TaskCommandProgress>> {
         acyclic_harness::NativeFutureBundle::new(work, || async move {
-            self.run_native(context, fence, command, payload, false, work).await
+            self.run(context, fence, command, payload, false, work).await
         })
     }
     fn reconcile_with_native_work<'a>(&'a self, context: Arc<NativeTaskContext>,
@@ -973,16 +908,8 @@ impl TaskCommandHost for PiSelectedHost<'_> {
         work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<acyclic_harness::NativeFutureBundle<'a, TaskCommandProgress>> {
         acyclic_harness::NativeFutureBundle::new(work, || async move {
-            self.run_native(context, fence, command, payload, true, work).await
+            self.run(context, fence, command, payload, true, work).await
         })
-    }
-}
-
-fn consume_root<T>(work: &acyclic_fs::NativeMaterializationWork,
-    result: crate::pi_root_provider::PiMeasuredResult<acyclic_fs::OperationReceipt<T>>) -> Result<T> {
-    match result {
-        Ok(receipt) => { work.spent(receipt.work).map_err(native_error)?; Ok(receipt.value) }
-        Err((cause, prefix)) => { work.spent(prefix).map_err(native_error)?; Err(cause) }
     }
 }
 

@@ -14,8 +14,7 @@ impl Journal {
         })
     }
 
-    /// Ordinary and current-original-meter checkpoints share the same frame,
-    /// packing, synchronization, replacement and poison boundaries.
+    /// Ordinary and current-original-meter checkpoints share the same frame, packing, synchronization, replacement and poison boundaries.
     pub(super) fn compact_with(
         &self,
         state: &State,

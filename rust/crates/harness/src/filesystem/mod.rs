@@ -77,7 +77,7 @@ pub(crate) use native_execution::NativePreparationCompletionTemplate;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt, NativeReceiptError, NativeProcessDrainProof, NativeProcessPublishedVolume};
+pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt, NativeProcessDrainProof, NativeProcessPublishedVolume};
 mod native_capture_bounds;
 mod native_contract;
 pub use native_contract::{
@@ -120,10 +120,9 @@ pub use recursive::{
 pub use native_execution::{
     NativeExistingLazyVolume, NativeRootOutputSource, NativeTaskWorkingView,
     BorrowedNativeVolumeBinding, NativePreparationReceipt, NativePreparationRoot,
-    NativeProcessView, NativeProcessNamespaceScopes, NativePublicationFailure, NativeViewOwner, NativeVolumeView,
+    NativeProcessView, NativeProcessNamespaceScopes, NativePublicationFailure, NativeVolumeView,
     NativePublicationCleanup, NativePublicationReservation, NativePublicationReservationFailure,
-    NativeReservationError,
-    NativePreparationJournalError, NativePreparationJournalObservation, NativeRecordedPreparation,
+    NativePreparationJournalObservation, NativeRecordedPreparation,
     NativeViewPublicationError, NativeViewPublicationReceipt,
     NativeTaskViewDrainReceipt, NativeTaskViewDrainFailure,
     copy_native_mapping_with_work,
@@ -2035,76 +2034,6 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    #[cfg(not(target_arch = "wasm32"))]
-    fn verify_with_native_work<'a>(
-        &'a self, receipt: &'a ProjectMergeReceipt,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let binding = self.native_binding.as_ref().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized, reason: "merge verifier has no native authority" })?;
-            binding.authenticate(work)?;
-            let mut observer = io.history_io();
-            receipt.validate_shape_with_work(&mut Some(&mut observer))?;
-            drop(observer);
-            if receipt.source_project.provider() != &self.host.provider
-                || receipt.target_project.provider() != &self.host.provider
-                || receipt.provider_proof.provider != self.host.provider
-                || receipt.provider_operation_id.as_slice() != native_project_join_key(receipt.operation_id, work)?.into_bytes().as_slice()
-                || receipt.provider_proof.format != FILESYSTEM_JOIN_PROOF_FORMAT
-            {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "merge receipt belongs to another provider, proof format or retry identity" });
-            }
-            if !binding.scope.capabilities().contains(capability::PROJECT_MERGE)
-                || !io.contains_capability(binding.scope.capabilities(), &receipt.source_project, "volume:read:")?
-                || !io.contains_capability(binding.scope.capabilities(), &receipt.target_project, "volume:write:")?
-            {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "merge verification lacks the current parent project grants" });
-            }
-            let source = fork_preparer_io::content_workspace(&self.host.provider, &receipt.source_project, Some(&io))?;
-            let target = fork_preparer_io::content_workspace(&self.host.provider, &receipt.target_project, Some(&io))?;
-            let source_workspace = fork_preparer_io::open(&self.host, &source, &io).await?;
-            let target_workspace = fork_preparer_io::open(&self.host, &target, &io).await?;
-            let encoded = io.encode_json(&receipt.provider_proof.statement, io.remaining()?.bytes_encoded, true)?;
-            let witness = io.decode_preparation::<JoinCommitWitness>(&encoded)?;
-            let source_generation = fork_preparer_io::generation(&self.host, &source_workspace, &receipt.source_generation, &io).await?;
-            let expected = fork_preparer_io::generation(&self.host, &target_workspace, &receipt.expected_target_generation, &io).await?;
-            let result = fork_preparer_io::generation(&self.host, &target_workspace, &receipt.result_generation, &io).await?;
-            if witness.source_workspace() != source_workspace.id().volume_id()
-                || witness.target_workspace() != target_workspace.id().volume_id()
-                || witness.source_generation() != source_generation.id()
-                || witness.expected_target() != expected.id()
-                || witness.result_generation() != result.id()
-                || witness.operation_id().into_bytes().as_slice() != receipt.provider_operation_id.as_slice()
-                || witness.history() != JoinHistory::Merge
-                || !target_workspace.verify_join_commit_with_native_work(&witness, work, work.cancellation())
-                    .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
-            {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "merge receipt does not prove the committed Filesystem join" });
-            }
-            let normalized = source_generation.normalized_join_parent_for_with_native_work(&expected, work, work.cancellation())
-                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
-            let parents_custody;
-            let (parents, custody) = result.parents_with_native_work(work, work.cancellation())
-                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
-            parents_custody = custody;
-            if parents.as_slice() != [expected.id(), normalized] {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "merge result does not bind the inspected child and target generations" });
-            }
-            drop(parents);
-            drop(parents_custody);
-            fork_preparer_io::retain(&self.host, &source_generation, &io).await?;
-            fork_preparer_io::retain(&self.host, &expected, &io).await?;
-            fork_preparer_io::retain(&self.host, &result, &io).await?;
-            Ok(())
-        })
-    }
-
     fn verify<'a>(&'a self, receipt: &'a ProjectMergeReceipt) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             if receipt.source_project.provider() != &self.host.provider

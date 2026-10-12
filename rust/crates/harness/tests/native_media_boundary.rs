@@ -1106,7 +1106,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         StreamClient::new(Arc::new(MemoryStream::default())),
         host.clone(),
         volume.clone(),
-        journal_issuer.verifier(),
+        journal_issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
         journal_scope,
         65_536,
     )?);
@@ -1384,7 +1384,7 @@ where
         stream.clone(),
         host.clone(),
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
         signed.clone(),
         65_536,
     )?);

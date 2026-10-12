@@ -505,8 +505,8 @@ fn source_json<T: serde::Serialize>(
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = io.original_native_work() {
         let diagnostic = work.retain_owned(crate::contract::sdk_json_diagnostic_bytes())?;
-        let bytes = crate::contract::canonical_json_bytes_bounded_native_trusted(
-            value, bounds, crate::wire::ErrorCode::Invalid,
+        let bytes = crate::contract::canonical_json_bytes_bounded(
+            value, bounds, Some(crate::wire::ErrorCode::Invalid),
             &mut |charge| io.codec_charge(charge, true),
         ).map_err(|error| match error {
             Error::NativeEncode { code, source, custody: None } =>
@@ -515,7 +515,7 @@ fn source_json<T: serde::Serialize>(
         })?;
         return super::fork_preparer_io::source_bytes_from_vec(bytes, Some(io));
     }
-    canonical_json_bytes_bounded(value, bounds, &mut |charge| io.codec_charge(charge, true)).map(Into::into)
+    canonical_json_bytes_bounded(value, bounds, None, &mut |charge| io.codec_charge(charge, true)).map(Into::into)
 }
 
 fn source_budget(maximum_work: u64, maximum_bytes: u64) -> Result<WorkBudget> {

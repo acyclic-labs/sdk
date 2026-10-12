@@ -190,8 +190,8 @@ impl crate::filesystem::PreparationRecord for SourceCheckpoint {
                 reason: "configured source checkpoint ownership overflows" },
             None => Error::Invalid("configured source checkpoint ownership overflows".into()),
         };
-        let snapshot = crate::contract::snapshot_json_ownership(
-            shape, 128, native_code,
+        let snapshot = crate::contract::json_decode_owned_bytes(
+            shape, true, native_code,
         )?;
         let outer = shape.lexical_items().checked_mul(10)
             .and_then(|items| items.checked_mul(Self::maximum_slot_bytes()))
@@ -199,7 +199,7 @@ impl crate::filesystem::PreparationRecord for SourceCheckpoint {
             .and_then(|bytes| bytes.checked_add(codec_scratch.max(input_bytes)))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
             .ok_or_else(overflow)?;
-        snapshot.maximum_owned_bytes.checked_sub(snapshot.diagnostic_bytes)
+        snapshot.0.checked_sub(snapshot.1)
             .and_then(|bytes| bytes.checked_add(crate::contract::sdk_json_diagnostic_bytes()))
             .and_then(|bytes| bytes.checked_add(outer)).ok_or_else(overflow)
     }

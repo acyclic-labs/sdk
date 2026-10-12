@@ -422,7 +422,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             if !visited.insert(operation) {
                 return Err(Error::Unauthorized("project source graph is cyclic".into()));
             }
-            let state = coordinator.observe_operation(&self.owner, &self.owner_scope, &self.verifier, operation)?;
+            let state = coordinator.observe_operation(&self.owner, &self.owner_scope, &self.verifier, operation, &mut None).cloned()?;
             if state.cancellation_requested {
                 return Err(Error::Unauthorized("project source graph is cancelled".into()));
             }
@@ -517,7 +517,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             Self::reserve_proof_slots(&mut visited, &mut observer)?;
             visited.push(operation);
-            let state = coordinator.observe_operation_ref_with_work(
+            let state = coordinator.observe_operation(
                 &self.owner, &self.owner_scope, &self.verifier, operation, &mut observer,
             )?;
             if state.cancellation_requested {

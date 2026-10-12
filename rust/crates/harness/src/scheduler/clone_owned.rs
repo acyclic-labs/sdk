@@ -16,25 +16,10 @@ impl Inventory {
     fn slots<T>(&mut self, count: usize) -> Result<()> {
         self.add(count.checked_mul(size_of::<T>()).ok_or_else(overflow)? as u64)
     }
-    fn value(&mut self, value: &Value) -> Result<()> {
-        match value {
-            Value::String(text) => self.text(text)?,
-            Value::Array(values) => {
-                self.slots::<Value>(values.capacity())?;
-                for value in values { self.value(value)?; }
-            }
-            Value::Object(values) => {
-                self.slots::<(String, Value)>(values.len())?;
-                for (key, value) in values { self.text(key)?; self.value(value)?; }
-            }
-            Value::Null | Value::Bool(_) | Value::Number(_) => {}
-        }
-        Ok(())
-    }
     fn entrypoint(&mut self, entrypoint: &EntrypointRef) -> Result<()> {
         self.text(&entrypoint.name)?;
         self.text(&entrypoint.version)?;
-        self.value(&entrypoint.result_schema)
+        self.add(crate::contract::json_value_logical_owned_bytes(&entrypoint.result_schema)?)
     }
     fn resources(&mut self, resources: &BTreeMap<String, u64>) -> Result<()> {
         self.slots::<(String, u64)>(resources.len())?;
@@ -366,10 +351,6 @@ impl OrchestrationDecision {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         inventory(self, Inventory::decision)
     }
-}
-
-pub(crate) fn json_value_owned_bytes(value: &Value) -> Result<u64> {
-    inventory(value, Inventory::value)
 }
 
 pub(super) fn clone_file_with_work(file: &FileRef, work: &mut Option<&mut dyn HistoryIo>) -> Result<FileRef> {

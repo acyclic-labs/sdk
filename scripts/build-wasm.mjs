@@ -80,7 +80,6 @@ const resolveWasmBindgen = () => {
   const explicit = wasmBindgenArgument || process.env.ACYCLIC_WASM_BINDGEN_BIN;
   if (explicit) return explicit;
   if (capture("wasm-bindgen", ["--version"]) === expectedVersion) return "wasm-bindgen";
-  // Fall back to the pinned resolver, which installs the CLI when missing.
   const script = resolve(root, "scripts", "ensure-wasm-bindgen.sh");
   const gitBash = process.platform === "win32" ? capture("cygpath", ["-w", "/bin/bash.exe"]) : undefined;
   return gitBash
@@ -145,8 +144,6 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
   const key = createHash("sha256").update(script).update(expectedVersion).update(readFileSync(module)).digest("hex");
   if (!existsSync(stamp) || readFileSync(stamp, "utf8") !== key) {
     for (const stale of [stamp, bindings]) rmSync(stale, { recursive: true, force: true });
-    // The function name section is about 45% of each module and only serves
-    // symbolicated stack traces; shipped packages trade those for size.
     run(wasmBindgen, [
       module, "--target", "web", "--out-dir", bindings, "--out-name", outName,
       "--remove-name-section", "--remove-producers-section",

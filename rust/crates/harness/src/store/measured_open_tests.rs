@@ -109,8 +109,7 @@ mod measured_open_tests {
         })?;
         prepared.append(publication.path.clone(), publication.bytes.clone())?;
         publication.add_index_with_work(&mut prepared)?;
-        let (outcome, retained) = crate::distributed::commit_prepared(
-            &client, prepared, event.operation_id, None, None, None).await?;
+        let (outcome, retained) = prepared.commit(&client, Some(event.operation_id), None, None, None).await?;
         let acyclic_stream::CommitOutcome::Committed(envelope) = outcome else {
             return Err(Error::Conflict("original indexed publication unexpectedly conflicted".into()));
         };
