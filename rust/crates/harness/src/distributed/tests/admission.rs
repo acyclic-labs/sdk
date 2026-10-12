@@ -8,11 +8,7 @@ async fn pull_enforces_operation_placement_labels() -> Result<()> {
     let mut declaration = spec(operation_id, 0)?;
     declaration.placement.insert("region".into(), "eu".into());
     declare(&mut coordinator, declaration, "placed").await?;
-    let mut worker = Worker {
-        id: "worker".into(),
-        available: ResourceSnapshot::default(),
-        labels: BTreeMap::new(),
-    };
+    let mut worker = worker("worker");
     assert!(coordinator.pull(&worker).await?.is_none());
     worker.labels.insert("region".into(), "us".into());
     assert!(coordinator.pull(&worker).await?.is_none());
@@ -482,11 +478,7 @@ async fn cancelled_work_does_not_starve_the_pull_queue() -> Result<()> {
         },
     )
     .await?;
-    let worker = Worker {
-        id: "worker".into(),
-        available: ResourceSnapshot::default(),
-        labels: BTreeMap::new(),
-    };
+    let worker = worker("worker");
     assert_eq!(
         follower
             .pull(&worker)

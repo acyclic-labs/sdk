@@ -1,6 +1,11 @@
 use super::*;
+use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _};
+use windows::{
+    Wdk::Storage::FileSystem as nt,
+    Win32::{Foundation as win, Storage::FileSystem as fs},
+};
 
-/// Compares attributes while allowing ProjFS hydration marks to change.
+/// Allows attributes removed by ProjFS hydration.
 pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
     const SPARSE: u32 = 0x0000_0200;
     const REPARSE_POINT: u32 = 0x0000_0400;
@@ -18,7 +23,6 @@ pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
     before & !ignored == after & !ignored && after & PROJFS_MARKS & !marks == 0
 }
 
-/// Translates native status, treating a pending deletion as absent.
 pub(super) fn status_error(status: windows::Win32::Foundation::NTSTATUS) -> io::Error {
     const DELETE_PENDING: windows::Win32::Foundation::NTSTATUS =
         windows::Win32::Foundation::NTSTATUS(0xC000_0056_u32.cast_signed());
@@ -35,12 +39,12 @@ pub(super) fn status_error(status: windows::Win32::Foundation::NTSTATUS) -> io::
 
 pub(super) fn wide_units<W: NativeHostWork>(name: &OsStr, work: &mut W) -> Result<usize, W::Error> {
     use std::os::windows::ffi::OsStrExt as _;
-    let mut units = 0usize;
+    let mut length = 0usize;
     for _ in name.encode_wide() {
         work.started_io(ITEM)?;
-        units = units.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+        length = length.checked_add(1).ok_or(crate::WorkError::Overflow)?;
     }
-    Ok(units)
+    Ok(length)
 }
 
 pub(crate) fn with_wide_path<W: NativeHostWork, T>(
@@ -50,22 +54,19 @@ pub(crate) fn with_wide_path<W: NativeHostWork, T>(
 ) -> Result<T, W::Error> {
     use std::os::windows::ffi::OsStrExt as _;
     work.check()?;
-    let units = wide_units(path.as_os_str(), work)?;
-    let bytes = units.checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64;
+    let length = wide_units(path.as_os_str(), work)?;
     let encoded = WorkCounters {
-        bytes_encoded: bytes,
+        bytes_encoded: length.checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64,
         ..WorkCounters::UNCHARGED
     };
     work.admit(encoded)?;
-    let (mut name, allocation) = buffer(units, work)?;
+    let (mut name, allocation) = buffer(length, work)?;
     let result = (|| {
-        name.extend(path.as_os_str().encode_wide().map(|unit| {
-            if unit == u16::from(b'/') {
-                u16::from(b'\\')
-            } else {
-                unit
-            }
-        }));
+        name.extend(
+            path.as_os_str()
+                .encode_wide()
+                .map(|u| if u == 47 { 92 } else { u }),
+        );
         work.record(encoded)?;
         operation(&name, work)
     })();
@@ -74,90 +75,77 @@ pub(crate) fn with_wide_path<W: NativeHostWork, T>(
     result
 }
 
-pub(super) fn windows_wide_name<W: NativeHostWork>(
+pub(super) fn relative_kernel_name<W: NativeHostWork>(
     path: &[u16],
     work: &mut W,
-    invalid_length: impl FnOnce() -> W::Error,
-) -> Result<Option<windows::Win32::Foundation::UNICODE_STRING>, W::Error> {
+) -> Result<Option<win::UNICODE_STRING>, W::Error> {
     work.check()?;
     if path.is_empty() {
         return Ok(None);
     }
-    if path != [u16::from(b'.')] {
-        let mut begin = 0usize;
-        let item = ITEM;
-        work.started_io(item)?;
-        for (index, unit) in path.iter().enumerate() {
-            work.admit(item)?;
-            work.record(item)?;
-            if matches!(*unit, 0 | 47 | 58) {
+    if path != [46] {
+        work.started_io(ITEM)?;
+        let mut begin = 0;
+        for (i, unit) in path.iter().enumerate() {
+            work.admit(ITEM)?;
+            work.record(ITEM)?;
+            if matches!(unit, 0 | 47 | 58) {
                 return Ok(None);
             }
             if *unit == 92 {
-                let component = &path[begin..index];
-                if component.is_empty() || component == [46] || component == [46, 46] {
+                if matches!(&path[begin..i], [] | [46] | [46, 46]) {
                     return Ok(None);
                 }
-                begin = index + 1;
-                work.admit(item)?;
-                work.record(item)?;
+                begin = i + 1;
+                work.admit(ITEM)?;
+                work.record(ITEM)?;
             }
         }
-        let component = &path[begin..];
-        if component.is_empty() || component == [46] || component == [46, 46] {
+        if matches!(&path[begin..], [] | [46] | [46, 46]) {
             return Ok(None);
         }
     }
-    // NT opens the held directory with an empty name; it does not resolve ".".
-    let path = if path == [46] { &[][..] } else { path };
-    let length = u16::try_from(
-        path.len()
-            .checked_mul(2)
-            .ok_or(crate::WorkError::Overflow)?,
-    )
-    .map_err(|_| invalid_length())?;
-    Ok(Some(windows::Win32::Foundation::UNICODE_STRING {
+    // NT names the held directory with an empty string, never ".".
+    let name = if path == [46] { &[][..] } else { path };
+    let bytes = name
+        .len()
+        .checked_mul(2)
+        .ok_or(crate::WorkError::Overflow)?;
+    let length = u16::try_from(bytes).map_err(|_| W::invalid_request())?;
+    Ok(Some(win::UNICODE_STRING {
         Length: length,
         MaximumLength: length,
-        Buffer: windows::core::PWSTR(path.as_ptr().cast_mut()),
+        Buffer: windows::core::PWSTR(name.as_ptr().cast_mut()),
     }))
 }
 
 pub(super) fn stat_windows_name<W: NativeHostWork>(
     directory: &Dir,
-    name: &windows::Win32::Foundation::UNICODE_STRING,
+    name: &win::UNICODE_STRING,
     volume: u32,
     work: &mut W,
 ) -> Result<Option<HostStat>, W::Error> {
-    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
-    use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
-    use windows::Wdk::Storage::FileSystem::{
-        FILE_STAT_INFORMATION, FileStatInformation, NtQueryInformationByName,
-    };
-    use windows::Win32::Foundation::{HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE};
-    use windows::Win32::System::IO::IO_STATUS_BLOCK;
-    const REPARSE: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
-    let attributes = OBJECT_ATTRIBUTES {
-        Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
-        RootDirectory: HANDLE(directory.as_handle().as_raw_handle()),
-        ObjectName: &raw const *name,
-        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+    let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
+        Length: std::mem::size_of::<windows::Wdk::Foundation::OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: win::HANDLE(directory.as_raw_handle()),
+        ObjectName: std::ptr::from_ref(name),
+        Attributes: win::OBJ_CASE_INSENSITIVE | win::OBJ_DONT_REPARSE,
         ..Default::default()
     };
-    let mut block = IO_STATUS_BLOCK::default();
-    let mut information = FILE_STAT_INFORMATION::default();
+    let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
+    let mut information = nt::FILE_STAT_INFORMATION::default();
     work.started_io(READ)?;
-    // SAFETY: held capability and fixed-size query storage outlive the call.
+    // SAFETY: the held directory, name, and fixed-size output outlive the query.
     let status = unsafe {
-        NtQueryInformationByName(
-            &raw const attributes,
-            &raw mut block,
+        nt::NtQueryInformationByName(
+            &attributes,
+            &mut block,
             (&raw mut information).cast(),
-            std::mem::size_of::<FILE_STAT_INFORMATION>() as u32,
-            FileStatInformation,
+            std::mem::size_of_val(&information) as u32,
+            nt::FileStatInformation,
         )
     };
-    if status == REPARSE {
+    if status.0 == 0xC000_050B_u32.cast_signed() {
         return Ok(None);
     }
     if status.is_err() {
@@ -172,14 +160,11 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
 pub(super) fn open_windows_wide_at<W: NativeHostWork>(
     directory: &Dir,
     path: &[u16],
-    access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
-    options: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS,
+    access: fs::FILE_ACCESS_RIGHTS,
+    options: nt::NTCREATEFILE_CREATE_OPTIONS,
     work: &mut W,
-    invalid_length: impl FnOnce() -> W::Error,
 ) -> Result<Option<cap_std::fs::File>, W::Error> {
-    use windows::Win32::Foundation::{NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE};
-    const REPARSE: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
-    let Some(name) = windows_wide_name(path, work, invalid_length)? else {
+    let Some(name) = relative_kernel_name(path, work)? else {
         return Ok(None);
     };
     work.started_io(READ)?;
@@ -187,49 +172,43 @@ pub(super) fn open_windows_wide_at<W: NativeHostWork>(
         directory,
         &name,
         access,
-        windows::Wdk::Storage::FileSystem::FILE_OPEN,
+        nt::FILE_OPEN,
         options,
-        OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        win::OBJ_CASE_INSENSITIVE | win::OBJ_DONT_REPARSE,
     ) {
         Ok(file) => Ok(Some(cap_std::fs::File::from_std(file))),
-        Err(REPARSE) => Ok(None),
+        Err(status) if status.0 == 0xC000_050B_u32.cast_signed() => Ok(None),
         Err(status) => Err(status_error(status).into()),
     }
 }
 
 pub(super) fn open_windows_name(
     directory: &Dir,
-    name: &windows::Win32::Foundation::UNICODE_STRING,
-    access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
-    disposition: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_DISPOSITION,
-    options: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS,
-    flags: windows::Win32::Foundation::OBJECT_ATTRIBUTE_FLAGS,
-) -> Result<File, windows::Win32::Foundation::NTSTATUS> {
-    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
-    use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-    let attributes = OBJECT_ATTRIBUTES {
-        Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
-        RootDirectory: HANDLE(directory.as_raw_handle()),
+    name: &win::UNICODE_STRING,
+    access: fs::FILE_ACCESS_RIGHTS,
+    disposition: nt::NTCREATEFILE_CREATE_DISPOSITION,
+    options: nt::NTCREATEFILE_CREATE_OPTIONS,
+    flags: win::OBJECT_ATTRIBUTE_FLAGS,
+) -> Result<File, win::NTSTATUS> {
+    let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
+        Length: std::mem::size_of::<windows::Wdk::Foundation::OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: win::HANDLE(directory.as_raw_handle()),
         ObjectName: std::ptr::from_ref(name),
         Attributes: flags,
         ..Default::default()
     };
     let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
-    let mut handle = HANDLE::default();
-    // SAFETY: the held directory, validated name, and complete output storage outlive this call.
+    let mut handle = win::HANDLE::default();
+    // SAFETY: the held directory, name, and output storage outlive NtCreateFile.
     let status = unsafe {
-        windows::Wdk::Storage::FileSystem::NtCreateFile(
-            &raw mut handle,
+        nt::NtCreateFile(
+            &mut handle,
             access,
-            &raw const attributes,
-            &raw mut block,
+            &attributes,
+            &mut block,
             None,
-            FILE_ATTRIBUTE_NORMAL,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            fs::FILE_ATTRIBUTE_NORMAL,
+            fs::FILE_SHARE_READ | fs::FILE_SHARE_WRITE | fs::FILE_SHARE_DELETE,
             disposition,
             options,
             None,
@@ -239,29 +218,25 @@ pub(super) fn open_windows_name(
     if status.is_err() {
         return Err(status);
     }
-    // SAFETY: successful creation/open transferred ownership of a fresh handle.
+    // SAFETY: successful NtCreateFile transfers a fresh owned handle.
     Ok(unsafe { File::from_raw_handle(handle.0) })
 }
 
 pub(super) fn windows_stat_information<W: NativeHostWork>(
     file: &impl std::os::windows::io::AsHandle,
     work: &mut W,
-) -> Result<windows::Wdk::Storage::FileSystem::FILE_STAT_INFORMATION, W::Error> {
-    use std::os::windows::io::AsRawHandle as _;
-    use windows::Wdk::Storage::FileSystem::{
-        FILE_STAT_INFORMATION, FileStatInformation, NtQueryInformationFile,
-    };
+) -> Result<nt::FILE_STAT_INFORMATION, W::Error> {
     work.attempt_io(READ, || {
         let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
-        let mut information = FILE_STAT_INFORMATION::default();
-        // SAFETY: the held handle and fixed-size output survive this synchronous query.
+        let mut information = nt::FILE_STAT_INFORMATION::default();
+        // SAFETY: the held handle and complete output outlive this query.
         let status = unsafe {
-            NtQueryInformationFile(
-                windows::Win32::Foundation::HANDLE(file.as_handle().as_raw_handle()),
-                &raw mut block,
+            nt::NtQueryInformationFile(
+                win::HANDLE(file.as_handle().as_raw_handle()),
+                &mut block,
                 (&raw mut information).cast(),
-                std::mem::size_of::<FILE_STAT_INFORMATION>() as u32,
-                FileStatInformation,
+                std::mem::size_of_val(&information) as u32,
+                nt::FileStatInformation,
             )
         };
         if status.is_err() {
@@ -287,7 +262,6 @@ pub(crate) fn stat_windows_leaf<W: NativeHostWork>(
     path: &[u16],
     work: &mut W,
 ) -> Result<HostStat, W::Error> {
-    use windows::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE};
     let volume = u32::try_from(directory_identity(directory, work)?.device)
         .map_err(|_| io::Error::other("native volume serial exceeds u32"))?;
     let name = windows_leaf_name(path, work)?;
@@ -297,7 +271,7 @@ pub(crate) fn stat_windows_leaf<W: NativeHostWork>(
     let file = open_windows_leaf_handle(
         directory,
         path,
-        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
         None,
         work,
     )?;
@@ -305,8 +279,8 @@ pub(crate) fn stat_windows_leaf<W: NativeHostWork>(
 }
 
 pub(super) fn wide_parent_leaf(path: &[u16]) -> Result<(&[u16], &[u16]), DemandError> {
-    let (parent, leaf) = match path.iter().rposition(|unit| *unit == u16::from(b'\\')) {
-        Some(index) => (&path[..index], &path[index + 1..]),
+    let (parent, leaf) = match path.iter().rposition(|u| *u == 92) {
+        Some(i) => (&path[..i], &path[i + 1..]),
         None => (&[][..], path),
     };
     if leaf.is_empty() {
@@ -320,179 +294,91 @@ impl HostRoot {
         &self,
         path: &[u16],
         work: &mut W,
-    ) -> Result<(Dir, NativeRootIdentity), W::Error> {
-        let mut current = clone_directory(&self.directory, work)?;
-        let mut identity = self.identity;
-        if path.is_empty() {
-            return Ok((current, identity));
+    ) -> Result<Dir, W::Error> {
+        let mut directory = clone_directory(&self.directory, work)?;
+        if !path.is_empty() {
+            for name in path.split(|u| *u == 92) {
+                work.started_io(ITEM)?;
+                directory = open_windows_directory(&directory, name, work)?.0;
+            }
         }
-        for component in path.split(|unit| *unit == u16::from(b'\\')) {
-            let item = ITEM;
-            work.started_io(item)?;
-            let (next, next_identity) = self.open_dir_component_wide(&current, component, work)?;
-            identity = next_identity;
-            current = next;
-        }
-        Ok((current, identity))
-    }
-    pub(crate) fn open_dir_component_wide<W: NativeHostWork>(
-        &self,
-        parent: &Dir,
-        name: &[u16],
-        work: &mut W,
-    ) -> Result<(Dir, NativeRootIdentity), W::Error> {
-        use windows::Wdk::Storage::FileSystem::{
-            FILE_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
-        };
-        use windows::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_GENERIC_READ,
-        };
-        if name.is_empty() || name == [46] || name == [46, 46] {
-            return Err(W::invalid_request());
-        }
-        let file = open_windows_wide_at(
-            parent,
-            name,
-            FILE_GENERIC_READ,
-            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
-            work,
-            W::invalid_request,
-        )?
-        .ok_or_else(W::invalid_request)?
-        .into_std();
-        let stat = self.stat_file(&file, work)?;
-        if stat.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
-            return Err(W::invalid_request());
-        }
-        let identity = NativeRootIdentity {
-            device: u64::from(stat.volume_serial_number()),
-            object: stat.file_index(),
-        };
-        Ok((Dir::from_std_file(file), identity))
+        Ok(directory)
     }
     pub(crate) fn stat_wide<W: NativeHostWork>(
         &self,
         path: &[u16],
         work: &mut W,
     ) -> Result<HostStat, W::Error> {
-        use windows::Wdk::Storage::FileSystem::{
-            FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
-        };
-        use windows::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE};
         let volume = self.volume_serial_number()?;
         if path.is_empty() {
             return stat_windows_file(&self.directory, volume, work);
         }
-        if let Some(name) = windows_wide_name(path, work, W::invalid_request)? {
+        if let Some(name) = relative_kernel_name(path, work)? {
             if let Some(stat) = stat_windows_name(&self.directory, &name, volume, work)? {
                 return Ok(stat);
             }
         }
         let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
+        let parent = self.open_dir_held_wide(parent, work)?;
         let file = open_windows_wide_at(
             &parent,
             leaf,
-            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
+            nt::FILE_OPEN_REPARSE_POINT | nt::FILE_SYNCHRONOUS_IO_NONALERT,
             work,
-            W::invalid_request,
         )?
         .ok_or_else(W::invalid_request)?
         .into_std();
-        self.stat_file(&file, work)
+        stat_windows_file(&file, volume, work)
     }
     pub(crate) fn read_dir_stats_wide<W: NativeHostWork>(
         &self,
         path: &[u16],
         work: &mut W,
     ) -> Result<(HostStatReader, W::Allocation), W::Error> {
-        let volume_serial_number = self.volume_serial_number()?;
-        let directory = self
-            .open_dir_held_wide(path, work)
-            .map(|(directory, _)| directory)?;
-        read_dir_held_with_volume(&directory, volume_serial_number, work)
+        let directory = self.open_dir_held_wide(path, work)?;
+        read_dir_held_with_volume(&directory, self.volume_serial_number()?, work)
     }
-    pub(super) fn open_file_wide<W: NativeHostWork>(
+    pub(crate) fn open_file_wide<W: NativeHostWork>(
         &self,
         path: &[u16],
-        synchronization: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS,
+        synchronization: nt::NTCREATEFILE_CREATE_OPTIONS,
         work: &mut W,
     ) -> Result<cap_std::fs::File, W::Error> {
-        use windows::Wdk::Storage::FileSystem::{FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT};
-        use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
-        let options = FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | synchronization;
-        if let Some(file) = open_windows_wide_at(
-            &self.directory,
-            path,
-            FILE_GENERIC_READ,
-            options,
-            work,
-            W::invalid_request,
-        )? {
+        let options = nt::FILE_NON_DIRECTORY_FILE | nt::FILE_OPEN_REPARSE_POINT | synchronization;
+        if let Some(file) =
+            open_windows_wide_at(&self.directory, path, fs::FILE_GENERIC_READ, options, work)?
+        {
             return Ok(file);
         }
         let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
-        open_windows_wide_at(
-            &parent,
-            leaf,
-            FILE_GENERIC_READ,
-            options,
-            work,
-            W::invalid_request,
-        )?
-        .ok_or_else(W::invalid_request)
-    }
-    pub(crate) fn open_file_positional_wide<W: NativeHostWork>(
-        &self,
-        path: &[u16],
-        work: &mut W,
-    ) -> Result<cap_std::fs::File, W::Error> {
-        self.open_file_wide(
-            path,
-            windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
-            work,
-        )
+        let parent = self.open_dir_held_wide(parent, work)?;
+        open_windows_wide_at(&parent, leaf, fs::FILE_GENERIC_READ, options, work)?
+            .ok_or_else(W::invalid_request)
     }
     pub(crate) fn open_file_yielding_wide<W: SourceDemandReadWork>(
         &self,
         path: &[u16],
         work: &mut W,
     ) -> Result<YieldingFile, DemandError> {
-        use windows::Wdk::Storage::FileSystem::{
-            FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_OPEN_REQUIRING_OPLOCK,
-            NTCREATEFILE_CREATE_OPTIONS,
-        };
-        use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
-        let options = FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT;
-        let file = match open_windows_wide_at(
-            &self.directory,
-            path,
-            FILE_GENERIC_READ,
-            options | FILE_OPEN_REQUIRING_OPLOCK,
-            work,
-            || DemandError::InvalidRequest,
-        ) {
-            Ok(file) => file,
-            Err(DemandError::Io(_)) => open_windows_wide_at(
+        let mut opened = |flags| {
+            open_windows_wide_at(
                 &self.directory,
                 path,
-                FILE_GENERIC_READ,
-                options | NTCREATEFILE_CREATE_OPTIONS(0),
+                fs::FILE_GENERIC_READ,
+                nt::FILE_NON_DIRECTORY_FILE | nt::FILE_OPEN_REPARSE_POINT | flags,
                 work,
-                || DemandError::InvalidRequest,
-            )?,
+            )
+        };
+        let file = match opened(nt::FILE_OPEN_REQUIRING_OPLOCK) {
+            Ok(file) => file,
+            Err(DemandError::Io(_)) => opened(nt::NTCREATEFILE_CREATE_OPTIONS(0))?,
             Err(error) => return Err(error),
         };
         match file {
             Some(file) => YieldingFile::new(file.into_std(), work),
             None => YieldingFile::plain(
-                self.open_file_wide(path, NTCREATEFILE_CREATE_OPTIONS(0), work)?
+                self.open_file_wide(path, nt::NTCREATEFILE_CREATE_OPTIONS(0), work)?
                     .into_std(),
                 work,
             ),
@@ -505,10 +391,12 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<(Vec<u16>, W::Allocation), W::Error> {
         let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
-        read_link_held_wide(&parent, leaf, maximum_bytes, work)
+        read_link_held_wide(
+            &self.open_dir_held_wide(parent, work)?,
+            leaf,
+            maximum_bytes,
+            work,
+        )
     }
     pub(crate) fn read_source_link<W: SourceDemandReadWork>(
         &self,
@@ -516,11 +404,13 @@ impl HostRoot {
         maximum_bytes: u64,
         work: &mut W,
     ) -> Result<acyclic_stream::OwnedBytes, DemandError> {
-        let (parent, leaf) = wide_parent_leaf(path).map_err(|_| DemandError::InvalidRequest)?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
-        read_source_link_held_wide(&parent, leaf, maximum_bytes, work)
+        let (parent, leaf) = wide_parent_leaf(path)?;
+        read_source_link_held_wide(
+            &self.open_dir_held_wide(parent, work)?,
+            leaf,
+            maximum_bytes,
+            work,
+        )
     }
 }
 
@@ -528,14 +418,12 @@ pub(crate) fn reports_every_change<W: NativeHostWork<Error = DemandError>>(
     file: &impl std::os::windows::io::AsRawHandle,
     work: &mut W,
 ) -> Result<bool, DemandError> {
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::GetVolumeInformationByHandleW;
     let mut name = [0_u16; 64];
     work.started_io(READ)?;
-    // SAFETY: a live handle and an output buffer that outlives the call.
+    // SAFETY: the held handle and complete output buffer outlive the call.
     unsafe {
-        GetVolumeInformationByHandleW(
-            HANDLE(file.as_raw_handle()),
+        fs::GetVolumeInformationByHandleW(
+            win::HANDLE(file.as_raw_handle()),
             None,
             None,
             None,
@@ -546,14 +434,38 @@ pub(crate) fn reports_every_change<W: NativeHostWork<Error = DemandError>>(
     .map_err(io::Error::from)?;
     let mut length = 0;
     for unit in &name {
-        let examined = ITEM;
-        work.admit(examined)?;
-        let terminator = *unit == 0;
-        work.record(examined)?;
-        if terminator {
+        work.started_io(ITEM)?;
+        if *unit == 0 {
             break;
         }
         length += 1;
     }
-    Ok(name.get(..length) == Some(&[78, 84, 70, 83][..]))
+    Ok(name[..length] == [78, 84, 70, 83])
+}
+
+pub(crate) fn open_windows_directory<W: NativeHostWork>(
+    parent: &Dir,
+    name: &[u16],
+    work: &mut W,
+) -> Result<(Dir, NativeRootIdentity), W::Error> {
+    if matches!(name, [] | [46] | [46, 46]) {
+        return Err(W::invalid_request());
+    }
+    let file = open_windows_wide_at(
+        parent,
+        name,
+        fs::FILE_GENERIC_READ,
+        nt::FILE_DIRECTORY_FILE | nt::FILE_OPEN_REPARSE_POINT | nt::FILE_SYNCHRONOUS_IO_NONALERT,
+        work,
+    )?
+    .ok_or_else(W::invalid_request)?;
+    let directory = Dir::from_std_file(file.into_std());
+    let identity = directory_identity(&directory, work).map_err(|e| {
+        if W::io_error_kind(&e) == Some(io::ErrorKind::InvalidInput) {
+            W::invalid_request()
+        } else {
+            e
+        }
+    })?;
+    Ok((directory, identity))
 }

@@ -108,7 +108,7 @@ mod task_commands;
 mod task_runtime;
 pub use configured_recursive_tools::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
-    ConfiguredRecursiveMerge, ConfiguredRecursiveSourceCheckpoint, ConfiguredRecursiveToolSource,
+    ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource,
     ConfiguredRecursiveToolsConfig,
 };
 pub(crate) use default_tools::InvocationCancellation;

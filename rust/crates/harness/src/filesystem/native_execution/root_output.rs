@@ -1,4 +1,6 @@
+use super::super::root_binding::{boundary, native_root_output_binding_operation};
 use super::*;
+use crate::conversation::{ContentPublisher, ContentResidencyVerifier, FileRef};
 /// Authenticated, unmounted original ROOT result storage.
 pub struct NativeRootOutputSource {
     pub(super) reader: Arc<dyn ContentResidencyVerifier>,
@@ -44,7 +46,9 @@ impl<P: StreamProvider> NativeRootOutputOwner for TaskJournalOwner<P> {
             self.require_volume_grant(
                 source.writer.volume(),
                 operation,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )),
             )?;
             let proof = self
                 .authenticated_root_binding_with_native_work(work)
@@ -255,7 +259,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             owner.require_volume_grant(
                 volume,
                 VolumeOperation::Write,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )),
             )?;
             if !owner.native_shared_work_matches(work) {
                 return Err(boundary(
@@ -351,7 +357,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             owner.require_volume_grant(
                 volume,
                 VolumeOperation::Write,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )),
             )?;
             let custody = work.claim(
                 std::mem::size_of::<NativeRootOutputSource>() as u64,
