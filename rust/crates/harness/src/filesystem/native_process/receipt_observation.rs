@@ -77,8 +77,7 @@ fn observation_parts_bytes(
 pub(super) fn receipt_bytes(value: &Receipt) -> Result<u64> {
     match value {
         Receipt::Launch(value) => {
-            let mut bytes = size_of::<LaunchReceipt>() as u64;
-            bytes = add(bytes, value.dispatch.provider.capacity() as u64)?;
+            let mut bytes = value.dispatch.provider.capacity() as u64;
             bytes = add(bytes, value.dispatch.effect_kind.capacity() as u64)?;
             bytes = add(bytes, value.dispatch.request.logical_owned_bytes()?)?;
             bytes = add(bytes, plan_bytes(&value.plan)?)?;
@@ -86,7 +85,7 @@ pub(super) fn receipt_bytes(value: &Receipt) -> Result<u64> {
             bytes = add(bytes, value.fence.reservation_id.capacity() as u64)?;
             add(bytes, value.fence.placement.capacity() as u64)
         }
-        Receipt::Observed(value) => add(size_of::<NativeObservation>() as u64, observation_parts_bytes(&value.effect, value.diagnostic.as_ref(), value.publication_failure.as_ref(), value.invocation_failure.as_ref(), &value.published)?),
+        Receipt::Observed(value) => observation_parts_bytes(&value.effect, value.diagnostic.as_ref(), value.publication_failure.as_ref(), value.invocation_failure.as_ref(), &value.published),
     }
 }
 
@@ -160,7 +159,7 @@ pub(super) async fn read<P: StreamProvider>(
                 return Err(boundary(crate::wire::ErrorCode::Storage, "native observation identity is invalid"));
             }
             drop(record);
-            Some(*observed)
+            Some(observed)
         }
         None => None,
     };
@@ -169,7 +168,7 @@ pub(super) async fn read<P: StreamProvider>(
         return Err(boundary(crate::wire::ErrorCode::Storage, "native receipt sequence is invalid"));
     }
     check(work)?;
-    Ok(Some((*launch, observed, custody)))
+    Ok(Some((launch, observed, custody)))
 }
 
 /// Authenticates one protected launch against the original qualified effect reader.

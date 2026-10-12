@@ -234,7 +234,7 @@ struct LaunchReceipt<'a> {
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum Receipt<L = Box<LaunchReceipt<'static>>, O = Box<NativeObservation>> {
+enum Receipt<L = LaunchReceipt<'static>, O = NativeObservation> {
     Launch(L),
     Observed(O),
 }

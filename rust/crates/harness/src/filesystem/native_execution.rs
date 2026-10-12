@@ -1608,9 +1608,7 @@ where
             for (binding, volume) in bindings.iter().zip(&volumes) {
                 verify_binding(owner, binding, &volume._work)?;
             }
-            let mut receipt = preparation_receipt(intent, inspection, None)?;
-            output_custody.absorb(&mut receipt._custody)?;
-            receipt._custody = output_custody;
+            let receipt = preparation_receipt(intent, inspection, output_custody)?;
             drop(intent_operation_custody);
             Ok(Self { volumes, preparation: receipt })
         })
@@ -1761,7 +1759,7 @@ where
             }
             let inspection = materializer.inspect(operation).await.map_err(Error::from)?
                 .ok_or(boundary(crate::wire::ErrorCode::Conflict, "native preparation journal disappeared"))?;
-            let receipt = preparation_receipt(intent.0, inspection, Some(intent.1))?;
+            let receipt = preparation_receipt(intent.0, inspection, intent.1)?;
             materializer.store().verify_read_owner().await?;
             Ok(Some(receipt))
         })
@@ -2257,17 +2255,12 @@ fn preparation_intent(
 
 fn preparation_receipt(
     intent: NativePreparationIntent, inspection: acyclic_fs::MaterializationInspection,
-    custody: Option<acyclic_fs::NativeAllocation>,
+    mut custody: acyclic_fs::NativeAllocation,
 ) -> Result<NativePreparationReceipt> {
     let mut journal = inspection.journal;
-    let custody = match (custody, journal.custody.take()) {
-        (Some(mut custody), Some(mut journal_custody)) => {
-            custody.absorb(&mut journal_custody)?;
-            custody
-        }
-        (Some(custody), None) | (None, Some(custody)) => custody,
-        (None, None) => return Err(boundary(crate::wire::ErrorCode::Storage, "native preparation inspection lost its original journal custody")),
-    };
+    let mut journal_custody = journal.custody.take().ok_or(boundary(crate::wire::ErrorCode::Storage,
+        "native preparation inspection lost its original journal custody"))?;
+    custody.absorb(&mut journal_custody)?;
     Ok(NativePreparationReceipt {
         task: intent.task, original_fence: intent.original_fence, manifest: intent.manifest,
         journal, root: inspection.root, preparation: inspection.preparation,
