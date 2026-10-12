@@ -158,19 +158,6 @@ pub(crate) fn outcome_on<T, E: ErrorKind>(
     result
 }
 
-/// Records a plain receipt result; failed APIs without receipts have no work totals.
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-pub(crate) fn receipt_on<T, E: ErrorKind>(
-    span: &OperationSpan,
-    result: Result<OperationReceipt<T>, E>,
-) -> Result<OperationReceipt<T>, E> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Ok(receipt) = &result {
-        record_work(&span.span, &receipt.work);
-    }
-    outcome_on(span, result)
-}
-
 /// Summary on an explicitly owned span: a filtered child cannot mutate its parent.
 #[cfg_attr(
     target_arch = "wasm32",
