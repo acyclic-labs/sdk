@@ -1,4 +1,4 @@
-import { copyBytes, copyOptionalBytes, requireIdentity, requireWorkspaceName } from "./binding-values.js";
+import { copyBytes, copyName, copyOptionalBytes, requireIdentity, requireWorkspaceName } from "./binding-values.js";
 import { createRequire } from "node:module";
 import { arch, platform } from "node:process";
 import type { WasmRawFs, WasmRawWorkspace, EngineCapabilities, FsGeneration, FsWorkspace, NativeBindings, NativeFsEngine, NativeFsWorkspace, NativeFsOptions, NativeRawFs, NativeRawCheckout, NativeRawTransactionOperation, NativeRawSourceResult, NativeRawWorkspace, NativeRawWatcher, NativeRawWatchBatch, NativeWatcher, NativeWatchBatch, NativeNamespacePath, CaptureResult, NativeWorkspaceMount, SourceResult, WorkCounters, TransactionOperation, GenerationExportManifest, NativeRawWorkspaceGraph, NativeRawWorkspaceLineageRecord } from "./contracts.js";
@@ -191,7 +191,7 @@ function nativeWatchBatch(value: NativeRawWatchBatch): NativeWatchBatch {
 }
 
 function copyNamespacePath(path: NativeNamespacePath): NativeNamespacePath {
-  return { components: path.components.map(component => ({ encoding: component.encoding, bytes: copyBytes(component.bytes) })) };
+  return { components: path.components.map(copyName) };
 }
 
 function isRescanReason(value: string | undefined): value is Extract<NativeWatchBatch, { readonly status: "rescan-required" }>["reason"] {
@@ -243,7 +243,7 @@ function normalizeNative(value: unknown): unknown {
 }
 
 function createNativeAdapter() {
-  const adapter = createFilesystemAdapter({
+  const scope = createFilesystemAdapter({
     checkout(handle) {
       const raw = (nativeHandles.get(handle) as NativeRawCheckout);
       return {
@@ -292,38 +292,17 @@ function createNativeAdapter() {
         },
       };
     },
-  });
-  const scope = (adapter as Omit<typeof adapter, "adaptWorkspace"> & {
+  }) as Omit<ReturnType<typeof createFilesystemAdapter>, "adaptWorkspace"> & {
     adaptWorkspace(raw: import("./contracts.js").WasmRawWorkspace): NativeFsWorkspace;
-  });
+  };
   return scope;
 }
 
 function nativeTransactionOperation(value: TransactionOperation): NativeRawTransactionOperation {
-  return {
-    kind: value.kind,
-    ...("path" in value ? { path: value.path } : {}),
-    ...("source" in value ? { source: value.source } : {}),
-    ...("destination" in value ? { destination: value.destination } : {}),
-    ...("bytes" in value ? { bytes: copyBytes(value.bytes) } : {}),
-    ...("target" in value ? { target: copyBytes(value.target) } : {}),
-    ...("payload" in value ? { payload: copyBytes(value.payload) } : {}),
-    ...("expectedFileId" in value && value.expectedFileId !== undefined
-      ? { expectedFileId: copyBytes(value.expectedFileId) } : {}),
-    ...("fileKind" in value ? { fileKind: value.fileKind } : {}),
-    ...("offset" in value ? { offset: value.offset } : {}),
-    ...("sourceOffset" in value ? { sourceOffset: value.sourceOffset } : {}),
-    ...("destinationOffset" in value ? { destinationOffset: value.destinationOffset } : {}),
-    ...("length" in value ? { length: value.length } : {}),
-    ...("logicalBytes" in value ? { logicalBytes: value.logicalBytes } : {}),
-    ...("major" in value ? { major: value.major } : {}),
-    ...("minor" in value ? { minor: value.minor } : {}),
-    ...("replace" in value ? { replace: value.replace } : {}),
-    ...("allocated" in value ? { allocated: value.allocated } : {}),
-    ...("extend" in value ? { extend: value.extend } : {}),
-    ...("keepSize" in value ? { keepSize: value.keepSize } : {}),
-    ...("canonicalBytes" in value ? { canonicalBytes: copyBytes(value.canonicalBytes) } : {}),
-  };
+  return Object.fromEntries(Object.entries(value)
+    .filter(([, field]) => field !== undefined)
+    .map(([key, field]) => [key, field instanceof Uint8Array ? copyBytes(field) : field]),
+  ) as NativeRawTransactionOperation;
 }
 
 function rawWorkspace(workspace: FsWorkspace): NativeRawWorkspace {

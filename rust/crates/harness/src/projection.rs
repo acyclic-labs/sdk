@@ -717,24 +717,21 @@ async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized
 ) -> Result<ProjectionAttachments<'a>> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io { io.check_cancellation()?; }
-    let attachments = match &message.attachments {
-        ReferencedAttachments::Inline { items } => ProjectionAttachments::Borrowed(items),
+    match &message.attachments {
+        ReferencedAttachments::Inline { items } => {
+            if items.len() > maximum_attachments {
+                return Err(projection_invalid(io, "selected message exceeds attachment projection limit"));
+            }
+            Ok(ProjectionAttachments::Borrowed(items))
+        }
         ReferencedAttachments::Manifest { manifest, item_count } => {
             if *item_count as usize > maximum_attachments {
                 return Err(projection_invalid(io, "selected message exceeds attachment projection limit"));
             }
             let (items, hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
-            let loaded = ProjectionAttachments::Owned(items, hold);
-            if loaded.as_slice().len() != *item_count as usize {
-                return Err(projection_invalid(io, "attachment manifest count does not match its declared count"));
-            }
-            loaded
+            Ok(ProjectionAttachments::Owned(items, hold))
         }
-    };
-    if attachments.as_slice().len() > maximum_attachments {
-        return Err(projection_invalid(io, "selected message exceeds attachment projection limit"));
     }
-    Ok(attachments)
 }
 
 async fn read_projected_invocation<R: ContentResidencyVerifier + ?Sized>(

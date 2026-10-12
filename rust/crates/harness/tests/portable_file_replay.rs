@@ -243,7 +243,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     });
     tool.executor = executor.clone();
     let definition = tool.definition.clone();
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(tool)?;
     let mutations = [
         (

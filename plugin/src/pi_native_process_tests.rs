@@ -1,5 +1,6 @@
 
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::Passive;
 use acyclic_harness::{
     AgentId, Capabilities, TaskId,

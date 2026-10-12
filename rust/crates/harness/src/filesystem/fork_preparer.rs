@@ -357,7 +357,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemForkPreparer<A, O> {
     fn controller(&self, io: Option<&PreparationIo>) -> Result<ParentProjectController<'_, A, O>> {
         ParentProjectController::new(&self.host, &self.parent, &self.verifier, &self.scope, &self.project, io)
     }
@@ -372,28 +372,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             None => { attempt = self.attempt(self.task_preparation.as_deref())?; attempt.io.as_ref() }
         };
         self.check_request(request, io, self.task_preparation.as_deref())?;
-        let maximum_messages = usize::try_from(request.preparation.maximum_inherited_messages)
-            .map_err(|_| bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "fork message bound is too large"))?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let native = io.and_then(PreparationIo::original_native_work);
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut grants = if let Some(work) = native {
-            if let Some(task) = &self.task_preparation { task.verify_creation_with_native_work(work)?.await?; }
-            let controller = self.controller(io)?;
-            let (grants, custody) = controller.inherited_reference_grants_with_native_work(
-                &self.parent, request.child_agent, &request.attached_agents,
-                request.preparation.inherited_through_sequence, maximum_messages,
-                request.preparation.maximum_inherited_bytes,
-                request.preparation.maximum_inherited_references as usize,
-                self.resolver.as_ref(), self.history.as_ref(), work,
-            ).await?;
-            io.expect("native projection IO").absorb_native_custody(custody)?;
-            grants
-        } else {
-            self.reference_grants(request, maximum_messages).await?
-        };
-        #[cfg(target_arch = "wasm32")]
-        let mut grants = self.reference_grants(request, maximum_messages).await?;
+        let mut grants = self.reference_grants(request, io).await?;
         if request.preparation.summary.is_some() {
             let summary = self.prepare_bound_summary(request, io).await?
                 .ok_or_else(|| bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "summary source was not authenticated"))?;
@@ -421,15 +400,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = native
+        if let Some(work) = io.and_then(PreparationIo::original_native_work)
             && let Some(task) = &self.task_preparation {
             task.verify_creation_with_native_work(work)?.await?;
         }
         Ok(grants)
     }
 
-    async fn reference_grants(&self, request: &ForkRequest, maximum_messages: usize) -> Result<Vec<ReferenceGrant>> {
-        let controller = self.controller(None)?;
+    async fn reference_grants(&self, request: &ForkRequest, io: Option<&PreparationIo>) -> Result<Vec<ReferenceGrant>> {
+        let maximum_messages = usize::try_from(request.preparation.maximum_inherited_messages)
+            .map_err(|_| bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "fork message bound is too large"))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = io.and_then(PreparationIo::original_native_work);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = native && let Some(task) = &self.task_preparation {
+            task.verify_creation_with_native_work(work)?.await?;
+        }
+        let controller = self.controller(io.filter(|io| io.uses_native_work()))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = native {
+            let (grants, custody) = controller.inherited_reference_grants_with_native_work(
+                &self.parent, request.child_agent, &request.attached_agents,
+                request.preparation.inherited_through_sequence, maximum_messages,
+                request.preparation.maximum_inherited_bytes,
+                request.preparation.maximum_inherited_references as usize,
+                self.resolver.as_ref(), self.history.as_ref(), work,
+            ).await?;
+            io.expect("native projection IO").absorb_native_custody(custody)?;
+            return Ok(grants);
+        }
         controller.inherited_reference_grants(
             &self.parent, request.child_agent, &request.attached_agents,
             request.preparation.inherited_through_sequence, maximum_messages,
@@ -465,7 +464,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                 let version = resource.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
                 let copied = ResourceRef::new_with_work(resource.kind(), provider, key, version, quota.work())?;
                 quota.transfer();
-                Ok(copied)
+                Ok::<_, Error>(copied)
             })?;
             resources.push(copied);
             proofs.push(crate::resource_preparation::ResourceCreationProofRef {
@@ -772,7 +771,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PreparationAttempt<'_, A, O> {
 
     fn journal_limit(&self, default: u64) -> u64 {
         self.task_preparation.as_ref().map_or(default, |task| {
