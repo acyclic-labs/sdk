@@ -11,7 +11,7 @@ pub(crate) enum MacMetadataTarget {
     },
 }
 
-pub(super) fn open_macos_metadata_target<
+pub(crate) fn open_macos_metadata_target<
     W: NativeHostWork<Error = DemandError, Allocation = u64>,
 >(
     root: &Dir,
