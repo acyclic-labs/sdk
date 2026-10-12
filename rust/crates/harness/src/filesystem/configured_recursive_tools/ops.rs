@@ -49,15 +49,7 @@ where
         file: &crate::conversation::FileRef,
         io: &PreparationIo,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            return context.read_file_with_native_work(file, work).await;
-        }
-        io.receive_content(
-            context
-                .read_file_measured(file, io.remaining()?, io.cancellation())
-                .await,
-        )
+        context.read_file(file, Some(io)).await
     }
     pub(super) async fn source(
         &self,

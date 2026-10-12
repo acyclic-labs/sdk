@@ -1189,12 +1189,11 @@ impl PiControlHost<'_> {
                 .ok_or_else(|| denied("mounted destination lost its original issued context"))?;
             let guard = live
                 .context
-                .volume_callback_guard_with_native_work(&live.owner, &live.original_work)
+                .volume_callback_guard(&live.owner, &live.original_work)
                 .await?;
             Some(
                 guard
-                    .for_volume(&live.owner, volume, true, &publication_work)?
-                    .0,
+                    .for_volume(&live.owner, volume, true, &publication_work)?,
             )
         } else {
             None

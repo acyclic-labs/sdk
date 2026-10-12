@@ -282,16 +282,21 @@ impl<'a> PiForkCoordinator<'a> {
         )?;
         let checkpoint_path =
             work.display(&format_args!("pi-fork/{original}/source-checkpoint.json"))?;
-        let checkpoint = (context)
-            .stage_file_once_with_native_work(
-                derived(original, "source-checkpoint", &self.work)?,
-                &checkpoint_path.0,
-                &checkpoint_bytes.0,
-                "application/json",
-                "Pi original caller cut",
-                &self.work,
-            )
-            .await?;
+        let checkpoint = {
+            let publication_io =
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?;
+            (context)
+                .stage_file_once(
+                    derived(original, "source-checkpoint", &self.work)?,
+                    &checkpoint_path.0,
+                    &checkpoint_bytes.0,
+                    "application/json",
+                    "Pi original caller cut",
+                    Some(&publication_io),
+                )
+                .await
+                .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+        }?;
         let resolver = shared.content_residency_verifier_with_native_work(owner.clone(), work)?;
         let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work(
             "local", "stream", "1", work,
@@ -402,16 +407,21 @@ impl<'a> PiForkCoordinator<'a> {
             work,
         )?;
         let fork_path = work.display(&format_args!("pi-fork/{original}/fork-input.json"))?;
-        let mut fork_input = (context)
-            .stage_file_once_with_native_work(
-                derived(original, "fork-input", &self.work)?,
-                &fork_path.0,
-                &bytes.0,
-                "application/json",
-                "Pi original fork input",
-                &self.work,
-            )
-            .await?;
+        let mut fork_input = {
+            let publication_io =
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?;
+            (context)
+                .stage_file_once(
+                    derived(original, "fork-input", &self.work)?,
+                    &fork_path.0,
+                    &bytes.0,
+                    "application/json",
+                    "Pi original fork input",
+                    Some(&publication_io),
+                )
+                .await
+                .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+        }?;
         let command_kind = work.display(&FORK_PREPARE_TASK_COMMAND_KIND)?;
         let command = WorkflowCommand {
             operation_id: operations.fork,

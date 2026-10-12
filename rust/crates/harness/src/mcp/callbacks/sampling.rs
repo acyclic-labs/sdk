@@ -123,14 +123,7 @@ pub(super) async fn sampling_messages(
                     }
                     let path = format!("mcp/{operation}/sampling/{message_index}-{block_index}");
                     let file = context
-                        .stage_file_once(
-                            OperationId::from_bytes(identity),
-                            &path,
-                            &bytes,
-                            mime,
-                            "MCP sampling media",
-                        )
-                        .await?;
+                        .stage_file_once(OperationId::from_bytes(identity), &path, &bytes, mime, "MCP sampling media", None).await.map(|(file, _)| file)?;
                     media.validate(&file, context.scope().limits(), &mut None)?;
                     ModelContentPart::File {
                         file,

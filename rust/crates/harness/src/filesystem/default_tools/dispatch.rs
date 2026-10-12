@@ -268,24 +268,24 @@ pub(super) async fn retained_payload(
                 reason: "retained recursive payload exceeds its original bound",
             });
         }
-        let bytes = context.read_file_with_native_work(file, work).await?;
+        let bytes = context.read_file(file, Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
         return Ok(crate::filesystem::retain_decoded(io.decode(
             std::marker::PhantomData::<Value>,
             &bytes,
             crate::wire::ErrorCode::Storage,
         )?));
     }
-    let _ = io;
-    let bytes = context
-        .task()
-        .read_file_measured(
-            file,
-            acyclic_fs::performance::work_budget(maximum, maximum),
-            cancellation,
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let ordinary;
+    let content_io = match io {
+        Some(io) => io,
+        None => {
+            ordinary = crate::filesystem::PreparationIo::from_budget(
+                acyclic_fs::performance::work_budget(maximum, maximum), cancellation,
+            )?;
+            &ordinary
+        }
+    };
+    let bytes = context.read_file(file, Some(content_io)).await?;
     crate::contract::json_from_slice(&bytes).map_err(|error| Error::Storage(error.to_string()))
 }
 pub(super) async fn stage(
@@ -313,16 +313,20 @@ pub(super) async fn stage(
         let _display;
         let display = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("{label}.json"), work))?;
         _display = io.guard_owned(display.capacity() as u64)?;
-        let (file, custody) = context
-            .stage_file_once_with_native_work(
-                operation,
-                &path,
-                &bytes,
-                "application/json",
-                &display,
-                work,
-            )
-            .await?;
+        let (file, custody) = {
+            let publication_io = crate::executor::PreparationIo::from_native_work(work)?;
+            context
+                .stage_file_once(
+                    operation,
+                    &path,
+                    &bytes,
+                    "application/json",
+                    &display,
+                    Some(&publication_io),
+                )
+                .await
+                .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+        }?;
         io.absorb_native_custody(custody)?;
         return Ok(file);
     }
@@ -336,17 +340,16 @@ pub(super) async fn stage(
         maximum.min(context.scope().limits().file_bytes),
         true,
     )?;
-    io.receive_content(
-        context
-            .stage_file_once_measured(
-                operation,
-                &format!("recursive-tools/{}/{label}.json", context.operation_id()),
-                &bytes,
-                "application/json",
-                &format!("{label}.json"),
-                io.remaining()?,
-                cancellation,
-            )
-            .await,
-    )
+    context
+        .stage_file_once(
+            operation,
+            &format!("recursive-tools/{}/{label}.json", context.operation_id()),
+            &bytes,
+            "application/json",
+            &format!("{label}.json"),
+            Some(&io),
+        )
+        .await
+        .map(|(file, _)| file)
+
 }

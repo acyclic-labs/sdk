@@ -390,8 +390,8 @@ async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -
             let file: FileRef = serde_json::from_value(first.value["file"].clone()).map_err(|error| Error::Invalid(error.to_string()))?;
             let user = task.stage_file(OperationId::new(), "notes/one.txt", b"later user edit", "text/plain", "one.txt").await?;
             assert_eq!(tool.executor.reconcile_with_context(context.clone(), invocation.clone()).await?, Some(first));
-            assert_eq!(task.read_file(&file).await?.as_ref(), b"saved text".as_ref());
-            assert_eq!(task.read_file(&user).await?.as_ref(), b"later user edit".as_ref());
+            assert_eq!(task.read_file(&file, None).await?.as_ref(), b"saved text".as_ref());
+            assert_eq!(task.read_file(&user, None).await?.as_ref(), b"later user edit".as_ref());
             for (field, value) in [("text", "different text"), ("path", "notes/another.txt"), ("media_type", "text/markdown"), ("display_name", "other.txt")] {
                 let mut changed = invocation.clone(); changed.arguments[field] = json!(value);
                 assert!(matches!(tool.executor.reconcile_with_context(context.clone(), changed).await, Err(Error::Conflict(_))));
@@ -940,10 +940,10 @@ async fn typed_tasks_stage_and_resolve_only_with_owner_bound_grants() -> Result<
                     "result.txt",
                 )
                 .await?;
-            let bytes = context.read_file(&file).await?;
+            let bytes = context.read_file(&file, None).await?;
             let narrowed =
                 context.scoped(Capabilities::new(Vec::<String>::new()), Limits::default())?;
-            assert!(narrowed.read_file(&file).await.is_err());
+            assert!(narrowed.read_file(&file, None).await.is_err());
             assert!(
                 narrowed
                     .stage_file(
