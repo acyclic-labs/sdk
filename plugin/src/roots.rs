@@ -629,7 +629,7 @@ pub(crate) async fn existing_tracked_paths(
 ) -> Result<BTreeSet<String>, PluginGitError> {
     let mut tracked = BTreeSet::new();
     for path in candidates {
-        match generation.stat(&format!("/{path}")).await {
+        match generation.stat(&format!("/{path}"), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
             Ok(stat) if stat.kind != FileKind::Directory => {
                 tracked.insert(path.clone());
             }

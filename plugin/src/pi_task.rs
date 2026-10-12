@@ -17,8 +17,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 
-/// Resolves a creator-seeded native intent under the actual admitted child
-/// scope before staging its one-shot process effect.
+/// Resolves a creator-seeded native intent under the actual admitted child scope before staging its one-shot process effect.
 pub(crate) const NATIVE_LAUNCH_TASK_COMMAND_KIND: &str = "acyclic.pi.native.launch.v1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -34,8 +33,7 @@ pub(crate) struct PiControlReply {
     pub(crate) value: Value,
 }
 
-/// Immutable admission input. Allocation progress stays on the existing plugin
-/// preparation/route record; it cannot change the task's admitted selection.
+/// Immutable admission input.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiTaskInput {
@@ -85,7 +83,6 @@ struct CommandResult {
     value: Outcome<FileRef>,
 }
 
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ControlResults {
@@ -116,8 +113,6 @@ pub(crate) const PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES: u64 =
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeMetadata for PiTaskInput {
-    // Binding/root/command metadata contains only typed identifiers, strings,
-    // maps, arrays and immutable FileRefs, not serde_json::Value leaves.
     const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::None;
     const DIAGNOSTIC_LABEL_BYTES: u64 = PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES;
 }
@@ -142,8 +137,6 @@ impl NativeMetadata for CommandResults {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeMetadata for PiTaskState {
-    // The SDK has no Pi-specific selector. Its genuine whole-document shape
-    // conservatively covers hosting.reply.value, even after body masking.
     const VALUE_SCHEMA: acyclic_harness::JsonValueSchema = acyclic_harness::JsonValueSchema::Root;
     const DIAGNOSTIC_LABEL_BYTES: u64 = PI_COMMAND_DIAGNOSTIC_LABEL_BYTES
         + super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
@@ -188,8 +181,6 @@ impl PiTaskMachine {
     pub(crate) fn new_with_native_work(
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Arc<Self>> {
-        // Inspect and hash the actual source bytes plus each eight-byte length
-        // prefix. Admission/cancellation precedes the first shared digest update.
         let source_bytes = machine_sources().iter().map(|source| source.len() as u64 + 8).sum();
         work.charge(acyclic_fs::WorkCounters {
             items_examined: source_bytes,
@@ -203,8 +194,6 @@ impl PiTaskMachine {
             &state_schema_descriptor(), NATIVE_METADATA_MAXIMUM, work,
         )?;
         identity.1.absorb(&mut schema.1).map_err(native_work_error)?;
-        // This is the one actual Arc allocation, admitted before publication;
-        // its two atomic counters and inline machine share the original ledger.
         let alignment = std::mem::align_of::<Self>();
         let header = 2 * std::mem::size_of::<usize>();
         let bytes = (header.div_ceil(alignment) * alignment + std::mem::size_of::<Self>()) as u64;
@@ -238,8 +227,6 @@ impl PiTaskMachine {
         self: &Arc<Self>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(TaskDefinition<PiTaskInput, FileRef>, acyclic_fs::NativeAllocation)> {
-        // Both schema trees are actual SDK encoder outputs. The root-intent
-        // descriptor emits borrowed fields directly, without a temporary Value.
         let mut input = super::pi_root_provider::guarded_pi_value(
             &task_input_schema(PiRootIntent::schema_descriptor()), NATIVE_METADATA_MAXIMUM, work,
         )?;
@@ -247,8 +234,6 @@ impl PiTaskMachine {
             &TypeSchema { kind: "object" }, NATIVE_METADATA_MAXIMUM, work,
         )?;
         input.1.absorb(&mut output.1).map_err(native_work_error)?;
-        // The SDK moves the paid trees into the definition and admits its own
-        // identity/schema-validation/digest metadata before construction.
         TaskDefinition::resumable_with_native_work(
             self.clone(), input.0, output.0, input.1, work,
         )
@@ -273,8 +258,6 @@ fn machine_digest() -> [u8; 32] {
     *digest.finalize().as_bytes()
 }
 
-// Borrowed schema descriptors follow the existing RootAllocationSchema pattern.
-// Native callers emit their fixed fields directly into the SDK observed encoder.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ObjectSchema<R, P> {
@@ -502,8 +485,6 @@ fn validate_native_command(command: &WorkflowCommand) -> acyclic_harness::Result
 
 fn validate_control_command(command: &WorkflowCommand) -> acyclic_harness::Result<()> {
     command.validate()?;
-    // These are ordinary installed durable command adapters, not caller-selected
-    // effects, model providers or raw filesystem mutation.
     if !matches!(command.kind.as_str(),
         "acyclic.task.admit.v1" | "acyclic.task.admit_prepared.v1" |
         "acyclic.task.observe.v1" | "acyclic.mail.send.v1" |
@@ -531,9 +512,7 @@ pub(crate) fn control_reply(state: &Value) -> acyclic_harness::Result<Option<PiC
     })
 }
 
-
-/// The caller retains the checkpoint's original custody through extraction and
-/// transfers it to the moved body. This guard covers only new bounded metadata.
+/// The caller retains the checkpoint's original custody through extraction and transfers it to the moved body.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn control_reply_owned(
     mut state: Value,
@@ -571,8 +550,6 @@ impl ResumableMachine for PiTaskMachine {
         &'a self,
         _work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<&'a MachineIdentity> {
-        // This is the actual immutable published identity, not an ordinary SPI
-        // callback or a reconstructed/cloned descriptor.
         Ok(&self.identity)
     }
 
@@ -590,9 +567,6 @@ impl ResumableMachine for PiTaskMachine {
         input: &Value,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Value, acyclic_fs::NativeAllocation)> {
-        // The original admission input remains borrowed and in caller custody.
-        // Decode quota precedes binding/state construction; no ordinary
-        // initialize/serde-to-value pass or retrospective claim is involved.
         let mut decoded = native_metadata::<PiTaskInput>(input, work)?;
         let state = initial_state(decoded.0, true)?;
         let mut encoded = super::pi_root_provider::guarded_pi_value(
@@ -630,8 +604,6 @@ impl ResumableMachine for PiTaskMachine {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
         use super::pi_root_provider::guarded_pi_value;
-        // Keep tuple field drop order: metadata is destroyed before its guard,
-        // including early input/schema/cancellation failures.
         let mut state_metadata = native_metadata::<PiTaskState>(
             &MetadataValue(state, MetadataRole::State), work,
         )?;
@@ -649,9 +621,6 @@ impl ResumableMachine for PiTaskMachine {
                     &MetadataValue(&input, MetadataRole::Results), work,
                 )?;
                 state_metadata.1.absorb(&mut decoded.1).map_err(native_work_error)?;
-                // The SDK owns the authentic replay copy and keeps this input's
-                // original guard until after output commit. Only the body moves;
-                // no second reservation or reconstructed payload guard is made.
                 moved_reply = Some(take_result_body(&mut input)?);
                 TransitionInput::Controls(decoded.0)
             }
@@ -670,9 +639,6 @@ impl ResumableMachine for PiTaskMachine {
             Ok(encoded.0)
         })?;
         let mut encoded_state = if unchanged_hosting {
-            // This is a genuine old-checkpoint/new-checkpoint duplication. Use
-            // the typed header (including serde defaults), borrowing only the
-            // old arbitrary body; the canonical codec observes all growth.
             #[derive(Serialize)]
             struct HostingCheckpoint<'a> {
                 state: &'static str,
@@ -699,8 +665,6 @@ impl ResumableMachine for PiTaskMachine {
         };
         state_metadata.1.absorb(&mut encoded_state.1).map_err(native_work_error)?;
         if let Some(body) = moved_reply {
-            // The existing value slot was encoded as null, so assignment neither
-            // allocates a map node nor copies the large owned reply.
             *encoded_state.0.get_mut("reply").and_then(|reply| reply.get_mut("value"))
                 .ok_or_else(|| transition_error("Pi native reply header is missing", true))? = body;
         }
@@ -710,20 +674,6 @@ impl ResumableMachine for PiTaskMachine {
             commands: command.into_iter().collect(),
             status,
         }, state_metadata.1))
-    }
-}
-
-/// Reads the original machine checkpoint; catalog state is never a dispatch
-/// proof. The native host must separately verify admission and effect absence.
-pub(crate) fn original_ready_native_command(
-    state: &Value,
-) -> acyclic_harness::Result<Option<WorkflowCommand>> {
-    match decode::<PiTaskState>(state)? {
-        PiTaskState::Ready { command } if command.kind == NATIVE_LAUNCH_TASK_COMMAND_KIND => {
-            command.validate()?;
-            Ok(Some(command))
-        }
-        _ => Ok(None),
     }
 }
 
@@ -767,8 +717,6 @@ fn initial_state(input: PiTaskInput, native: bool) -> acyclic_harness::Result<Pi
             validate_native_command(&launch).map_err(|error| native_validation(
                 error, native, "Pi child requires its retained native launch command",
             ))?;
-            // Original Created-resource proofs authorize dispatch only after
-            // actual provider creation records are checked by the native host.
             PiTaskState::Ready { command: launch }
         }
     })
@@ -794,8 +742,6 @@ fn transition_input(state: &PiTaskState, input: &Value) -> acyclic_harness::Resu
 }
 
 /// One pure typed engine serves both ordinary and original-work transitions.
-/// Native callers admit the closed metadata quota before decoding or entering
-/// this engine; only ordinary callers clone an input Value to deserialize it.
 fn advance(
     state: PiTaskState,
     input: TransitionInput,
@@ -889,9 +835,6 @@ fn transition_error(reason: &'static str, native: bool) -> acyclic_harness::Erro
     invalid(reason)
 }
 
-// Project only the arbitrary reply body to null. All field names, malformed
-// shapes, unknown fields and operation IDs still pass through the closed DTO's
-// canonical parser, without an intermediate Value or a large-body clone.
 enum MetadataRole { State, Results, Replies, Reply }
 struct MetadataValue<'a>(&'a Value, MetadataRole);
 
@@ -938,11 +881,6 @@ fn native_metadata_quota<T>(bytes: u64, lexical_items: u64) -> acyclic_harness::
     let overflow = || native_work_error(acyclic_fs::NativeTreeMaterializationError::Work(
         acyclic_fs::WorkError::Overflow,
     ));
-    // This is only the closed DTO's opaque logical quota. The canonical SDK
-    // decoder independently issues its authentic Value shape and the guarded
-    // decode callback adds json_value_decode_owned_bytes(shape) before parsing.
-    // Cover tagged buffers, temporary/final String/Vec/FileRef storage and the
-    // one-command Vec; never report these quotas as allocator operations.
     let tagged_slot = (4 * std::mem::size_of::<Value>()) as u64;
     lexical_items.checked_mul(tagged_slot)
         .and_then(|owned| bytes.checked_mul(8).and_then(|strings| owned.checked_add(strings)))
@@ -958,8 +896,6 @@ fn native_metadata<T: NativeMetadata>(
 ) -> acyclic_harness::Result<(T, acyclic_fs::NativeAllocation)> {
     let before_items = work.receipt().items_examined;
     let (bytes, bytes_custody) = super::pi_root_provider::guarded_pi_bytes(value, NATIVE_METADATA_MAXIMUM, work)?;
-    // Use the canonical encoder's already observed structural items, not an
-    // inferred physical allocation count or another unbounded metadata scan.
     let quota = work.receipt().items_examined.checked_sub(before_items)
         .ok_or_else(|| native_work_error(acyclic_fs::NativeTreeMaterializationError::Work(
             acyclic_fs::WorkError::Overflow,

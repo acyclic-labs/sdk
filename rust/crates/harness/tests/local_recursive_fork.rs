@@ -161,7 +161,7 @@ where
         stream.clone(),
         host.clone(),
         private.clone(),
-        issuer.verifier(),
+        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
         read_scope,
         64 * 1024,
     )?
@@ -1070,7 +1070,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     action: Action::PublishProjectMerge {
                         receipt: Box::new(receipt),
                     },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
             assert_eq!(
                 host.read(

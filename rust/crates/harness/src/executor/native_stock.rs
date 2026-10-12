@@ -67,11 +67,11 @@ impl<'a> StockExecution<'a> {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn native_boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
+pub(crate) fn native_boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     Error::NativeBoundary { code, reason }
 }
 
-pub(super) fn stock_boundary(io: Option<&PreparationIo>, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
+pub(crate) fn stock_boundary(io: Option<&PreparationIo>, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if io.and_then(PreparationIo::original_native_work).is_some() { return native_boundary(code, reason); }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -315,7 +315,7 @@ pub(crate) async fn stage_json<T: Serialize>(journal: &dyn ExecutionJournal,
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let hold;
-        let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
+        let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
         hold = io.guard_bytes(&bytes)?;
         let result = stage_bytes_with_io(journal, operation, key, &bytes, Some(io)).await;
         drop(bytes);

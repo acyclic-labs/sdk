@@ -1140,63 +1140,34 @@ impl ToolRegistry {
     }
 
     /// Returns one assembled tool.
-    #[must_use]
-    pub fn get(&self, name: &str) -> Option<&Tool> {
-        if let Some((logical, revision)) = name.rsplit_once('@') {
-            return self.get_version(logical, revision);
-        }
-        let ModelSelection::Revision(revision) = self.selected.get(name)? else {
-            return None;
-        };
-        self.get_version(name, revision)
-    }
-
-    /// Resolves a pinned revision independently of the model-visible choice.
-    #[must_use]
-    pub fn get_version(&self, name: &str, revision: &str) -> Option<&Tool> {
-        self.versions.get(&(name.to_owned(), revision.to_owned()))
-    }
-
-    /// Resolves the same selected or explicitly qualified tool with original work and paid pinned-lookup keys, without an ordinary allocating lookup.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn get_with_native_work(
-        &self,
-        name: &str,
-        work: &acyclic_fs::NativeMaterializationWork,
+    pub(crate) fn get(
+        &self, name: &str, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
-        work.charge(acyclic_fs::WorkCounters {
-            items_examined: name.len() as u64,
-            ..Default::default()
-        })?;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters {
+                items_examined: name.len() as u64, ..Default::default()
+            })?;
+        }
         if let Some((logical, revision)) = name.rsplit_once('@') {
-            return self.get_version_with_native_work(logical, revision, work);
+            return self.get_version(logical, revision, io);
         }
         let Some(ModelSelection::Revision(revision)) = self.selected.get(name) else {
             return Ok(None);
         };
-        self.get_version_with_native_work(name, revision, work)
+        self.get_version(name, revision, io)
     }
 
-    /// Uses the same logarithmic pinned registry lookup with funded temporary key strings; no second registry or linear native lookup is introduced.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn get_version_with_native_work(
-        &self,
-        name: &str,
-        revision: &str,
-        work: &acyclic_fs::NativeMaterializationWork,
+    /// Resolves a pinned revision independently of the model-visible choice.
+    pub(crate) fn get_version(
+        &self, name: &str, revision: &str,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
-        let name_hold;
-        let (name, hold) = work.display(name)?;
-        name_hold = hold;
-        let revision_hold;
-        let (revision, hold) = work.display(revision)?;
-        revision_hold = hold;
-        let key = (name, revision);
-        let found = self.versions.get(&key);
-        drop(key);
-        drop(revision_hold);
-        drop(name_hold);
-        Ok(found)
+        let key = (
+            crate::executor::stock_string_copy(name, io)?,
+            crate::executor::stock_string_copy(revision, io)?,
+        );
+        Ok(self.versions.get(&key))
     }
 
     /// Copies only SDK-owned registry metadata on the original ledger.
@@ -1294,7 +1265,8 @@ impl ToolRegistry {
                     reason: "tool requires an explicit model revision",
                 }),
             };
-            let tool = self.get_version_with_native_work(name, revision, work)?.ok_or(Error::NativeBoundary {
+            let io = crate::executor::PreparationIo::from_native_work(work)?;
+            let tool = self.get_version(name, revision, Some(&io))?.ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Storage,
                 reason: "selected tool revision is not registered",
             })?;
@@ -1323,7 +1295,7 @@ impl ToolRegistry {
                 }
             };
             let tool = self
-                .get_version(name, revision)
+                .get_version(name, revision, None)?
                 .ok_or_else(|| Error::Storage("selected tool revision is not registered".into()))?;
             definitions.push(tool.definition.clone());
         }
@@ -1396,31 +1368,31 @@ mod tests {
                 projection: Arc::new(Projection),
             })?;
         }
-        assert!(tools.get("example.echo").is_none());
+        assert!(tools.get("example.echo", None)?.is_none());
         assert!(matches!(tools.definitions(), Err(Error::Conflict(_))));
-        assert!(tools.get_version("example.echo", "1").is_some());
+        assert!(tools.get_version("example.echo", "1", None)?.is_some());
         tools.select_model_version("example.echo", "2")?;
         assert_eq!(tools.definitions()?[0].revision, "2");
         assert_eq!(
             tools
-                .get("example.echo")
+                .get("example.echo", None)?
                 .map(|tool| tool.definition.revision.as_str()),
             Some("2")
         );
         tools.remove_from_model("example.echo")?;
         assert!(tools.definitions()?.is_empty());
-        assert!(tools.get("example.echo").is_none());
-        assert!(tools.get_version("example.echo", "1").is_some());
-        assert!(tools.get_version("example.echo", "2").is_some());
-        assert!(tools.get("example.echo@1").is_some());
+        assert!(tools.get("example.echo", None)?.is_none());
+        assert!(tools.get_version("example.echo", "1", None)?.is_some());
+        assert!(tools.get_version("example.echo", "2", None)?.is_some());
+        assert!(tools.get("example.echo@1", None)?.is_some());
         let mut replacement = tools
-            .get_version("example.echo", "1")
+            .get_version("example.echo", "1", None)?
             .ok_or_else(|| Error::NotFound("test tool".into()))?
             .clone();
         replacement.definition.revision = "3".into();
         tools.register(replacement)?;
         assert!(tools.definitions()?.is_empty());
-        assert!(tools.get_version("example.echo", "3").is_some());
+        assert!(tools.get_version("example.echo", "3", None)?.is_some());
         assert!(matches!(
             tools.remove_from_model("missing"),
             Err(Error::NotFound(_))
@@ -1568,7 +1540,7 @@ mod tests {
                 &approval,
             )
             .await?;
-        assert!(registry.get("example.echo").is_some());
+        assert!(registry.get("example.echo", None)?.is_some());
         Ok(())
     }
 }

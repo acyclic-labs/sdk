@@ -394,7 +394,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 stream.clone(),
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
                 signed.clone(),
                 65_536,
             )?),

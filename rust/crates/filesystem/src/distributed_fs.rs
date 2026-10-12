@@ -41,7 +41,7 @@ impl<A, O, S> DistributedFs<A, O, S> {
         S: WorkspaceLineageStore + Clone,
     {
         let record = self.lineage().resolve(workspace_id).await?;
-        let workspace = self.fs.open_workspace(&record.workspace_name).await?;
+        let workspace = self.fs.open_workspace(&record.workspace_name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         if workspace.id() != workspace_id {
             return Err(WorkspaceLineageError::IncompatibleState);
         }

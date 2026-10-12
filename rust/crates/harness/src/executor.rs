@@ -30,12 +30,12 @@ mod headless;
 pub use headless::ModelToolsProgress;
 use native_stock::*;
 pub(crate) use native_stock::{stock_vec_push, stock_key, stock_string_push,
-    stock_string_copy, stage_json};
+    stock_string_copy, stage_json, stock_boundary};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_stock::NativeStockExecutor;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use native_stock::{
-    replay_execution_with_native_work, stage_json_with_native_work, load_json_with_native_work,
+    native_boundary, replay_execution_with_native_work, stage_json_with_native_work, load_json_with_native_work,
     retained_model_step_with_native_work, completed_tool_projection_with_native_work,
 };
 
@@ -374,7 +374,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Verifies data and native option bindings without granting fresh execution.
     fn verify_model_content<'a>(&'a self, content: &'a ModelContent) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if !content.native_configurations().is_empty() {
+            if content.native_configurations().next().is_some() {
                 return Err(Error::Unsupported(
                     "original native option verification is unavailable".into(),
                 ));
@@ -989,7 +989,7 @@ fn stock_encode_json<T: Serialize>(
 ) -> Result<acyclic_stream::OwnedBytes> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        return io.encode_json(value, maximum, true);
+        return io.encode(value, maximum, true);
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
@@ -1012,7 +1012,7 @@ fn stock_json_bound<T: Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let _bytes_hold;
-        let bytes = io.encode_json(value, maximum, false)?;
+        let bytes = io.encode(value, maximum, false)?;
         _bytes_hold = io.guard_bytes(&bytes)?;
         return Ok(());
     }
@@ -2373,13 +2373,12 @@ impl StockExecution<'_> {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let continuation = if let Some(work) = self.native_work() {
                 let (continuation, custody) = self.provider.reconcile_with_native_work(
-                    crate::model::NativeModelAttempt {
+                    crate::model::ModelDispatch {
                         operation_id: purpose.attempt_operation(input.operation_id, self.io())?,
                         step,
                         request_digest,
-                        observed: &replayed_model,
                     },
-                    work,
+                    &replayed_model, work,
                 )?.await?;
                 io.expect("native stock session retains its original IO")
                     .absorb_native_custody(custody)?;
@@ -4002,7 +4001,7 @@ pub(crate) fn reserve_preparation_workspace<'a, T: Serialize>(
 ) -> Result<crate::filesystem::DecodeReservation<'a>> {
     let before_items = io.receipt().items_examined;
     let _encoded_hold;
-    let encoded = io.encode_json(value, io.remaining()?.bytes_encoded, false)?;
+    let encoded = io.encode(value, io.remaining()?.bytes_encoded, false)?;
     _encoded_hold = io.guard_owned(encoded.len() as u64)?;
     let items = io.receipt().items_examined.checked_sub(before_items)
         .ok_or_else(|| Error::Invalid("preparation item accounting underflow".into()))?;
@@ -4027,7 +4026,7 @@ pub(crate) fn preparation_digest<T: Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let _bytes_hold;
-        let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
+        let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
         _bytes_hold = io.guard_bytes(&bytes)?;
         let work = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
         io.preflight(work)?;
@@ -4051,7 +4050,7 @@ pub(crate) async fn load_json<'a, T: PreparationRecord>(
         {
             let parsed = io.decode_preparation::<Value>(&bytes)?;
             let _canonical_hold;
-            let canonical = io.encode_json(&parsed.value, bytes.len() as u64, true)?;
+            let canonical = io.encode(&parsed.value, bytes.len() as u64, true)?;
             _canonical_hold = io.guard_bytes(&canonical)?;
             if canonical.as_ref() != bytes.as_ref() {
                 return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,

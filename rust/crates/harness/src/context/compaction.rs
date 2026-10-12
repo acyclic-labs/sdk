@@ -63,132 +63,98 @@ impl ThresholdCompaction {
         Ok(input_tokens > u64::from(capacity.context_tokens - self.response_reserve_tokens))
     }
 
-    /// Selects a complete-message recent suffix.
-    pub fn recent_start(&self, count: &ModelTokenCount) -> Result<usize> {
+    /// Plans against the shared mandatory-message selection used by replay.
+    pub(crate) fn projection_budget(
+        &self, context: &Context, count: &ModelTokenCount, maximum_messages: usize,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(usize, usize)> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let recent_messages = maximum_messages.checked_sub(1)
+            .ok_or_else(|| compaction_error(quota.work(), "compaction requires a summary message allowance"))?;
         if self.recent_tokens == 0 {
-            return Err(Error::Invalid(
-                "recent token budget must be positive".into(),
-            ));
+            return Err(compaction_error(quota.work(), "recent token budget must be positive"));
         }
         let mut recent = 0_u64;
         let mut start = count.message_tokens.len();
         while start > 0 && recent < u64::from(self.recent_tokens) {
+            compaction_step(&mut quota)?;
             start -= 1;
-            let tokens = count
-                .message_tokens
-                .get(start)
-                .ok_or_else(|| Error::Invalid("recent token position is missing".into()))?;
-            recent = recent
-                .checked_add(u64::from(*tokens))
-                .ok_or_else(|| Error::Invalid("recent token count overflows".into()))?;
+            recent = recent.checked_add(u64::from(count.message_tokens[start]))
+                .ok_or_else(|| compaction_error(quota.work(), "recent token count overflows"))?;
         }
-        Ok(start)
-    }
-
-    /// Plans against the shared mandatory-message selection used by replay.
-    pub fn projection_budget(
-        &self,
-        context: &Context,
-        count: &ModelTokenCount,
-    ) -> Result<(usize, usize)> {
-        self.projection_budget_with_message_limit(context, count, usize::MAX)
-    }
-
-    /// Applies a hard retained-message allowance alongside the recent token budget.
-    pub fn projection_budget_with_message_limit(
-        &self,
-        context: &Context,
-        count: &ModelTokenCount,
-        maximum_messages: usize,
-    ) -> Result<(usize, usize)> {
-        let recent_messages = maximum_messages.checked_sub(1).ok_or_else(|| {
-            Error::Invalid("compaction requires a summary message allowance".into())
-        })?;
-        let mut through = self
-            .recent_start(count)?
-            .max(context.messages.len().saturating_sub(recent_messages));
+        let mut through = start.max(context.messages.len().saturating_sub(recent_messages));
         if count.message_tokens.len() != context.messages.len() || through == 0 {
-            return Err(Error::Invalid(
-                "no older source fits the compaction policy".into(),
-            ));
+            return Err(compaction_error(quota.work(), "no older source fits the compaction policy"));
         }
-        let mut pending = std::collections::BTreeMap::new();
+        let parts = context.messages.iter().try_fold(0_usize, |count, message|
+            count.checked_add(message.content.parts().len()))
+            .ok_or_else(|| compaction_error(quota.work(), "context part count overflows"))?;
+        let mut pending = quota_vector::<(&str, usize)>(parts, &mut quota)?;
         for (position, message) in context.messages.iter().take(through).enumerate() {
+            compaction_step(&mut quota)?;
             for part in message.content.parts() {
+                compaction_step(&mut quota)?;
                 match part {
                     ModelContentPart::ToolCall { call_id, .. } => {
-                        pending.insert(call_id, position);
+                        if let Some(prior) = pending.iter_mut().find(|(id, _)| *id == call_id) { prior.1 = position; }
+                        else { pending.push((call_id, position)); }
                     }
                     ModelContentPart::ToolResult { call_id, .. } => {
-                        pending.remove(call_id);
+                        if let Some(prior) = pending.iter().position(|(id, _)| *id == call_id) { pending.swap_remove(prior); }
                     }
                     _ => {}
                 }
             }
         }
-        if let Some(first) = pending.values().min() {
-            through = *first;
-        }
+        if let Some(first) = pending.iter().map(|(_, position)| *position).min() { through = first; }
         if through == 0 && maximum_messages == usize::MAX {
-            return Err(Error::Invalid(
-                "tool exchange leaves no complete older compaction source".into(),
-            ));
+            return Err(compaction_error(quota.work(), "tool exchange leaves no complete older compaction source"));
         }
-        if through == 0
-            || super::mandatory_positions(context, through, &self.retention).len()
-                >= maximum_messages
-        {
-            through = bounded_source_cut(context, through, &self.retention, maximum_messages)?;
+        let mandatory_count = |covered, quota: &mut crate::wire_codec::CodecQuota<'_, '_>| {
+            let (flags, pending) = mandatory_flags(context, covered, &self.retention, quota)?;
+            let count = flags.iter().filter(|selected| **selected).count();
+            retire_vector(pending, quota)?;
+            retire_vector(flags, quota)?;
+            Ok::<_, Error>(count)
+        };
+        if through == 0 || mandatory_count(through, &mut quota)? >= maximum_messages {
+            pending.clear();
+            let mut cuts = quota_vector::<usize>(context.messages.len().saturating_sub(1), &mut quota)?;
+            for (position, message) in context.messages.iter().take(context.messages.len().saturating_sub(1)).enumerate() {
+                compaction_step(&mut quota)?;
+                for part in message.content.parts() {
+                    compaction_step(&mut quota)?;
+                    match part {
+                        ModelContentPart::ToolCall { call_id, .. } => {
+                            if !pending.iter().any(|(id, _)| *id == call_id) { pending.push((call_id, position)); }
+                        }
+                        ModelContentPart::ToolResult { call_id, .. } => {
+                            if let Some(prior) = pending.iter().position(|(id, _)| *id == call_id) { pending.swap_remove(prior); }
+                        }
+                        _ => {}
+                    }
+                }
+                if pending.is_empty() && position + 1 >= through { cuts.push(position + 1); }
+            }
+            let mut lower = 0;
+            let mut upper = cuts.len();
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2;
+                if mandatory_count(cuts[middle], &mut quota)? >= maximum_messages { lower = middle + 1; }
+                else { upper = middle; }
+            }
+            through = *cuts.get(lower).ok_or_else(|| compaction_error(quota.work(),
+                "mandatory content leaves no compaction source"))?;
+            retire_vector(cuts, &mut quota)?;
         }
-        let mandatory = super::mandatory_positions(context, through, &self.retention);
-        let maximum = mandatory
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("compaction projection count overflows".into()))?;
+        let maximum = mandatory_count(through, &mut quota)?.checked_add(1)
+            .ok_or_else(|| compaction_error(quota.work(), "compaction projection count overflows"))?;
+        retire_vector(pending, &mut quota)?;
         if maximum > context.messages.len() || maximum > maximum_messages {
-            return Err(Error::Invalid(
-                "mandatory content leaves no compaction source".into(),
-            ));
+            return Err(compaction_error(quota.work(), "mandatory content leaves no compaction source"));
         }
         Ok((through, maximum))
     }
-}
-
-fn bounded_source_cut(
-    context: &Context,
-    minimum: usize,
-    retention: &CompactionRetention,
-    maximum_messages: usize,
-) -> Result<usize> {
-    let mut pending = std::collections::BTreeSet::new();
-    let mut cuts = Vec::new();
-    for (position, message) in context
-        .messages
-        .iter()
-        .take(context.messages.len().saturating_sub(1))
-        .enumerate()
-    {
-        for part in message.content.parts() {
-            match part {
-                ModelContentPart::ToolCall { call_id, .. } => {
-                    pending.insert(call_id);
-                }
-                ModelContentPart::ToolResult { call_id, .. } => {
-                    pending.remove(call_id);
-                }
-                _ => {}
-            }
-        }
-        if pending.is_empty() && position + 1 >= minimum {
-            cuts.push(position + 1);
-        }
-    }
-    let position = cuts.partition_point(|cut| {
-        super::mandatory_positions(context, *cut, retention).len() >= maximum_messages
-    });
-    cuts.get(position)
-        .copied()
-        .ok_or_else(|| Error::Invalid("mandatory content leaves no compaction source".into()))
 }
 
 /// Replaceable primitive policy.
@@ -481,7 +447,7 @@ fn compaction_step(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<
 fn compaction_error(work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
-        return super::native_context_boundary(crate::wire::ErrorCode::Invalid, reason);
+        return crate::executor::native_boundary(crate::wire::ErrorCode::Invalid, reason);
     }
     let _ = work;
     Error::Invalid(reason.into())
@@ -529,10 +495,9 @@ pub(crate) fn reserve_vector_with_work<T>(
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native {
     use super::*;
-    use crate::conversation::FileRef;
-    use crate::model::{ModelContent, ModelMessage};
+    use crate::model::ModelMessage;
     use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
-    use std::{collections::BTreeMap, mem::size_of};
+    use std::mem::size_of;
 
     fn overflow() -> Error {
         Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context clone storage overflows" }
@@ -572,11 +537,6 @@ mod native {
         Ok((copy, guard))
     }
 
-    fn examine(work: &NativeMaterializationWork) -> Result<()> {
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })
-    }
-
     pub(crate) fn mandatory_positions_native(
         context: &Context, covered: usize, retention: &CompactionRetention, work: &NativeMaterializationWork,
     ) -> Result<(Vec<usize>, NativeAllocation)> {
@@ -595,131 +555,23 @@ mod native {
         Ok((positions, io.into_custody()))
     }
 
-    impl ThresholdCompaction {
-        /// Uses the same complete-exchange cuts and mandatory closure on the original work.
-        pub fn projection_budget_with_message_limit_native(
-            &self, context: &Context, count: &ModelTokenCount, maximum_messages: usize,
-            work: &NativeMaterializationWork,
-        ) -> Result<((usize, usize), NativeAllocation)> {
-            let invalid = |reason| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
-            let recent_messages = maximum_messages.checked_sub(1)
-                .ok_or_else(|| invalid("compaction requires a summary message allowance"))?;
-            if self.recent_tokens == 0 { return Err(invalid("recent token budget must be positive")); }
-            let mut recent = 0_u64;
-            let mut start = count.message_tokens.len();
-            while start > 0 && recent < u64::from(self.recent_tokens) {
-                examine(work)?;
-                start -= 1;
-                recent = recent.checked_add(u64::from(count.message_tokens[start])).ok_or_else(overflow)?;
-            }
-            let mut through = start.max(context.messages.len().saturating_sub(recent_messages));
-            if count.message_tokens.len() != context.messages.len() || through == 0 {
-                return Err(invalid("no older source fits the compaction policy"));
-            }
-            let parts = context.messages.iter().try_fold(0_usize, |count, message|
-                count.checked_add(message.content.parts().len()).ok_or_else(overflow))?;
-            let (pending_guard, mut pending) = native_vector::<(&str, usize)>(parts, work).map(|(data, guard)| (guard, data))?;
-            for (position, message) in context.messages.iter().take(through).enumerate() {
-                examine(work)?;
-                for part in message.content.parts() {
-                    examine(work)?;
-                    match part {
-                        ModelContentPart::ToolCall { call_id, .. } => {
-                            if let Some(prior) = pending.iter_mut().find(|(id, _)| *id == call_id) { prior.1 = position; }
-                            else { pending.push((call_id, position)); }
-                        }
-                        ModelContentPart::ToolResult { call_id, .. } => {
-                            if let Some(prior) = pending.iter().position(|(id, _)| *id == call_id) { pending.swap_remove(prior); }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            if let Some(first) = pending.iter().map(|(_, position)| *position).min() { through = first; }
-            if through == 0 && maximum_messages == usize::MAX {
-                return Err(invalid("tool exchange leaves no complete older compaction source"));
-            }
-            let (mandatory_guard, mandatory) = mandatory_positions_native(context, through, &self.retention, work).map(|(data, guard)| (guard, data))?;
-            let needs_cut = through == 0 || mandatory.len() >= maximum_messages;
-            drop(mandatory); drop(mandatory_guard);
-            if needs_cut {
-                pending.clear();
-                let (cuts_guard, mut cuts) = native_vector::<usize>(context.messages.len().saturating_sub(1), work).map(|(data, guard)| (guard, data))?;
-                for (position, message) in context.messages.iter().take(context.messages.len().saturating_sub(1)).enumerate() {
-                    examine(work)?;
-                    for part in message.content.parts() {
-                        examine(work)?;
-                        match part {
-                            ModelContentPart::ToolCall { call_id, .. } => {
-                                if !pending.iter().any(|(id, _)| *id == call_id) { pending.push((call_id, position)); }
-                            }
-                            ModelContentPart::ToolResult { call_id, .. } => {
-                                if let Some(prior) = pending.iter().position(|(id, _)| *id == call_id) { pending.swap_remove(prior); }
-                            }
-                            _ => {}
-                        }
-                    }
-                    if pending.is_empty() && position + 1 >= through { cuts.push(position + 1); }
-                }
-                let mut lower = 0;
-                let mut upper = cuts.len();
-                while lower < upper {
-                    let middle = lower + (upper - lower) / 2;
-                    let (guard, mandatory) = mandatory_positions_native(context, cuts[middle], &self.retention, work).map(|(data, guard)| (guard, data))?;
-                    let too_many = mandatory.len() >= maximum_messages;
-                    drop(mandatory); drop(guard);
-                    if too_many { lower = middle + 1; } else { upper = middle; }
-                }
-                through = *cuts.get(lower).ok_or_else(|| invalid("mandatory content leaves no compaction source"))?;
-                drop(cuts); drop(cuts_guard);
-            }
-            let (guard, mandatory) = mandatory_positions_native(context, through, &self.retention, work).map(|(data, guard)| (guard, data))?;
-            let maximum = mandatory.len().checked_add(1).ok_or_else(overflow)?;
-            drop(mandatory); drop(guard); drop(pending); drop(pending_guard);
-            if maximum > context.messages.len() || maximum > maximum_messages {
-                return Err(invalid("mandatory content leaves no compaction source"));
-            }
-            let guard = work.retain_owned(0).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            Ok(((through, maximum), guard))
-        }
-    }
-
-    macro_rules! observer {
-        ($work:expr) => {
-            crate::store::history::native_work_io($work)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?
-        };
-    }
-
-    pub(crate) fn clone_file_native(file: &FileRef, work: &NativeMaterializationWork) -> Result<(FileRef, NativeAllocation)> {
-        file.clone_with_native_work(work)
-    }
     pub(crate) fn clone_messages_native(messages: &[ModelMessage], work: &NativeMaterializationWork) -> Result<(Vec<ModelMessage>, NativeAllocation)> {
-        let mut io = observer!(work);
+        let mut io = crate::store::history::native_work_io(work).map_err(super::super::native_context_work_error)?;
         let (copy, _) = clone_messages(messages, &mut Some(&mut io))?;
         Ok((copy, io.into_custody()))
     }
     pub(crate) fn clone_context_native(context: &Context, work: &NativeMaterializationWork) -> Result<(Context, NativeAllocation)> {
-        let mut io = observer!(work);
+        let mut io = crate::store::history::native_work_io(work).map_err(super::super::native_context_work_error)?;
         let (copy, _) = clone_context(context, &mut Some(&mut io))?;
         Ok((copy, io.into_custody()))
     }
     pub(crate) fn clone_context_prefix_native(
         context: &Context, through: usize, work: &NativeMaterializationWork,
     ) -> Result<(Context, NativeAllocation)> {
-        let mut io = observer!(work);
+        let mut io = crate::store::history::native_work_io(work).map_err(super::super::native_context_work_error)?;
         let (copy, _) = clone_context_prefix(context, through, &mut Some(&mut io))?;
         Ok((copy, io.into_custody()))
     }
-    pub(crate) fn clone_base_messages_native(
-        first: &[ModelMessage], user: Option<&ModelContent>, second: &[ModelMessage],
-        work: &NativeMaterializationWork,
-    ) -> Result<(Vec<ModelMessage>, NativeAllocation)> {
-        let mut io = observer!(work);
-        let (copy, _) = clone_base_messages(first, user, second, &mut Some(&mut io))?;
-        Ok((copy, io.into_custody()))
-    }
-
     pub(crate) fn clone_retention_native(
         retention: &CompactionRetention, work: &NativeMaterializationWork,
     ) -> Result<(CompactionRetention, NativeAllocation)> {
@@ -738,7 +590,7 @@ mod native {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use native::{clone_base_messages_native, clone_context_native, clone_context_prefix_native, clone_file_native, clone_messages_native, clone_retention_native, clone_text_native, mandatory_positions_native, native_vector};
+pub(crate) use native::{clone_context_native, clone_context_prefix_native, clone_messages_native, clone_retention_native, clone_text_native, mandatory_positions_native};
 
 #[cfg(test)]
 mod tests {
@@ -889,7 +741,7 @@ mod tests {
         };
         let policy = ThresholdCompaction::default();
         assert_eq!(
-            policy.projection_budget_with_message_limit(&context, &count, 6)?,
+            policy.projection_budget(&context, &count, 6, &mut None)?,
             (4, 6)
         );
         context.messages[3] = ModelMessage {
@@ -911,16 +763,16 @@ mod tests {
             }),
         };
         assert_eq!(
-            policy.projection_budget_with_message_limit(&context, &count, 6)?,
+            policy.projection_budget(&context, &count, 6, &mut None)?,
             (5, 5)
         );
         assert!(
             policy
-                .projection_budget_with_message_limit(&context, &count, 2)
+                .projection_budget(&context, &count, 2, &mut None)
                 .is_err()
         );
         // Explicit token-only callers retain their original no-pressure behavior.
-        assert!(policy.projection_budget(&context, &count).is_err());
+        assert!(policy.projection_budget(&context, &count, usize::MAX, &mut None).is_err());
         Ok(())
     }
 }

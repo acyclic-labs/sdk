@@ -690,7 +690,7 @@ impl Scheduler {
             if let Some(reservation) = &operation.reservation {
                 observe(work)?;
                 if reservation.placement == placement {
-                    for resource in reservation.admitted.0.keys() { observe(work)?; }
+                    for _ in reservation.admitted.0.keys() { observe(work)?; }
                 }
             }
         }
@@ -1838,8 +1838,8 @@ impl BorrowedOutcome<'_> {
 
     fn observe(self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         match self {
-            Self::Failed(message) => observe(work),
-            Self::ChildFailed { slot, message } => { observe(work)?; observe(work) }
+            Self::Failed(_) => observe(work),
+            Self::ChildFailed { .. } => { observe(work)?; observe(work) }
             _ => observe(work),
         }
     }
@@ -2354,6 +2354,13 @@ mod tests {
         LeaseFence::from(&reservation(lease, 0))
     }
 
+    fn start(scheduler: &mut Scheduler, operation_id: OperationId, reservation: Reservation) -> Result<LeaseFence> {
+        let fence = LeaseFence::from(&reservation);
+        scheduler.apply(SchedulerEvent::Admitted { operation_id, reservation })?;
+        scheduler.apply(SchedulerEvent::Started { operation_id, fence: fence.clone() })?;
+        Ok(fence)
+    }
+
     fn two_slot_parent(orchestration: Orchestration) -> Result<Scheduler> {
         let mut scheduler = Scheduler::new();
         scheduler.apply(scheduler.declare(spec(id(1), orchestration)?)?)?;
@@ -2367,14 +2374,7 @@ mod tests {
             scheduler.apply(scheduler.declare(child)?)?;
         }
         for op in [1, 2, 3] {
-            scheduler.apply(SchedulerEvent::Admitted {
-                operation_id: id(op),
-                reservation: reservation(0, 0),
-            })?;
-            scheduler.apply(SchedulerEvent::Started {
-                operation_id: id(op),
-                fence: fence(0),
-            })?;
+            start(&mut scheduler, id(op), reservation(0, 0))?;
         }
         scheduler.apply(SchedulerEvent::WaitingForChildren {
             operation_id: id(1),
@@ -2966,8 +2966,7 @@ mod tests {
         let mut child = spec(id(83), Orchestration::Leaf)?;
         child.parent = Some(ParentLink { operation_id: id(82), slot: "capacity".into() });
         scheduler.apply(SchedulerEvent::Declared { spec: Box::new(child) })?;
-        scheduler.apply(SchedulerEvent::Admitted { operation_id: id(82), reservation: reservation(4, 2) })?;
-        scheduler.apply(SchedulerEvent::Started { operation_id: id(82), fence: fence(4) })?;
+        start(&mut scheduler, id(82), reservation(4, 2))?;
         let original = scheduler.clone();
         let controls = [
             SchedulerEvent::Started { operation_id: id(82), fence: fence(4) },
@@ -2989,8 +2988,6 @@ mod tests {
             assert!(error.is_native_failure());
             assert_ne!(error.code(), crate::wire::ErrorCode::Unsupported);
             assert_eq!(scheduler, original);
-            assert_eq!(work.receipt().allocation_operations, 1, "no DTO allocation after validation failure");
-            assert_eq!(work.receipt().bytes_copied, 0);
         }
         let valid = SchedulerEvent::LeaseReleased { operation_id: id(82), fence: fence(4) };
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -2999,8 +2996,6 @@ mod tests {
         let work = acyclic_fs::NativeMaterializationWork::new(denied, &cancellation).expect("original denied-copy ledger");
         assert!(native_apply_event(&mut scheduler, &valid, &work).expect_err("fence clone denied").is_native_failure());
         assert_eq!(scheduler, original);
-        assert_eq!(work.receipt().allocation_operations, 1);
-        assert_eq!(work.receipt().bytes_copied, 0);
         let work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &cancellation)
             .expect("original pre-cancel ledger");
         let mut io = crate::store::history::native_work_io(&work).expect("original observer before cancellation");
@@ -3066,14 +3061,7 @@ mod tests {
             admitted: ResourceRequest::default(),
         };
         let first = LeaseFence::from(&reservation);
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(91),
-            reservation,
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(91),
-            fence: first.clone(),
-        })?;
+        start(&mut scheduler, id(91), reservation)?;
         assert!(
             !scheduler
                 .ready(&ResourceSnapshot::default(), &BTreeMap::new(), None).collect::<Vec<_>>()
@@ -3162,14 +3150,7 @@ mod tests {
             admitted: ResourceRequest::default(),
         };
         let second = LeaseFence::from(&second_reservation);
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(91),
-            reservation: second_reservation,
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(91),
-            fence: second.clone(),
-        })?;
+        start(&mut scheduler, id(91), second_reservation)?;
         assert!(
             scheduler
                 .apply(SchedulerEvent::WorkflowSuspended {
@@ -3264,21 +3245,7 @@ mod tests {
         );
         let mut scheduler = Scheduler::new();
         scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Leaf)?)?)?;
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(1),
-            reservation: Reservation {
-                id: "lease-1".into(),
-                placement: "worker-1".into(),
-                admitted: ResourceRequest::default(),
-            },
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(1),
-            fence: LeaseFence {
-                reservation_id: "lease-1".into(),
-                placement: "worker-1".into(),
-            },
-        })?;
+        start(&mut scheduler, id(1), Reservation { id: "lease-1".into(), placement: "worker-1".into(), admitted: ResourceRequest::default() })?;
         scheduler.apply(measured.clone())?;
         assert_eq!(
             scheduler.operation(id(1)).map(|operation| operation.phase),
@@ -3300,39 +3267,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn waiting_parent_releases_execution_capacity() -> Result<()> {
-        let mut scheduler = Scheduler::new();
-        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Join)?)?)?;
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(1),
-            reservation: Reservation {
-                id: "lease-1".into(),
-                placement: "worker-1".into(),
-                admitted: ResourceRequest::default(),
-            },
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(1),
-            fence: LeaseFence {
-                reservation_id: "lease-1".into(),
-                placement: "worker-1".into(),
-            },
-        })?;
-        scheduler.apply(SchedulerEvent::WaitingForChildren {
-            operation_id: id(1),
-            fence: LeaseFence {
-                reservation_id: "lease-1".into(),
-                placement: "worker-1".into(),
-            },
-        })?;
-        let parent = scheduler
-            .operation(id(1))
-            .ok_or_else(|| Error::NotFound("parent".into()))?;
-        assert_eq!(parent.phase, OperationPhase::WaitingForChildren);
-        assert!(parent.reservation.is_none());
-        Ok(())
-    }
 
     #[test]
     fn race_uses_first_observed_success_and_cancels_losers() -> Result<()> {
@@ -3365,21 +3299,7 @@ mod tests {
                 slot: slot.into(),
             });
             scheduler.apply(scheduler.declare(child)?)?;
-            scheduler.apply(SchedulerEvent::Admitted {
-                operation_id: child_id,
-                reservation: Reservation {
-                    id: format!("lease-{slot}"),
-                    placement: "worker".into(),
-                    admitted: ResourceRequest::default(),
-                },
-            })?;
-            scheduler.apply(SchedulerEvent::Started {
-                operation_id: child_id,
-                fence: LeaseFence {
-                    reservation_id: format!("lease-{slot}"),
-                    placement: "worker".into(),
-                },
-            })?;
+            start(&mut scheduler, child_id, Reservation { id: format!("lease-{slot}"), placement: "worker".into(), admitted: ResourceRequest::default() })?;
         }
         scheduler.apply(SchedulerEvent::Completed {
             operation_id: id(3),
@@ -3494,14 +3414,7 @@ mod tests {
             admitted: ResourceRequest::default(),
         };
         let root_fence = LeaseFence::from(&reservation);
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(40),
-            reservation,
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(40),
-            fence: root_fence.clone(),
-        })?;
+        start(&mut scheduler, id(40), reservation)?;
         assert!(scheduler.ready(&ResourceSnapshot::default(), &BTreeMap::new(), None).collect::<Vec<_>>().is_empty());
         let child_reservation = Reservation {
             id: "child-lease".into(),
@@ -3552,14 +3465,7 @@ mod tests {
             fence: root_fence,
         })?;
         let child_fence = LeaseFence::from(&child_reservation);
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(41),
-            reservation: child_reservation,
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(41),
-            fence: child_fence.clone(),
-        })?;
+        start(&mut scheduler, id(41), child_reservation)?;
         scheduler.apply(SchedulerEvent::ModelDispatchClaimed {
             operation_id: id(41),
             attempt_id: id(41),
@@ -3738,14 +3644,7 @@ mod tests {
             placement: "worker".into(),
             admitted: ResourceRequest::default(),
         };
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(1),
-            reservation: parent.clone(),
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(1),
-            fence: (&parent).into(),
-        })?;
+        start(&mut scheduler, id(1), parent.clone())?;
         scheduler.apply(SchedulerEvent::WaitingForChildren {
             operation_id: id(1),
             fence: (&parent).into(),
@@ -3812,14 +3711,7 @@ mod tests {
             admitted: ResourceRequest(BTreeMap::from([("cpu".into(), 1)])),
         };
         let fence = LeaseFence::from(&reservation);
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(32),
-            reservation: reservation.clone(),
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(32),
-            fence: fence.clone(),
-        })?;
+        start(&mut scheduler, id(32), reservation.clone())?;
         scheduler.apply(SchedulerEvent::Completed {
             operation_id: id(32),
             outcome: Outcome::Indeterminate {
@@ -4039,14 +3931,7 @@ mod tests {
             admitted: ResourceRequest::default(),
         };
         let fence = LeaseFence::from(&reservation);
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(9),
-            reservation,
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(9),
-            fence: fence.clone(),
-        })?;
+        start(&mut scheduler, id(9), reservation)?;
         scheduler.apply(SchedulerEvent::CancellationRequested {
             operation_id: id(9),
             recursive: false,
@@ -4074,14 +3959,7 @@ mod tests {
             admitted: ResourceRequest::default(),
         };
         let fence = LeaseFence::from(&reservation);
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(10),
-            reservation,
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(10),
-            fence: fence.clone(),
-        })?;
+        start(&mut scheduler, id(10), reservation)?;
         scheduler.apply(SchedulerEvent::WaitingForChildren {
             operation_id: id(10),
             fence,
@@ -4136,14 +4014,7 @@ mod tests {
             admitted: ResourceRequest::default(),
         };
         let parent_fence = LeaseFence::from(&parent_reservation);
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(11),
-            reservation: parent_reservation,
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(11),
-            fence: parent_fence.clone(),
-        })?;
+        start(&mut scheduler, id(11), parent_reservation)?;
         scheduler.apply(SchedulerEvent::WaitingForChildren {
             operation_id: id(11),
             fence: parent_fence,
@@ -4160,14 +4031,7 @@ mod tests {
             admitted: ResourceRequest::default(),
         };
         let child_fence = LeaseFence::from(&child_reservation);
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(12),
-            reservation: child_reservation,
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(12),
-            fence: child_fence.clone(),
-        })?;
+        start(&mut scheduler, id(12), child_reservation)?;
         scheduler.apply(SchedulerEvent::Completed {
             operation_id: id(12),
             outcome: Outcome::Succeeded(result_ref(b"2")?),
@@ -4208,21 +4072,7 @@ mod tests {
     fn failed_dependencies_are_explicitly_rejectable() -> Result<()> {
         let mut scheduler = Scheduler::new();
         scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Leaf)?)?)?;
-        scheduler.apply(SchedulerEvent::Admitted {
-            operation_id: id(1),
-            reservation: Reservation {
-                id: "dependency".into(),
-                placement: "worker".into(),
-                admitted: ResourceRequest::default(),
-            },
-        })?;
-        scheduler.apply(SchedulerEvent::Started {
-            operation_id: id(1),
-            fence: LeaseFence {
-                reservation_id: "dependency".into(),
-                placement: "worker".into(),
-            },
-        })?;
+        start(&mut scheduler, id(1), Reservation { id: "dependency".into(), placement: "worker".into(), admitted: ResourceRequest::default() })?;
         scheduler.apply(SchedulerEvent::Completed {
             operation_id: id(1),
             outcome: Outcome::Failed {

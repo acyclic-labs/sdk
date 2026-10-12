@@ -649,7 +649,7 @@ impl CreationFixture {
         if current.phase == crate::scheduler::OperationPhase::Running {
             let reservation = current.reservation.ok_or_else(|| Error::NotFound("preparation completion lease".into()))?;
             self.host.settle_task(preparation, (&reservation).into(),
-                Outcome::Succeeded(serde_json::json!({"prepared":true}))).await?;
+                Outcome::Succeeded(serde_json::json!({"prepared":true})), &mut None).await?;
         }
         let admitted = self.host.admit_owned(child, (&self.root_lease.reservation).into()).await?;
         if let Admission::Accepted(task) = &admitted {
@@ -1264,7 +1264,7 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     let reservation = observation.reservation
         .ok_or_else(|| Error::NotFound("created child reservation".into()))?;
     let owner = fixture.host.journal_owner(task,(&reservation).into()).await?;
-    assert_eq!(owner.authenticated_binding_agent()?,Some(created.seed.child_agent));
+    assert_eq!(owner.authenticated_binding_agent(&mut None)?,Some(created.seed.child_agent));
     owner.authenticate_fork_parent(&created.seed.child, &mut None)?;
     assert!(owner.authenticate_fork_parent(&fixture.host.authority, &mut None).is_err());
     let proof = owner.child_scratch_creation_proof()?;
@@ -1272,17 +1272,17 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     assert_eq!(proof.agent(),created.seed.child_agent);
     assert_eq!(proof.volume(),&created.private);
     let cancellation = acyclic_fs::CancellationToken::new();
-    let authorized = proof.authorize_settlement_measured(&owner,creation_control_budget(),&cancellation).await;
+    let authorized = owner.authorize_created_scratch_settlement_measured(&proof,creation_control_budget(),&cancellation).await;
     assert!(authorized.result.is_ok());
     assert!(authorized.counters.backend_read_operations > 0);
     let root_owner = fixture.host.journal_owner(
         fixture.root,(&fixture.root_lease.reservation).into(),
     ).await?;
     assert!(root_owner.child_scratch_creation_proof().is_err());
-    let hostile = proof.authorize_settlement_measured(&root_owner,creation_control_budget(),&cancellation).await;
+    let hostile = root_owner.authorize_created_scratch_settlement_measured(&proof,creation_control_budget(),&cancellation).await;
     assert!(hostile.result.is_err());
     assert_eq!(hostile.counters.backend_read_operations,0);
-    let denied = proof.authorize_settlement_measured(&owner,acyclic_fs::WorkBudget::default(),&cancellation).await;
+    let denied = owner.authorize_created_scratch_settlement_measured(&proof,acyclic_fs::WorkBudget::default(),&cancellation).await;
     assert!(denied.result.is_err());
     assert_eq!(denied.counters.backend_read_operations,0);
     #[cfg(not(target_arch = "wasm32"))]
@@ -1291,17 +1291,17 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
         let native_work = acyclic_fs::NativeMaterializationWork::new(
             creation_control_budget(), &native_cancellation,
         ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
-        proof.authorize_settlement_with_native_work(&owner, &native_work).await?;
+        owner.authorize_created_scratch_settlement_with_native_work(&proof, &native_work).await?;
         assert!(native_work.receipt().backend_read_operations > 0);
         let before = native_work.receipt().backend_read_operations;
         assert!(matches!(
-            proof.authorize_settlement_with_native_work(&root_owner, &native_work).await,
+            root_owner.authorize_created_scratch_settlement_with_native_work(&proof, &native_work).await,
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })
         ));
         assert_eq!(native_work.receipt().backend_read_operations, before);
         native_cancellation.cancel();
         assert!(matches!(
-            proof.authorize_settlement_with_native_work(&owner, &native_work).await,
+            owner.authorize_created_scratch_settlement_with_native_work(&proof, &native_work).await,
             Err(Error::NativeWork { .. })
         ));
         assert_eq!(native_work.receipt().backend_read_operations, before);
@@ -1313,13 +1313,13 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
             minimal, &fresh_cancellation,
         ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
         assert!(matches!(
-            proof.authorize_settlement_with_native_work(&owner, &denied_work).await,
+            owner.authorize_created_scratch_settlement_with_native_work(&proof, &denied_work).await,
             Err(Error::NativeWork { .. })
         ));
         assert_eq!(denied_work.receipt().backend_read_operations, 0);
     }
     cancellation.cancel();
-    let cancelled = proof.authorize_settlement_measured(&owner,creation_control_budget(),&cancellation).await;
+    let cancelled = owner.authorize_created_scratch_settlement_measured(&proof,creation_control_budget(),&cancellation).await;
     assert!(cancelled.result.is_err());
     assert_eq!(cancelled.counters.backend_read_operations,0);
 
@@ -1356,20 +1356,20 @@ async fn uncertain_root_choice_is_denial_only_and_rejects_identity_substitution(
     let operation = OperationId::from_bytes([113;16]);
     let intent = [114;32];
     let audience = [115;32];
-    owner.pin_root_binding_choice(operation,intent,audience)?;
-    owner.pin_root_binding_choice(operation,intent,audience)?;
+    owner.pin_root_binding_choice(operation,intent,audience, &mut None)?;
+    owner.pin_root_binding_choice(operation,intent,audience, &mut None)?;
     for offset in 0..32 {
         let mut changed_intent = intent;
         changed_intent[offset] ^= 1;
-        assert!(matches!(owner.pin_root_binding_choice(operation,changed_intent,audience),
+        assert!(matches!(owner.pin_root_binding_choice(operation,changed_intent,audience, &mut None),
             Err(Error::Conflict(_))));
         let mut changed_audience = audience;
         changed_audience[offset] ^= 1;
-        assert!(matches!(owner.pin_root_binding_choice(operation,intent,changed_audience),
+        assert!(matches!(owner.pin_root_binding_choice(operation,intent,changed_audience, &mut None),
             Err(Error::Conflict(_))));
     }
     assert!(matches!(owner.pin_root_binding_choice(
-        OperationId::from_bytes([116;16]),intent,audience),Err(Error::Conflict(_))));
+        OperationId::from_bytes([116;16]),intent,audience, &mut None),Err(Error::Conflict(_))));
     assert!(owner.root_binding.as_ref().and_then(|state| state.proof.get()).is_none());
     assert!(owner.authenticate_fork_parent(&fixture.host.authority, &mut None).is_err());
     #[cfg(not(target_arch = "wasm32"))]
