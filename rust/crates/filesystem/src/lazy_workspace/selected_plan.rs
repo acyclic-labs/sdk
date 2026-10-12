@@ -68,7 +68,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         snapshot: LazySnapshotRef,
         requested: &[NamespacePath],
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(SelectedImportPlan, crate::kernel::KernelOwnedAllocation), LazyWorkspaceError> {
+    ) -> Result<(SelectedImportPlan, crate::kernel::KernelOwnedAllocation), LazyWorkspaceError>
+    {
         self.validate_snapshot(snapshot, accounting)?;
         let mut roots = Owned::allocate(requested.len(), accounting)?;
         let result = async {

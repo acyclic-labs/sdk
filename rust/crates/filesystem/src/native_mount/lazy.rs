@@ -9449,8 +9449,9 @@ mod tests {
                 .observe(SourceViewGate::callback_owner(), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())), &crate::CancellationToken::new(), None).await?;
             observation.ensure_publication_resolved()?;
             view.lazy.list_directory_in_checkout(
-                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-            ).await.map(|receipt| receipt.value.1).map_err(|failure| lazy_error(crate::lazy_workspace::lazy_operation_failure(failure, std::convert::identity)))
+                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None,
+                &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+            ).await.map(|(_, state, _)| state).map_err(lazy_error)
         })?;
         let caller = crate::CancellationToken::new();
         let full_budget = finite_directory_budget();
@@ -9609,8 +9610,9 @@ mod tests {
                 .observe(SourceViewGate::callback_owner(), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())), &crate::CancellationToken::new(), None).await?;
             observation.ensure_publication_resolved()?;
             view.lazy.list_directory_in_checkout(
-                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-            ).await.map(|receipt| receipt.value.1).map_err(|failure| lazy_error(crate::lazy_workspace::lazy_operation_failure(failure, std::convert::identity)))
+                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None,
+                &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+            ).await.map(|(_, state, _)| state).map_err(lazy_error)
         })?;
         let caller = crate::CancellationToken::new();
         let budget = finite_directory_budget();
