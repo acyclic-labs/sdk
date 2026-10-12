@@ -12,6 +12,7 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 mod explicit_conversion;
 
 use acyclic_fs::Fs;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     bundle::HarnessBuilder,

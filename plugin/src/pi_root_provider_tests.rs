@@ -1,5 +1,6 @@
 
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::{PiScratchAllocation, PiScratchBinding, PiTaskBinding, pi_owner::PiOwnerPolicy,
     pi_root_inputs::stage_root_command, pi_runtime::PiTaskRuntime, pi_mail::{PiMailEnvelope, PiMailKind}};
 use acyclic_harness::{AgentId, Capabilities,

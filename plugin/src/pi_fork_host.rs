@@ -4,6 +4,7 @@ use crate::{PendingSpawn, PendingSpawnLifecycle, PluginTaskBinding, ServiceResou
     pi_native_host::PiNativeFilesystem,
     pi_owner::PiOwnerConfig, pi_root_provider::PiRootHandle,
     pi_task::{PiTaskInput, PiTaskExecution}};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{LazySnapshotRef, WorkBudget, WorkCounters, NativeMaterializationWork};
 use acyclic_harness::{Error, Result, TaskId, OperationId,
     durable_host::TaskJournalOwner, filesystem::{TaskCommandProgress, ForkPreparationLimits},

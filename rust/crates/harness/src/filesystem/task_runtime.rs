@@ -4,6 +4,7 @@ use super::{
     FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
     FilesystemInteractionHost, FilesystemSchedulerPayloadStore, FilesystemWorkflowJournal,
 };
+use crate::runtime::TaskStateProvider;
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     context::ContextPipeline,

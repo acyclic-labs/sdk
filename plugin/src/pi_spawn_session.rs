@@ -1,6 +1,7 @@
 //! SpawnCommit consumes the original SDK cut and ordinary fork preparation.
 
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{LazySnapshotRef, NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::{
     conversation::{VolumeClass, VolumeOwner, VolumeRef},

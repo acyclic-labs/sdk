@@ -7014,11 +7014,41 @@ mod tests {
                     Ok(())
                 })
             }
+        }
+
+        impl crate::runtime::TaskStateProvider for DispatchObserver {
             fn outcome<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
                 Box::pin(async { Err(Error::Unsupported("test observer".into())) })
             }
             fn cancel<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<()>> {
                 Box::pin(async { Err(Error::Unsupported("test observer".into())) })
+            }
+
+            fn policy_identity(&self) -> Option<ComponentIdentity> {
+                None
+            }
+
+            fn observe_admission<'a>(
+                &'a self,
+                _task_id: TaskId,
+            ) -> BoxFuture<'a, Result<crate::runtime::TaskAdmissionRecord>> {
+                Box::pin(async {
+                    Err(Error::Unsupported(
+                        "full durable admission observation is not bound".into(),
+                    ))
+                })
+            }
+
+            fn resume_scope<'a>(
+                &'a self,
+                _task_id: TaskId,
+                _operation_id: OperationId,
+            ) -> BoxFuture<'a, Result<RuntimeScope>> {
+                Box::pin(async {
+                    Err(Error::Unsupported(
+                        "durable task context authentication is not bound".into(),
+                    ))
+                })
             }
         }
         let host = Arc::new(DispatchObserver {

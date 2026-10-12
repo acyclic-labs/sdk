@@ -2,6 +2,7 @@
 #![allow(missing_docs, reason = "private binary configuration and composition, not a public SDK contract")]
 
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Admission, Error, OperationId, Result, TaskId,
     conversation::{ContentPublisher as _, Limits, VolumeRef},

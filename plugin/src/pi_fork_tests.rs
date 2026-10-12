@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::{PiScratchBinding, pi_owner::PiOwnerPolicy,
     pi_root::PiRootIntent, pi_root_inputs::{PiRootRequest, PiRootPreparation, ROOT_INPUT_DIRECTORY, ROOT_ALLOCATION_PROVIDER},
     pi_native::{PiNativeInvocation, PiNativeSourceCut, PiNativeSourceMode, PI_NATIVE_VERSION},

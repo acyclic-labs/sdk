@@ -2,6 +2,7 @@
 #![allow(missing_docs, reason = "private installed-binary scenario boundary")]
 
 use super::native::{AuthorityBinding, Config, ForkSourceConfig};
+use acyclic_harness::runtime::TaskStateProvider;
 use super::native_tools::{NativeToolCaller, NativeToolFork, NativeToolMerge};
 use super::native_writeback::NativePublicationConfig;
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};

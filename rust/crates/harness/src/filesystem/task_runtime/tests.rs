@@ -1,6 +1,7 @@
 //! Native controls exercise the ordinary admitted runtime and real journals.
 
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::{
     Admission, AgentId, Capabilities,
     conversation::{Limits, VolumeClass, VolumeOperation, VolumeOwner},

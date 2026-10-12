@@ -5,6 +5,7 @@ use crate::{LocalAuthorityBackend, LocalObjectBackend, LocalLazyWorkspace,
     pi_lazy_capture::PiLazyCapture, pi_native::PiNativeLaunchIntent,
     pi_owner::PiOwnerConfig, pi_runtime::PiTaskRuntime,
     pi_task::{PiTaskExecution, PiTaskInput, NATIVE_LAUNCH_TASK_COMMAND_KIND}};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{CancellationToken, GenerationId, Digest, LazySnapshotRef, WorkBudget, NativeMaterializationWork};
 use acyclic_harness::{AgentId, Capabilities, Error, OperationId, Outcome, Result, TaskId,
     core::{AggregateKind, Authority, Reducer, SchemaRegistry, Snapshot},
