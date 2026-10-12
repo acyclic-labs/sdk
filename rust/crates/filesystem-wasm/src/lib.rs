@@ -980,8 +980,8 @@ mod bindings {
                         Box::pin(value.fork(
                             destination,
                             ForkOptions::from_generation(generation, idempotency_key),
-                        ))
-                        .await
+                        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
+                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                         .map_err(js_error)?,
                     )
                 }
@@ -991,8 +991,8 @@ mod bindings {
                         Box::pin(value.fork(
                             destination,
                             ForkOptions::from_generation(generation, idempotency_key),
-                        ))
-                        .await
+                        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
+                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                         .map_err(js_error)?,
                     )
                 }
@@ -1002,8 +1002,8 @@ mod bindings {
                         Box::pin(value.fork(
                             destination,
                             ForkOptions::from_generation(generation, idempotency_key),
-                        ))
-                        .await
+                        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
+                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                         .map_err(js_error)?,
                     )
                 }
@@ -1037,8 +1037,8 @@ mod bindings {
                             idempotency_key,
                             options.paths.clone(),
                         ),
-                    ))
-                    .await
+                    acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(js_error)?,
                 ),
                 (
@@ -1052,8 +1052,8 @@ mod bindings {
                             idempotency_key,
                             options.paths.clone(),
                         ),
-                    ))
-                    .await
+                    acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(js_error)?,
                 ),
                 (
@@ -1067,8 +1067,8 @@ mod bindings {
                             idempotency_key,
                             options.paths.clone(),
                         ),
-                    ))
-                    .await
+                    acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(js_error)?,
                 ),
                 _ => {

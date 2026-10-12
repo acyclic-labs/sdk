@@ -168,7 +168,7 @@ async fn accounting_projects_retention_and_deleted_workspace_without_reopening_r
     let fork = workspace.fork(
         "accounting-fork",
         crate::ForkOptions::from_generation(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()),
-    ).await?;
+    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let fork_retention = retention_authority_id(
         workspace.id().volume_id(), RetentionKind::ForkBase,
         &hex::encode(fork.id().volume_id().into_bytes()),

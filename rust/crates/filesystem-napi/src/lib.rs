@@ -2235,8 +2235,8 @@ impl NativeWorkspace {
             .fork(
                 destination,
                 ForkOptions::from_generation(generation, idempotency_key),
-            )
-            .await
+            acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
             .map_err(napi_error)
     }
@@ -2260,8 +2260,8 @@ impl NativeWorkspace {
             None => fork,
         };
         self.inner
-            .fork(destination, fork)
-            .await
+            .fork(destination, fork, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
             .map_err(napi_error)
     }

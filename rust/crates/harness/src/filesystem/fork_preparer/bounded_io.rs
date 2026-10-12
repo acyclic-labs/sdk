@@ -1744,10 +1744,10 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
             workspace.fork_with_permit_guarded_with_native_work(&child_name, options,
                 acyclic_fs::PublicationPermit::Unrestricted, original, &io.cancellation, &mut before).await?
         } else {
-            io.receive(workspace.fork_measured(&child_name, options, io.remaining()?, &io.cancellation).await)?
+            io.receive(workspace.fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, &io.cancellation, |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))).await)?
         };
         #[cfg(target_arch = "wasm32")]
-        let forked = io.receive(workspace.fork_measured(&child_name, options, io.remaining()?, &io.cancellation).await)?;
+        let forked = io.receive(workspace.fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, &io.cancellation, |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))).await)?;
         let initial = filesystem_call!(io, original,
             forked.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, &io.cancellation),
             forked.operation_generation(operation, io.remaining()?, &io.cancellation))?;

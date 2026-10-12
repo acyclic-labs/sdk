@@ -5253,8 +5253,8 @@ where
         .fork(
             capture_name,
             crate::ForkOptions::from_generation(live.clone(), IdempotencyKey::from_bytes(bytes)),
-        )
-        .await?;
+        crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let capture_head = capture.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut commit_bytes = bytes;
     commit_bytes[0] ^= 0xa5;
@@ -5396,8 +5396,8 @@ where
                 previous_capture.clone(),
                 IdempotencyKey::from_bytes(bytes),
             ),
-        )
-        .await?;
+        crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut apply_bytes = bytes;
     apply_bytes[0] ^= 0xa5;
     let capture_head = capture.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
