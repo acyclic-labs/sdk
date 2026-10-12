@@ -9,23 +9,27 @@ use meter::*;
 mod encoder;
 use encoder::*;
 mod quota;
-use quota::{value_storage_bytes};
-pub use quota::{sdk_json_diagnostic_bytes, json_value_decode_owned_bytes, json_owned_value_conversion_additional_bytes};
-pub(crate) use quota::{owned_logical_bytes, json_owned_value_shape_bounded, json_typed_value_decode_owned_bytes, json_value_virtual_owned_bytes};
+use quota::value_storage_bytes;
+pub use quota::{
+    json_owned_value_conversion_additional_bytes, json_value_decode_owned_bytes,
+    sdk_json_diagnostic_bytes,
+};
+pub(crate) use quota::{
+    json_owned_value_shape_bounded, json_typed_value_decode_owned_bytes,
+    json_value_virtual_owned_bytes, owned_logical_bytes,
+};
 mod lexical;
 use lexical::{Scan, admit_json_value_shape_inline};
 pub(crate) use lexical::{admit_json, admit_json_value_shape, lexical_json_diagnostic_bytes};
 mod canonical;
 pub use canonical::{canonical_json_bytes_bounded, json_value_bounded};
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use canonical::canonical_json_value_into_prepaid_native_trusted;
 mod records;
-pub use records::{json_bytes_bounded, json_from_slice_bounded};
 pub(super) use records::count_json_bytes_trusted;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use records::json_from_value_bounded;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use records::validate_json_byte_bound_native_trusted;
+pub use records::{json_bytes_bounded, json_from_slice_bounded};
 mod value_shape;
 use value_shape::ValueInspector;
 #[cfg(test)]
@@ -151,16 +155,28 @@ pub struct JsonValueShape {
     origin: ShapeOrigin,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ShapeOrigin { Slice, OwnedConversion, BorrowedConversion }
+enum ShapeOrigin {
+    Slice,
+    OwnedConversion,
+    BorrowedConversion,
+}
 impl JsonValueShape {
     /// Source bytes consumed once; for resident inspection, the owned UTF-8 payload/node lower bound instead.
-    pub const fn input_bytes(self) -> u64 { self.input_bytes }
+    pub const fn input_bytes(self) -> u64 {
+        self.input_bytes
+    }
     /// Original lexical or resident values/map keys, including source duplicates.
-    pub const fn lexical_items(self) -> u64 { self.lexical_items }
+    pub const fn lexical_items(self) -> u64 {
+        self.lexical_items
+    }
     /// Additional lexical nodes in inspected decoded RawValue sources.
-    pub const fn virtual_items(self) -> u64 { self.virtual_items }
+    pub const fn virtual_items(self) -> u64 {
+        self.virtual_items
+    }
     /// Whether a possible RawValue path requires conservative byte-based quota.
-    pub const fn unresolved_raw(self) -> bool { self.unresolved_raw }
+    pub const fn unresolved_raw(self) -> bool {
+        self.unresolved_raw
+    }
 }
 
 /// Called before admitted logical storage grows and after it is freed.
@@ -216,7 +232,6 @@ pub enum JsonCodecCharge {
         value_shape: JsonValueShape,
     },
 }
-
 
 #[cfg(test)]
 mod tests;
