@@ -1,18 +1,18 @@
 use super::*;
 
-pub(super) const READ_WORK: crate::WorkCounters = crate::WorkCounters {
+pub(super) const READ_WORK: WorkCounters = WorkCounters {
     backend_read_operations: 1,
-    ..crate::WorkCounters::UNCHARGED
+    ..WorkCounters::UNCHARGED
 };
-pub(super) const WRITE_WORK: crate::WorkCounters = crate::WorkCounters {
+pub(super) const WRITE_WORK: WorkCounters = WorkCounters {
     backend_write_operations: 1,
-    ..crate::WorkCounters::UNCHARGED
+    ..WorkCounters::UNCHARGED
 };
 
 pub(super) struct DarwinOwned<T> {
     pub(super) value: T,
     // Physical backing drops before its original allocation owner.
-    pub(super) allocation: Option<crate::NativeAllocation>,
+    pub(super) allocation: Option<NativeAllocation>,
 }
 
 impl<T> std::ops::Deref for DarwinOwned<T> {
@@ -36,15 +36,11 @@ impl<T> DarwinOwned<T> {
         }
     }
 
-    pub(super) fn claim_more(
-        &mut self,
-        bytes: u64,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
+    pub(super) fn claim_more(&mut self, bytes: u64, work: &Work) -> Result<(), NativeMountError> {
         if bytes == 0 {
             return Ok(());
         }
-        let mut next = work.claim(bytes, 1, crate::WorkCounters::UNCHARGED)?;
+        let mut next = work.claim(bytes, 1, WorkCounters::UNCHARGED)?;
         if let Some(allocation) = &mut self.allocation {
             allocation.absorb(&mut next)?;
         } else {
@@ -55,43 +51,32 @@ impl<T> DarwinOwned<T> {
 }
 
 pub(super) fn vector<T>(
-    work: &crate::NativeMaterializationWork,
+    work: &Work,
     count: usize,
 ) -> Result<DarwinOwned<Vec<T>>, NativeMountError> {
-    let bytes = count
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(crate::WorkError::Overflow)? as u64;
-    let mut value = DarwinOwned::empty(Vec::new());
-    value.claim_more(bytes, work)?;
-    value.try_reserve_exact(count)?;
-    if let Some(allocation) = &mut value.allocation {
-        allocation.reconcile_capacity(
-            value
-                .value
-                .capacity()
-                .checked_mul(std::mem::size_of::<T>())
-                .ok_or(crate::WorkError::Overflow)? as u64,
-        )?;
-    }
-    Ok(value)
+    let (value, allocation) = crate::native_host::buffer(count, &mut &*work)?;
+    Ok(DarwinOwned {
+        value,
+        allocation: Some(allocation),
+    })
 }
 
 pub(super) fn shared<T>(
-    work: &crate::NativeMaterializationWork,
+    work: &Work,
     mut value: DarwinOwned<T>,
 ) -> Result<Arc<DarwinOwned<T>>, NativeMountError> {
     let bytes = std::mem::size_of::<DarwinOwned<T>>()
         .checked_add(2 * std::mem::size_of::<usize>())
-        .ok_or(crate::WorkError::Overflow)? as u64;
+        .ok_or(WorkError::Overflow)? as u64;
     value.claim_more(bytes, work)?;
     Ok(Arc::new(value))
 }
 
 pub(super) fn grow_map<K: std::hash::Hash + Eq, V>(
     map: &mut DarwinOwned<HashMap<K, V>>,
-    work: &crate::NativeMaterializationWork,
+    work: &Work,
 ) -> Result<(), NativeMountError> {
-    work.admit(crate::WorkCounters::UNCHARGED)?;
+    work.admit(WorkCounters::UNCHARGED)?;
     if map.len() < map.capacity() {
         return Ok(());
     }
@@ -99,26 +84,17 @@ pub(super) fn grow_map<K: std::hash::Hash + Eq, V>(
         .capacity()
         .max(4)
         .checked_mul(2)
-        .ok_or(crate::WorkError::Overflow)?;
+        .ok_or(WorkError::Overflow)?;
     let bytes = |capacity: usize| -> Result<u64, NativeMountError> {
         let bucket = std::mem::size_of::<(K, V)>()
             .checked_add(1)
             .and_then(|n| n.checked_mul(2))
-            .ok_or(crate::WorkError::Overflow)?;
+            .ok_or(WorkError::Overflow)?;
         Ok(capacity
             .checked_mul(bucket)
             .and_then(|n| n.checked_add(32))
-            .ok_or(crate::WorkError::Overflow)? as u64)
+            .ok_or(WorkError::Overflow)? as u64)
     };
-    let copied = crate::WorkCounters {
-        items_examined: map.len() as u64,
-        bytes_copied: map
-            .len()
-            .checked_mul(std::mem::size_of::<(K, V)>())
-            .ok_or(crate::WorkError::Overflow)? as u64,
-        ..crate::WorkCounters::UNCHARGED
-    };
-    work.admit(copied)?;
     let mut replacement = DarwinOwned::empty(HashMap::new());
     replacement.claim_more(bytes(capacity)?, work)?;
     replacement.try_reserve(capacity)?;
@@ -128,14 +104,13 @@ pub(super) fn grow_map<K: std::hash::Hash + Eq, V>(
         .as_mut()
         .expect("funded map")
         .reconcile_capacity(actual)?;
-    work.charge(copied)?;
     replacement.extend(map.drain());
     drop(std::mem::replace(map, replacement));
     Ok(())
 }
 
 pub(super) fn retained_file(
-    work: &crate::NativeMaterializationWork,
+    work: &Work,
     (file, bytes): (Arc<dyn MountOpenFile>, u64),
 ) -> Result<
     (
@@ -168,7 +143,7 @@ pub(super) fn retained_file(
 pub(super) fn grow_bytes(
     value: &mut DarwinOwned<Vec<u8>>,
     required: usize,
-    work: &crate::NativeMaterializationWork,
+    work: &Work,
 ) -> Result<(), NativeMountError> {
     if required > MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES {
         return Err(driver_errno(libc::E2BIG));
@@ -189,4 +164,52 @@ pub(super) fn grow_bytes(
     next.extend_from_slice(value);
     drop(std::mem::replace(value, next));
     Ok(())
+}
+
+use acyclic_stream::OwnedBytes;
+
+pub(super) fn source_bytes(
+    chunk: crate::kernel::OwnedSourceChunk,
+    work: &Work,
+    use_bytes: impl FnOnce(&[u8]) -> Result<c_int, NativeMountError>,
+) -> Result<c_int, NativeMountError> {
+    let (bytes, capacity, intrinsic) = chunk.into_owned_parts();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| use_bytes(&bytes)));
+    drop(bytes);
+    if !intrinsic {
+        work.state.lock().release(capacity)?;
+    }
+    match result {
+        Ok(result) => result,
+        Err(panic) => Err(NativeMountError::DriverPanicked {
+            operation: "Darwin byte reply",
+            panic: Mutex::new(panic),
+        }),
+    }
+}
+
+pub(super) fn copy_bytes(
+    work: &Work,
+    bytes: &[u8],
+) -> Result<crate::kernel::OwnedSourceChunk, NativeMountError> {
+    work.admit(copy_work(bytes.len() as u64))?;
+    if bytes.is_empty() {
+        return Ok(crate::kernel::OwnedSourceChunk::intrinsic(
+            OwnedBytes::new(),
+            0,
+        ));
+    }
+    let (value, allocation) = work.copy_bytes(bytes)?;
+    let retained = allocation.bytes();
+    let bytes = OwnedBytes::from_vec_with_guard(value, allocation, work.runtime_meter()).map_err(
+        |failure| match failure.into_error() {
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                NativeMountError::from(work.runtime_error(error))
+            }
+            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                unreachable!("initialized vector")
+            }
+        },
+    )?;
+    Ok(crate::kernel::OwnedSourceChunk::intrinsic(bytes, retained))
 }

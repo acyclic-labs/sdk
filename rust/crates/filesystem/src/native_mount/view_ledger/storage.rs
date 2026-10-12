@@ -13,26 +13,16 @@ pub(super) fn vector<T>(
     if count == 0 {
         return Ok((Vec::new(), None));
     }
-    let bytes = count
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(crate::WorkError::Overflow)? as u64;
     let custody = carrier.new_custody()?;
-    carrier
-        .with_work(|work| custody.claim(bytes, work))
+    let (value, bytes) = carrier
+        .with_work(|work| crate::native_host::buffer::<T, _>(count, work))
         .map_err(mount_demand_error)?;
-    let mut value = Vec::new();
-    value
-        .try_reserve_exact(count)
-        .map_err(MountSourceError::Allocation)?;
-    let extra = value
-        .capacity()
-        .checked_sub(count)
-        .and_then(|n| n.checked_mul(std::mem::size_of::<T>()))
-        .ok_or(crate::WorkError::Overflow)? as u64;
-    if extra != 0 {
+    if let Err(error) = carrier.with_work(|work| custody.retain_admitted(bytes, work)) {
+        drop(value);
         carrier
-            .with_work(|work| custody.claim(extra, work))
+            .with_work(|work| work.release(bytes))
             .map_err(mount_demand_error)?;
+        return Err(mount_demand_error(error));
     }
     Ok((value, Some(custody)))
 }
@@ -92,11 +82,12 @@ pub(super) fn record(
         let ChangePositions {
             latest, custody, ..
         } = &mut *positions;
-        replace(latest, custody, old_bytes, carrier, |old, carrier| {
-            let custody = carrier.new_custody()?;
+        let borrowed = adopt_backing(custody.as_ref(), old_bytes, carrier)?;
+        let result = (|| {
+            let next_custody = carrier.new_custody()?;
             let bytes = map_bytes(count)?;
             carrier
-                .with_work(|work| custody.claim(bytes, work))
+                .with_work(|work| next_custody.claim(bytes, work))
                 .map_err(mount_demand_error)?;
             let mut next = HashMap::new();
             next.try_reserve(count)
@@ -104,24 +95,18 @@ pub(super) fn record(
             let actual = map_bytes(next.capacity())?;
             if actual > bytes {
                 carrier
-                    .with_work(|work| custody.claim(actual - bytes, work))
+                    .with_work(|work| next_custody.claim(actual - bytes, work))
                     .map_err(mount_demand_error)?;
             } else {
-                custody.retire(bytes - actual)?;
+                next_custody.retire(bytes - actual)?;
             }
-            charge(
-                carrier,
-                crate::WorkCounters {
-                    items_examined: old.len() as u64,
-                    bytes_copied: (old.len() as u64)
-                        .checked_mul(std::mem::size_of::<(u64, u64)>() as u64)
-                        .ok_or(crate::WorkError::Overflow)?,
-                    ..crate::WorkCounters::UNCHARGED
-                },
-            )?;
-            next.extend(old.drain());
-            Ok((next, Some(custody)))
-        })?;
+            next.extend(latest.drain());
+            drop(std::mem::replace(latest, next));
+            drop(std::mem::replace(custody, Some(next_custody)));
+            Ok(())
+        })();
+        let released = release_backing(borrowed, carrier);
+        result.and(released)?;
     }
     charge(
         carrier,
@@ -131,16 +116,6 @@ pub(super) fn record(
             } else {
                 0
             },
-            bytes_copied: if fold {
-                (positions.latest.capacity() as u64)
-                    .checked_mul(2)
-                    .and_then(|n| n.checked_add(32))
-                    .ok_or(crate::WorkError::Overflow)?
-            } else {
-                0
-            }
-            .checked_add(std::mem::size_of::<(u64, u64)>() as u64)
-            .ok_or(crate::WorkError::Overflow)?,
             ..crate::WorkCounters::UNCHARGED
         },
     )?;
@@ -180,54 +155,56 @@ pub(super) fn grow_vector<T>(
         .capacity()
         .checked_mul(std::mem::size_of::<T>())
         .ok_or(crate::WorkError::Overflow)? as u64;
-    replace(entries, owner, bytes, carrier, |old, carrier| {
-        let mut next = vector(capacity, carrier)?;
+    let borrowed = adopt_backing(owner.as_ref(), bytes, carrier)?;
+    let result = (|| {
+        let (mut next, custody) = vector(capacity, carrier)?;
         charge(
             carrier,
             copy_work(
-                (old.len() as u64)
+                (entries.len() as u64)
                     .checked_mul(std::mem::size_of::<T>() as u64)
                     .ok_or(crate::WorkError::Overflow)?,
             ),
         )?;
-        next.0.append(old);
-        Ok(next)
-    })
+        next.append(entries);
+        drop(std::mem::replace(entries, next));
+        drop(std::mem::replace(owner, custody));
+        Ok(())
+    })();
+    result.and(release_backing(borrowed, carrier))
 }
 
-fn replace<T>(
-    value: &mut T,
-    owner: &mut Option<NativeMountAllocationCustody>,
+fn adopt_backing(
+    owner: Option<&NativeMountAllocationCustody>,
     bytes: u64,
     carrier: &mut NativeDemandCarrier<'_>,
-    build: impl FnOnce(
-        &mut T,
-        &mut NativeDemandCarrier<'_>,
-    ) -> Result<(T, Option<NativeMountAllocationCustody>), MountSourceError>,
-) -> Result<(), MountSourceError> {
-    let borrowed = owner
-        .as_ref()
+) -> Result<u64, MountSourceError> {
+    if owner
         .map(|owner| carrier.with_work(|work| owner.is_admitted(work)))
         .transpose()
         .map_err(mount_demand_error)?
-        .is_some_and(|admitted| !admitted);
-    if borrowed {
+        .is_some_and(|admitted| !admitted)
+    {
         carrier
             .with_work(|work| work.adopt(bytes))
             .map_err(mount_demand_error)?;
+        Ok(bytes)
+    } else {
+        Ok(0)
     }
-    let result = build(value, carrier).map(|(next, custody)| {
-        drop(std::mem::replace(value, next));
-        drop(std::mem::replace(owner, custody));
-    });
-    let released = if borrowed {
+}
+
+fn release_backing(
+    bytes: u64,
+    carrier: &mut NativeDemandCarrier<'_>,
+) -> Result<(), MountSourceError> {
+    if bytes == 0 {
+        Ok(())
+    } else {
         carrier
             .with_work(|work| work.release(bytes))
             .map_err(mount_demand_error)
-    } else {
-        Ok(())
-    };
-    result.and(released)
+    }
 }
 
 pub(in crate::native_mount) fn same_work(
