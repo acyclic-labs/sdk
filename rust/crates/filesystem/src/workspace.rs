@@ -4146,13 +4146,13 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
     let limits = volume.config.limits;
     let generation = GenerationId::new(generation_root.digest);
     let cache_key = crate::path_index::cache_key(
-        generation, root.root_file_id, root.file_table, ids, accounting, cancellation,
+        generation, root.root_file_id, root.file_table, ids, accounting,
     )?;
-    let (bytes, allocation) = volume.fs.path_index().load(cache_key, accounting, cancellation)?;
+    let (bytes, allocation) = volume.fs.path_index().load(cache_key, accounting)?;
     let bytes = (bytes, allocation);
     if let Some(payload) = bytes.0.as_ref() {
         let (cached, allocation) = crate::path_index::decode(
-            payload, generation, ids, limits, accounting, cancellation,
+            payload, generation, ids, limits, accounting,
         )?;
         let mut cached = (cached, allocation);
         if let Some(paths) = cached.0.as_ref().filter(|paths| paths.len() <= maximum_entries as usize) {
@@ -4299,11 +4299,11 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
     reverse_drop(pending, pending_bytes, accounting)?;
     reverse_sort(&mut matches.0.records, accounting)?;
     let (bytes, allocation) = crate::path_index::encode_records(
-        generation, ids, &matches.0.records, accounting, cancellation,
+        generation, ids, &matches.0.records, accounting,
     )?;
     let bytes = (bytes, allocation);
     if let Some(payload) = &bytes.0 {
-        volume.fs.path_index().store(cache_key, payload, accounting, cancellation)?;
+        volume.fs.path_index().store(cache_key, payload, accounting)?;
     }
     let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
     reverse_drop(bytes, bytes_count, accounting)?;

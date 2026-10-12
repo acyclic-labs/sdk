@@ -4869,7 +4869,7 @@ where
         scratch.track(logical_bytes)?;
         let namespace = self.authored.namespace_path_with_carrier(path, scratch.carrier)?;
         if namespace.1.is_none() { scratch.track(namespace.0.retained_bytes())?; }
-        self.authored.record_projection_change_with_carrier(&ViewChange::Unbound(&namespace.0, file_id), scratch.carrier)?;
+        self.authored.record_projection_change_with_carrier(&ViewChange::Entry(&namespace.0, file_id), scratch.carrier)?;
         let bytes = key.legacy_owned_bytes().checked_add(logical_bytes)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         let custody = scratch.carrier.new_custody()?;
@@ -5172,7 +5172,7 @@ where
             removals.epoch = removals.epoch.wrapping_add(1);
             self.cursors.clear();
         }
-        self.authored.record_projection_change(&ViewChange::Unbound(
+        self.authored.record_projection_change(&ViewChange::Entry(
             &self.authored.namespace_path(path)?,
             file_id,
         ));
