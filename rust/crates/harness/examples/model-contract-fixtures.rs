@@ -56,7 +56,7 @@ fn main() -> Result<()> {
         "{}",
         json!({
             "request": text(prepared.bytes())?,
-            "prefix": text(ModelPrefix::select(&prepared, None)?.canonical_bytes()?.as_ref())?,
+            "prefix": text(ModelPrefix::select(&prepared, None)?.canonical_bytes(None)?.as_ref())?,
         })
     );
     Ok(())

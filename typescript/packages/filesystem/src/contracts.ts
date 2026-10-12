@@ -150,10 +150,8 @@ export type WorkspaceNameEncoding = WasmBinding.BrowserWorkspaceName["encoding"]
 export type WorkspaceName = ReadonlyDeep<WasmBinding.BrowserWorkspaceName>;
 export type WorkspaceMetadata = ReadonlyDeep<WasmBinding.BrowserWorkspaceMetadata>;
 export type WorkspaceStat = ReadonlyDeep<WasmBinding.BrowserWorkspaceStat>;
-export type WorkspaceDirectoryEntry = ReadonlyDeep<WasmBinding.BrowserWorkspaceDirectoryEntry>;
 export type WorkspaceDirectoryPage = ReadonlyDeep<WasmBinding.BrowserWorkspaceDirectoryPage>;
 export type WorkspaceExtentKind = WasmBinding.BrowserWorkspaceExtentSpan["kind"];
-export type WorkspaceExtentSpan = ReadonlyDeep<WasmBinding.BrowserWorkspaceExtentSpan>;
 export type WorkspaceExtentPlan = ReadonlyDeep<WasmBinding.BrowserWorkspaceExtentPlan>;
 
 /** Small customer-facing handle over one independently versioned filesystem. */
@@ -1077,10 +1075,7 @@ export type WasmRawExportManifest = WasmBinding.BrowserExportManifestResult;
 export type WasmRawFileRecordSnapshot = WasmBinding.BrowserFileRecordResult;
 export type WasmRawGenerationDiff = WasmBinding.BrowserGenerationDiffResult;
 export type WasmRawCommitResult = WasmBinding.BrowserCommitResult;
-export type WasmRawLiveMutationResult = WasmBinding.BrowserLiveMutationResult;
 export type WasmRawLiveTransactionResult = WasmBinding.BrowserLiveTransactionResult;
-export type WasmRawFileExtentPlan = WasmBinding.BrowserExtentPlanResult;
-export type WasmRawExtentSeekResult = WasmBinding.BrowserExtentSeekResult;
 
 export type WasmRawGeneration = WasmTypedClass<WasmBinding.BrowserGeneration, {
   listDirectory: [path: string, after: WorkspaceName | undefined, maximumEntries: number];
@@ -1295,39 +1290,24 @@ type NativeBoundary<T> =
   T;
 
 export type NativeBindings = NativeBoundary<typeof NativeBinding>;
-export type NativeRawWorkspaceContextRegistry = NativeBoundary<NativeBinding.NativeWorkspaceContextRegistry>;
 export type NativeRawWorkspaceLineageRecord = NativeBoundary<NativeBinding.NativeWorkspaceLineageRecord>;
 export type NativeRawWorkspaceGraph = NativeBoundary<NativeBinding.NativeWorkspaceGraph>;
 export type NativeRawOperationWindowLease = NativeBoundary<NativeBinding.NativeOperationWindowLease>;
 export type NativeRawOperationWindowPhase = NativeBoundary<NativeBinding.NativeOperationWindowPhase>;
 export type NativeRawOperationWindowClose = NativeBoundary<NativeBinding.NativeOperationWindowClose>;
-export type NativeRawWorkspaceOperationWindowClose = NativeBoundary<NativeBinding.NativeWorkspaceOperationFinish>;
 export type NativeRawOperationWindowCoordinator = NativeBoundary<NativeBinding.NativeOperationWindowCoordinator>;
-export type NativeRawGitCompatRepository = NativeBoundary<NativeBinding.NativeGitCompatRepository>;
-export type NativeRawObjectCacheOptions = NativeBoundary<NativeBinding.NativeObjectCacheOptions>;
-export type NativeRawLookup = NativeBoundary<NativeBinding.NativeLookup>;
 export type NativeRawMutation = NativeBoundary<NativeBinding.NativeMutationResult>;
-export type NativeRawWatchChange = NativeBoundary<NativeBinding.NativeWatchChange>;
 export type NativeRawWatchBatch = NativeBoundary<NativeBinding.NativeWatchBatch>;
 export type NativeRawWatcher = NativeBoundary<NativeBinding.NativeWatcher>;
 export type NativeRawCheckout = NativeBoundary<NativeBinding.NativeCheckout>;
 export type NativeRawResolvedFile = NativeBoundary<NativeBinding.NativeResolvedFile>;
-export type NativeRawResolvedFiles = NativeBoundary<NativeBinding.NativeResolvedFiles>;
 export type NativeRawTransactionOperation = NativeBoundary<NativeBinding.NativeTransactionOperation>;
-export type NativeRawCheckpointResult = NativeBoundary<NativeBinding.NativeCheckpointResult>;
 export type NativeRawVolume = NativeBoundary<NativeBinding.NativeVolume>;
 export type NativeRawGenerationDiff = NativeBoundary<NativeBinding.NativeGenerationDiff>;
 export type NativeRawMergeConflict = NativeBoundary<NativeBinding.NativeMergeConflict>;
-export type NativeRawMergePreparation = NativeBoundary<NativeBinding.NativeMergePreparation>;
 export type NativeRawFs = NativeBoundary<NativeBinding.NativeFs>;
-export type NativeRawWorkspaceCommit = NativeBoundary<NativeBinding.NativeWorkspaceCommit>;
 export type NativeRawWorkspace = NativeBoundary<NativeBinding.NativeWorkspace>;
-export type NativeRawChangeSet = NativeBoundary<NativeBinding.NativeChangeSet>;
 export type NativeRawJoinPlan = NativeBoundary<NativeBinding.NativeJoinPlan>;
-export type NativeRawJoinResult = NativeBoundary<NativeBinding.NativeJoinResult>;
 export type NativeRawSourceResult = NativeBoundary<NativeBinding.NativeSourceResult>;
-export type NativeRawGeneration = NativeBoundary<NativeBinding.NativeGeneration>;
 export type NativeRawWorkspaceMount = NativeBoundary<NativeBinding.NativeWorkspaceMount>;
-export type NativeRawWorkspaceTransaction = NativeBoundary<NativeBinding.NativeWorkspaceTransaction>;
 export type NativeRawSpeculation = NativeBoundary<NativeBinding.NativeSpeculation>;
-export type NativeRawExportManifest = NativeBoundary<NativeBinding.NativeExportManifest>;

@@ -20,36 +20,37 @@ pub struct FilesystemContentPublisher<A, O> {
 }
 
 impl<A, O> FilesystemContentPublisher<A, O> {
-    /// Binds original write authority and a positive finite content limit.
+    /// Binds write authority and copies configuration with optional accounting.
     pub fn new(
-        host: Arc<FilesystemHost<A, O>>,
-        volume: VolumeRef,
-        verifier: &AuthorityVerifier,
-        scope: &Scope,
-        maximum_bytes: u64,
-    ) -> Result<Self> {
-        Self::new_with_io(host, volume, verifier, scope, maximum_bytes, None)
-    }
-
-    pub(crate) fn new_with_io(
-        host: Arc<FilesystemHost<A, O>>, volume: VolumeRef,
+        host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
         verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
-        io: Option<&super::PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<Self> {
         Self::validate_limit(maximum_bytes, io)?;
-        let grant = if let Some(io) = io {
-            let mut observer = io.history_io();
-            ContentGrant::verify_with_work(verifier, scope, &volume, VolumeOperation::Write,
-                maximum_bytes, &mut Some(&mut observer))?
-        } else { ContentGrant::verify(verifier, scope, &volume, VolumeOperation::Write)? };
-        Ok(Self {
-            host,
-            volume,
-            grant,
-            maximum_bytes,
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let grant = match io {
             #[cfg(not(target_arch = "wasm32"))]
-            _native_metadata: None,
-        })
+            Some(io) if io.original_native_work().is_some() =>
+                ContentGrant::verify_with_io(verifier, scope, volume, VolumeOperation::Write, io)?,
+            Some(io) => ContentGrant::verify_with_work(verifier, scope, volume, VolumeOperation::Write,
+                maximum_bytes, &mut Some(&mut io.history_io()))?,
+            None => ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write)?,
+        };
+        let mut history = io.map(PreparationIo::history_io);
+        let volume = volume.clone_with_work(&mut history.as_mut().map(
+            |observer| observer as &mut dyn crate::store::history::HistoryIo))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
+            Some(io) => {
+                io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+                Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
+                    .ok_or_else(|| super::fork_preparer_io::invalid(Some(io), "content publisher custody underflows"))?)?)
+            }
+            None => None,
+        };
+        Ok(Self { host, volume, grant, maximum_bytes,
+            #[cfg(not(target_arch = "wasm32"))] _native_metadata })
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
@@ -59,29 +60,10 @@ impl<A, O> FilesystemContentPublisher<A, O> {
 
     fn validate_limit(maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
         if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-            return Err(super::fork_preparer_io::invalid(io,
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
                 "content publication limit must be positive and finite"));
         }
         Ok(())
-    }
-
-    /// Copies only newly owned configuration after the original write proof.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_with_native_work(
-        host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
-        verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        let io = PreparationIo::from_native_work(work)?;
-        Self::validate_limit(maximum_bytes, Some(&io))?;
-        let grant = ContentGrant::verify_with_io(
-            verifier, scope, volume, VolumeOperation::Write, &io,
-        )?;
-        let volume = volume.clone_with_io(&io)?;
-        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-        let retained = io.owned_bytes()?;
-        let _native_metadata = Some(io.into_native_custody(retained)?);
-        Ok(Self { host, volume, grant, maximum_bytes, _native_metadata })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -114,7 +96,7 @@ where
         display_name: &'a str,
     ) -> BoxProviderFuture<'a, Result<FileRef>> {
         Box::pin(async move {
-            self.stage_once_with_io(operation_id, path, bytes, media_type,
+            self.publish_once(operation_id, path, bytes, media_type,
                 display_name, None, None, None).await
         })
     }
@@ -123,7 +105,7 @@ where
         &'a self, operation_id: OperationId, maximum_bytes: u64,
     ) -> BoxProviderFuture<'a, Result<Option<FileRef>>> {
         Box::pin(async move {
-            self.observe_once_with_io(operation_id, maximum_bytes, None).await
+            self.observe_publication(operation_id, maximum_bytes, None).await
         })
     }
 
@@ -136,7 +118,7 @@ where
         Box::pin(async move {
             let io = PreparationIo::from_budget(budget, cancellation)
                 .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = self.stage_once_with_io(operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await;
+            let result = self.publish_once(operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await;
             match result {
                 Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
                 Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
@@ -159,7 +141,7 @@ where
     ) -> crate::Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let result = self.stage_once_with_io(operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await;
+            let result = self.publish_once(operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await;
             let file = result?;
             let retained = file.logical_owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
@@ -174,7 +156,7 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let file = self.stage_at_with_io(operation_id, source, bytes, Some(&io), None, None).await?;
+            let file = self.replace(operation_id, source, bytes, Some(&io), None, None).await?;
             let custody = io.into_native_custody(file.logical_owned_bytes()?)?;
             Ok((file, custody))
         })
@@ -187,7 +169,7 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let file = self.observe_once_with_io(operation_id, maximum_bytes, Some(&io)).await?;
+            let file = self.observe_publication(operation_id, maximum_bytes, Some(&io)).await?;
             let retained = file.as_ref().map(UploadRecord::logical_owned_bytes).transpose()?.unwrap_or(0);
             let custody = io.into_native_custody(retained)?;
             Ok((file, custody))
@@ -202,7 +184,7 @@ where
         Box::pin(async move {
             let io = PreparationIo::from_budget(budget, cancellation)
                 .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = self.observe_once_with_io(operation_id, maximum_bytes, Some(&io)).await;
+            let result = self.observe_publication(operation_id, maximum_bytes, Some(&io)).await;
             match result {
                 Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
                 Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
@@ -217,7 +199,7 @@ where
         bytes: &'a [u8],
     ) -> BoxProviderFuture<'a, Result<FileRef>> {
         Box::pin(async move {
-            self.stage_at_with_io(operation_id, source, bytes, None, None, None).await
+            self.replace(operation_id, source, bytes, None, None, None).await
         })
     }
     fn stage<'a>(
@@ -242,88 +224,7 @@ where
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemContentPublisher<A, O>
 {
-    /// Root-owned lease checks add no authority to this already bound writer.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "original complete publication identity and borrowed lease")]
-    pub(crate) fn stage_once_with_publication_lease<'a>(
-        &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
-        media_type: &'a str, display_name: &'a str,
-        lease: &'a dyn crate::resource_preparation::CreatedTaskLease,
-        allocation: &'a FilesystemRootBootstrapAllocation<A, O>,
-    ) -> BoxProviderFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            self.stage_once_with_io(operation_id, path, bytes, media_type,
-                display_name, None, Some(lease), Some(allocation)).await
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn stage_at_with_publication_lease<'a>(
-        &'a self, operation_id: OperationId, source: &'a FileRef, bytes: &'a [u8],
-        lease: &'a dyn crate::resource_preparation::CreatedTaskLease,
-        allocation: &'a FilesystemRootBootstrapAllocation<A, O>,
-    ) -> BoxProviderFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            self.stage_at_with_io(operation_id, source, bytes, None, Some(lease), Some(allocation)).await
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "original publication identity, finite budget and borrowed lease")]
-    pub(crate) fn stage_once_with_publication_lease_measured<'a>(
-        &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
-        media_type: &'a str, display_name: &'a str, budget: acyclic_fs::WorkBudget,
-        cancellation: &'a acyclic_fs::CancellationToken,
-        lease: &'a dyn crate::resource_preparation::CreatedTaskLease,
-        allocation: &'a FilesystemRootBootstrapAllocation<A, O>,
-    ) -> BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<FileRef>, Error>> {
-        Box::pin(async move {
-            let io = PreparationIo::from_budget(budget, cancellation)
-                .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = self.stage_once_with_io(operation_id, path, bytes,
-                media_type, display_name, Some(&io), Some(lease), Some(allocation)).await;
-            match result {
-                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-            }
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "original publication identity, native ledger and borrowed lease")]
-    pub(crate) fn stage_once_with_publication_lease_with_native_work<'a>(
-        &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
-        media_type: &'a str, display_name: &'a str,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-        lease: &'a dyn crate::resource_preparation::CreatedTaskLease,
-        allocation: &'a FilesystemRootBootstrapAllocation<A, O>,
-    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let file = self.stage_once_with_io(operation_id, path, bytes,
-                media_type, display_name, Some(&io), Some(lease), Some(allocation)).await?;
-            let custody = io.into_native_custody(file.logical_owned_bytes()?)?;
-            Ok((file, custody))
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn stage_at_with_publication_lease_with_native_work<'a>(
-        &'a self, operation_id: OperationId, source: &'a FileRef, bytes: &'a [u8],
-        work: &'a acyclic_fs::NativeMaterializationWork,
-        lease: &'a dyn crate::resource_preparation::CreatedTaskLease,
-        allocation: &'a FilesystemRootBootstrapAllocation<A, O>,
-    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let file = self.stage_at_with_io(operation_id, source, bytes,
-                Some(&io), Some(lease), Some(allocation)).await?;
-            let custody = io.into_native_custody(file.logical_owned_bytes()?)?;
-            Ok((file, custody))
-        })
-    }
-
-    pub(super) async fn observe_once_with_io(
+    pub(super) async fn observe_publication(
         &self, operation_id: OperationId, maximum_bytes: u64, io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
         let retry = once_key(operation_id, io)?;
@@ -336,7 +237,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         Ok(file)
     }
 
-    pub(super) async fn stage_at_with_io(
+    pub(super) async fn replace(
         &self, operation_id: OperationId, source: &FileRef, bytes: &[u8],
         io: Option<&PreparationIo>,
         publication_lease: Option<&dyn crate::resource_preparation::CreatedTaskLease>,
@@ -366,10 +267,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             crate::conversation::inspect_native_metadata(work, version.len())?;
         }
         if version.len() != 64 || !version.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(super::fork_preparer_io::invalid(io, "file version is not a Filesystem generation"));
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "file version is not a Filesystem generation"));
         }
         if source.descriptor().byte_length() > 9_007_199_254_740_991 {
-            return Err(super::fork_preparer_io::invalid(io, "file byte length exceeds cross-language precision"));
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "file byte length exceeds cross-language precision"));
         }
         #[cfg(not(target_arch = "wasm32"))]
         let root_generation = root_allocation
@@ -399,7 +300,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     }
 
     #[allow(clippy::too_many_arguments, reason = "one canonical complete publication identity")]
-    pub(super) async fn stage_once_with_io(
+    pub(super) async fn publish_once(
         &self, operation_id: OperationId, path: &str, bytes: &[u8],
         media_type: &str, display_name: &str, io: Option<&PreparationIo>,
         publication_lease: Option<&dyn crate::resource_preparation::CreatedTaskLease>,
@@ -455,7 +356,7 @@ pub(super) fn once_key(operation: OperationId, io: Option<&PreparationIo>) -> Re
     use std::fmt::Write as _;
     let mut key = String::with_capacity(length);
     write!(&mut key, "filesystem-single-file:{operation}")
-        .map_err(|_| super::fork_preparer_io::invalid(io, "original publication identity encoding failed"))?;
+        .map_err(|_| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "original publication identity encoding failed"))?;
     if let Some(io) = io {
         io.charge(acyclic_fs::WorkCounters { bytes_encoded: key.len() as u64, bytes_copied: key.len() as u64, items_examined: 1, ..Default::default() })?;
     }
@@ -475,7 +376,7 @@ fn replacement_key(operation: OperationId, path: &str, io: Option<&PreparationIo
     use std::fmt::Write as _;
     let mut key = String::with_capacity(length);
     write!(&mut key, "filesystem-replacement:{operation}:{}", blake3::hash(path.as_bytes()).to_hex())
-        .map_err(|_| super::fork_preparer_io::invalid(io, "original replacement identity encoding failed"))?;
+        .map_err(|_| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "original replacement identity encoding failed"))?;
     if let Some(io) = io {
         io.charge(acyclic_fs::WorkCounters {
             bytes_hashed: path.len() as u64, bytes_encoded: length as u64,
@@ -491,20 +392,20 @@ fn validate_publication(
 ) -> Result<()> {
     super::fork_preparer_io::validate_content_path(path, io)?;
     if bytes.len() as u64 > maximum_bytes || bytes.len() as u64 > 9_007_199_254_740_991 {
-        return Err(super::fork_preparer_io::invalid(io, "content size limit mismatch"));
+        return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "content size limit mismatch"));
     }
     if path == ".system" || path.starts_with(".system/")
         || path == "turns/.canonical" || path.starts_with("turns/.canonical/") {
-        return Err(super::fork_preparer_io::invalid(io, "internal storage paths are reserved"));
+        return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "internal storage paths are reserved"));
     }
     if display_name.is_empty() || display_name.len() > crate::conversation::MAX_LABEL_BYTES
         || display_name.chars().any(char::is_control) {
-        return Err(super::fork_preparer_io::invalid(io, "file display name is invalid"));
+        return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "file display name is invalid"));
     }
     if !media_type.split_once('/').is_some_and(|(kind, subtype)| !kind.is_empty() && !subtype.is_empty())
         || media_type.chars().any(|character| !character.is_ascii_alphanumeric()
             && !matches!(character, '/' | '-' | '+' | '.' | '_')) {
-        return Err(super::fork_preparer_io::invalid(io, "media type is invalid"));
+        return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "media type is invalid"));
     }
     Ok(())
 }

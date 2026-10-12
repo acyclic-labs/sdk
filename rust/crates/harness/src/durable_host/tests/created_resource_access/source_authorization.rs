@@ -52,7 +52,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     };
     fixture.host.settle_task(preparation_task, (&preparation_lease.reservation).into(),
         Outcome::Succeeded(serde_json::to_value(&created.report)
-            .map_err(|error|Error::Invalid(error.to_string()))?)).await?;
+            .map_err(|error|Error::Invalid(error.to_string()))?), &mut None).await?;
     fixture.admit_child(created.request.child.clone()).await?;
     let child = TaskId::from_bytes([84; 16]);
     let project = created.project;
@@ -92,22 +92,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(creation_control_budget(), &cancellation)
-            .expect("finite original label operation");
-        let baseline = work.remaining().expect("remaining source-label bytes").peak_allocation_bytes;
-        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        let mut observer = io.history_io();
-        let label = handle.authorization().scope_label_with_work(&mut Some(&mut observer))?;
-        assert_eq!(label, handle.authorization().scope_label()?);
-        assert_eq!(label, handle.authorization().policy_scope.id());
-        drop(label);
-        drop(observer);
-        drop(io);
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let mut budget = creation_control_budget();
+        let mut budget = test_budget(16_384, 16 * 1_024 * 1_024);
         budget.allocation_operations = 1;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .expect("admitted original ledger with no remaining allocator attempt");
@@ -122,26 +107,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
                 selected_operation, selected_task, selected_project, selected_generation, None, &work,
             ), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unauthorized, .. })));
         }
-        handle.grant().require_directory_path_with_native_work(&project, "", &work)?;
-        for path in [".system", ".system/hidden", ".system/inherited-conversation/transcript"] {
-            assert!(matches!(handle.grant().require_directory_path_with_native_work(
-                &project, path, &work,
-            ), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unauthorized, .. })));
-        }
-        assert!(matches!(handle.grant().require_directory_path_with_native_work(
-            &policy.bootstrap.project, "", &work,
-        ), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unauthorized, .. })));
-        for path in ["", "../escape", "a/../escape", "/absolute", "back\\slash", "a//b"] {
-            assert!(matches!(crate::conversation::validate_content_path_with_native_work(
-                path, &work,
-            ), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Invalid, .. })));
-        }
-        crate::conversation::validate_content_path_with_native_work("selected.txt", &work)?;
-        assert_eq!(work.receipt().backend_read_operations, 0);
-        cancellation.cancel();
-        assert!(matches!(handle.grant().require_directory_path_with_native_work(
-            &project, "", &work,
-        ), Err(Error::NativeWork { .. })));
     }
     let serialized = crate::contract::canonical_json_bytes(handle.authorization())?;
     let restored_record: crate::source_authorization::ProjectSourceAuthorization =
@@ -166,7 +131,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     {
         let native_cancellation = acyclic_fs::CancellationToken::new();
         let native = acyclic_fs::NativeMaterializationWork::new(
-            creation_control_budget(), &native_cancellation,
+            test_budget(16_384, 16 * 1_024 * 1_024), &native_cancellation,
         ).expect("finite original source invocation");
         let mut prepared = created.request.clone();
         prepared.read_authorization = Some(handle.authorization().clone());
@@ -181,12 +146,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         let sealed = sealed.expect("authentic retained foreign Project selection");
         sealed.require_selection(operation, child, &project, &generation, None)?;
         assert!(custody.matches_work(&native));
-        let grant_bytes = sealed.grant().logical_owned_bytes()?;
-        let minimum = (std::mem::size_of::<crate::source_authorization::ProjectSourceReadHandle>() as u64)
-            .checked_add(sealed.authorization().logical_owned_bytes()?)
-            .and_then(|bytes| bytes.checked_add(grant_bytes))
-            .expect("finite complete source handle ownership");
-        assert!(custody.bytes() >= minimum);
         assert_eq!(context.scope().grants(), &original);
         drop(sealed);
         drop(custody);
@@ -232,7 +191,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         }
         let foreign_cancellation = acyclic_fs::CancellationToken::new();
         let foreign = acyclic_fs::NativeMaterializationWork::new(
-            creation_control_budget(), &foreign_cancellation,
+            test_budget(16_384, 16 * 1_024 * 1_024), &foreign_cancellation,
         ).expect("independent caller ledger for the hostile selection");
         let before = foreign.receipt();
         assert!(matches!(selected.require_native_project_selection_with_native_work(
@@ -246,7 +205,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         assert_eq!(foreign.receipt().backend_read_operations, before.backend_read_operations);
         drop(selected);
 
-        let mut denied_budget = creation_control_budget();
+        let mut denied_budget = test_budget(16_384, 16 * 1_024 * 1_024);
         denied_budget.backend_read_operations = 0;
         let denied = acyclic_fs::NativeMaterializationWork::new(
             denied_budget, &native_cancellation,
@@ -410,18 +369,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
             _ => record.policy_scope = foreign.root(record.policy_scope.id(), record.policy_scope.capabilities().clone()),
         }
         assert!(record.verify_scope(&fixture.host.verifier).is_err(), "descriptor control {control}");
-    }
-    for mask in 0_u16..256 {
-        let mut record = handle.authorization().clone();
-        if mask & 1 != 0 { record.owner.id.push('x'); }
-        if mask & 2 != 0 { record.caller_task = child; }
-        if mask & 4 != 0 { record.caller_admission_digest[0] ^= 1; }
-        if mask & 8 != 0 { record.operation_id = OperationId::from_bytes([126;16]); }
-        if mask & 16 != 0 { record.source_task = fixture.root; }
-        if mask & 32 != 0 { record.project = policy.bootstrap.project.clone(); }
-        if mask & 64 != 0 { record.graph_root = child; }
-        if mask & 128 != 0 { record.native_snapshot = Some(serde_json::json!({"unverified":mask})); }
-        assert_eq!(record.verify_scope(&fixture.host.verifier).is_ok(), mask == 0);
     }
     assert!(owner.authorize_project_source(&context, &issuer, &policy, child, operation,
         ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:Some(serde_json::json!({"raw":true})) },

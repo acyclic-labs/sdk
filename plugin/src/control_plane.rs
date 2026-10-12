@@ -665,11 +665,9 @@ impl ControlPlane {
                 .workspace(root.target_workspace_id)
                 .await
                 .map_err(display)?;
-            let published = workspace
-                .generation(published_generation)
-                .await
+            let published = workspace.generation(published_generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(display)?;
-            let ignore_text = match published.read("/.gitignore", 1024 * 1024).await {
+            let ignore_text = match published.read("/.gitignore", 1024 * 1024, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(WorkspaceError::NotFound) => String::new(),
                 Err(error) => return Err(display(error)),
@@ -2468,9 +2466,7 @@ impl ControlPlane {
                     .distributed
                     .workspace(workspace_id)
                     .await
-                    .map_err(display)?
-                    .head()
-                    .await
+                    .map_err(display)?.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(display)?
                     .id();
                 let current = *current.digest().as_bytes();
@@ -2651,7 +2647,7 @@ impl ControlPlane {
                     .map_err(display)?;
                 let root_name = route_name(*root_id);
                 let child_name = format!("{}-{root_name}", pending.workspace_name);
-                let fork_generation = parent_lazy.workspace().head().await.map_err(display)?.id();
+                let fork_generation = parent_lazy.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?.id();
                 let child = parent_lazy
                     .fork(&child_name, derived_idempotency_key(fork_key, *root_id))
                     .await
@@ -2968,11 +2964,9 @@ impl ControlPlane {
                 .authorize_join(lineage_cursor.id(), parent.id())
                 .await
                 .map_err(display)?;
-            let base = workspace
-                .generation(branch_base.unwrap_or(lineage.initial_generation))
-                .await
+            let base = workspace.generation(branch_base.unwrap_or(lineage.initial_generation), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(display)?;
-            let head = workspace.head().await.map_err(display)?;
+            let head = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?;
             let changes = workspace
                 .diff(&base, &head, 100_000)
                 .await
@@ -3885,12 +3879,7 @@ impl ControlPlane {
             maximum_extent_spans: 65_536,
         };
         let policy = CapturePolicy::excluding(reserved_root_paths()?).map_err(display)?;
-        let mut checkout = workspace
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
-            )
-            .await
+        let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(display)?;
         match observation.batch {
             WatchBatch::Changes { .. } if source_advanced_elsewhere => {
@@ -4318,15 +4307,13 @@ mod root_allocation_tests;
 
 /// Every path the workspace's head records, parents before children.
 async fn recorded_paths(workspace: &LocalWorkspace) -> Result<Vec<NamespacePath>, String> {
-    let head = workspace.head().await.map_err(display)?;
+    let head = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?;
     let mut recorded = Vec::new();
     let mut directories = vec!["/".to_owned()];
     while let Some(directory) = directories.pop() {
         let mut after = None;
         loop {
-            let page = head
-                .list_directory(&directory, after.as_ref(), 1_024)
-                .await
+            let page = head.list_directory(&directory, after.as_ref(), 1_024, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(display)?;
             for entry in &page.entries {
                 let name = entry
@@ -4419,9 +4406,7 @@ impl ControlPlane {
                 .distributed
                 .workspace(root.source_workspace_id)
                 .await
-                .map_err(display)?
-                .generation(root.source_generation)
-                .await
+                .map_err(display)?.generation(root.source_generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(display)?;
             let parent_view = match &parent_route {
                 Some(parent_route) => Some(self.lazy_workspace_root(parent_route, *root_id).await?),
@@ -4431,7 +4416,7 @@ impl ControlPlane {
             let mut paths = Vec::new();
             for (path, deleted) in tombstones {
                 let beneath = format!("{path}/");
-                if child_head.stat(&path).await.is_ok()
+                if child_head.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok()
                     || view.current_source_version(&path).await.map_err(display)? != Some(deleted)
                     || changed
                         .range(beneath.clone()..)

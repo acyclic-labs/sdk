@@ -6961,7 +6961,7 @@ mod tests {
         config.profile = crate::model::FilesystemProfile::Windows;
         let root_path = crate::kernel::NamespacePath::new(Vec::new(), config.limits)?;
         let fresh = CheckoutMountSource::new_at_meter(
-            checkout, config, root_path, original.claim_allocation(0, 0)?,
+            checkout, config, root_path, original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?,
             &meter, Some(&original),
         )?.into_arc_meter(&meter)?;
         let cold = crate::native_mount::prepare_native_mount_start_with_meter(&meter)?
@@ -6975,7 +6975,7 @@ mod tests {
             >>().map_err(|_| "original stock checkout alias differs")?;
         let fresh = CheckoutMountSource::new_at_meter(
             checkout, config, crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
-            original.claim_allocation(0, 0)?, &meter, Some(&original),
+            original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?, &meter, Some(&original),
         )?.into_arc_meter(&meter)?;
         let mut restarted = crate::native_mount::prepare_native_mount_start_with_meter(&meter)?
             .restart_with_meter(old.expect("actual original issuer retained once"), fresh, &meter)?;
@@ -7863,7 +7863,7 @@ mod tests {
     {
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("advance-projfs").await?;
+        let workspace = engine.create_workspace("advance-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let path = root.path().join("mount");
         std::fs::create_dir(&path)?;
         let mount = workspace
@@ -7877,7 +7877,7 @@ mod tests {
             std::fs::metadata(&added).err().map(|error| error.kind()),
             Some(std::io::ErrorKind::NotFound)
         );
-        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction
             .create_file(
                 "/added.txt",
@@ -7885,7 +7885,7 @@ mod tests {
                 FileMetadata::default(),
             )
             .await?;
-        transaction.commit().await?;
+        transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         mount.advance_to_head().await?;
         assert_eq!(std::fs::read(&added)?, b"added");
         mount.unmount().await?;
@@ -8120,10 +8120,10 @@ mod tests {
         ] {
             let root = tempfile::tempdir()?;
             let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-            let workspace = engine.create_workspace("edits-projfs").await?;
-            let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+            let workspace = engine.create_workspace("edits-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             transaction.create_file(&format!("/{name}"), Bytes::from_static(content), FileMetadata::default()).await?;
-            transaction.commit().await?;
+            transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let first = root.path().join("first-mount");
             std::fs::create_dir(&first)?;
             let mount = workspace.mount(&first, MountOptions::read_write().publication(MountPublication::Manual)).await?;
@@ -8164,8 +8164,8 @@ mod tests {
 
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("rename-unread-projfs").await?;
-        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        let workspace = engine.create_workspace("rename-unread-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction
             .create_file(
                 "/before.txt",
@@ -8173,7 +8173,7 @@ mod tests {
                 crate::kernel::FileMetadata::default(),
             )
             .await?;
-        transaction.commit().await?;
+        transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let destination = root.path().join("mount");
         std::fs::create_dir(&destination)?;
         let mount = workspace
@@ -8206,8 +8206,8 @@ mod tests {
 
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("watch-projfs").await?;
-        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        let workspace = engine.create_workspace("watch-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction
             .create_file(
                 "/original.txt",
@@ -8215,7 +8215,7 @@ mod tests {
                 crate::kernel::FileMetadata::default(),
             )
             .await?;
-        transaction.commit().await?;
+        transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
 
         let destination = root.path().join("projection");
         std::fs::create_dir(&destination)?;
@@ -8297,7 +8297,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("nested-projfs").await?;
+        let workspace = engine.create_workspace("nested-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let path = root.path().join("mount");
         std::fs::create_dir(&path)?;
         let mount = workspace
@@ -8330,8 +8330,8 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("enumeration-rebase").await?;
-        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        let workspace = engine.create_workspace("enumeration-rebase", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         for index in 0..300 {
             transaction
                 .create_file(
@@ -8350,7 +8350,7 @@ mod tests {
                 )
                 .await?;
         }
-        transaction.commit().await?;
+        transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let path = root.path().join("mount");
         std::fs::create_dir(&path)?;
         let mount = workspace

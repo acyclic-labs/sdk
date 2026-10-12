@@ -57,9 +57,7 @@ export function publishClientSnapshots<Value>(store: ClientSnapshot<Value>, port
   return stop;
 }
 
-/** Explicitly attach a receiver, initialized with the same SSR/hydration snapshot.
- * No worker is created. Disposal closes the owned port and clears subscriptions.
- */
+/** Receive bounded snapshots on an owned port. */
 export function receiveClientSnapshots<Value>(initial: Value, port: MessagePort,
   codec: SnapshotCodec<Value>, maximumBytes: number, onError: (error: unknown) => void): ClientSnapshot<Value> & { dispose(): void } {
   bound(maximumBytes);
