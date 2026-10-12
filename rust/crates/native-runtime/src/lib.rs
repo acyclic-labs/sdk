@@ -4652,7 +4652,8 @@ mod tests {
 
     #[test]
     fn batch_larger_than_native_queue_preserves_every_write() -> io::Result<()> {
-        let file = tempfile::tempfile()?;
+        let temporary = tempfile::NamedTempFile::new()?;
+        let file = temporary.reopen()?;
         let writes: Vec<_> = (0_u8..17)
             .map(|value| OwnedWrite {
                 offset: u64::from(value) * 4,
@@ -4702,7 +4703,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn native_write_batch_preserves_empty_writes_and_port_reuse() -> io::Result<()> {
-        let file = tempfile::tempfile()?;
+        let temporary = tempfile::NamedTempFile::new()?;
+        let file = temporary.reopen()?;
         for value in 0_u8..8 {
             complete(NativeFile::from_file(file.try_clone()?)?.write_all_batch_async(vec![
                     OwnedWrite {
@@ -5045,7 +5047,8 @@ mod tests {
 
     #[test]
     fn platform_control_is_offloaded_and_file_sequenced() -> io::Result<()> {
-        let native = NativeFile::from_file(tempfile::tempfile()?)?;
+        let temporary = tempfile::NamedTempFile::new()?;
+        let native = NativeFile::from_file(temporary.reopen()?)?;
         let mut write = native.write_all_batch_async(vec![OwnedWrite {
             offset: 0,
             bytes: Bytes::from_static(b"ready"),
@@ -5155,7 +5158,8 @@ mod tests {
                 .recv_timeout(Duration::from_secs(10))
                 .map_err(|error| io::Error::other(error.to_string()))?;
         }
-        let file = tempfile::tempfile()?;
+        let temporary = tempfile::NamedTempFile::new()?;
+        let file = temporary.reopen()?;
         complete(read_batch_async(
             file,
             vec![OwnedRead {
@@ -5191,7 +5195,8 @@ mod tests {
 
     #[test]
     fn native_read_batch_preserves_order_and_short_reads() -> io::Result<()> {
-        let file = tempfile::tempfile()?;
+        let temporary = tempfile::NamedTempFile::new()?;
+        let file = temporary.reopen()?;
         write_all_at(&file, 0, b"abcdefgh")?;
         let reads = complete(read_batch_async(
             file,
@@ -5397,7 +5402,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn native_read_batch_preserves_empty_and_eof_ranges() -> io::Result<()> {
-        let file = tempfile::tempfile()?;
+        let temporary = tempfile::NamedTempFile::new()?;
+        let file = temporary.reopen()?;
         write_all_at(&file, 0, b"abc")?;
         let reads = complete(read_batch_async(
             file.try_clone()?,
