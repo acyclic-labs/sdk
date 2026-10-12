@@ -3472,9 +3472,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
             checkpoint: None,
         },
         &resolver,
-        limits.context_messages,
-        limits.attachments,
-        limits.render_bytes,
+        limits,
         limits.attachments,
         io,
     )

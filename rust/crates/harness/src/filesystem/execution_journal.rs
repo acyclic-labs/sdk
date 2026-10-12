@@ -2150,9 +2150,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             committed.conversation_revision,
             committed,
             &resolver,
-            messages,
-            attachments,
-            render_bytes,
+            crate::conversation::Limits { context_messages: messages, attachments: attachments, render_bytes: render_bytes, ..Default::default() },
             attachments,
             io,
         ).await?;
@@ -2417,8 +2415,13 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     let resolver = JournalSelectedResolver { journal, inner: verifier };
     let resolver: &dyn ContentResidencyVerifier = if io.is_some() { &resolver } else { verifier };
     let selected = select_model_context(
-        &history, selection.conversation_revision, selection, resolver,
-        limits.context_messages, limits.attachments, limits.render_bytes, limits.attachments, io,
+        &history,
+        selection.conversation_revision,
+        selection,
+        resolver,
+        limits,
+        limits.attachments,
+        io,
     ).await?;
     let input = crate::executor::with_history_io(io, |work| crate::model::clone_content(&selected.messages.last().ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid, "canonical input is missing"))?.content, work).map(|(copy, _)| copy))?;
     let mut selected_delta = selected;
@@ -2744,9 +2747,7 @@ mod tests {
                 selection.conversation_revision,
                 selection,
                 content,
-                limits.context_messages,
-                limits.attachments,
-                limits.render_bytes,
+                limits,
                 limits.attachments,
                 None,
             )
@@ -2778,9 +2779,7 @@ mod tests {
             complete.conversation_revision,
             complete.clone(),
             content.as_ref(),
-            limits.context_messages,
-            limits.attachments,
-            limits.render_bytes,
+            limits,
             limits.attachments,
             None,
         )

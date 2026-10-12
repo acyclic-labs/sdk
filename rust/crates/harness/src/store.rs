@@ -2802,9 +2802,7 @@ mod tests {
                 selection.conversation_revision,
                 selection.clone(),
                 &TestContent,
-                3,
-                8,
-                65_536,
+                crate::conversation::Limits { context_messages: 3, attachments: 8, render_bytes: 65_536, ..Default::default() },
                 8,
                 None,
             )
