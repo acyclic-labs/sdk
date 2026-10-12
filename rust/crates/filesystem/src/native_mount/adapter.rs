@@ -10207,7 +10207,7 @@ mod tests {
 
         acyclic_native_runtime::initialize_native_io_services()?;
         let borrowed = source(FilesystemProfile::Portable)?;
-        let workspace_id = crate::WorkspaceId::from_volume_id(borrowed.volume_id()?);
+        let workspace_id = crate::WorkspaceId::from_bytes(borrowed.volume_id()?.into_bytes());
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let context = crate::lazy_workspace::NativeSnapshotContext::Authored { workspace_id, config };
         let path = native_test_path("qualified-guard-original");

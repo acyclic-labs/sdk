@@ -1061,10 +1061,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(work) = io.original_native_work() {
             let _changes_custody;
             let (changes, custody) = initial.diff_to_with_native_work(head, u32::MAX, work, work.cancellation())
-                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                .await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             _changes_custody = custody;
             let (paths, custody) = changes.changed_paths_with_native_work(u32::MAX, work, work.cancellation())
-                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                .await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             drop(changes);
             drop(_changes_custody);
             io.absorb_native_custody(custody)?;
@@ -3920,7 +3920,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         (page, page_custody) = generation.list_after_with_native_work(
             &requested, after, maximum_entries as usize + usize::from(path.is_empty()),
             work, work.cancellation(),
-        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+        ).await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
         output.absorb_native_custody(page_custody)?;
         guard().await?;
         if path.is_empty() {
