@@ -1,8 +1,8 @@
-use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::WorkError;
 use crate::foundation::Digest;
 use crate::storage::{FenceOutcome, ObjectKind};
+use acyclic_stream::OwnedBytes;
 
 fn object(bytes: &[u8]) -> (ObjectId, OwnedBytes) {
     let bytes = OwnedBytes::copy_from_slice(bytes);
@@ -34,18 +34,27 @@ async fn delayed_objects_are_invisible_until_bounded_flush() -> Result<(), Box<d
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"delayed");
-    (objects.put(
-        object_id,
-        bytes.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
-    let missing_result = (objects.read(
-        object_id,
-        64,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await;
+    (async {
+        let __object_args = (
+            object_id,
+            bytes.clone(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
+    let missing_result = (async {
+        let __object_args = (object_id, 64, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await;
     let Err(missing) = missing_result else {
         return Err("delayed object became visible before flush".into());
     };
@@ -54,12 +63,14 @@ async fn delayed_objects_are_invisible_until_bounded_flush() -> Result<(), Box<d
         simulation.flush_object_visibility(WorkBudget::UNBOUNDED, &cancellation)
     ).await?;
     assert_eq!(flushed.value, 1);
-    let visible = (objects.read(
-        object_id,
-        64,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let visible = (async {
+        let __object_args = (object_id, 64, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(visible.value.bytes, bytes);
     Ok(())
 }
@@ -80,28 +91,34 @@ async fn corrupt_and_partial_reads_are_exactly_scheduled() -> Result<(), Box<dyn
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"authenticated");
-    (objects.put(
-        object_id,
-        bytes,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
-    let corrupt = (objects.read(
-        object_id,
-        64,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    (async {
+        let __object_args = (object_id, bytes, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
+    let corrupt = (async {
+        let __object_args = (object_id, 64, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_ne!(
         object_digest(object_id.kind, &corrupt.value.bytes),
         object_id.digest
     );
-    let partial = (objects.read(
-        object_id,
-        64,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let partial = (async {
+        let __object_args = (object_id, 64, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(partial.value.bytes.len(), b"authenticated".len() - 1);
     Ok(())
 }
@@ -256,11 +273,12 @@ async fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, _) = object(b"x");
-    let rejected_result = (objects.contains(
-        object_id,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await;
+    let rejected_result = (async {
+        let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = objects.contains(__object_args.0, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    }).await;
     let Err(rejected) = rejected_result else {
         return Err("scheduled contains rejection succeeded".into());
     };
@@ -279,11 +297,12 @@ async fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::
         SimulationFault::PartitionBefore,
     )?;
     assert_eq!(next.occurrence, 2);
-    let second_result = (objects.contains(
-        object_id,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await;
+    let second_result = (async {
+        let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = objects.contains(__object_args.0, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    }).await;
     let Err(second) = second_result else {
         return Err("scheduled next partition succeeded".into());
     };
@@ -418,37 +437,54 @@ async fn exercise_object_before_work(
     }];
     let cancelled = fault.is_none();
     assert_object_before_work(
-        (objects.put(
-            object_id,
-            bytes,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await,
+        (async {
+            let __object_args = (object_id, bytes, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = objects
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        })
+        .await,
         cancelled,
     )?;
     assert_object_before_work(
-        (objects.read(
-            object_id,
-            64,
+        (async {
+            let __object_args = (object_id, 64,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await,
+        );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = objects
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        })
+        .await,
         cancelled,
     )?;
     assert_object_before_work(
-        (objects.read_many(
-            &requests,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await,
+        (async {
+            let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = objects
+                .read_many(__object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+            __object_work.receipt(__object_result)
+        })
+        .await,
         cancelled,
     )?;
     assert_object_before_work(
-        (objects.contains(
-            object_id,
-            WorkBudget::UNBOUNDED,
+        (async {
+            let __object_args = (object_id, WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await,
+        );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = objects.contains(__object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        }).await,
         cancelled,
     )?;
     assert!(simulation.trace()?.is_empty() == cancelled);
@@ -511,12 +547,14 @@ async fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
     ));
 
     let (object_id, bytes) = object(b"batch-fault");
-    (objects.put(
-        object_id,
-        bytes,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    (async {
+        let __object_args = (object_id, bytes, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     let requests = [ObjectReadRequest {
         object_id,
         maximum_bytes: 64,
@@ -531,20 +569,28 @@ async fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
             fault,
         })?;
     }
-    let corrupt = (objects.read_many(
-        &requests,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let corrupt = (async {
+        let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = objects
+            .read_many(__object_args.0, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_ne!(
         object_digest(object_id.kind, &corrupt.value[0].bytes),
         object_id.digest
     );
-    let partial = (objects.read_many(
-        &requests,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let partial = (async {
+        let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = objects
+            .read_many(__object_args.0, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(partial.value[0].bytes.len(), b"batch-fault".len() - 1);
     Ok(())
 }
@@ -586,18 +632,24 @@ async fn simulator_bounds_duplicate_schedule_and_trace_exhaustion_are_fail_close
     let cancellation = CancellationToken::new();
     let (object_id, _) = object(b"trace");
     assert!(
-        (objects.contains(
-            object_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
+        (async {
+            let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = objects.contains(__object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        })
+        .await
         .is_err()
     );
-    let exhausted = (objects.contains(
-        object_id,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
+    let exhausted = (async {
+        let __object_args = (object_id,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = objects.contains(__object_args.0, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    }).await
     .err()
     .ok_or("trace exhaustion was ignored")?;
     assert!(matches!(exhausted.error, ObjectStoreError::Rejected(_)));
@@ -624,39 +676,62 @@ async fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (first_id, first_bytes) = object(b"four");
-    let digest_failure = (objects.put(
-        first_id,
-        OwnedBytes::from_static(b"bad!"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
+    let digest_failure = (async {
+        let __object_args = (
+            first_id,
+            OwnedBytes::from_static(b"bad!"),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await
     .err()
     .ok_or("digest mismatch was admitted")?;
     assert!(matches!(
         digest_failure.error,
         ObjectStoreError::DigestMismatch
     ));
-    (objects.put(
-        first_id,
-        first_bytes.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
-    let repeated = (objects.put(
-        first_id,
-        first_bytes,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    (async {
+        let __object_args = (
+            first_id,
+            first_bytes.clone(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
+    let repeated = (async {
+        let __object_args = (first_id, first_bytes, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(repeated.work.backend_write_operations, 1);
 
     let (second_id, second_bytes) = object(b"x");
-    let bounded = (objects.put(
-        second_id,
-        second_bytes,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
+    let bounded = (async {
+        let __object_args = (
+            second_id,
+            second_bytes,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await
     .err()
     .ok_or("delayed-object bound was ignored")?;
     assert!(matches!(bounded.error, ObjectStoreError::Rejected(_)));
@@ -679,18 +754,22 @@ async fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
     let (authority, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (empty_id, empty_bytes) = object(b"");
-    (objects.put(
-        empty_id,
-        empty_bytes,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
-    let corrupt = (objects.read(
-        empty_id,
-        0,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
+    (async {
+        let __object_args = (empty_id, empty_bytes, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
+    let corrupt = (async {
+        let __object_args = (empty_id, 0, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = objects
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await
     .err()
     .ok_or("empty corrupt read succeeded")?;
     assert!(matches!(corrupt.error, ObjectStoreError::Corrupt));
@@ -739,11 +818,12 @@ async fn poisoned_simulation_authority_and_object_surfaces_fail_closed()
         authority_failure.error,
         AuthorityStoreError::CorruptStatic(_)
     ));
-    let object_failure = (objects.contains(
-        object(b"poisoned").0,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
+    let object_failure = (async {
+        let __object_args = (object(b"poisoned").0, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = objects.contains(__object_args.0, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    }).await
     .err()
     .ok_or("poisoned object lookup unexpectedly succeeded")?;
     assert!(matches!(object_failure.error, ObjectStoreError::Corrupt));
@@ -874,7 +954,9 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
 self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-let value = crate::AsyncAuthorityStore::create_authority(&self.inner, authority, epoch, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+let value = crate::AsyncAuthorityStore::create_authority(&self.inner, authority, epoch, work, None::<&mut ()>).await.map_err(|error| {
+            crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+        })?;
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
@@ -885,7 +967,9 @@ if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
 self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-crate::AsyncAuthorityStore::compare_and_append(&self.inner, request, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))
+crate::AsyncAuthorityStore::compare_and_append(&self.inner, request, work, None::<&mut ()>).await.map_err(|error| {
+                crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+            })
 }
 async fn head(&self, authority: crate::AuthorityId, work: &mut crate::AuthorityWork<'_>) -> Result<crate::Head, crate::AuthorityStoreError> {
 #[cfg(not(target_arch = "wasm32"))]
@@ -908,7 +992,8 @@ work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
 self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 crate::AsyncAuthorityStore::fence(&self.inner, authority, expected, work).await
 }
-async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError,
+    > {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
@@ -935,11 +1020,15 @@ async fn original_simulation_propagates_opaque_backend_rejection_before_ordinary
     let expected = Head { epoch: Epoch::GENESIS, sequence: Sequence::GENESIS, digest: Digest::from_bytes([0xf2; 32]) };
     assert!(matches!(({ let __authority_args = (id, &work, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_result }),
         Err(AuthorityStoreError::NativeOriginalUnsupported)));
-    assert!(matches!(({ let __authority_args = (id, Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: 64 }, &work, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.3, __authority_args.4); let __authority_result = authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }),
+    assert!(matches!(({ let __authority_args = (id, Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: 64 }, &work, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.3, __authority_args.4); let __authority_result = authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, allocation)| {
+                    (value, allocation.expect("native authority allocation"))
+                }); __authority_result }),
         Err(AuthorityStoreError::NativeOriginalUnsupported)));
     assert!(matches!(({ let __authority_args = (id, expected, &work, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = authority.fence(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }),
         Err(AuthorityStoreError::NativeOriginalUnsupported)));
-    assert!(matches!(({ let __authority_args = (id, OperationId::from_bytes([0xf3; 16]), &work, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }), Err(AuthorityStoreError::NativeOriginalUnsupported)));
+    assert!(matches!(({ let __authority_args = (id, OperationId::from_bytes([0xf3; 16]), &work, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| {
+                    (value, allocation.expect("native authority allocation"))
+                }); __authority_result }), Err(AuthorityStoreError::NativeOriginalUnsupported)));
     assert_eq!(simulation.authority.ordinary_calls.load(std::sync::atomic::Ordering::Relaxed), 0);
     assert_eq!(work.receipt(), before);
     Ok(())
@@ -972,7 +1061,9 @@ fn original_proposal(
         bytes, (allocation, control), original.runtime_meter(),
     ).map_err(|failure| match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
-        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => crate::NativeTreeMaterializationError::InvalidLayout,
+        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+            crate::NativeTreeMaterializationError::InvalidLayout
+        }
     })?;
     let payload = bytes::Bytes::from_owner(payload);
     Ok(ProposedCommit {
@@ -1032,13 +1123,21 @@ async fn original_simulation_mutation_faults_and_unsupported_providers_never_cal
         simulation.schedule_next(SimulationOperation::AuthorityCreate, fault)?;
         assert!(matches!(({ let __authority_args = (id, proposed.clone(), &original, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = authority.create_first_record(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_result }), Err(AuthorityStoreError::RejectedStatic(_))));
         simulation.schedule_next(SimulationOperation::AuthorityAppend, fault)?;
-        assert!(matches!(({ let __authority_args = (original_append(id, expected, proposed.clone()), &original, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }), Err(AuthorityStoreError::RejectedStatic(_))));
+        assert!(matches!(({ let __authority_args = (original_append(id, expected, proposed.clone()), &original, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, allocation)| {
+                        (value, allocation.expect("native authority allocation"))
+                    }); __authority_result }), Err(AuthorityStoreError::RejectedStatic(_))));
         simulation.schedule_next(SimulationOperation::AuthorityAppend, fault)?;
-        assert!(matches!(({ let __authority_args = (original_append(id, expected, proposed.clone()), &original, &cancellation, &mut guard,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.3).clone()))).await.map_err(|error| error.into_error(std::convert::Into::into)).map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }), Err(SimulationOwnerFailure::Authority(AuthorityStoreError::RejectedStatic(_)))));
+        assert!(matches!(({ let __authority_args = (original_append(id, expected, proposed.clone()), &original, &cancellation, &mut guard,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.3).clone()))).await.map_err(|error| error.into_error(std::convert::Into::into)).map(|(value, allocation)| {
+                        (value, allocation.expect("native authority allocation"))
+                    }); __authority_result }), Err(SimulationOwnerFailure::Authority(AuthorityStoreError::RejectedStatic(_)))));
     }
     assert!(matches!(({ let __authority_args = (id, proposed.clone(), &original, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = authority.create_first_record(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_result }), Err(AuthorityStoreError::NativeOriginalUnsupported)));
-    assert!(matches!(({ let __authority_args = (original_append(id, expected, proposed.clone()), &original, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }), Err(AuthorityStoreError::NativeOriginalUnsupported)));
-    assert!(matches!(({ let __authority_args = (original_append(id, expected, proposed), &original, &cancellation, &mut guard,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.3).clone()))).await.map_err(|error| error.into_error(std::convert::Into::into)).map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }), Err(SimulationOwnerFailure::Authority(AuthorityStoreError::NativeOriginalUnsupported))));
+    assert!(matches!(({ let __authority_args = (original_append(id, expected, proposed.clone()), &original, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, allocation)| {
+                    (value, allocation.expect("native authority allocation"))
+                }); __authority_result }), Err(AuthorityStoreError::NativeOriginalUnsupported)));
+    assert!(matches!(({ let __authority_args = (original_append(id, expected, proposed), &original, &cancellation, &mut guard,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.3).clone()))).await.map_err(|error| error.into_error(std::convert::Into::into)).map(|(value, allocation)| {
+                    (value, allocation.expect("native authority allocation"))
+                }); __authority_result }), Err(SimulationOwnerFailure::Authority(AuthorityStoreError::NativeOriginalUnsupported))));
     assert_eq!(simulation.authority.ordinary_calls.load(std::sync::atomic::Ordering::Relaxed), 0);
     assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
     assert_eq!(original.receipt().backend_read_operations, 0);

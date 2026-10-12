@@ -1,15 +1,14 @@
 //! Immutable checkpoint and two-parent merge-generation construction.
 
-use super::{DecodeLimits, GenerationRoot, encode_generation_root};
 #[cfg(not(target_arch = "wasm32"))]
 use super::allocation::KernelOwnedAllocation;
 use super::persistent_point::Owned;
+use super::{DecodeLimits, GenerationRoot, encode_generation_root};
 use crate::cancellation::CancellationToken;
 use crate::foundation::{GenerationId, usize_to_u64};
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
-    HashedObject,
+    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
 };
 use std::mem::size_of;
 use thiserror::Error;
@@ -125,8 +124,15 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
                     ObjectKind::GenerationRoot, &mut encoded.value, guard, original, cancellation,
                 ).map_err(checkpoint_storage_error)?;
                 let object = hashed.object_id();
-                store.put_hashed_with_native_work(hashed, original, cancellation).await
-                    .map_err(checkpoint_storage_error)?;
+                {
+                    let __object_args = (hashed, original, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result =
+                        store.put_hashed(__object_args.0, &mut __object_work).await;
+                    __object_result
+                }
+                .map_err(checkpoint_storage_error)?;
                 return Ok(object);
             }
             let hashing = WorkCounters {
@@ -137,7 +143,12 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
             let hashed = HashedObject::new(ObjectKind::GenerationRoot, std::mem::take(&mut encoded.value).into());
             accounting.record_completed(hashing)?;
             let object = hashed.object_id();
-            let receipt = store.put_hashed(hashed, accounting.remaining()?, cancellation).await;
+            let receipt = {
+                let __object_args = (hashed, accounting.remaining()?, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
+                __object_work.receipt(__object_result)
+            };
             let spent = match &receipt { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
             super::file_read::complete_standalone_backend(accounting, spent, 0)?;
             receipt.map_err(|failure| checkpoint_storage_error(failure.error))?;

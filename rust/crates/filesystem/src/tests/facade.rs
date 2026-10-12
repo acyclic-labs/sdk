@@ -1,6 +1,5 @@
 use super::*;
-use acyclic_stream::OwnedBytes;
-use crate::kernel::{InlineFileData, LogicalName, NameEncoding, MAXIMUM_GENERATION_ROOT_BYTES};
+use crate::kernel::{InlineFileData, LogicalName, MAXIMUM_GENERATION_ROOT_BYTES, NameEncoding};
 use crate::memory::MemoryObjectStore as TestMemoryObjectStore;
 use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy, VolumeLimits,
@@ -11,6 +10,7 @@ use crate::storage::{AuthorityFailure, AuthorityResult, };
 use crate::storage::{
     ObjectFailure, ObjectRead, ObjectReadRequest, ObjectResult, ObjectWrite,
 };
+use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -170,7 +170,9 @@ async fn create_authority<G: crate::AuthorityGuard>(&self, authority: crate::Aut
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-let value = delegate!(self, AsyncAuthorityStore, authority, create_authority(authority, epoch, work, None::<&mut ()>)).map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+let value = delegate!(self, AsyncAuthorityStore, authority, create_authority(authority, epoch, work, None::<&mut ()>)).map_err(|error| {
+                crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+            })?;
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
@@ -178,16 +180,21 @@ async fn fork_authority<G: crate::AuthorityGuard>(&self, source: crate::Generati
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-let value = delegate!(self, AsyncAuthorityStore, authority, fork_authority(source, destination, operation, work, None::<&mut ()>)).map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+let value = delegate!(self, AsyncAuthorityStore, authority, fork_authority(source, destination, operation, work, None::<&mut ()>)).map_err(|error| {
+                crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+            })?;
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
-async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>,
+        > {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::AuthorityStoreError::Rejected("authority backend cannot atomically evaluate operation leases".to_owned()).into()); }
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-delegate!(self, AsyncAuthorityStore, authority, compare_and_append(request, work, None::<&mut ()>)).map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))
+delegate!(self, AsyncAuthorityStore, authority, compare_and_append(request, work, None::<&mut ()>)).map_err(|error| {
+                crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+            })
 }
 async fn head(&self, authority: crate::AuthorityId, work: &mut crate::AuthorityWork<'_>) -> Result<crate::Head, crate::AuthorityStoreError> {
 #[cfg(not(target_arch = "wasm32"))]
@@ -196,7 +203,8 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 delegate!(self, AsyncAuthorityStore, authority, head(authority, work))
 
 }
-async fn replay(&self, authority: crate::AuthorityId, after: crate::Sequence, limit: crate::ReplayLimit, work: &mut crate::AuthorityWork<'_>) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+async fn replay(&self, authority: crate::AuthorityId, after: crate::Sequence, limit: crate::ReplayLimit, work: &mut crate::AuthorityWork<'_>) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError,
+        > {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 
@@ -210,7 +218,8 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 delegate!(self, AsyncAuthorityStore, authority, fence(authority, expected, work))
 
 }
-async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError,
+        > {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 
@@ -237,11 +246,11 @@ fn supports_generation_lineage_prefix(&self) -> bool {
             }
         }
     },
-        fn put(id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()>;
-        fn put_many(writes: &[ObjectWrite], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()>;
-        fn read(id: ObjectId, maximum: u64, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<ObjectRead>;
-        fn read_many(requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<Vec<ObjectRead>>;
-        fn contains(id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<bool>;
+        fn put(id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()>;,
+        fn put_many(writes: &[ObjectWrite], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()>;,
+        fn read(id: ObjectId, maximum: u64, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<ObjectRead>;,
+        fn read_many(requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<Vec<ObjectRead>>;,
+        fn contains(id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<bool>;,
         fn flush_before_publish(scope: crate::PublicationScope<'_>, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<crate::PublicationHold>;
     );
 
@@ -297,7 +306,10 @@ fn supports_generation_lineage_prefix(&self) -> bool {
                         head.clone(),
                         crate::IdempotencyKey::from_bytes([62; 16]),
                     ),
-                crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+                crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| {
+                        std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))
+                    },
+                )
                 .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             fork.write_text("/file", "child only").await?;
             assert_eq!(workspace.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value.id(), head.id());
@@ -594,7 +606,9 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
 if self.control.should_fail() { let failure = Self::failure(false); work.record(*failure.work)?; return Err(failure.error.into()); }
-let value = crate::AsyncAuthorityStore::create_authority(&self.inner, authority, epoch, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+let value = crate::AsyncAuthorityStore::create_authority(&self.inner, authority, epoch, work, None::<&mut ()>).await.map_err(|error| {
+            crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+        })?;
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
@@ -605,7 +619,9 @@ if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
 if self.control.should_fail() { let failure = Self::failure(false); work.record(*failure.work)?; return Err(failure.error.into()); }
-crate::AsyncAuthorityStore::compare_and_append(&self.inner, request, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))
+crate::AsyncAuthorityStore::compare_and_append(&self.inner, request, work, None::<&mut ()>).await.map_err(|error| {
+                crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+            })
 }
 async fn head(&self, authority: crate::AuthorityId, work: &mut crate::AuthorityWork<'_>) -> Result<crate::Head, crate::AuthorityStoreError> {
 #[cfg(not(target_arch = "wasm32"))]
@@ -628,7 +644,8 @@ work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
 if self.control.should_fail() { let failure = Self::failure(false); work.record(*failure.work)?; return Err(failure.error.into()); }
 crate::AsyncAuthorityStore::fence(&self.inner, authority, expected, work).await
 }
-async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError,
+    > {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
@@ -653,138 +670,550 @@ impl FaultObjectStore {
 }
 
 impl crate::async_storage::AsyncObjectStore for FaultObjectStore {
-    async fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<()> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
+    async fn put(&self, object_id: ObjectId, bytes: OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+        cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
         if self.control.should_fail() {
             return Err(Self::failure(false));
         }
-        AsyncObjectStore::put(&self.inner, object_id, bytes, budget, cancellation).await
+            {
+                let __object_args = (object_id, bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = AsyncObjectStore::put(&self.inner,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
-    async fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<()> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
+    async fn put_many(&self, writes: &[ObjectWrite],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+        cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
         if self.control.should_fail() {
             return Err(Self::failure(false));
         }
-        AsyncObjectStore::put_many(&self.inner, writes, budget, cancellation).await
+            {
+                let __object_args = (writes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::put_many(&self.inner, __object_args.0, &mut __object_work)
+                        .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
-    async fn read(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<ObjectRead> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
+    async fn read(&self, object_id: ObjectId, maximum_bytes: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+        cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
         if self.control.should_fail() {
             return Err(Self::failure(true));
         }
-        AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, budget, cancellation).await
+            {
+                let __object_args = (object_id, maximum_bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = AsyncObjectStore::read(&self.inner,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
-    async fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<Vec<ObjectRead>> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
+    async fn read_many(&self, requests: &[ObjectReadRequest],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+        cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
         if self.control.should_fail() {
             return Err(Self::failure(true));
         }
-        AsyncObjectStore::read_many(&self.inner, requests, budget, cancellation).await
+            {
+                let __object_args = (requests, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::read_many(&self.inner, __object_args.0, &mut __object_work)
+                        .await
+                        .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result).map(|values| (values, None))
     }
-    async fn contains(&self, object_id: ObjectId, budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<bool> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
+    async fn contains(&self, object_id: ObjectId,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+        cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
         if self.control.should_fail() {
             return Err(Self::failure(true));
         }
-        AsyncObjectStore::contains(&self.inner, object_id, budget, cancellation).await
+            {
+                let __object_args = (object_id, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::contains(&self.inner, __object_args.0, &mut __object_work)
+                        .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 }
 
 
 
 impl crate::async_storage::AsyncObjectStore for CountingObjectStore {
-    async fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<()> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
-        AsyncObjectStore::put(&self.inner, object_id, bytes, budget, cancellation).await
+    async fn put(&self, object_id: ObjectId, bytes: OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+        cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
+            {
+                let __object_args = (object_id, bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = AsyncObjectStore::put(&self.inner,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
-    async fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<()> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
-        AsyncObjectStore::put_many(&self.inner, writes, budget, cancellation).await
+    async fn put_many(&self, writes: &[ObjectWrite],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+        cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
+            {
+                let __object_args = (writes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::put_many(&self.inner, __object_args.0, &mut __object_work)
+                        .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
-    async fn read(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<ObjectRead> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
+    async fn read(&self, object_id: ObjectId, maximum_bytes: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+        cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
         self.record(object_id)?;
-        AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, budget, cancellation).await
+            {
+                let __object_args = (object_id, maximum_bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = AsyncObjectStore::read(&self.inner,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
-    async fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<Vec<ObjectRead>> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
+    async fn read_many(&self, requests: &[ObjectReadRequest],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+        cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
         for request in requests {
             self.record(request.object_id)?;
         }
-        AsyncObjectStore::read_many(&self.inner, requests, budget, cancellation).await
+            {
+                let __object_args = (requests, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::read_many(&self.inner, __object_args.0, &mut __object_work)
+                        .await
+                        .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result).map(|values| (values, None))
     }
-    async fn contains(&self, object_id: ObjectId, budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<bool> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
-        AsyncObjectStore::contains(&self.inner, object_id, budget, cancellation).await
+    async fn contains(&self, object_id: ObjectId,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
+            {
+                let __object_args = (object_id, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::contains(&self.inner, __object_args.0, &mut __object_work)
+                        .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 }
 
-
-
 impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
-    async fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<()> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
-        let receipt = AsyncObjectStore::put(&*self.inner, object_id, bytes, budget, cancellation).await?;
-        if self.control.should_fail() {
+    async fn put(
+        &self,
+        object_id: ObjectId,
+        bytes: OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                {
+                    let __object_args = (object_id, bytes, original, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                    let __object_result = crate::async_storage::AsyncObjectStore::put(
+                        &*self.inner,
+                        __object_args.0,
+                        __object_args.1,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_result
+                }?;
+                if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
+                Ok(())
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
+            let receipt = {
+                let __object_args = (object_id, bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = AsyncObjectStore::put(
+                    &*self.inner,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }?;
+            if self.control.should_fail() {
             return Err(ObjectFailure::new(ObjectStoreError::Corrupt, receipt.work));
         }
-        Ok(receipt)
+            Ok(receipt)
+        }
+        .await;
+        context.accept(result)
     }
-    async fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<()> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
-        let receipt = AsyncObjectStore::put_many(&*self.inner, writes, budget, cancellation).await?;
-        if self.control.should_fail() {
+    async fn put_many(
+        &self,
+        writes: &[ObjectWrite],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                {
+                    let __object_args = (writes, original, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = crate::async_storage::AsyncObjectStore::put_many(
+                        &*self.inner,
+                        __object_args.0,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_result
+                }?;
+                if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
+                Ok(())
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
+            let receipt = {
+                let __object_args = (writes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::put_many(&*self.inner, __object_args.0, &mut __object_work)
+                        .await;
+                __object_work.receipt(__object_result)
+            }?;
+            if self.control.should_fail() {
             return Err(ObjectFailure::new(ObjectStoreError::Corrupt, receipt.work));
         }
-        Ok(receipt)
+            Ok(receipt)
+        }
+        .await;
+        context.accept(result)
     }
-    async fn read(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<ObjectRead> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
-        AsyncObjectStore::read(&*self.inner, object_id, maximum_bytes, budget, cancellation).await
+    async fn read(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                {
+                    let __object_args = (object_id, maximum_bytes, original, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                    let __object_result = AsyncObjectStore::read(
+                        &*self.inner,
+                        __object_args.0,
+                        __object_args.1,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_result
+                }
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
+            {
+                let __object_args = (object_id, maximum_bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = AsyncObjectStore::read(
+                    &*self.inner,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
-    async fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<Vec<ObjectRead>> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
-        AsyncObjectStore::read_many(&*self.inner, requests, budget, cancellation).await
+    async fn read_many(
+        &self,
+        requests: &[ObjectReadRequest],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                {
+                    let __object_args = (requests, original, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = AsyncObjectStore::read_many(
+                        &*self.inner,
+                        __object_args.0,
+                        &mut __object_work,
+                    )
+                    .await
+                    .map(|(values, allocation)| {
+                        (values, allocation.expect("native batch allocation"))
+                    });
+                    __object_result
+                }
+            }
+            .await
+            .map(|(values, allocation)| (values, Some(allocation)));
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
+            {
+                let __object_args = (requests, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::read_many(&*self.inner, __object_args.0, &mut __object_work)
+                        .await
+                        .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result).map(|values| (values, None))
     }
-    async fn contains(&self, object_id: ObjectId, budget: WorkBudget, cancellation: &crate::CancellationToken) -> ObjectResult<bool> {
-        cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
-        AsyncObjectStore::contains(&*self.inner, object_id, budget, cancellation).await
-    }
-#[cfg(not(target_arch = "wasm32"))]
-    async fn read_with_native_work(&self, object_id: ObjectId, maximum_bytes: u64, original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
-        AsyncObjectStore::read_with_native_work(&*self.inner, object_id, maximum_bytes, original, cancellation).await
-    }
-#[cfg(not(target_arch = "wasm32"))]
-    async fn read_many_with_native_work(&self, requests: &[ObjectReadRequest], original: &crate::NativeMaterializationWork, cancellation: &CancellationToken) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
-        AsyncObjectStore::read_many_with_native_work(&*self.inner, requests, original, cancellation).await
+    async fn contains(
+        &self,
+        object_id: ObjectId,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            cancellation.check().map_err(|_| {
+                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+            })?;
+            {
+                let __object_args = (object_id, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::contains(&*self.inner, __object_args.0, &mut __object_work)
+                        .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
-#[cfg(not(target_arch = "wasm32"))]
-    async fn put_with_native_work(
-        &self, object_id: ObjectId, bytes: OwnedBytes,
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        crate::async_storage::AsyncObjectStore::put_with_native_work(&*self.inner, object_id, bytes, original, cancellation).await?;
+    async fn put_hashed(
+        &self,
+        object: HashedObject,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                {
+                    let __object_args = (object, original, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = crate::async_storage::AsyncObjectStore::put_hashed(
+                        &*self.inner,
+                        __object_args.0,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_result
+                }?;
         if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
         Ok(())
-    }
-#[cfg(not(target_arch = "wasm32"))]
-    async fn put_hashed_with_native_work(
-        &self, object: HashedObject,
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        crate::async_storage::AsyncObjectStore::put_hashed_with_native_work(&*self.inner, object, original, cancellation).await?;
-        if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
-        Ok(())
-    }
-#[cfg(not(target_arch = "wasm32"))]
-    async fn put_many_with_native_work(
-        &self, writes: &[ObjectWrite],
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        crate::async_storage::AsyncObjectStore::put_many_with_native_work(&*self.inner, writes, original, cancellation).await?;
-        if self.control.should_fail() { return Err(ObjectStoreError::Corrupt); }
-        Ok(())
+            }
+            .await;
+        }
+        let (id, bytes) = object.into_parts();
+        self.put(id, bytes, context).await
     }
 }
 
@@ -796,7 +1225,9 @@ async fn create_authority<G: crate::AuthorityGuard>(&self, authority: crate::Aut
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
-let value = crate::AsyncAuthorityStore::create_authority(self.inner.as_ref(), authority, epoch, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+let value = crate::AsyncAuthorityStore::create_authority(self.inner.as_ref(), authority, epoch, work, None::<&mut ()>).await.map_err(|error| {
+            crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+        })?;
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
@@ -806,7 +1237,9 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::AuthorityStoreError::Rejected("authority backend cannot atomically evaluate operation leases".to_owned()).into()); }
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
-let value = crate::AsyncAuthorityStore::compare_and_append(self.inner.as_ref(), request, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+let value = crate::AsyncAuthorityStore::compare_and_append(self.inner.as_ref(), request, work, None::<&mut ()>).await.map_err(|error| {
+            crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+        })?;
 if matches!(&value.0, crate::AppendOutcome::Committed(_)) && self.control.should_fail() {
     return Err(crate::AuthorityStoreError::Indeterminate { operation: "compare-and-append", source: std::io::Error::other("deterministic acknowledgement loss") }.into());
 }
@@ -830,7 +1263,8 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
 crate::AsyncAuthorityStore::fence(self.inner.as_ref(), authority, expected, work).await
 }
-async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError,
+    > {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
@@ -3921,7 +4355,8 @@ fn original_borrowed_path_changes(
     metadata: FileMetadata,
     original: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
-) -> Result<(Vec<AuthoredMutation>, crate::NativeAllocation, crate::NativeAllocation), FsError> {
+) -> Result<(Vec<AuthoredMutation>, crate::NativeAllocation, crate::NativeAllocation), FsError,
+> {
     use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
     let mut accounting = KernelAccounting::native(original, cancellation);
     let input = crate::kernel::Owned::<Vec<AuthoredMutation>>::allocate(4, &mut accounting)?;
@@ -7687,9 +8122,10 @@ async fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
     assert!(semantic.bindings.iter().any(|change|
         change.name.as_bytes() == b"changed" && change.before.is_some() && change.after.is_none()));
     for name in [b"alias".as_slice(), b"renamed".as_slice()] {
-        assert!(semantic.bindings.iter().any(|change|
+        assert!(semantic.bindings.iter().any(|change| {
             change.name.as_bytes() == name && change.before.is_none()
-                && change.after.as_ref().is_some_and(|entry| entry.file_id == changed_id)));
+                && change.after.as_ref().is_some_and(|entry| entry.file_id == changed_id)
+        }));
     }
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     for (before, after) in [(initial, first), (first, second), (second, third), (third, fourth), (fourth, fourth)] {
@@ -8197,7 +8633,10 @@ async fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn s
             volume_id: wrong_volume,
             config: config(),
             initial_generation_root: generation_root,
-        }, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed))?),
+        }, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| {
+                crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed)
+            },
+        )?),
     };
     assert!(matches!(
         generation_from_record(&creation, expected_volume, &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new())),
@@ -8232,11 +8671,17 @@ async fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn s
     let head = match active.value {
         CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
     };
-    let encoded = crate::kernel::encode(WorkBudget::UNBOUNDED, Some(&CancellationToken::new()), 0, |observe| crate::kernel::encode_volume_created(VolumeCreated {
+    let encoded = crate::kernel::encode(WorkBudget::UNBOUNDED, Some(&CancellationToken::new()), 0, |observe| {
+            crate::kernel::encode_volume_created(VolumeCreated {
         volume_id: wrong_volume,
         config: config(),
         initial_generation_root: generation_root,
-    }, observe, |_| VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed)))?;
+    }, observe, |_| {
+                    VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed)
+                },
+            )
+        },
+    )?;
     let (proposal, _) = creation_commit(
         OperationId::from_bytes([227; 16]), encoded,
         WorkBudget::UNBOUNDED, &CancellationToken::new(),
@@ -9182,7 +9627,10 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         "selected-fork-closure-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(paths.clone()),
-    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| {
+                std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))
+            },
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let initial = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!((child.read("/tree/nested/alias", 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value).as_ref(), b"linked body");
     assert!(child.read("/outside-alias", 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.is_err());
@@ -9232,7 +9680,10 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         "selected-fork-root-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/tree".to_owned(), "/".to_owned(), "/".to_owned()]),
-    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| {
+                std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))
+            },
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let all = all.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(all.matches_fork_selection(&source, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
     assert!(all.matches_fork_selection(&source, Some(vec!["/".to_owned()]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
@@ -9263,7 +9714,10 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         "selected-fork-verification-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/file".to_owned()]),
-    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))).await?.value;
+    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| {
+            std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))
+        },
+    )).await?.value;
     let initial = (async { child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot, digest: source.id().digest(),

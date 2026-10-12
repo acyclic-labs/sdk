@@ -283,7 +283,9 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
     {
         return Err(AccountingError::InvalidHistory);
     }
-    let kind = if let Ok(created) = decode_volume_created(&initial.payload, MAX_EVENT_BYTES, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(())) {
+    let kind = if let Ok(created) = decode_volume_created(&initial.payload, MAX_EVENT_BYTES, &mut |_| {
+            Ok::<_, crate::kernel::VolumeCreatedError>(())
+        }) {
         if volume_authority_id(created.volume_id) != authority_id {
             return Err(AccountingError::InvalidHistory);
         }
@@ -353,7 +355,9 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
         })?;
         let transition = match &kind {
             AuthorityKind::Volume { volume_id, config } if record.sequence == Sequence::new(1) => {
-                let created = decode_volume_created(&record.payload, MAX_EVENT_BYTES, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))
+                let created = decode_volume_created(&record.payload, MAX_EVENT_BYTES, &mut |_| {
+                    Ok::<_, crate::kernel::VolumeCreatedError>(())
+                })
                     .map_err(|_| AccountingError::InvalidHistory)?;
                 prove_published(
                     objects,
@@ -368,7 +372,9 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
                 .await?
             }
             AuthorityKind::Volume { volume_id, config } => {
-                if let Ok(published) = decode_published_generation(&record.payload, MAX_EVENT_BYTES, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
+                if let Ok(published) = decode_published_generation(&record.payload, MAX_EVENT_BYTES, |_| {
+                        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+                    })
                 {
                     if published.volume_id != *volume_id {
                         return Err(AccountingError::InvalidHistory);
@@ -554,10 +560,28 @@ async fn prove_bytes<O: AsyncObjectStore>(
     // Eight source lengths cover both representations and the retained source.
     let evidence_bound = config.limits.maximum_generation_bytes
         .min(measured.remaining()?.peak_allocation_bytes / 8);
-    let archived = objects.historical_generation_evidence(
-        authority_id, record, evidence_bound, config.limits.maximum_objects_per_generation,
-        measured.remaining()?, cancellation,
-    ).await.map_err(|failure| AccountingError::Proof(failure.error.to_string()))?;
+    let archived = {
+        let __object_args = (
+            authority_id,
+            record,
+            evidence_bound,
+            config.limits.maximum_objects_per_generation,
+            measured.remaining()?,
+            cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.4, __object_args.5);
+        let __object_result = objects
+            .historical_generation_evidence(
+                __object_args.0,
+                __object_args.1,
+                __object_args.2,
+                __object_args.3,
+                &mut __object_work,
+            )
+            .await;
+        __object_work.receipt(__object_result)
+    }
+    .map_err(|failure| AccountingError::Proof(failure.error.to_string()))?;
     measured.backend(archived.work)?;
     if let Some(evidence) = archived.value {
         let original = crate::kernel::decode_historical_generation_evidence(

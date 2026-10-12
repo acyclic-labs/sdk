@@ -1,6 +1,5 @@
 //! Thin embedded `Fs`/`Volume`/`Checkout` composition over the two durable stores.
 
-use acyclic_stream::ProviderTask;
 use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
 use crate::cancellation::{CancellationError, CancellationToken};
 use crate::foundation::{
@@ -22,14 +21,14 @@ use crate::kernel::{
     publish_generation_async_guarded_with_native_work,
 };
 
-use crate::kernel::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
-use crate::kernel::{Owned, ProofDataClaim, ProofDataCustody};
-use crate::workspace::WorkspaceError;
+use acyclic_stream::ProviderTask;
+
 use crate::foundation::usize_to_u64;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError};
+use crate::kernel::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use crate::kernel::decode_retention_created;
+#[cfg(test)]
+use crate::kernel::merge_directory_record_async as merge_directory_record;
 use crate::kernel::{
     AsyncBlobSource, AttributeEntry, AttributeListing, AttributeLookupError,
     AttributeMutation, AttributeMutationError, AttributeName, AttributePage, AuthenticatedGenerationProbe,
@@ -54,11 +53,8 @@ use crate::kernel::{
     prove_generation_closure, publish_generation, publish_generation_async_with_permit,
     read_blob_range, read_file_range_async, retention_authority_id, volume_authority_id,
 };
-#[cfg(test)]
-use crate::kernel::{
-    merge_directory_record_async as merge_directory_record,
-};
 pub use crate::kernel::{LiveMutationOutcome, MergeConflict};
+use crate::kernel::{Owned, ProofDataClaim, ProofDataCustody};
 #[cfg(all(
     feature = "local",
     feature = "native-watch",
@@ -78,6 +74,9 @@ use crate::storage::{
     OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest,
     ObjectStoreError, PublicationPermit, ReplayLimit, object_digest,
 };
+use crate::workspace::WorkspaceError;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use acyclic_native_runtime::OwnershipAnchor;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -175,7 +174,8 @@ pub(crate) enum WorkspaceJoinOutcome {
     IdempotencyConflict,
 }
 
-pub(crate) struct WorkspaceJoinRequest<'a, A, O, R = BTreeMap<MergeConflict, MergeConflictResolution>> {
+pub(crate) struct WorkspaceJoinRequest<'a, A, O, R = BTreeMap<MergeConflict, MergeConflictResolution>,
+> {
     pub target: &'a Volume<A, O>,
     pub base: WorkspaceCommonAncestor,
     pub source: &'a crate::Generation<A, O>,
@@ -344,8 +344,12 @@ enum WorkspaceJoinPublished {
 
 fn workspace_join_published(receipt: &crate::kernel::PublicationReceipt) -> WorkspaceJoinPublished {
     match &receipt.outcome {
-        AppendOutcome::Committed(_) => WorkspaceJoinPublished::Committed(receipt.proof.generation_id),
-        AppendOutcome::AlreadyCommitted(_) => WorkspaceJoinPublished::AlreadyCommitted(receipt.proof.generation_id),
+        AppendOutcome::Committed(_) => {
+            WorkspaceJoinPublished::Committed(receipt.proof.generation_id)
+        }
+        AppendOutcome::AlreadyCommitted(_) => {
+            WorkspaceJoinPublished::AlreadyCommitted(receipt.proof.generation_id)
+        }
         AppendOutcome::Conflict { .. } => WorkspaceJoinPublished::Conflict, AppendOutcome::Fenced { .. } => WorkspaceJoinPublished::Fenced,
         AppendOutcome::IdempotencyConflict { .. } => WorkspaceJoinPublished::IdempotencyConflict,
     }
@@ -924,9 +928,11 @@ impl ProofDataAdmission<'_> {
         }
         self.reconcile()?;
         let (accounting, caller_work, budget) = match &mut self.ledger {
-            ProofDataAdmissionLedger::Local { accounting, work, budget } => { (accounting, work, *budget) }
+            ProofDataAdmissionLedger::Local { accounting, work, budget } => (accounting, work, *budget),
             #[cfg(not(target_arch = "wasm32"))]
-            ProofDataAdmissionLedger::Original { .. } => unreachable!("original admission returned"),
+            ProofDataAdmissionLedger::Original { .. } => {
+                unreachable!("original admission returned")
+            }
         };
         let (_, standing) = self.owner.live_payload_counts();
         let mut allocations = accounting.allocations;
@@ -1133,9 +1139,7 @@ impl Proof {
         }
         let owner = Arc::clone(admission.owner);
         self.dependencies.commit_with_data_custody(
-            extension, Some(&owner), |bytes, operations, copied, items| {
-                admission.admit(bytes, operations, copied, items)
-            },
+            extension, Some(&owner), |bytes, operations, copied, items| admission.admit(bytes, operations, copied, items),
         )
     }
 }
@@ -2000,7 +2004,7 @@ impl AuthoredMutation {
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         match self {
             Self::Rename { source, destination, .. }
-            | Self::HardLink { source, destination } => { source.retained_bytes() + destination.retained_bytes() }
+            | Self::HardLink { source, destination } => source.retained_bytes() + destination.retained_bytes(),
             Self::CloneRange(request) => { request.source.retained_bytes() + request.destination.retained_bytes() }
             Self::Reidentify { path, .. }
             | Self::CreateFile { path, .. }
@@ -3417,7 +3421,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let decoded = read_generation_root_with_accounting(
                 &self.inner.objects, ObjectId { kind: ObjectKind::GenerationRoot, digest: generation.digest() },
                 volume.config, &mut accounting, cancellation,
-            ).await.map_err(|error| if standalone { WorkspaceError::engine(error) } else { error.into() })?;
+            ).await.map_err(|error| {
+                if standalone { WorkspaceError::engine(error) } else { error.into()
+                }
+            })?;
             if decoded.0.volume_id != volume.id { return Err(WorkspaceError::ForeignGeneration); }
             Ok((decoded.0.parents, decoded.1))
         }.await;
@@ -3459,7 +3466,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let prior = created.work;
         let live = created.value.name.retained_bytes();
         let allowance = remaining_owned(prior, budget, live)
-            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+            .map_err(|failure| {
+            failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+        })?;
         let observed = self.read_creation_record(created.value.volume.id, allowance, cancellation).await
             .map_err(|failure| {
                 merge_simultaneous_failure(prior, *failure.work, live, failure.error)
@@ -3467,7 +3476,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             })?;
         let creation = observed.value.0;
         let work = merge_simultaneous_work(prior, observed.work, live, budget)
-            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+            .map_err(|failure| {
+                failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+            })?;
         self.initial_workspace_generation(
             created.value, creation.initial_generation_root, work, budget, cancellation,
         ).await
@@ -3485,7 +3496,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let mut work = named.work;
         let live = name.retained_bytes();
         let allowance = remaining_owned(work, budget, live)
-            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+            .map_err(|failure| {
+            failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+        })?;
         let (creation, operation, nested) = match self.read_creation_record(
             id.volume_id(), allowance, cancellation,
         ).await {
@@ -3498,7 +3511,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             }
         };
         work = merge_simultaneous_work(work, nested, live, budget)
-            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+            .map_err(|failure| {
+            failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+        })?;
         authenticate_named_creation(
             &creation, operation, id.volume_id(), config, original_operation_id,
         ).map_err(|error| OperationFailure::new(WorkspaceError::from(error), work))?;
@@ -3545,7 +3560,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         let publication = |id, commit, _| async move {
-            (({ let __authority_args = (id, commit, original, cancellation, before_publication,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.create_first_record(__authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.4).clone()))).await.map_err(|error| error.into_error(|error| crate::FsError::from(error).into())); __authority_result }), WorkCounters::UNCHARGED)
+            (({ let __authority_args = (id, commit, original, cancellation, before_publication,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.create_first_record(__authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.4).clone()))).await.map_err(|error| {
+                            error.into_error(|error| crate::FsError::from(error).into())
+                        }); __authority_result }), WorkCounters::UNCHARGED)
         };
         self.create_workspace_with_operation_with_native_work_value(
             name, config, original_operation_id, original, cancellation, publication,
@@ -3587,7 +3604,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 observed
             }
-            Err(FsError::VolumeMismatch) => return Err(WorkspaceError::from(FsError::CreationRejected).into()),
+            Err(FsError::VolumeMismatch) => { return Err(WorkspaceError::from(FsError::CreationRejected).into()); }
             Err(error) => return Err(WorkspaceError::from(error).into()),
         };
         authenticate_named_creation(&creation, operation, id.volume_id(), config, original_operation_id)?;
@@ -3618,7 +3635,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 id.volume_id(), original, cancellation,
             ).await {
                 Ok(creation) => creation, Err(FsError::Authority(AuthorityStoreError::Missing)) => return Ok(None),
-                Err(FsError::VolumeMismatch) => return Err(WorkspaceError::from(FsError::CreationRejected)),
+                Err(FsError::VolumeMismatch) => {
+                    return Err(WorkspaceError::from(FsError::CreationRejected));
+                }
                 Err(error) => return Err(WorkspaceError::from(error)),
             };
             authenticate_named_creation(&creation, operation, id.volume_id(), config, original_operation_id)?;
@@ -3676,7 +3695,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
         let live = workspace.name.retained_bytes();
         let allowance = remaining_owned(work, budget, live)
-            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+            .map_err(|failure| {
+            failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+        })?;
         let checkout = workspace.volume.checkout(
             GenerationSelector::Exact(GenerationId::new(generation_root.digest)), CheckoutMode::read_only_pinned(), allowance, cancellation,
         ).await.map_err(|failure| {
@@ -3684,7 +3705,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
         })?;
         let work = merge_simultaneous_work(work, checkout.work, live, budget)
-            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+            .map_err(|failure| {
+                failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+            })?;
         Ok(FsReceipt {
             value: crate::Generation { workspace, id: checkout.value.generation_id(), publication_closure: None, }, work,
         })
@@ -3705,13 +3728,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let work = created.work;
             let live = created.value.name.retained_bytes();
             let allowance = remaining_owned(work, budget, live)
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+                .map_err(|failure| {
+                failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+            })?;
             let head = created.value.volume.resolve_head_generation(allowance, cancellation).await.map_err(|failure| {
                     merge_simultaneous_failure(work, *failure.work, live, failure.error)
                         .map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
                 })?;
             let work = merge_simultaneous_work(work, head.2, live, budget)
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+                .map_err(|failure| {
+                failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+            })?;
             Ok(FsReceipt { value: created.value, work, })
         }).await.observe_on(&span, "create_workspace")
     }
@@ -3719,7 +3746,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn workspace_name_identity_with_native_work(
         &self, name: impl AsRef<str>, original: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(crate::WorkspaceName, crate::WorkspaceId), (WorkspaceError, Option<NativeAllocation>)> {
+    ) -> Result<(crate::WorkspaceName, crate::WorkspaceId), (WorkspaceError, Option<NativeAllocation>),
+    > {
         let result = (|| {
             let name = crate::WorkspaceName::new(name.as_ref(), original, cancellation)?;
             let id = crate::WorkspaceId::derive(
@@ -3742,14 +3770,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let prior = named.work;
         let live = name.retained_bytes();
         let allowance = remaining_owned(prior, budget, live)
-            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+            .map_err(|failure| {
+            failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+        })?;
         let created = self.create_volume_with_id_operation(id.volume_id(), config, operation_id, allowance, cancellation).await
             .map_err(|failure| {
                 merge_simultaneous_failure(prior, *failure.work, live, failure.error)
                     .map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
             })?;
         let work = merge_simultaneous_work(prior, created.work, live, budget)
-            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+            .map_err(|failure| {
+                failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+            })?;
         Ok(FsReceipt {
             value: crate::Workspace {
                 name, id, volume: created.value,
@@ -3776,21 +3808,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let prior = named.work;
             let live = name.retained_bytes();
             let allowance = remaining_owned(prior, budget, live)
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+                .map_err(|failure| {
+                failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+            })?;
             let opened = self.open_volume(id.volume_id(), allowance, cancellation).await.map_err(|failure| {
                     merge_simultaneous_failure(prior, *failure.work, live, failure.error)
                         .map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
                 })?;
             let work = merge_simultaneous_work(prior, opened.work, live, budget)
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+                .map_err(|failure| {
+                    failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+                })?;
             let allowance = remaining_owned(work, budget, live)
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+                .map_err(|failure| {
+                failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+            })?;
             let head = opened.value.resolve_head_generation(allowance, cancellation).await.map_err(|failure| {
                     merge_simultaneous_failure(work, *failure.work, live, failure.error)
                         .map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
                 })?;
             let work = merge_simultaneous_work(work, head.2, live, budget)
-                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+                .map_err(|failure| {
+                failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+            })?;
             Ok(FsReceipt {
                 value: crate::Workspace {
                     name, id, volume: opened.value,
@@ -3830,7 +3870,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         paths: Option<Vec<String>>, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
     ) -> Result<(Owned<VerifiedForkSource>, ObjectId), WorkspaceError> {
 
-        let path_bytes = paths.as_ref().map_or(Ok(0), |paths| crate::workspace::workspace_owned_strings_bytes(paths))?;
+        let path_bytes = paths.as_ref().map_or(Ok(0), |paths| {
+            crate::workspace::workspace_owned_strings_bytes(paths)
+        })?;
         let (path_allocation, admitted) = accounting.record_actual_owned(path_bytes)?;
         let mut paths = (paths, path_allocation);
         admitted?;
@@ -3864,7 +3906,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         };
         let fork_root = Owned::new(fork_root, parents.allocation, parents.bytes);
         source_root.retire(accounting)?;
-        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_generation_root(&fork_root.value, observe, allocation_error))?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_generation_root(&fork_root.value, observe, allocation_error)
+            })?;
         let generation_root = self.put_encoded_with_accounting(
             ObjectKind::GenerationRoot, encoded, accounting, cancellation,
         ).await?;
@@ -3930,10 +3974,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 return (committed, WorkCounters::UNCHARGED);
             }
             let committed = match guard {
-                Some(guard) => ({ let __authority_args = (fork, permit, budget, cancellation, guard,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.fork_workspace(__authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut (&mut *__authority_args.4))).await.map_err(|error| error.into_error(crate::FsError::from)); __authority_work.receipt(__authority_result) }),
+                Some(guard) => {
+                    ({ let __authority_args = (fork, permit, budget, cancellation, guard,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.fork_workspace(__authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut (&mut *__authority_args.4))).await.map_err(|error| error.into_error(crate::FsError::from)); __authority_work.receipt(__authority_result) })
+                }
                 None => ({ let __authority_args = (fork, budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = self.inner.authority.fork_workspace(__authority_args.0, crate::PublicationPermit::Unrestricted, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
                     .map(|receipt| FsReceipt { value: receipt.value, work: receipt.work })
-                    .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, FsError::from)),
+                    .map_err(|failure| {
+                    failure.map_with_prior_work(WorkCounters::UNCHARGED, FsError::from)
+                }),
             };
             let work = match &committed { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
             (committed.map(|receipt| receipt.value).map_err(|failure| WorkspaceError::from(failure.error)), work)
@@ -3942,9 +3990,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             Ok((allocation, admitted)) => {
                 let destination = (destination, allocation);
                 match admitted {
-                    Ok(()) => self.fork_workspace_with_accounting(
+                    Ok(()) => {
+                        self.fork_workspace_with_accounting(
                         destination.0, source, idempotency_key, paths, permit, &mut accounting, cancellation, publication,
-                    ).await, Err(error) => Err(WorkspaceError::from(error)),
+                    ).await
+                    }
+                    Err(error) => Err(WorkspaceError::from(error)),
                 }
             }
             Err(error) => Err(WorkspaceError::from(error)),
@@ -3966,7 +4017,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     {
         let mut accounting = KernelAccounting::native(original, cancellation);
         let publication = |fork, permit, _| async move {
-            (({ let __authority_args = (fork, permit, original, cancellation, before_publication,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.fork_workspace(__authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.4).clone()))).await.map_err(|error| error.into_error(|error| crate::FsError::from(error).into())); __authority_result }), WorkCounters::UNCHARGED)
+            (({ let __authority_args = (fork, permit, original, cancellation, before_publication,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.fork_workspace(__authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.4).clone()))).await.map_err(|error| {
+                            error.into_error(|error| crate::FsError::from(error).into())
+                        }); __authority_result }), WorkCounters::UNCHARGED)
         };
         self.fork_workspace_with_accounting(
             destination, source, idempotency_key, paths, permit, &mut accounting, cancellation, publication,
@@ -3984,7 +4037,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Fut: Future<Output = (Result<crate::WorkspaceForkOutcome, E>, WorkCounters)> + ProviderTask,
     {
 
-        let path_bytes = paths.as_ref().map_or(Ok(0), |paths| crate::workspace::workspace_owned_strings_bytes(paths))?;
+        let path_bytes = paths.as_ref().map_or(Ok(0), |paths| {
+            crate::workspace::workspace_owned_strings_bytes(paths)
+        })?;
         let (path_allocation, admitted) = accounting.record_actual_owned(path_bytes)?;
         let mut paths = (paths, path_allocation);
         admitted?;
@@ -4012,8 +4067,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     source: None,
                 });
             }
-            Err(WorkspaceError::Filesystem(FsError::Authority(AuthorityStoreError::Missing))) =>
-                accounting.check()?,
+            Err(WorkspaceError::Filesystem(FsError::Authority(AuthorityStoreError::Missing))) => {
+                accounting.check()?
+            }
             Err(error) => return Err(error.into()),
         }
         let lineage = self.fork_lineage_with_accounting(source, accounting, cancellation).await?;
@@ -4029,22 +4085,47 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
                 let original = *original;
-                let drained = self.inner.objects.flush_before_publish_with_native_work(
-                    crate::PublicationScope::Closure {
+                let drained = {
+                    let __object_args = (
+                        crate::PublicationScope::Closure {
                         objects: &fork_root.value.closure, proven_at: fork_root.value.proven_at,
-                    }, original, cancellation,
-                ).await.map_err(FsError::from)?;
+                    },
+                        original,
+                        cancellation,
+                    );
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .inner
+                        .objects
+                        .flush_before_publish(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_result
+                }
+                .map_err(FsError::from)?;
                 accounting.check()?;
                 let (outcome, _) = publication(fork, permit, accounting.remaining()?).await;
                 drop(drained);
                 outcome?
             }
             _ => {
-                let drained = self.inner.objects.flush_before_publish(
+                let drained = {
+                    let __object_args = (
                     crate::PublicationScope::Closure {
                         objects: &fork_root.value.closure, proven_at: fork_root.value.proven_at,
-                    }, accounting.remaining()?, cancellation,
-                ).await;
+                    },
+                        accounting.remaining()?,
+                        cancellation,
+                    );
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .inner
+                        .objects
+                        .flush_before_publish(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                };
                 let work = match &drained { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
                 merge_fork_backend_work(accounting, work)?;
                 let drained = drained.map_err(|failure| FsError::from(failure.error))?;
@@ -4059,9 +4140,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         };
         match outcome {
             crate::WorkspaceForkOutcome::Committed => {}
-            crate::WorkspaceForkOutcome::RetentionConflict => return Err(WorkspaceError::RetentionConflict.into()),
-            crate::WorkspaceForkOutcome::CreationRejected =>
-                return Err(WorkspaceError::from(FsError::CreationRejected).into()),
+            crate::WorkspaceForkOutcome::RetentionConflict => {
+                return Err(WorkspaceError::RetentionConflict.into());
+            }
+            crate::WorkspaceForkOutcome::CreationRejected => { return Err(WorkspaceError::from(FsError::CreationRejected).into()); }
         }
         fork_root.retire(accounting)?;
         let (created, operation) = self.read_fork_creation_with_accounting(volume_id, accounting, cancellation).await?;
@@ -4148,9 +4230,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let (closure, work) = prove_record_closure_async(
             &self.inner.objects, records, closure_limits(config), budget, cancellation,
         ).await.map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), FsError::from))?;
-        let flushed = self.inner.objects.flush_before_publish(
-            crate::PublicationScope::Closure { objects: &closure, proven_at }, remaining(work, budget)?, cancellation,
-        ).await.map_err(|failure| failure.map_with_prior_work(work, FsError::from))?;
+        let flushed = {
+            let __object_args = (
+                crate::PublicationScope::Closure {
+                    objects: &closure,
+                    proven_at,
+                },
+                remaining(work, budget)?,
+                cancellation,
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }
+        .map_err(|failure| failure.map_with_prior_work(work, FsError::from))?;
         let total = work.checked_add(flushed.work).map_err(|error| OperationFailure::new(FsError::from(error), work))?;
         Ok(FsReceipt { value: flushed.value, work: total })
     }
@@ -4167,9 +4261,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             &self.inner.objects, records, closure_limits(config), original, cancellation,
         ).await?;
         let closure = (value, allocation);
-        self.inner.objects.flush_before_publish_with_native_work(
-            crate::PublicationScope::Closure { objects: &closure.0, proven_at }, original, cancellation,
-        ).await.map_err(FsError::from)
+        {
+            let __object_args = (
+                crate::PublicationScope::Closure {
+                    objects: &closure.0,
+                    proven_at,
+                },
+                original,
+                cancellation,
+            );
+            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+            let __object_result = self
+                .inner
+                .objects
+                .flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_result
+        }
+        .map_err(FsError::from)
     }
 
     /// Holds the actual generation closure across an external durable publication.
@@ -4181,22 +4290,42 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let proven_at = self.inner.objects.collection_sweeps();
         let proof = prove_generation_closure(
             &self.inner.objects, generation_root, closure_limits(volume.config), budget, cancellation,
-        ).await.map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::engine))?;
+        ).await.map_err(|failure| {
+            failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::engine)
+        })?;
         let work = proof.work;
         if proof.root.volume_id != volume.id {
             return Err(OperationFailure::new(WorkspaceError::ForeignGeneration, work));
         }
         drop(proof.root);
         let live = (proof.objects.capacity() as u64).checked_mul(size_of::<ObjectId>() as u64)
-            .ok_or_else(|| OperationFailure::new(WorkspaceError::Work(WorkError::Overflow), work))?;
-        let flushed = self.inner.objects.flush_before_publish(
-            crate::PublicationScope::Closure { objects: &proof.objects, proven_at },
-            remaining_owned(work, budget, live).map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?,
-            cancellation,
-        ).await.map_err(|failure| merge_simultaneous_failure(work, *failure.work, live, FsError::Object(failure.error))
-            .map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+            .ok_or_else(|| {
+                OperationFailure::new(WorkspaceError::Work(WorkError::Overflow), work)
+            })?;
+        let flushed = {
+            let __object_args = (
+                crate::PublicationScope::Closure {
+                    objects: &proof.objects,
+                    proven_at,
+                },
+                remaining_owned(work, budget, live).map_err(|failure| {
+                    failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+                })?,
+                cancellation,
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }
+        .map_err(|failure| {
+            merge_simultaneous_failure(work, *failure.work, live, FsError::Object(failure.error))
+            .map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+        })?;
         let work = merge_simultaneous_work(work, flushed.work, live, budget)
-            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
+            .map_err(|failure| {
+                failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
+            })?;
         Ok(FsReceipt { value: flushed.value, work })
     }
 
@@ -4211,11 +4340,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let publication = self.retention_publication_with_accounting(
                 volume, ObjectId { kind: ObjectKind::GenerationRoot, digest: generation.digest() }, &mut accounting, cancellation,
             ).await?;
-            let held = self.inner.objects.flush_before_publish_with_native_work(
-                crate::PublicationScope::Closure {
+            let held = {
+                let __object_args = (
+                    crate::PublicationScope::Closure {
                     objects: &publication.value.objects, proven_at: publication.value.proven_at,
-                }, original, cancellation,
-            ).await.map_err(FsError::from)?;
+                },
+                    original,
+                    cancellation,
+                );
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .objects
+                    .flush_before_publish(__object_args.0, &mut __object_work)
+                    .await;
+                __object_result
+            }
+            .map_err(FsError::from)?;
             publication.retire(&mut accounting)?;
             Ok(held)
         }.await;
@@ -4264,7 +4406,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let fact = Owned::new(
             RetentionCreated { volume_id: volume.id, kind, label, generation_root, config: volume.config }, allocation, bytes,
         );
-        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_retention_created(&fact.value, observe, allocation_error))?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_retention_created(&fact.value, observe, allocation_error)
+            })?;
         let commit = creation_commit_with_accounting(
             OperationId::from_bytes(authority_id.into_bytes()), encoded, accounting,
         )?;
@@ -4281,8 +4425,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 let found = self.retention_operation_with_accounting(
                     authority_id, commit.operation_id, accounting, cancellation,
                 ).await?;
-                if found.is_some_and(|(sequence, fingerprint)| sequence == Sequence::new(1)
-                    && fingerprint == commit.fingerprint)
+                if found.is_some_and(|(sequence, fingerprint)| {
+                    sequence == Sequence::new(1)
+                    && fingerprint == commit.fingerprint
+                })
                 { if let Some(cached) = cached { cached.retire(accounting)?; } return Ok(()); }
             }
             Err(FsError::Authority(AuthorityStoreError::Missing)) => {}
@@ -4293,7 +4439,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             Some(proof) if self.same_deployment(&proof.value.filesystem)
                 && proof.value.generation_root == generation_root && proof.value.volume_id == volume.id
                 && proof.value.limits == limits
-                && proof.value.proven_at == self.inner.objects.collection_sweeps() => Some(proof),
+                && proof.value.proven_at == self.inner.objects.collection_sweeps() =>
+            {
+                Some(proof)
+            }
             Some(proof) => { proof.retire(accounting)?; None }
             None => None,
         };
@@ -4326,13 +4475,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<Option<(Sequence, Digest)>, FsError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            let found = ({ let __authority_args = (authority_id, operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result })?;
-            return Ok(found.0.as_ref().map(|record| (record.sequence, record.fingerprint)));
+            let found = ({ let __authority_args = (authority_id, operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| {
+                        (value, allocation.expect("native authority allocation"))
+                    }); __authority_result })?;
+            return Ok(found.0
+                .as_ref().map(|record| (record.sequence, record.fingerprint)));
         }
         let result = ({ let __authority_args = (authority_id, operation_id, accounting.remaining()?, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) });
         let spent = match &result { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         merge_creation_backend_work(accounting, spent)?;
-        result.map(|receipt| receipt.value.map(|record| (record.sequence, record.fingerprint))).map_err(|failure| failure.error.into())
+        result.map(|receipt| {
+                receipt.value.map(|record| (record.sequence, record.fingerprint))
+            }).map_err(|failure| failure.error.into())
     }
 
     async fn retention_publication_with_accounting(
@@ -4380,18 +4534,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<bool, FsError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            let _hold = self.inner.objects.flush_before_publish_with_native_work(
-                crate::PublicationScope::Closure { objects: &publication.objects, proven_at: publication.proven_at },
-                original, cancellation,
-            ).await?;
+            let _hold = {
+                let __object_args = (
+                    crate::PublicationScope::Closure { objects: &publication.objects, proven_at: publication.proven_at },
+                    original,
+                    cancellation,
+                );
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .objects
+                    .flush_before_publish(__object_args.0, &mut __object_work)
+                    .await;
+                __object_result
+            }?;
             accounting.check()?;
             let created = ({ let __authority_args = (authority_id, commit, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.create_first_record(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_result })?;
             return Ok(created);
         }
-        let drained = self.inner.objects.flush_before_publish(
-            crate::PublicationScope::Closure { objects: &publication.objects, proven_at: publication.proven_at },
-            accounting.remaining()?, cancellation,
-        ).await;
+        let drained = {
+            let __object_args = (
+                crate::PublicationScope::Closure { objects: &publication.objects, proven_at: publication.proven_at },
+                accounting.remaining()?,
+                cancellation,
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        };
         let spent = match &drained { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         merge_creation_backend_work(accounting, spent)?;
         let _hold = drained.map_err(|failure| FsError::Object(failure.error))?.value;
@@ -4427,9 +4599,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .inner
             .authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
             .map_err(WorkspaceError::engine)?;
-        let latest = latest.value.first().ok_or_else(|| {
-            WorkspaceError::engine(FsError::InvalidAuthorityHistory)
-        })?;
+        let latest = latest.value.first().ok_or_else(|| WorkspaceError::engine(FsError::InvalidAuthorityHistory))?;
         if let Ok(deleted) = decode_workspace_deleted(&latest.payload, MAXIMUM_VOLUME_EVENT_BYTES) {
             if deleted != volume.id {
                 return Err(WorkspaceError::engine(
@@ -4443,7 +4613,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         generation_from_record(latest, volume.id, &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation))
             .map_err(WorkspaceError::engine)?;
-        let encoded = crate::kernel::encode::<FsError>(WorkBudget::UNBOUNDED, Some(&cancellation), 0, |observe| crate::kernel::encode_workspace_deleted(volume.id, observe, FsError::EncodedAllocationFailed))
+        let encoded = crate::kernel::encode::<FsError>(WorkBudget::UNBOUNDED, Some(&cancellation), 0, |observe| {
+                crate::kernel::encode_workspace_deleted(volume.id, observe, FsError::EncodedAllocationFailed)
+            },
+        )
             .map_err(|failure| WorkspaceError::engine(failure.error))?;
         let encoded = creation_commit(operation_id, encoded, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| WorkspaceError::engine(failure.error))?;
@@ -4548,7 +4721,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             root_file_id: target_root.0.root_file_id, file_table: source_root.0.file_table,
             required_features: source_root.0.continuation_features(), parents: source_root.0.parents,
         }, source_root.1);
-        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_generation_root(&normalized.0, observe, allocation_error))?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_generation_root(&normalized.0, observe, allocation_error)
+            })?;
         let hashing = WorkCounters {
             bytes_hashed: (encoded.0.len() as u64).checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
                 .ok_or(WorkError::Overflow)?,..WorkCounters::UNCHARGED
@@ -4640,7 +4815,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
             cancellation.check().map_err(FsError::from)?;
-            let observed = ({ let __authority_args = (volume_authority_id(workspace.id), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }).map_err(FsError::from)?;
+            let observed = ({ let __authority_args = (volume_authority_id(workspace.id), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| {
+                        (value, allocation.expect("native authority allocation"))
+                    }); __authority_result }).map_err(FsError::from)?;
             native = Some((observed.0, KernelOwnedAllocation::NativeOriginal(observed.1)));
         }
         let observed = match native {
@@ -4654,7 +4831,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 (result.map_err(|failure| WorkspaceError::from(failure.error))?.value, KernelOwnedAllocation::Standalone)
             }
         };
-        let generation = observed.0.as_ref().map(|record| {
+        let generation = observed.0
+            .as_ref().map(|record| {
             accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
             if record.operation_id != operation_id { return Err(FsError::InvalidAuthorityHistory); }
             generation_from_record(record, workspace.id, accounting).map(|root| GenerationId::new(root.digest))
@@ -4677,7 +4855,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let mut native = None;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                let observed = ({ let __authority_args = (volume_authority_id(target.id), witness.operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }).map_err(FsError::from)?;
+                let observed = ({ let __authority_args = (volume_authority_id(target.id), witness.operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| {
+                            (value, allocation.expect("native authority allocation"))
+                        }); __authority_result }).map_err(FsError::from)?;
                 native = Some((observed.0, KernelOwnedAllocation::NativeOriginal(observed.1)));
             }
             let observed = match native {
@@ -4798,17 +4978,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         let mut metadata = Vec::with_capacity(2);
         for object in [left.metadata, right.metadata] {
-            let read = self
-                .inner
-                .objects
-                .read(
+            let read = {
+                let __object_args = (
                     object,
                     workspace.config.limits.maximum_object_bytes,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
-                )
-                .await
-                .map_err(WorkspaceError::engine)?;
+                );
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = self
+                .inner
+                .objects
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+            .map_err(WorkspaceError::engine)?;
             metadata.push(
                 crate::kernel::decode_file_metadata(&read.value.bytes, DecodeLimits::for_volume(workspace.config), &mut |_| Ok::<_, FsError>(()))
                 .map_err(WorkspaceError::engine)?
@@ -4823,17 +5008,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         workspace: &Volume<A, O>,
         record: FileRecord,
     ) -> Result<Vec<u8>, WorkspaceError> {
-        let read = self
-            .inner
-            .objects
-            .read(
+        let read = {
+            let __object_args = (
                 record.metadata,
                 workspace.config.limits.maximum_object_bytes,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
-            )
-            .await
-            .map_err(WorkspaceError::engine)?;
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = self
+            .inner
+            .objects
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }
+        .map_err(WorkspaceError::engine)?;
         crate::kernel::decode_file_metadata(&read.value.bytes, DecodeLimits::for_volume(workspace.config), &mut |_| Ok::<_, FsError>(()))
         .map_err(WorkspaceError::engine)?;
         Ok(read.value.bytes.to_vec())
@@ -4912,7 +5102,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<ObjectId, WorkspaceError> {
         let metadata = crate::kernel::decode_file_metadata(bytes, DecodeLimits::for_volume(workspace.config), &mut |_| Ok::<_, FsError>(())).map_err(WorkspaceError::engine)?;
         let cancellation = CancellationToken::new();
-        let encoded = crate::kernel::encode::<FsError>(WorkBudget::UNBOUNDED, Some(&cancellation), 0, |observe| crate::kernel::encode_file_metadata(metadata, observe, FsError::EncodedAllocationFailed)).map_err(|failure| WorkspaceError::engine(failure.error))?;
+        let encoded = crate::kernel::encode::<FsError>(WorkBudget::UNBOUNDED, Some(&cancellation), 0, |observe| {
+                crate::kernel::encode_file_metadata(metadata, observe, FsError::EncodedAllocationFailed)
+            },
+        ).map_err(|failure| WorkspaceError::engine(failure.error))?;
         let (object, _) = self
             .put_encoded(ObjectKind::Metadata, encoded, WorkCounters::default(), WorkBudget::UNBOUNDED, &cancellation)
             .await
@@ -5270,8 +5463,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         match output.allocation {
             KernelOwnedAllocation::NativeOriginal(allocation) =>
                 Ok((output.value, allocation)),
-            KernelOwnedAllocation::Standalone =>
-                unreachable!("native join retains original output custody"),
+            KernelOwnedAllocation::Standalone => {
+                unreachable!("native join retains original output custody")
+            }
         }
     }
 
@@ -5321,11 +5515,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             base_root.value.volume_id = target.id;
             source_root.value.required_features = source_root.value.continuation_features();
             source_root.value.volume_id = target.id;
-            let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_generation_root(&base_root.value, observe, allocation_error))?;
+            let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                    crate::kernel::encode_generation_root(&base_root.value, observe, allocation_error)
+                })?;
             let normalized_base_object = self.put_encoded_with_accounting(
                 ObjectKind::GenerationRoot, encoded, accounting, cancellation,
             ).await?;
-            let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_generation_root(&source_root.value, observe, allocation_error))?;
+            let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                    crate::kernel::encode_generation_root(&source_root.value, observe, allocation_error)
+                })?;
             let normalized_source_object = self.put_encoded_with_accounting(
                 ObjectKind::GenerationRoot, encoded, accounting, cancellation,
             ).await?;
@@ -5339,14 +5537,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 retain_theirs_parent: history == crate::workspace::JoinHistory::Merge, maximum_changes, maximum_conflicts,
             };
             let (merged, allocation) = match resolutions.view() {
-                WorkspaceJoinResolutionView::Map(map) =>
+                WorkspaceJoinResolutionView::Map(map) => {
                     merge_generation_with_borrowed_map_resolutions_with_accounting(
                         &self.inner.objects, &merge_request, map, DecodeLimits::for_volume(target.config), accounting, cancellation,
-                    ).await?,
-                WorkspaceJoinResolutionView::Slice(slice) =>
+                    ).await?
+                }
+                WorkspaceJoinResolutionView::Slice(slice) => {
                     merge_generation_with_borrowed_resolutions_with_accounting(
                         &self.inner.objects, merge_request, slice, DecodeLimits::for_volume(target.config), accounting, cancellation,
-                    ).await?,
+                    ).await?
+                }
             };
             let (candidate, root) = match merged {
                 MergeGenerationOutcome::Conflicted { conflicts, truncated } => {
@@ -5380,12 +5580,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }, PublicationIntent::guarded(Some(operation_context), permit), closure_limits(target.config), accounting, cancellation,
             ).await?;
             let outcome = match published {
-                WorkspaceJoinPublished::Committed(id) => WorkspaceJoinOutcome::Joined(id, resolutions_digest),
-                WorkspaceJoinPublished::AlreadyCommitted(id) => WorkspaceJoinOutcome::AlreadyJoined(id, resolutions_digest),
+                WorkspaceJoinPublished::Committed(id) => {
+                    WorkspaceJoinOutcome::Joined(id, resolutions_digest)
+                }
+                WorkspaceJoinPublished::AlreadyCommitted(id) => {
+                    WorkspaceJoinOutcome::AlreadyJoined(id, resolutions_digest)
+                }
                 WorkspaceJoinPublished::Conflict => WorkspaceJoinOutcome::Stale(
                     self.workspace_head_state(target, accounting, cancellation).await?.0,
                 ), WorkspaceJoinPublished::Fenced => WorkspaceJoinOutcome::Fenced,
-                WorkspaceJoinPublished::IdempotencyConflict => WorkspaceJoinOutcome::IdempotencyConflict,
+                WorkspaceJoinPublished::IdempotencyConflict => {
+                    WorkspaceJoinOutcome::IdempotencyConflict
+                }
             };
             workspace_join_scalar(outcome, accounting).map_err(P::Error::from)
         }.await;
@@ -5413,9 +5619,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let scope = crate::PublicationScope::Closure { objects: &objects, proven_at: self.inner.objects.collection_sweeps() };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            return self.inner.objects.flush_before_publish_with_native_work(scope, original, cancellation).await.map_err(Into::into);
+            return {
+                let __object_args = (scope, original, cancellation);
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .objects
+                    .flush_before_publish(__object_args.0, &mut __object_work)
+                    .await;
+                __object_result
+            }
+            .map_err(Into::into);
         }
-        let flushed = self.inner.objects.flush_before_publish(scope, accounting.remaining()?, cancellation).await;
+        let flushed = {
+            let __object_args = (scope, accounting.remaining()?, cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = self
+                .inner
+                .objects
+                .flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        };
         let spent = match &flushed { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         merge_creation_backend_work(accounting, spent)?;
         flushed.map(|receipt| receipt.value).map_err(|failure| failure.error.into())
@@ -5587,12 +5813,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<crate::storage::ObjectRead> {
-        let receipt = self
+        let receipt = {
+            let __object_args = (object_id, maximum_bytes, budget, cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = self
             .inner
             .objects
-            .read(object_id, maximum_bytes, budget, cancellation)
-            .await
-            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }
+        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
         Ok(FsReceipt {
             value: receipt.value,
             work: receipt.work,
@@ -5607,12 +5838,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        let receipt = self
+        let receipt = {
+            let __object_args = (object_id, bytes.into(), budget, cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = self
             .inner
             .objects
-            .put(object_id, bytes.into(), budget, cancellation)
-            .await
-            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }
+        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
         Ok(FsReceipt {
             value: (),
             work: receipt.work,
@@ -5759,7 +5995,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> FsResult<Volume<A, O>> {
         let mut allocations = AllocationLedger::default();
         allocations.claim_bytes(closure_owned_bytes, 0, &mut work, budget)
-            .map_err(|error| OperationFailure::new(crate::collection::handle_allocation_error(error), work))?;
+            .map_err(|error| {
+                OperationFailure::new(crate::collection::handle_allocation_error(error), work)
+            })?;
         let result = {
             let mut accounting = KernelAccounting::borrowed_standalone(
                 &mut allocations, &mut work, budget, cancellation,
@@ -5792,14 +6030,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 OperationId::from_bytes(derived_digest(CREATION_OPERATION_DOMAIN, volume_id).as_bytes()[..16].try_into().expect("sixteen digest bytes"))
             }
         };
-        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_volume_created(creation, observe, allocation_error))?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_volume_created(creation, observe, allocation_error)
+            })?;
         let capacity = encoded.0.capacity() as u64;
         let commit = creation_commit_with_accounting(operation_id, encoded, accounting)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            let drained = self.inner.objects.flush_before_publish_with_native_work(
-                crate::PublicationScope::Closure { objects: closure, proven_at }, original, cancellation,
-            ).await.map_err(FsError::from)?;
+            let drained = {
+                let __object_args = (
+                    crate::PublicationScope::Closure {
+                        objects: closure,
+                        proven_at,
+                    },
+                    original,
+                    cancellation,
+                );
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .objects
+                    .flush_before_publish(__object_args.0, &mut __object_work)
+                    .await;
+                __object_result
+            }
+            .map_err(FsError::from)?;
             accounting.check()?;
             let (created, _) = publication(volume_authority_id(volume_id), commit, accounting.remaining()?).await;
             let created = created?;
@@ -5807,9 +6063,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             drop(drained);
             return Ok(Volume { fs: self.clone(), id: volume_id, config });
         }
-        let drained = self.inner.objects.flush_before_publish(
-            crate::PublicationScope::Closure { objects: closure, proven_at }, accounting.remaining()?, cancellation,
-        ).await;
+        let drained = {
+            let __object_args = (
+                crate::PublicationScope::Closure {
+                    objects: closure,
+                    proven_at,
+                },
+                accounting.remaining()?,
+                cancellation,
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        };
         let spent = match &drained { Ok(receipt) => receipt.work, Err(failure) => *failure.work, };
         merge_creation_backend_work(accounting, spent)?;
         let drained = drained.map_err(|failure| FsError::from(failure.error))?;
@@ -5833,7 +6100,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
                 accounting.check()?;
-                let records = ({ let __authority_args = (volume_authority_id(volume_id), Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.3, __authority_args.4); let __authority_result = self.inner.authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result })?;
+                let records = ({ let __authority_args = (volume_authority_id(volume_id), Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.3, __authority_args.4); let __authority_result = self.inner.authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, allocation)| {
+                            (value, allocation.expect("native authority allocation"))
+                        }); __authority_result })?;
                 return decode_first_creation_record(volume_id, &records.0, &mut accounting);
             }
             let allowance = accounting.standalone_parts().expect("standalone creation read").2;
@@ -5853,9 +6122,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<[ObjectId; 4], FsError> {
-        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_file_metadata(FileMetadata::default(), observe, allocation_error))?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_file_metadata(FileMetadata::default(), observe, allocation_error)
+            })?;
         let metadata = self.put_encoded_with_accounting(ObjectKind::Metadata, encoded, accounting, cancellation).await?;
-        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_tree_page(&TreePage::Leaf(Vec::new()), config.limits.maximum_directory_page_entries, observe, allocation_error))?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_tree_page(&TreePage::Leaf(Vec::new()), config.limits.maximum_directory_page_entries, observe, allocation_error)
+            })?;
         let tree = self.put_encoded_with_accounting(ObjectKind::TreePage, encoded, accounting, cancellation).await?;
         accounting.charge(identity_hash_work(ROOT_FILE_DOMAIN))?;
         let root_file_id = FileId::from_bytes(derived_digest(ROOT_FILE_DOMAIN, volume_id).as_bytes()[..16].try_into().expect("sixteen digest bytes"));
@@ -5865,14 +6138,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             link_count: 1,
             metadata, payload: FilePayload::Directory { entries: tree },
         };
-        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_file_table_leaf_records(std::slice::from_ref(&record), config.limits.maximum_directory_page_entries, None, observe, allocation_error))?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_file_table_leaf_records(std::slice::from_ref(&record), config.limits.maximum_directory_page_entries, None, observe, allocation_error)
+            })?;
         let file_table = self.put_encoded_with_accounting(
             ObjectKind::FileTablePage, encoded, accounting, cancellation,
         ).await?;
         let root = GenerationRoot {
             volume_id, root_file_id, file_table, parents: Vec::new(), required_features: 0,
         };
-        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_generation_root(&root, observe, allocation_error))?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_generation_root(&root, observe, allocation_error)
+            })?;
         let generation_root = self.put_encoded_with_accounting(
             ObjectKind::GenerationRoot, encoded, accounting, cancellation,
         ).await?;
@@ -5891,7 +6168,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             };
             let hashed = HashedObject::from_native_vec(kind, &mut encoded.0, allocation, original, cancellation)?;
             let object = hashed.object_id();
-            self.inner.objects.put_hashed_with_native_work(hashed, original, cancellation).await?;
+            {
+                let __object_args = (hashed, original, cancellation);
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .objects
+                    .put_hashed(__object_args.0, &mut __object_work)
+                    .await;
+                __object_result
+            }?;
             return Ok(object);
         }
         let capacity = encoded.0.capacity() as u64;
@@ -5911,7 +6198,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let hashed = HashedObject::new(kind, bytes);
         accounting.record_completed(hashing)?;
         let object = hashed.object_id();
-        let receipt = self.inner.objects.put_hashed(hashed, accounting.remaining()?, cancellation).await;
+        let receipt = {
+            let __object_args = (hashed, accounting.remaining()?, cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = self.inner.objects.put_hashed(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        };
         let spent = match &receipt { Ok(receipt) => receipt.work, Err(failure) => *failure.work, };
         let (allocations, work, budget, _) = accounting.standalone_parts().ok_or(FsError::HandleAllocationFailed)?;
         *work = work.with_backend(spent, allocations.live_bytes())?;
@@ -5928,13 +6221,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation.check().map_err(|error| OperationFailure::new(error.into(), work))?;
         let mut allocations = AllocationLedger::default();
         allocations.claim_bytes(live_owned_bytes, 0, &mut work, budget)
-            .map_err(|error| OperationFailure::new(error.into_work_or(FsError::PendingMutationAllocationFailed), work))?;
+            .map_err(|error| {
+                OperationFailure::new(error.into_work_or(FsError::PendingMutationAllocationFailed), work)
+            })?;
         let child_budget = remaining_owned(work, budget, live_owned_bytes)?;
-        let encoded = crate::kernel::encode::<FsError>(child_budget, Some(cancellation), 0, |observe| crate::kernel::encode_generation_root(root, observe, FsError::EncodedAllocationFailed))
-            .map_err(|failure| merge_simultaneous_failure(work, *failure.work, live_owned_bytes, failure.error))?;
+        let encoded = crate::kernel::encode::<FsError>(child_budget, Some(cancellation), 0, |observe| {
+                crate::kernel::encode_generation_root(root, observe, FsError::EncodedAllocationFailed)
+            })
+            .map_err(|failure| {
+                merge_simultaneous_failure(work, *failure.work, live_owned_bytes, failure.error)
+            })?;
         let (object, child_work) = self.put_encoded(
             ObjectKind::GenerationRoot, encoded, WorkCounters::default(), child_budget, cancellation,
-        ).await.map_err(|failure| merge_simultaneous_failure(work, *failure.work, live_owned_bytes, failure.error))?;
+        ).await.map_err(|failure| {
+                merge_simultaneous_failure(work, *failure.work, live_owned_bytes, failure.error)
+            })?;
         Ok((object, merge_simultaneous_work(work, child_work, live_owned_bytes, budget)?))
     }
 
@@ -5964,12 +6265,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let hashed = HashedObject::new(kind, encoded.value.into());
         let object = hashed.object_id();
         let backend_budget = remaining_owned(prospective, budget, live_bytes)?;
-        let receipt = self
+        let receipt = {
+            let __object_args = (hashed, backend_budget, cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = self
             .inner
             .objects
-            .put_hashed(hashed, backend_budget, cancellation)
-            .await
-            .map_err(|failure| {
+            .put_hashed(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }
+        .map_err(|failure| {
                 merge_simultaneous_failure(
                     prospective,
                     *failure.work,
@@ -6214,10 +6520,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             let mut allocations = AllocationLedger::default();
             allocations.claim_bytes(
                 usize_to_u64(root.parents.capacity() * size_of::<GenerationId>()), 0, &mut work, budget,
-            ).map_err(|error| OperationFailure::new(crate::collection::handle_allocation_error(error), work))?;
+            ).map_err(|error| {
+                    OperationFailure::new(crate::collection::handle_allocation_error(error), work)
+                })?;
             let captured_bytes = usize_to_u64(CheckoutDependencies::empty_logical_owned_bytes());
             allocations.claim_bytes(captured_bytes, 1, &mut work, budget)
-                .map_err(|error| OperationFailure::new(crate::collection::handle_allocation_error(error), work))?;
+                .map_err(|error| {
+                    OperationFailure::new(crate::collection::handle_allocation_error(error), work)
+                })?;
             let dependencies = CheckoutDependencies::new(
                 std::iter::empty(),
                 std::iter::empty(),
@@ -6226,10 +6536,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             .map_err(|error| OperationFailure::new(error.into(), work))?;
             let lock_and_paths_bytes = usize_to_u64(size_of::<Mutex<Proof>>() + size_of::<ObservedPathMap>());
             allocations.claim_bytes(lock_and_paths_bytes, 2, &mut work, budget)
-                .map_err(|error| OperationFailure::new(crate::collection::handle_allocation_error(error), work))?;
+                .map_err(|error| {
+                    OperationFailure::new(crate::collection::handle_allocation_error(error), work)
+                })?;
             let custody_bytes = allocations.claim_elements::<ProofDataCustody>(
                 1, &mut work, budget,
-            ).map_err(|error| OperationFailure::new(crate::collection::handle_allocation_error(error), work))?;
+            ).map_err(|error| {
+                    OperationFailure::new(crate::collection::handle_allocation_error(error), work)
+                })?;
             let mut dependencies = DependencyLedger::new(dependencies);
             dependencies.proof().control = ProofDataClaim::control(
                 &dependencies.data_custody, usize_to_u64(size_of::<Mutex<Proof>>()),
@@ -6288,8 +6602,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             &self.fs.inner.objects, generation_root, self.config, &mut accounting, cancellation,
         ).await?;
         let mut root_guard = match decoded.1 {
-            KernelOwnedAllocation::NativeOriginal(guard) => guard, KernelOwnedAllocation::Standalone =>
-                unreachable!("native root accounting returns its original allocation guard"),
+            KernelOwnedAllocation::NativeOriginal(guard) => guard, KernelOwnedAllocation::Standalone => {
+                unreachable!("native root accounting returns its original allocation guard")
+            }
         };
         let root = decoded.0;
         if root.volume_id != self.id { return Err(FsError::VolumeMismatch); }
@@ -6298,8 +6613,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             let expected = authority_head.ok_or(FsError::WritableCheckoutRequiresHead)?;
             authority_head = Some(match ({ let __authority_args = (volume_authority_id(self.id), expected, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.fs.inner.authority.fence(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result })? {
                 FenceOutcome::Advanced(head) => head,
-                FenceOutcome::Conflict { actual } => return Err(FsError::ExclusiveWriterConflict { actual }),
-            });
+                FenceOutcome::Conflict { actual } => {
+                        return Err(FsError::ExclusiveWriterConflict { actual });
+                    }
+                });
         }
         cancellation.check()?;
         let mut token_header = original.claim_root_metadata(std::mem::size_of::<ProofDataCustody>() as u64)?;
@@ -6389,7 +6706,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         let authority_id = volume_authority_id(self.id);
         let head = ({ let __authority_args = (authority_id, work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = self.fs.inner.authority.head(__authority_args.0, &mut __authority_work).await; __authority_result })?;
         if head.sequence == Sequence::GENESIS { return Err(FsError::EmptyAuthority); }
-        let records = ({ let __authority_args = (authority_id, Sequence::new(head.sequence.get().saturating_sub(1)), ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.3, __authority_args.4); let __authority_result = self.fs.inner.authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result })?;
+        let records = ({ let __authority_args = (authority_id, Sequence::new(head.sequence.get().saturating_sub(1)), ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.3, __authority_args.4); let __authority_result = self.fs.inner.authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, allocation)| {
+                    (value, allocation.expect("native authority allocation"))
+                }); __authority_result })?;
         let latest = records.0.first().ok_or(FsError::InvalidAuthorityHistory)?;
         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
         Ok((generation_from_head_record_value(latest, self.id, &mut KernelAccounting::native(work, cancellation))?, head))
@@ -6781,7 +7100,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                     limits: DecodeLimits::for_volume(self.volume.config), budget: accounting.remaining()?,
                 }, &mut accounting, cancellation,
             ).await
-        }.await.map_err(|error| if standalone {
+        }.await.map_err(|error| {
+            if standalone {
             FsError::FileRead(match error {
                 FsError::FileRead(error) => error,
                 FsError::BlobRead(error) => FileRangeReadError::Blob(error),
@@ -6789,7 +7109,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 FsError::Cancelled(_) => FileRangeReadError::Cancelled,
                 error => FileRangeReadError::Context(Box::new(error)),
             })
-        } else { error });
+        } else { error
+            }
+        });
         budget.finish(result, &accounting)
     }
 
@@ -6884,7 +7206,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_named_attributes_with_native_work(
         &self, root: ObjectId, work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(Vec<(AttributeName, acyclic_stream::OwnedBytes)>, NativeAllocation), FsError> {
+    ) -> Result<(Vec<(AttributeName, acyclic_stream::OwnedBytes)>, NativeAllocation), FsError,
+    > {
         self.validate_native_work(work)?;
         let mut accounting = KernelAccounting::native(work, cancellation);
         let mut attributes = Owned::<Vec<(AttributeName, acyclic_stream::OwnedBytes)>>::allocate(0, &mut accounting)?;
@@ -7159,14 +7482,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         let metadata = if metadata_requests.is_empty() {
             Vec::new()
         } else {
-            let receipt = self
+            let receipt = {
+                let __object_args = (&metadata_requests, remaining(work, budget)?, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
                 .volume
                 .fs
                 .inner
                 .objects
-                .read_many(&metadata_requests, remaining(work, budget)?, cancellation)
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
+                .read_many(__object_args.0, &mut __object_work)
+                    .await
+                    .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
             work = add(work, receipt.work)?;
             receipt.value
         };
@@ -7233,9 +7562,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 ).await;
             }
             let (_, _, budget, _) = accounting.standalone_parts().expect("standalone metadata read");
-            let metadata = self.volume.fs.inner.objects.read(
-                record.metadata, self.volume.config.limits.maximum_object_bytes, budget, cancellation,
-            ).await;
+            let metadata = {
+                let __object_args = (
+                    record.metadata,
+                    self.volume.config.limits.maximum_object_bytes,
+                    budget,
+                    cancellation,
+                );
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = self
+                    .volume
+                    .fs.inner.objects.read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            };
             let completed = match &metadata { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
             *accounting.standalone_parts().expect("standalone metadata read").1 = completed;
             let metadata = metadata.map_err(|failure| FsError::Object(failure.error))?;
@@ -7550,14 +7890,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         let reads = if requests.is_empty() {
             Vec::new()
         } else {
-            let receipt = self
+            let receipt = {
+                let __object_args = (&requests, remaining(work, budget)?, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
                 .volume
                 .fs
                 .inner
                 .objects
-                .read_many(&requests, remaining(work, budget)?, cancellation)
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
+                .read_many(__object_args.0, &mut __object_work)
+                    .await
+                    .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
             work = add(work, receipt.work)?;
             receipt.value
         };
@@ -7701,7 +8047,8 @@ async fn seek_record_extent_with_accounting<A: AsyncAuthorityStore, O: AsyncObje
     }
 }
 
-async fn read_record_metadata_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn read_record_metadata_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore,
+>(
     volume: &Volume<A, O>,
     record: FileRecord,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -7720,13 +8067,16 @@ async fn read_record_metadata_to_file_root_with_accounting<A: AsyncAuthorityStor
             },
             error => error,
         })?;
-        crate::kernel::decode_owned(accounting, |observe| crate::kernel::decode_file_metadata(&read.bytes, DecodeLimits::for_volume(volume.config), &mut |step| observe(step))).map(|(metadata, _)| metadata)
+        crate::kernel::decode_owned(accounting, |observe| {
+            crate::kernel::decode_file_metadata(&read.bytes, DecodeLimits::for_volume(volume.config), &mut |step| observe(step))
+        }).map(|(metadata, _)| metadata)
     }.await;
     readonly_cleanup_standalone(accounting, before, 0)?;
     result
 }
 
-async fn list_directory_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn list_directory_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore,
+>(
     volume: &Volume<A, O>,
     root: &GenerationRoot,
     path: &NamespacePath,
@@ -7734,7 +8084,8 @@ async fn list_directory_to_file_root_with_accounting<A: AsyncAuthorityStore, O: 
     maximum_entries: u32,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(crate::kernel::DirectoryPage, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+) -> Result<(crate::kernel::DirectoryPage, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+> {
     let before = readonly_standalone_live(accounting);
     let result = async {
         let record = crate::kernel::lookup_path_async_with_accounting(
@@ -7752,8 +8103,10 @@ async fn list_directory_to_file_root_with_accounting<A: AsyncAuthorityStore, O: 
         Ok((page, _)) if before.is_some() => page.entries.iter().try_fold(
             page.entries.capacity().checked_mul(size_of::<crate::kernel::TreeEntry>())
                 .map(crate::foundation::usize_to_u64).ok_or(WorkError::Overflow)?,
-            |bytes, entry| bytes.checked_add(entry.name.retained_bytes() as u64)
-                .ok_or(FsError::Work(WorkError::Overflow)),
+            |bytes, entry| {
+        bytes.checked_add(entry.name.retained_bytes() as u64)
+                .ok_or(FsError::Work(WorkError::Overflow))
+    },
         )?,
         _ => 0,
     };
@@ -7761,7 +8114,8 @@ async fn list_directory_to_file_root_with_accounting<A: AsyncAuthorityStore, O: 
     result
 }
 
-pub(crate) async fn list_directory_records_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(crate) async fn list_directory_records_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore,
+>(
     volume: &Volume<A, O>,
     root: &GenerationRoot,
     path: &NamespacePath,
@@ -7769,7 +8123,8 @@ pub(crate) async fn list_directory_records_to_file_root_with_accounting<A: Async
     maximum_entries: u32,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(DirectoryRecordPage, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+) -> Result<(DirectoryRecordPage, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+> {
     let before = readonly_standalone_live(accounting);
     let result = async {
         let (page, allocation) = list_directory_to_file_root_with_accounting(
@@ -7795,13 +8150,15 @@ fn directory_record_page_retained_bytes(page: &DirectoryRecordPage) -> Result<u6
     })
 }
 
-async fn attach_directory_records_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn attach_directory_records_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore,
+>(
     volume: &Volume<A, O>, file_table: ObjectId, page: DirectoryPage,
     allocation: crate::kernel::allocation::KernelOwnedAllocation,
     maximum_entries: u32, accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
     custody: Option<&crate::kernel::ProofDataCustody>,
-) -> Result<(DirectoryRecordPage, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+) -> Result<(DirectoryRecordPage, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+> {
     let mut source = (page, allocation);
     let count = source.0.entries.len();
     let mut ids = crate::kernel::Owned::<Vec<FileId>>::allocate(count, accounting)?;
@@ -7847,7 +8204,9 @@ async fn attach_directory_records_to_file_root_with_accounting<A: AsyncAuthority
             if record.file_id != binding.file_id || record.kind != binding.kind {
                 return Err(FsError::InvalidDirectoryRecord);
             }
-            let metadata = crate::kernel::decode_owned(accounting, |observe| crate::kernel::decode_file_metadata(&metadata.bytes, DecodeLimits::for_volume(volume.config), &mut |step| observe(step))).map(|(metadata, _)| metadata)?;
+            let metadata = crate::kernel::decode_owned(accounting, |observe| {
+                crate::kernel::decode_file_metadata(&metadata.bytes, DecodeLimits::for_volume(volume.config), &mut |step| observe(step))
+            }).map(|(metadata, _)| metadata)?;
             let copied = WorkCounters {
                 items_examined: 1, bytes_copied: size_of::<DirectoryRecordEntry>() as u64,
                 ..WorkCounters::UNCHARGED
@@ -7857,9 +8216,17 @@ async fn attach_directory_records_to_file_root_with_accounting<A: AsyncAuthority
             accounting.record_completed(copied)?;
         }
     }
-    let retired = buffers.0.0.entries.capacity().checked_mul(size_of::<crate::kernel::TreeEntry>())
-        .and_then(|bytes| buffers.0.1.capacity().checked_mul(size_of::<FileId>())
-            .and_then(|ids| bytes.checked_add(ids)))
+    let retired = buffers.0
+        .0
+        .entries
+        .capacity().checked_mul(size_of::<crate::kernel::TreeEntry>())
+        .and_then(|bytes| {
+            buffers
+                .0
+                .1
+                .capacity().checked_mul(size_of::<FileId>())
+            .and_then(|ids| bytes.checked_add(ids))
+        })
         .map(crate::foundation::usize_to_u64).ok_or(WorkError::Overflow)?;
     let (page, file_ids, entries) = buffers.0;
     let has_more = page.has_more;
@@ -7886,7 +8253,8 @@ async fn list_directory_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     measured(result, &accounting)
 }
 
-async fn read_named_attribute_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn read_named_attribute_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore,
+>(
     volume: &Volume<A, O>, metadata: FileMetadata, name: &AttributeName,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
 ) -> Result<Option<crate::kernel::OwnedSourceChunk>, FsError> {
@@ -7922,10 +8290,12 @@ async fn read_named_attribute_to_file_root_with_accounting<A: AsyncAuthorityStor
     result
 }
 
-async fn list_named_attributes_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn list_named_attributes_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore,
+>(
     volume: &Volume<A, O>, metadata: FileMetadata, after: Option<&AttributeName>, maximum_entries: u32,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
-) -> Result<(AttributeListing, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+) -> Result<(AttributeListing, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+> {
     let MetadataField::Value(root) = metadata.named_attributes else {
         return Ok((AttributeListing {
             entries: Vec::new(), has_more: false, next_residency: None, work: accounting.spent(),
@@ -8289,9 +8659,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             maximum_conflicts, &mut accounting, cancellation,
         ).await?;
         match allocation {
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => Ok((decision, allocation)),
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone =>
-                unreachable!("native rebase preserves its original allocation custody"),
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+                Ok((decision, allocation))
+            }
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
+                unreachable!("native rebase preserves its original allocation custody")
+            }
         }
     }
 
@@ -8300,7 +8673,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         maximum_conflicts: u32,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(RebaseDecision, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+    ) -> Result<(RebaseDecision, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+    > {
         use crate::kernel::Owned;
         accounting.check()?;
         if self.prepared_merge_parent.is_some() { return Err(FsError::PreparedMergePending); }
@@ -8333,8 +8707,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ).await.map_err(|error| match error {
             crate::kernel::ClassifyRebaseFailure::Probe(error)
             | crate::kernel::ClassifyRebaseFailure::Accounting(error) => error,
-            crate::kernel::ClassifyRebaseFailure::ZeroConflictLimit =>
-                FsError::Rebase(RebaseError::ZeroConflictLimit),
+            crate::kernel::ClassifyRebaseFailure::ZeroConflictLimit => {
+                FsError::Rebase(RebaseError::ZeroConflictLimit)
+            }
         });
         let retired = probe.0.retire_with_accounting(accounting);
         drop(probe.1);
@@ -8418,7 +8793,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         maximum_conflicts: u32,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(GenerationRoot, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+    ) -> Result<(GenerationRoot, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+    > {
         use crate::kernel::{clone_generation_root_with_accounting, retire_allocation};
         if self.root.file_table == self.base_file_table {
             return clone_generation_root_with_accounting(candidate_root, accounting);
@@ -8473,7 +8849,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     crate::foundation::usize_to_u64(conflicts.capacity() * size_of::<crate::kernel::MergeConflict>()),
                     |bytes, conflict| {
                         let nested = match conflict {
-                            crate::kernel::MergeConflict::Binding { name, .. } => name.retained_bytes(),
+                            crate::kernel::MergeConflict::Binding { name, .. } => {
+                                name.retained_bytes()
+                            }
                             crate::kernel::MergeConflict::File(_) => 0,
                         };
                         bytes.checked_add(crate::foundation::usize_to_u64(nested)).ok_or(WorkError::Overflow)
@@ -8514,13 +8892,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ).await?;
         match decision {
             RebaseDecision::Safe { .. } => { drop(allocation); Ok(()) }
-            RebaseDecision::Conflicted { conflicts, truncated } => {
-                match allocation {
-                    crate::kernel::allocation::KernelOwnedAllocation::Standalone =>
-                        Err(FsError::LiveConflict { conflicts, truncated }),
-                    #[cfg(not(target_arch = "wasm32"))]
-                    crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =>
-                        Err(FsError::NativeLiveConflict { conflicts, truncated, allocation }),
+            RebaseDecision::Conflicted { conflicts, truncated } => match allocation {
+                    crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
+                    Err(FsError::LiveConflict { conflicts, truncated })
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                    crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+                    Err(FsError::NativeLiveConflict { conflicts, truncated, allocation }),
                 }
             }
         }
@@ -8886,8 +9264,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             return Err(E::from(FsError::NoPendingMutations));
         }
         match self.live_operation_id {
-            Some(retained) if retained != operation_id =>
-                return Err(E::from(FsError::PendingLiveMutation)),
+            Some(retained) if retained != operation_id => {
+                return Err(E::from(FsError::PendingLiveMutation));
+            }
             Some(_) => {}
             None => self.live_operation_id = Some(operation_id),
         }
@@ -8902,10 +9281,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 producer_custody, operation_context, operation_evidence.clone(), original_fingerprint_permit,
             ).await? {
                 Some(outcome) => outcome,
-                None => self.publish_pending_with_native_work(
+                None => {
+                    self.publish_pending_with_native_work(
                     operation_id, operation_context, operation_evidence.clone(), original_fingerprint_permit,
                     permit, original, cancellation, &mut before_publication, producer_custody,
-                ).await?,
+                ).await?
+                }
             };
             if let Some(completed) = self.finish_live_retry(
                 &mut state, publication, maximum_conflicts, &mut accounting, cancellation, &mut empty_allocation,
@@ -8921,10 +9302,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             self.live_operation_id = None;
         }
         match allocation {
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =>
-                Ok((outcome, allocation)),
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone =>
-                unreachable!("native live outcomes preserve original allocation custody"),
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+                Ok((outcome, allocation))
+            }
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
+                unreachable!("native live outcomes preserve original allocation custody")
+            }
         }
     }
 
@@ -8991,7 +9374,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 match state.observe_rebase(decision).map_err(FsError::LiveRetry)? {
                     LiveRetryAction::Publish => { drop(allocation); Ok(None) }
                     LiveRetryAction::Complete(outcome) => Ok(Some((outcome, allocation))),
-                    LiveRetryAction::Rebase => Err(FsError::LiveRetry(LiveRetryError::InvalidTransition)),
+                    LiveRetryAction::Rebase => {
+                        Err(FsError::LiveRetry(LiveRetryError::InvalidTransition))
+                    }
                 }
             }
         }
@@ -9045,7 +9430,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.validate_native_work(original)?;
             }
             (None, KernelOwnedAllocation::Standalone) => {}
-            _ => return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout)),
+            _ => {
+                return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
+            }
         }
         if self.mode.access != AccessMode::ReadWrite
             || !matches!(self.mode.mutations, MutationMode::PrivateOverlay | MutationMode::DirectLive)
@@ -9180,7 +9567,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 let scope = allocation.work().checkout_control_sink(producer)?;
                 allocation.transfer_checkout_control(producer, &scope)?
             }
-            KernelOwnedAllocation::Standalone => Self::root_control_claim(&working.0, Some(producer))?,
+            KernelOwnedAllocation::Standalone => {
+                Self::root_control_claim(&working.0, Some(producer))?
+            }
         };
         // No fallible work follows the transfer into the actual root producer.
         self.root.set_prepared_working(working.0, control, held);
@@ -9271,7 +9660,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     fn name_binding_vector(
         length: usize,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    ) -> Result<(Vec<(NamespacePath, FileId)>, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+    ) -> Result<(Vec<(NamespacePath, FileId)>, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+    > {
         let requested = length.checked_mul(size_of::<(NamespacePath, FileId)>())
             .ok_or(WorkError::Overflow)? as u64;
         let mut allocation = accounting.claim_owned(requested, u64::from(length != 0))?;
@@ -9301,8 +9691,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         removed: &NamespacePath,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     ) -> Result<(), FsError> {
-        let bytes = bindings.0.iter().filter(|(path, _)| path == removed)
-            .try_fold(0_u64, |total, (path, _)| total.checked_add(path.retained_bytes()).ok_or(WorkError::Overflow))?;
+        let bytes = bindings.0
+            .iter().filter(|(path, _)| path == removed)
+            .try_fold(0_u64, |total, (path, _)| {
+                total.checked_add(path.retained_bytes()).ok_or(WorkError::Overflow)
+            })?;
         bindings.0.retain(|(path, _)| path != removed);
         accounting.release_owned(&mut bindings.1, bytes)
     }
@@ -9407,7 +9800,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         pending: &[(NamespacePath, FileId)],
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(NamespacePath, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+    ) -> Result<(NamespacePath, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+    > {
         if let Some((exact, _)) = pending_binding_path(path.components(), pending,
             self.volume.config.case_sensitivity, accounting)?
         {
@@ -9432,7 +9826,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         pending: &[(NamespacePath, FileId)],
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Option<(NamespacePath, crate::kernel::allocation::KernelOwnedAllocation)>, FsError> {
+    ) -> Result<Option<(NamespacePath, crate::kernel::allocation::KernelOwnedAllocation)>, FsError,
+    > {
         let allocation = accounting.claim_owned(0, 0)?;
         let mut canonical = (
             NamespacePath::new(Vec::new(), self.volume.config.limits).map_err(name_path_error)?,
@@ -9663,8 +10058,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
-        use crate::kernel::{Owned, retire_allocation, split_allocation};
         use crate::kernel::allocation::KernelOwnedAllocation;
+        use crate::kernel::{Owned, retire_allocation, split_allocation};
         #[cfg(not(target_arch = "wasm32"))]
         self.validate_authored_input(&input, accounting)?;
         accounting.check()?;
@@ -9770,10 +10165,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .ok_or(FsError::HandleAllocationFailed)?;
                 let scope = original.checkout_control_sink(&dependencies.data_custody)?;
                 match &mut proof_allocation {
-                    crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =>
-                        allocation.transfer_checkout_control(&dependencies.data_custody, &scope)?,
-                    crate::kernel::allocation::KernelOwnedAllocation::Standalone =>
-                        return Err(FsError::HandleAllocationFailed),
+                    crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+                        allocation.transfer_checkout_control(&dependencies.data_custody, &scope)?
+                    }
+                    crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
+            return Err(FsError::HandleAllocationFailed);
+        }
                 }
             }
             _ => crate::kernel::ProofDataClaim::control(
@@ -9782,9 +10179,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         };
         let (base_root, base_control) = match accounting {
             #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { .. } => crate::collection::clone_generation_root_native(
+            KernelAccounting::NativeOriginal { .. } => {
+                crate::collection::clone_generation_root_native(
                 &self.base_root, accounting, &dependencies.data_custody,
-            )?,
+            )?
+            }
             _ => {
                 let (base_root, _) = crate::collection::clone_generation_root_with_accounting(
                     &self.base_root, accounting,
@@ -9942,9 +10341,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let mut dependencies = self.dependencies.observing_with_custody(custody);
             let base = match accounting {
                 #[cfg(not(target_arch = "wasm32"))]
-                KernelAccounting::NativeOriginal { .. } => crate::collection::clone_generation_root_native(
+                KernelAccounting::NativeOriginal { .. } => {
+                    crate::collection::clone_generation_root_native(
                     &self.base_root, accounting, &dependencies.data_custody,
-                )?,
+                )?
+                }
                 _ => {
                     let root = crate::collection::clone_generation_root_with_accounting(&self.base_root, accounting)?;
                     if !matches!(root.1, crate::kernel::allocation::KernelOwnedAllocation::Standalone) {
@@ -10307,7 +10708,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 KernelOwnedAllocation::NativeOriginal(allocation)
                     if allocation.work().shares_ledger(original)
                         && allocation.bytes() == input.value.retained_bytes() => {}
-                _ => return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout)),
+                _ => {
+                return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
+            }
             }
         }
         let bytes = input.bytes;
@@ -10482,7 +10885,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
-        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_file_metadata(metadata, observe, allocation_error))?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_file_metadata(metadata, observe, allocation_error)
+            })?;
         self.volume.fs.put_encoded_with_accounting(
             ObjectKind::Metadata, encoded, accounting, cancellation,
         ).await
@@ -10509,7 +10914,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
-        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_tree_page(&TreePage::Leaf(Vec::new()), self.volume.config.limits.maximum_directory_page_entries, observe, allocation_error))?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_tree_page(&TreePage::Leaf(Vec::new()), self.volume.config.limits.maximum_directory_page_entries, observe, allocation_error)
+            })?;
         self.volume.fs.put_encoded_with_accounting(
             ObjectKind::TreePage, encoded, accounting, cancellation,
         ).await
@@ -10549,7 +10956,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
         cancellation: &'a CancellationToken,
         allowed_file_ids: &'a [FileId],
-    ) -> impl std::future::Future<Output = Result<Option<(LogicalName, crate::kernel::allocation::KernelOwnedAllocation)>, FsError>> + ProviderTask + 'a {
+    ) -> impl std::future::Future<Output = Result<Option<(LogicalName, crate::kernel::allocation::KernelOwnedAllocation)>, FsError,
+        >,
+    > + ProviderTask + 'a {
         async move {
             let mut frame_custody = None;
             let (future, frame_bytes) = crate::heap_future::in_heap_admitted(
@@ -10597,13 +11006,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             let bytes = old.0.retained_bytes() as u64;
                             retire_name_owned(old, bytes, accounting)?;
                         }
-                        after = match page.0.entries.last().filter(|_| has_more && found.is_none()) {
-                            Some(entry) => Some(entry.name.clone_with_accounting(accounting, cancellation)?),
+                        after = match page.0
+                            .entries
+                            .last().filter(|_| has_more && found.is_none()) {
+                            Some(entry) => {
+                                Some(entry.name.clone_with_accounting(accounting, cancellation)?)
+                            }
                             None => None,
                         };
                         let bytes = page.0.entries.iter().try_fold(
                             (page.0.entries.capacity() * size_of::<crate::kernel::TreeEntry>()) as u64,
-                            |bytes, entry| bytes.checked_add(entry.name.retained_bytes() as u64).ok_or(WorkError::Overflow),
+                            |bytes, entry| {
+                                bytes.checked_add(entry.name.retained_bytes() as u64).ok_or(WorkError::Overflow)
+                            },
                         )?;
                         retire_name_owned(page, bytes, accounting)?;
                         if found.is_some() || !has_more { break found; }
@@ -10635,7 +11050,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             AuthoredMutation::CreateFile { bytes, .. }
             | AuthoredMutation::CreateSymbolicLink { target: bytes, .. }
                 if bytes.len() as u64 > self.volume.config.limits.maximum_read_bytes =>
-                return Err(OperationFailure::before_work(FsError::FileRead(FileRangeReadError::InvalidRange))),
+            {
+            return Err(OperationFailure::before_work(FsError::FileRead(FileRangeReadError::InvalidRange)));
+        }
             AuthoredMutation::CreateEmptySpecial { kind, .. } => {
                 if !matches!(kind, FileKind::Fifo | FileKind::Socket | FileKind::MountBoundary) {
                     return Err(OperationFailure::before_work(FsError::InvalidSpecialKind));
@@ -10660,13 +11077,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             | AuthoredMutation::CreateSymbolicLink { .. } => {}
             _ => return Err(OperationFailure::before_work(FsError::InvalidSpecialKind)),
         }
-        self.apply_authored_transaction(vec![authored], budget, cancellation).await.map(|receipt| {
-            FsReceipt {
+        self.apply_authored_transaction(vec![authored], budget, cancellation).await.map(|receipt| FsReceipt {
                 value: receipt.value.created_file_ids.into_iter().next().flatten()
                     .expect("one creation emits one file identity"),
                 work: receipt.work,
-            }
-        })
+            })
     }
 
     /// Reads the same symbolic-link target, preserving producer-owned capacity.
@@ -10994,7 +11409,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(crate) async fn list_named_attributes_by_id_with_accounting(
         &mut self, file_id: FileId, after: Option<&AttributeName>, maximum_entries: u32,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
-    ) -> Result<(AttributeListing, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+    ) -> Result<(AttributeListing, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+    > {
         let metadata = self.read_metadata_by_id_with_accounting(file_id, accounting, cancellation).await?;
         list_named_attributes_to_file_root_with_accounting(&self.volume, metadata, after, maximum_entries, accounting, cancellation).await
     }
@@ -11028,21 +11444,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let root = match metadata.named_attributes {
             MetadataField::Value(root) => root,
             MetadataField::Unavailable if value.is_some() => {
-                let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_attribute_page(&AttributePage::Leaf(Vec::new()), volume.config.limits.maximum_directory_page_entries, observe, allocation_error))?;
+                let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                        crate::kernel::encode_attribute_page(&AttributePage::Leaf(Vec::new()), volume.config.limits.maximum_directory_page_entries, observe, allocation_error)
+                    })?;
                 volume.fs.put_encoded_with_accounting(ObjectKind::AttributePage, encoded, accounting, cancellation).await?
-            },
+            }
             MetadataField::Unavailable => return Err(FsError::NotFound),
         };
         let (current, allocation) = crate::kernel::lookup_attribute_async_with_accounting(
             &volume.fs.inner.objects, root, name,
             DecodeLimits::for_volume(volume.config), accounting, cancellation,
         ).await?;
-        let current_bytes = current.as_ref().map_or(0, |entry| crate::foundation::usize_to_u64(entry.name.retained_bytes()));
+        let current_bytes = current.as_ref().map_or(0, |entry| {
+            crate::foundation::usize_to_u64(entry.name.retained_bytes())
+        });
         let current = crate::kernel::Owned::new(current, allocation, current_bytes);
         let result = async {
             match (value.map(|(_, mode)| mode), current.value.as_ref()) {
                 (Some(NamedAttributeWriteMode::Create), Some(_))
-                | (Some(NamedAttributeWriteMode::Replace), None) => return Err(FsError::CreationRejected),
+                | (Some(NamedAttributeWriteMode::Replace), None) => {
+        return Err(FsError::CreationRejected);
+    }
                 (None, None) => return Err(FsError::NotFound),
                 _ => {}
             }
@@ -11141,21 +11563,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let lowered = async {
                 let (file, change) = input.value.take().expect("content input is consumed once");
                 let operation = match change {
-                    ContentChange::Write { bytes, .. } if bytes.is_empty() => ContentOperation::ValidateRegular,
+                    ContentChange::Write { bytes, .. } if bytes.is_empty() => {
+                        ContentOperation::ValidateRegular
+                    }
                     ContentChange::Write { offset, bytes } => {
                         let content = self.stage_authored_blob_with_accounting(bytes, accounting, cancellation).await?;
                         ContentOperation::Write { offset, length: content.logical_bytes, content: content.root }
                     }
-                    ContentChange::Resize { logical_bytes } => ContentOperation::Resize { logical_bytes },
+                    ContentChange::Resize { logical_bytes } => {
+                        ContentOperation::Resize { logical_bytes }
+                    }
                     ContentChange::ZeroRange { range, allocated, extend } => ContentOperation::ZeroRange { range, allocated, extend },
-                    ContentChange::Preallocate { range, keep_size } => ContentOperation::Preallocate { range, keep_size },
+                    ContentChange::Preallocate { range, keep_size } => {
+                        ContentOperation::Preallocate { range, keep_size }
+                    }
                     ContentChange::CloneFrom { source, source_offset, offset, length } => ContentOperation::CloneFrom { source, source_offset, offset, length },
                 };
                 let mut stamped_metadata = None;
                 if let ContentTimes::Stamp(at_ns) = times {
                     let mut metadata = match file.address() {
-                        ContentAddress::Path(path) => self.read_metadata_with_accounting(path, accounting, cancellation).await?,
-                        ContentAddress::File(file_id) => self.read_metadata_by_id_with_accounting(file_id, accounting, cancellation).await?,
+                        ContentAddress::Path(path) => {
+                            self.read_metadata_with_accounting(path, accounting, cancellation).await?
+                        }
+                        ContentAddress::File(file_id) => {
+                            self.read_metadata_by_id_with_accounting(file_id, accounting, cancellation).await?
+                        }
                     };
                     if metadata.stamp_content_change(at_ns) {
                         stamped_metadata = Some(self.stage_metadata_with_accounting(metadata, accounting, cancellation).await?);
@@ -11254,7 +11686,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 let change_input = Owned::new(change, guard, 0);
                 let admitted = accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED });
                 let change = match admitted {
-                    Ok(()) => self.compile_grouped_with_accounting(change_input, &mut metadata, accounting, cancellation).await,
+                    Ok(()) => {
+                        self.compile_grouped_with_accounting(change_input, &mut metadata, accounting, cancellation).await
+                    }
                     Err(error) => { change_input.retire(accounting)?; Err(error) }
                 };
                 compiled.value.push(change);
@@ -11492,7 +11926,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 return Err(OperationFailure::before_work(E::from(FsError::MutationNotAllowed)));
             }
             let expected = self.authority_head
-                .ok_or_else(|| OperationFailure::before_work(E::from(FsError::WritableCheckoutRequiresHead)))?;
+                .ok_or_else(|| {
+                    OperationFailure::before_work(E::from(FsError::WritableCheckoutRequiresHead))
+                })?;
             self.publish_pending_against(operation_id, operation_context, operation_evidence, original_fingerprint_permit, permit, expected, budget, cancellation, before_publication, None, producer_custody).await
         }, budget, cancellation, E::from(FsError::Cancelled(crate::CancellationError)), None, |error| E::from(FsError::from(error))).await
     }
@@ -11522,7 +11958,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         let expected = self
             .authority_head
-            .ok_or_else(|| OperationFailure::before_work(E::from(FsError::WritableCheckoutRequiresHead)))?;
+            .ok_or_else(|| {
+            OperationFailure::before_work(E::from(FsError::WritableCheckoutRequiresHead))
+        })?;
         self.publish_pending_against(operation_id, operation_context, operation_evidence, original_fingerprint_permit, permit, expected, budget, cancellation, before_publication, None, None)
         .await
     }
@@ -11790,10 +12228,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
-        let resolved = ({ let __authority_args = (volume_authority_id(self.volume.id), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.volume.fs.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }).map_err(|error| E::from(match error {
+        let resolved = ({ let __authority_args = (volume_authority_id(self.volume.id), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.volume.fs.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| {
+                    (value, allocation.expect("native authority allocation"))
+                }); __authority_result }).map_err(|error| {
+            E::from(match error {
             AuthorityStoreError::NativeOriginal(error) => FsError::NativeKernel(error),
             error => FsError::Authority(error),
-        }))?;
+        })
+        })?;
         let Some(commit) = resolved.0 else { return Ok(None); };
         let previous_sequence = commit.sequence.get().checked_sub(1)
             .ok_or_else(|| E::from(FsError::InvalidAuthorityHistory))?;
@@ -11899,7 +12341,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         crate::heap_future::in_heap_measured_with_error(move |budget| async move {
             cancellation
                 .check()
-                .map_err(|error| OperationFailure::before_work(E::from(FsError::from(error))))?;
+                .map_err(|error| {
+                    OperationFailure::before_work(E::from(FsError::from(error)))
+                })?;
             let resolved = ({ let __authority_args = (volume_authority_id(self.volume.id), operation_id, budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self
                 .volume
                 .fs
@@ -11957,7 +12401,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let resolved = match &mut accounting {
                 #[cfg(not(target_arch = "wasm32"))]
                 KernelAccounting::NativeOriginal { work: original, .. } => {
-                    let (value, allocation) = ({ let __authority_args = (volume_authority_id(self.volume.id), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.volume.fs.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }).map_err(|error| match error {
+                    let (value, allocation) = ({ let __authority_args = (volume_authority_id(self.volume.id), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.volume.fs.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| {
+                                (value, allocation.expect("native authority allocation"))
+                            }); __authority_result }).map_err(|error| match error {
                         AuthorityStoreError::NativeOriginal(error) => FsError::NativeKernel(error),
                         error => FsError::Authority(error),
                     })?;
@@ -12137,18 +12583,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         capture_terminal: bool,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(crate::kernel::ObservedPathLookup, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+    ) -> Result<(crate::kernel::ObservedPathLookup, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+    > {
         let observed = crate::kernel::observe_path_async_with_accounting(
             &self.volume.fs.inner.objects, &self.base_root, path, self.volume.config,
             accounting, cancellation, Some(&self.dependencies.data_custody), capture_terminal,
         ).await;
         match observed {
             Ok(observed) => Ok(observed.into_parts()),
-            Err(FsError::Path(PathLookupError::NotDirectory)) if has_candidate =>
+            Err(FsError::Path(PathLookupError::NotDirectory)) if has_candidate => {
                 crate::kernel::observe_path_async_with_accounting(
                     &self.volume.fs.inner.objects, &self.base_root, path, self.volume.config,
                     accounting, cancellation, Some(&self.dependencies.data_custody), false,
-                ).await.map(|observed| observed.into_parts()),
+                ).await.map(|observed| observed.into_parts())
+            }
             Err(error) => Err(error),
         }
     }
@@ -12176,7 +12624,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &mut self, paths: &[NamespacePath], selected_restore: bool,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(PathBatchLookup, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+    ) -> Result<(PathBatchLookup, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+    > {
         if selected_restore && (self.mode.access != AccessMode::ReadOnly
             || self.mode.consistency != ConsistencyMode::Pinned
             || self.tracks_observations() || *self.root != self.base_root)
@@ -12212,11 +12661,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.observe_staged_paths_with_accounting(
                     base, paths, true, dependencies, &mut observed.1, accounting, cancellation,
                 )?;
-                let bytes = observed.0.lookup.entries.capacity().checked_mul(size_of::<crate::kernel::PathBatchEntry>())
+                let bytes = observed.0
+                    .lookup
+                    .entries
+                    .capacity().checked_mul(size_of::<crate::kernel::PathBatchEntry>())
                     .map(crate::foundation::usize_to_u64).ok_or(WorkError::Overflow)?;
                 let output_allocation = match &mut observed.1 {
-                    crate::kernel::allocation::KernelOwnedAllocation::Standalone =>
-                        crate::kernel::allocation::KernelOwnedAllocation::Standalone,
+                    crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
+                        crate::kernel::allocation::KernelOwnedAllocation::Standalone
+                    }
                     #[cfg(not(target_arch = "wasm32"))]
                     crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =>
                         crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation.split_off(bytes)?),
@@ -12340,7 +12793,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         maximum_entries: u32,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(DirectoryPage, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+    ) -> Result<(DirectoryPage, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+    > {
         if matches!(after, std::ops::Bound::Included(_)) && self.tracks_observations() {
             return Err(FsError::UnsupportedCheckout);
         }
@@ -12388,7 +12842,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             (Some(name), allocation)
                         }
                         std::ops::Bound::Unbounded => (None, accounting.claim_owned(0, 0)?),
-                        std::ops::Bound::Included(_) => unreachable!("included cursors cannot track observations"),
+                        std::ops::Bound::Included(_) => {
+                            unreachable!("included cursors cannot track observations")
+                        }
                     };
                     let mut region = (DependencyRegion::DirectoryRange {
                             directory_id: record.file_id, after: cursor, maximum_entries,
@@ -12397,7 +12853,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         &this.volume.fs.inner.objects, probe_limits(this.volume.config), accounting,
                     )?;
                     let probe = (probe.with_data_custody(Some(&this.dependencies.data_custody)), allocation);
-                    let state = probe.0.probe_async_with_accounting(
+                    let state = probe.0
+                        .probe_async_with_accounting(
                         GenerationId::new(this.root.base().digest), &region.0, accounting, cancellation,
                     ).await?;
                     let (probe, allocation) = probe;
@@ -12467,7 +12924,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &mut self, path: &NamespacePath, after: std::ops::Bound<&LogicalName>,
         maximum_entries: u32, accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(DirectoryRecordPage, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+    ) -> Result<(DirectoryRecordPage, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+    > {
         let before = readonly_standalone_live(accounting);
         let result = async {
             let (page, allocation) = self.list_directory_with_accounting(
@@ -12562,7 +13020,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(crate) async fn list_named_attributes_with_accounting(
         &mut self, path: &NamespacePath, after: Option<&AttributeName>, maximum_entries: u32,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
-    ) -> Result<(AttributeListing, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+    ) -> Result<(AttributeListing, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+    > {
         let metadata = self.read_metadata_with_accounting(path, accounting, cancellation).await?;
         list_named_attributes_to_file_root_with_accounting(&self.volume, metadata, after, maximum_entries, accounting, cancellation).await
     }
@@ -12794,7 +13253,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 accounting.admit(copied)?;
                 dependencies.value.push(Dependency {
                     region: DependencyRegion::Metadata(*file_id),
-                    expected: record.map_or(DependencyState::Absent, |record| DependencyState::Present(record.metadata.digest)),
+                    expected: record.map_or(DependencyState::Absent, |record| {
+                        DependencyState::Present(record.metadata.digest)
+                    }),
                 });
                 accounting.record_completed(copied)?;
             }
@@ -12948,7 +13409,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         &mut self, metadata: FileMetadata, logical_bytes: Option<u64>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
-        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_file_metadata(metadata, observe, allocation_error))?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_file_metadata(metadata, observe, allocation_error)
+            })?;
         let metadata_id = self.volume.fs.put_encoded_with_accounting(
             ObjectKind::Metadata, encoded, accounting, cancellation,
         ).await?;
@@ -13004,7 +13467,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         &self, after: Option<&AttributeName>, maximum_entries: u32,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(AttributeListing, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+    ) -> Result<(AttributeListing, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+    > {
         let metadata = read_record_metadata_to_file_root_with_accounting(
             &self.volume, self.record, accounting, cancellation,
         ).await?;
@@ -13101,7 +13565,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
                 return Err(FsError::FileRead(FileRangeReadError::NotRegular));
             }
             let logical_bytes = match self.record.payload {
-                FilePayload::InlineRegular(data) => u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX),
+                FilePayload::InlineRegular(data) => {
+            u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX)
+        }
                 FilePayload::Regular { logical_bytes, .. } => logical_bytes,
                 _ => return Err(FsError::FileRead(FileRangeReadError::NotRegular)),
             };
@@ -13148,25 +13614,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
                         offset, length: content.logical_bytes, content: content.root, content_offset: 0,
                     })
                 }
-                ContentChange::Resize { logical_bytes } => Some(RegularMutation::Resize { logical_bytes }),
+                ContentChange::Resize { logical_bytes } => {
+                    Some(RegularMutation::Resize { logical_bytes })
+                }
                 ContentChange::ZeroRange { range, allocated, extend } => Some(RegularMutation::ZeroRange {
                     offset: range.offset, length: range.length, allocated, extend,
                 }),
-                ContentChange::Preallocate { range, keep_size } => Some(RegularMutation::Preallocate {
+                ContentChange::Preallocate { range, keep_size } => {
+                    Some(RegularMutation::Preallocate {
                     offset: range.offset, length: range.length, keep_size,
-                }),
+                })
+                }
                 ContentChange::CloneFrom { source, .. } => match source {},
             };
             let payload = match mutation {
-                Some(mutation) => crate::kernel::apply_regular_mutation_with_accounting(
+                Some(mutation) => {
+                    crate::kernel::apply_regular_mutation_with_accounting(
                     &self.volume.fs.inner.objects, self.record.payload, mutation,
                     self.volume.config, accounting, cancellation,
-                ).await?.payload,
+                ).await?.payload
+                }
                 None => self.record.payload,
             };
             let metadata_id = match metadata {
                 Some(metadata) => {
-                    let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_file_metadata(metadata, observe, allocation_error))?;
+                    let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                            crate::kernel::encode_file_metadata(metadata, observe, allocation_error)
+                        },
+                    )?;
                     self.volume.fs.put_encoded_with_accounting(
                         ObjectKind::Metadata, encoded, accounting, cancellation,
                     ).await?
@@ -13199,10 +13674,10 @@ pub(crate) async fn read_generation_root<O: AsyncObjectStore>(
         match ownership {
             crate::kernel::allocation::KernelOwnedAllocation::Standalone => (),
             #[cfg(not(target_arch = "wasm32"))]
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(_) => unreachable!(
-                "standalone generation reading cannot create native custody",
-            ),
-        }
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(_) => {
+                    unreachable!("standalone generation reading cannot create native custody",)
+                }
+            }
         (root, work)
     }).map_err(|error| OperationFailure::new(error, work))
 }
@@ -13388,7 +13863,8 @@ async fn diff_generation_file_tables<O: AsyncObjectStore>(
     config: VolumeConfig,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(GenerationDiff, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+) -> Result<(GenerationDiff, crate::kernel::allocation::KernelOwnedAllocation), FsError,
+> {
     let (records, allocation) = crate::kernel::diff_file_records_with_accounting(
         objects, Some(before), Some(after), maximum_changes,
         DecodeLimits::for_volume(config), accounting, cancellation,
@@ -13430,7 +13906,8 @@ async fn diff_generation_file_tables<O: AsyncObjectStore>(
         bindings.allocation.absorb(&mut entries.allocation)?;
         bindings.bytes = next_bytes;
         let buffer_bytes = crate::foundation::usize_to_u64(
-            entries.value.changes.capacity().checked_mul(size_of::<crate::kernel::ValueChange<LogicalName, crate::kernel::TreeEntry>>())
+            entries.value.changes.capacity().checked_mul(size_of::<crate::kernel::ValueChange<LogicalName, crate::kernel::TreeEntry>,
+                >())
                 .ok_or(WorkError::Overflow)?,
         );
         for entry in entries.value.changes.drain(..) {
@@ -13516,7 +13993,8 @@ async fn collect_generation_ancestors<O: AsyncObjectStore>(
     maximum_generations: u32,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(crate::kernel::Owned<Vec<(GenerationId, Option<VolumeId>)>>, bool), crate::workspace::WorkspaceError> {
+) -> Result<(crate::kernel::Owned<Vec<(GenerationId, Option<VolumeId>)>>, bool), crate::workspace::WorkspaceError,
+> {
     let maximum = usize::try_from(maximum_generations).unwrap_or(usize::MAX);
     let mut visited = crate::kernel::Owned::<Vec<(GenerationId, Option<VolumeId>)>>::allocate(0, accounting)?;
     let mut pending = crate::kernel::Owned::<Vec<GenerationId>>::allocate(0, accounting)?;
@@ -13795,7 +14273,9 @@ fn root_parent_buffer(
             let actual = crate::foundation::usize_to_u64(values.capacity() * size_of::<GenerationId>());
             if actual > admitted {
                 allocations.claim_bytes(actual - admitted, 0, &mut work, WorkBudget::UNBOUNDED)
-                    .map_err(|error| error.into_work_or(FsError::PendingMutationAllocationFailed))?;
+                    .map_err(|error| {
+                        error.into_work_or(FsError::PendingMutationAllocationFailed)
+                    })?;
                 work.verify(budget)?;
             }
         }
@@ -13901,7 +14381,9 @@ fn decode_first_creation_record(
     }
     let hashed_bytes = (first.payload.len() as u64).checked_mul(2)
         .and_then(|bytes| bytes.checked_add(CREATION_FINGERPRINT_DOMAIN.len() as u64))
-        .and_then(|bytes| bytes.checked_add(crate::foundation::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES))
+        .and_then(|bytes| {
+            bytes.checked_add(crate::foundation::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES)
+        })
         .ok_or(WorkError::Overflow)?;
     let hashing = WorkCounters { bytes_hashed: hashed_bytes, ..WorkCounters::UNCHARGED };
     accounting.admit(hashing)?;
@@ -13973,15 +14455,19 @@ fn fork_records_with_accounting<A, O>(
         volume_id: source.id, kind: RetentionKind::ForkBase, label: label.value,
         generation_root: source_root, config: source.config,
     }, label.allocation, label.bytes);
-    let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_retention_created(&fact.value, observe, allocation_error))?;
+    let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+        crate::kernel::encode_retention_created(&fact.value, observe, allocation_error)
+    })?;
     let retained_bytes = encoded.0.capacity() as u64;
     let retained = creation_commit_with_accounting(
         OperationId::from_bytes(retention.into_bytes()), encoded, accounting,
     )?;
     fact.retire(accounting)?;
-    let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_volume_created(VolumeCreated {
+    let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+        crate::kernel::encode_volume_created(VolumeCreated {
         volume_id: destination.volume_id(), config: source.config, initial_generation_root: fork_root,
-    }, observe, allocation_error))?;
+    }, observe, allocation_error)
+    })?;
     let creation_bytes = encoded.0.capacity() as u64;
     let creation = creation_commit_with_accounting(operation_id, encoded, accounting)?;
     let payload_bytes = retained_bytes.checked_add(creation_bytes).ok_or(WorkError::Overflow)?;
@@ -14039,7 +14525,8 @@ fn creation_commit_with_accounting(
         {
             return Err(FsError::HandleAllocationFailed);
         }
-        let control_bytes = crate::kernel::allocation::bytes_owner_control_bytes::<crate::kernel::Owned<Vec<u8>>>()?;
+        let control_bytes = crate::kernel::allocation::bytes_owner_control_bytes::<crate::kernel::Owned<Vec<u8>>,
+        >()?;
         let mut control = allocation.work().claim(control_bytes, u64::from((control_bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let bytes = encoded.0.capacity() as u64;
         let mut payload = crate::kernel::Owned::new(encoded.0, encoded.1, bytes);
@@ -14141,7 +14628,9 @@ fn clone_authored_path(
         crate::kernel::allocation::KernelAccounting::Standalone { cancellation, .. }
         | crate::kernel::allocation::KernelAccounting::BorrowedStandalone { cancellation, .. } => *cancellation,
         #[cfg(not(target_arch = "wasm32"))]
-        crate::kernel::allocation::KernelAccounting::NativeOriginal { cancellation, .. } => *cancellation,
+        crate::kernel::allocation::KernelAccounting::NativeOriginal { cancellation, .. } => {
+            *cancellation
+        }
     };
     let (path, allocation) = path.clone_with_accounting(accounting, cancellation)?;
     let bytes = path.retained_bytes();

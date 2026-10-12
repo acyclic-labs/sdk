@@ -5,12 +5,12 @@ use super::view_ledger::{ViewChange, ViewEffect, ViewLedger, ViewStamp};
 use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountPath, MountPublication, MountRangeAllocation, MountSparseRange, MountSeekTarget, MountSourceError,
+    MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
+    MountSparseRange,
     NativeMountError, ViewObserver, ViewOrigin, capture_root_identity,
     seal_checkout,
 };
 use crate::heap_future::in_heap;
-use crate::native_host::NativeHostWork as _;
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
     FileRecord, GenerationMutationError, LogicalName, MetadataField, NameEncoding, NamespacePath, RebaseDecision,
@@ -20,14 +20,15 @@ use crate::native_capture::{
     MAX_NATIVE_EXACT_CAPTURE_PATHS, NativeViewBaseline, capture_paths_batched,
     capture_subtrees_with_native_work,
 };
+use crate::native_host::NativeHostWork as _;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
     Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, GroupedChange,
     GroupedOutcome, NamedAttributeWriteMode, NativeRootIdentity, ObjectId, OperationFailure,
     OperationId, VolumeId, WorkBudget, WorkError,
 };
-use bytes::Bytes;
 use acyclic_stream::OwnedBytes;
+use bytes::Bytes;
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
@@ -110,7 +111,9 @@ pub(super) fn validate_native_source_io_binding(
 ) -> Result<NativeSourceIoBinding, MountSourceError> {
     match binding {
         Some(binding) if payer.shares_ledger(binding) && payer.shares_resource_allowance(binding) =>
-            Ok(NativeSourceIoBinding::Native),
+        {
+            Ok(NativeSourceIoBinding::Native)
+        }
         Some(_) => Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout)),
         None => Ok(NativeSourceIoBinding::Ordinary),
     }
@@ -146,7 +149,8 @@ impl Drop for NativeSourceIoLeaseInner {
 }
 
 impl<A, O> NativeSourceIoRetirement for CheckoutMountSource<A, O>
-where Self: Send + Sync {
+where Self: Send + Sync,
+{
     fn release_native_source_io(&self) {
         drop(CaptureProducerLease { gate: &self.capture_gate, quiesced: &self.capture_quiesced });
     }
@@ -369,8 +373,9 @@ impl CaptureInputScratch for NativeCaptureScratchAllocation<'_> {
         self.absorb(self.work.claim(requested, u64::from(requested != 0), crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?);
         let mut vector = Vec::new();
-        vector.try_reserve_exact(count).map_err(|error|
-            MountSourceError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(error)))?;
+        vector.try_reserve_exact(count).map_err(|error| {
+            MountSourceError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(error))
+        })?;
         let actual = vector.capacity().checked_mul(std::mem::size_of::<T>())
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
@@ -605,8 +610,9 @@ fn source_publication_result(
     result: Result<(), super::NativeMountError>,
 ) -> Result<(), MountSourceError> {
     result.map_err(|error| match error {
-        super::NativeMountError::CallbackDenied { source, custody } =>
-            MountSourceError::NativeCallbackDenied { source, custody },
+        super::NativeMountError::CallbackDenied { source, custody } => {
+            MountSourceError::NativeCallbackDenied { source, custody }
+        }
         super::NativeMountError::Materialization(error) => MountSourceError::NativeWork(error),
         _ => unreachable!("native guarded callback constructor or funded denial"),
     })
@@ -645,9 +651,11 @@ pub(super) fn source_publication_guard(
             owned_work.admit(crate::WorkCounters::UNCHARGED)?;
             Ok(())
         }) {
-            Ok(future) => futures::future::Either::Right(future.map(
+            Ok(future) => {
+                futures::future::Either::Right(future.map(
                 source_publication_result as fn(_) -> _,
-            )),
+            ))
+            }
             Err(error) => futures::future::Either::Left(std::future::ready(
                 source_publication_result(Err(error)),
             )),
@@ -738,9 +746,7 @@ impl<'w, A, O> LookupObserverOwned<'w, A, O> {
         if matches!(&self.work, NativeDemandCarrier::Native(_)) {
             return Ok(());
         }
-        self.work.with_work(|work| {
-            work.merge(pending).map_err(super::lazy::mount_demand_error)
-        })
+        self.work.with_work(|work| work.merge(pending).map_err(super::lazy::mount_demand_error))
     }
 
 }
@@ -1045,10 +1051,11 @@ pub(super) fn retain_namespace_lineage(
             name.encoding(), name.as_bytes(), lineage.limits, &mut scratch,
         )?);
     }
-    let root = NamespacePath::new(names, lineage.limits).map_err(|error|
+    let root = NamespacePath::new(names, lineage.limits).map_err(|error| {
         MountSourceError::Filesystem(crate::FsError::Path(
             crate::kernel::PathLookupError::NamespacePath(error),
-        )))?;
+        ))
+    })?;
     let lazy_root = match lineage.lazy_root {
         Some(text) => {
             let copied = crate::WorkCounters { bytes_copied: text.len() as u64, ..crate::WorkCounters::UNCHARGED };
@@ -1213,7 +1220,9 @@ impl CallbackRuntime {
         };
         match tokio::runtime::Handle::try_current() {
             Ok(current) if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
-                tokio::task::block_in_place(poll),
+            {
+                tokio::task::block_in_place(poll)
+            }
             _ => poll(),
         }
     }
@@ -1394,12 +1403,8 @@ pub(super) async fn await_lock<F: Future>(
                 let quota = work.budget.items_examined.checked_add(reserved)
                     .ok_or(MountSourceError::Work(crate::WorkError::Overflow))
                     .map(|items| work.budget.items_examined = items);
-                let caller = caller_wait.map(|wait| {
-                    work.finish_cancelled(wait).map_err(mount_wait_error)
-                }).unwrap_or(Ok(()));
-                let lifetime = lifetime_wait.map(|wait| {
-                    work.finish_cancelled(wait).map_err(mount_wait_error)
-                }).unwrap_or(Ok(()));
+                let caller = caller_wait.map(|wait| work.finish_cancelled(wait).map_err(mount_wait_error)).unwrap_or(Ok(()));
+                let lifetime = lifetime_wait.map(|wait| work.finish_cancelled(wait).map_err(mount_wait_error)).unwrap_or(Ok(()));
                 quota.and(caller).and(lifetime)
             })
         }
@@ -1524,15 +1529,18 @@ impl PendingBytes {
 
     fn sharing_allocation(&self) -> u64 {
         match self {
-            Self::Mutable { bytes, allocation } =>
-                u64::from(allocation.is_none() && bytes.capacity() != 0),
+            Self::Mutable { bytes, allocation } => {
+                u64::from(allocation.is_none() && bytes.capacity() != 0)
+            }
             Self::Shared { .. } => 0,
         }
     }
 
     fn original_work(&self) -> Option<crate::NativeMaterializationWork> {
         match self {
-            Self::Mutable { allocation, .. } => allocation.as_ref().map(|guard| guard.work().clone()),
+            Self::Mutable { allocation, .. } => {
+                allocation.as_ref().map(|guard| guard.work().clone())
+            }
             Self::Shared { original, .. } => original.clone(),
         }
     }
@@ -1570,7 +1578,9 @@ impl PendingBytes {
             return Ok(None);
         }
         let requested = match self {
-            Self::Mutable { bytes, .. } => length.max(bytes.capacity().saturating_mul(2).max(8).min(maximum)),
+            Self::Mutable { bytes, .. } => {
+                length.max(bytes.capacity().saturating_mul(2).max(8).min(maximum))
+            }
             Self::Shared { .. } => length.max(self.capacity()),
         };
         let copied = self.len().min(length);
@@ -1717,7 +1727,9 @@ impl PendingCreate {
 
     fn lookup(&self) -> Option<MountLookup> {
         match &*self.state() {
-            PendingState::Pending { metadata, bytes } => Some(self.held_lookup(**metadata, bytes.len() as u64)),
+            PendingState::Pending { metadata, bytes } => {
+                Some(self.held_lookup(**metadata, bytes.len() as u64))
+            }
             _ => None,
         }
     }
@@ -1757,14 +1769,20 @@ const MAXIMUM_GROUPED_CHANGES: usize = 64;
 impl PendingCreate {
     fn reject_uninstalled(self: Arc<Self>, error: MountSourceError) {
         let retryable = match error.semantic_error() {
-            MountSourceError::Work(_) | MountSourceError::Cancelled | MountSourceError::Stale => true,
+            MountSourceError::Work(_) | MountSourceError::Cancelled | MountSourceError::Stale => {
+                true
+            }
             MountSourceError::Filesystem(FsError::Work(_) | FsError::Cancelled(_)) => true,
             MountSourceError::NativeWork(error)
-            | MountSourceError::Filesystem(FsError::NativeKernel(error)) =>
-                super::native_materialization_failure_is_fatal(error),
-            MountSourceError::NativeWorkspaceCause(cause) =>
-                super::native_workspace_failure_is_fatal(&cause.source),
-            MountSourceError::WorkspaceCause(error) => super::native_workspace_failure_is_fatal(error),
+            | MountSourceError::Filesystem(FsError::NativeKernel(error)) => {
+                super::native_materialization_failure_is_fatal(error)
+            }
+            MountSourceError::NativeWorkspaceCause(cause) => {
+                super::native_workspace_failure_is_fatal(&cause.source)
+            }
+            MountSourceError::WorkspaceCause(error) => {
+                super::native_workspace_failure_is_fatal(error)
+            }
             _ => false,
         };
         if retryable {
@@ -1984,9 +2002,11 @@ fn grouped_publication_guard(
             original.admit(crate::WorkCounters::UNCHARGED)?;
             Ok(())
         }) {
-            Ok(future) => futures::future::Either::Right(future.map(
+            Ok(future) => {
+                futures::future::Either::Right(future.map(
                 source_publication_result as fn(_) -> _,
-            )),
+            ))
+            }
             Err(error) => futures::future::Either::Left(std::future::ready(
                 source_publication_result(Err(error)),
             )),
@@ -2075,7 +2095,8 @@ struct NativePublicationLoan<'a, A, O> {
 
 impl<A, O> NativePublicationLoan<'_, A, O> {
     fn return_original(&mut self) {
-        let Some(mut original) = self.original.take() else { return };
+        let Some(mut original) = self.original.take() else { return;
+        };
         if self.notification.is_some() {
             let current = original.checkout.root().file_table;
             if current != original.recorded_view {
@@ -2100,7 +2121,8 @@ impl<A, O> NativePublicationLoan<'_, A, O> {
     }
 
     fn restore(mut self) -> impl Future<Output = ()> + Send
-    where A: Send + Sync, O: Send + Sync {
+    where A: Send + Sync, O: Send + Sync,
+    {
         self.return_original();
         async move {
             self.shared.restore_returned_checkout().await;
@@ -2143,10 +2165,10 @@ impl<A, O> SharedCheckout<A, O> {
         publication: MountPublication,
         native: Option<&crate::NativeMaterializationWork>,
     ) -> Result<Self, MountSourceError> {
-        let native_revision_allocation = native.map(|work|
-            work.claim(std::mem::size_of::<AtomicU64>() as u64, 1, crate::WorkCounters::UNCHARGED)
+        let native_revision_allocation = native.map(|work| {
+                work.claim(std::mem::size_of::<AtomicU64>() as u64, 1, crate::WorkCounters::UNCHARGED)
                 .map_err(MountSourceError::NativeWork)
-        ).transpose()?;
+            }).transpose()?;
         let revision = Arc::new(AtomicU64::new(1));
         let ledger = match native {
             Some(work) => ViewLedger::new_with_native_work(work)?,
@@ -2222,7 +2244,8 @@ impl<A, O> SharedCheckout<A, O> {
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
     ) -> Result<(CheckoutCandidate<A, O>, u64, ViewStamp), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         let checkout = self.lock_with_carrier(carrier, cancellation, lifetime).await?;
         self.prepare_native_phase_from_guard(checkout, None, carrier, cancellation)
     }
@@ -2234,7 +2257,8 @@ impl<A, O> SharedCheckout<A, O> {
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
     ) -> Result<(CheckoutCandidate<A, O>, u64, ViewStamp), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         let checkout = await_lock(
             self.lock_settled(), carrier, cancellation, lifetime,
         ).await?;
@@ -2248,7 +2272,8 @@ impl<A, O> SharedCheckout<A, O> {
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(CheckoutCandidate<A, O>, u64, ViewStamp), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         let epoch = self.view_gate.generation();
         let stamp = self.ledger.stamp();
         let candidate = checkout.candidate_for_operation_with_carrier(
@@ -2272,13 +2297,16 @@ impl<A, O> SharedCheckout<A, O> {
     ) -> Result<Option<T>, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore,
           F: FnOnce(&mut NativeDemandCarrier<'_>) -> Result<(), MountSourceError>,
-          H: FnOnce(MountPublication, &mut SharedCheckoutState<A, O>) -> T {
+          H: FnOnce(MountPublication, &mut SharedCheckoutState<A, O>) -> T,
+    {
         self.install_candidate(
             candidate, epoch, stamp, carrier, cancellation, lifetime, record,
             |checkout, candidate, prepared| {
-                let commit = || checkout.adopt_prepared_candidate(
+                let commit = || {
+                    checkout.adopt_prepared_candidate(
                     &candidate.base, candidate.checkout, prepared,
-                );
+                )
+                };
                 match lifetime {
                     Some(lifetime) => cancellation.commit_if_both_live(lifetime, commit),
                     None => cancellation.commit_if_live(commit),
@@ -2307,7 +2335,8 @@ impl<A, O> SharedCheckout<A, O> {
               &mut Checkout<A, O>, CheckoutCandidate<A, O>,
               crate::facade::PreparedCandidateAdoption,
           ) -> Result<bool, MountSourceError>,
-          H: FnOnce(MountPublication, &mut SharedCheckoutState<A, O>) -> T {
+          H: FnOnce(MountPublication, &mut SharedCheckoutState<A, O>) -> T,
+    {
         use super::lazy::{mount_demand_error, mount_engine_error};
         let original_native = carrier.original_native_work();
         carrier.with_work(|work| {
@@ -2382,7 +2411,8 @@ impl<A, O> SharedCheckout<A, O> {
         lifetime: Option<&CancellationToken>,
         callback_guard: Option<&Arc<dyn super::NativeMountCallbackGuard>>,
     ) -> Result<(), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         use super::lazy::{mount_demand_error, mount_engine_error};
         let (mut candidate, epoch, stamp) = self.prepare_native_phase_with_carrier(
             carrier, cancellation, lifetime,
@@ -2415,7 +2445,8 @@ impl<A, O> SharedCheckout<A, O> {
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
     ) -> Result<(), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         let checkout = self.lock_with_carrier(carrier, cancellation, lifetime).await?;
         checkout.ensure_publication_resolved()?;
         carrier.with_work(|work| work.check()).map_err(super::lazy::mount_demand_error)
@@ -2431,7 +2462,8 @@ impl<A, O> SharedCheckout<A, O> {
         lifetime: Option<&CancellationToken>,
         callback_guard: Option<&Arc<dyn super::NativeMountCallbackGuard>>,
     ) -> Result<(), MountSourceError>
-    where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
+    where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
         use super::lazy::{mount_demand_error, mount_engine_error, mount_items};
         let original = carrier.original_native_work();
         let Some(end) = offset.checked_add(range.logical_bytes) else {
@@ -2534,7 +2566,8 @@ impl<A, O> SharedCheckout<A, O> {
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
     ) -> Result<SharedCheckoutGuard<'_, A, O>, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         if let NativeDemandCarrier::Borrowed(work) = carrier {
             super::view_ledger::ViewLedgerAdmission::default().reconcile(&self.ledger, work)?;
         }
@@ -2553,11 +2586,14 @@ impl<A, O> SharedCheckout<A, O> {
         lifetime: Option<&CancellationToken>,
         callback_guard: Option<&Arc<dyn super::NativeMountCallbackGuard>>,
     ) -> Result<(), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         use super::lazy::mount_demand_error;
         let bytes = match &*carrier {
             NativeDemandCarrier::Native(_) => 0,
-            NativeDemandCarrier::Borrowed(_) | NativeDemandCarrier::Shared(_) => name.retained_bytes() as u64,
+            NativeDemandCarrier::Borrowed(_) | NativeDemandCarrier::Shared(_) => {
+                name.retained_bytes() as u64,
+        }
         };
         let mut input = NativeCarrierOwned { value: Some((name, value)), carrier, bytes };
         let (mut candidate, epoch, stamp) = self.prepare_native_phase_with_carrier(
@@ -2566,8 +2602,12 @@ impl<A, O> SharedCheckout<A, O> {
         let accepted = if let Some(original) = input.carrier.original_native_work() {
             let (name, value) = input.value.as_ref().expect("native attribute input is live");
             match value {
-                Some((value, mode)) => candidate.checkout.change_named_attribute_by_id(file_id, name, Some((value, *mode)), &original, cancellation).await,
-                None => candidate.checkout.change_named_attribute_by_id(file_id, name, None, &original, cancellation).await,
+                Some((value, mode)) => {
+                    candidate.checkout.change_named_attribute_by_id(file_id, name, Some((value, *mode)), &original, cancellation).await
+                }
+                None => {
+                    candidate.checkout.change_named_attribute_by_id(file_id, name, None, &original, cancellation).await
+                }
             }.map_err(MountSourceError::Filesystem)
         } else {
             let (budget, prior_live) = input.carrier.with_work(|work| {
@@ -2577,8 +2617,12 @@ impl<A, O> SharedCheckout<A, O> {
             })?;
             let (name, value) = input.value.take().expect("native attribute input is live");
             let result = match value {
-                Some((value, mode)) => candidate.checkout.change_named_attribute_by_id(file_id, &name, Some((&value, mode)), budget, cancellation).await,
-                None => candidate.checkout.change_named_attribute_by_id(file_id, &name, None, budget, cancellation).await,
+                Some((value, mode)) => {
+                    candidate.checkout.change_named_attribute_by_id(file_id, &name, Some((&value, mode)), budget, cancellation).await
+                }
+                None => {
+                    candidate.checkout.change_named_attribute_by_id(file_id, &name, None, budget, cancellation).await
+                }
             };
             input.carrier.accept_with_prior_live(result, prior_live, fs_error)
         };
@@ -2649,7 +2693,8 @@ impl<A, O> SharedCheckout<A, O> {
         &self, carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken, lifetime: Option<&CancellationToken>,
     ) -> Result<NativePublicationLoan<'_, A, O>, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         use super::lazy::{mount_demand_error, mount_engine_error};
         let mut checkout = await_lock(
             self.lock_settled(), carrier, cancellation, lifetime,
@@ -2771,29 +2816,36 @@ impl<A, O> SharedCheckout<A, O> {
         snapshot_context: Option<crate::lazy_workspace::NativeSnapshotContext>,
         acknowledged: &mut Option<crate::lazy_workspace::NativePublicationSnapshot>,
         accounting_failure: &mut Option<MountSourceError>,
-    ) -> Result<(NativeSourcePublicationAck, Option<crate::lazy_workspace::NativePublicationSnapshot>), E>
+    ) -> Result<(NativeSourcePublicationAck, Option<crate::lazy_workspace::NativePublicationSnapshot>), E,
+    >
     where A: AsyncAuthorityStore, O: AsyncObjectStore,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + Send + 'static,
     {
         match carrier {
-            NativeDemandCarrier::Borrowed(work) => BorrowedNativeDemandMeter::new(work)?
+            NativeDemandCarrier::Borrowed(work) => {
+                BorrowedNativeDemandMeter::new(work)?
                 .run_async(|meter| async move {
                     let original = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
                     self.seal_original_on_native_work_guarded(
                         permit, force, &original, cancellation, lifetime, before_publication,
                         snapshot_context, acknowledged, accounting_failure,
                     ).await
-                }).await,
-            NativeDemandCarrier::Shared(meter) => self.seal_original_on_native_work_guarded(
+                }).await
+            }
+            NativeDemandCarrier::Shared(meter) => {
+                self.seal_original_on_native_work_guarded(
                 permit, force, &crate::NativeMaterializationWork::from_meter(Arc::clone(meter)), cancellation, lifetime, before_publication,
                 snapshot_context, acknowledged, accounting_failure,
-            ).await,
-            NativeDemandCarrier::Native(original) => self.seal_original_on_native_work_guarded(
+            ).await
+            }
+            NativeDemandCarrier::Native(original) => {
+                self.seal_original_on_native_work_guarded(
                 permit, force, original, cancellation, lifetime, before_publication,
                 snapshot_context, acknowledged, accounting_failure,
-            ).await,
+            ).await
+            }
         }
     }
 
@@ -2805,7 +2857,8 @@ impl<A, O> SharedCheckout<A, O> {
         snapshot_context: Option<crate::lazy_workspace::NativeSnapshotContext>,
         acknowledged: &mut Option<crate::lazy_workspace::NativePublicationSnapshot>,
         accounting_failure: &mut Option<MountSourceError>,
-    ) -> Result<(NativeSourcePublicationAck, Option<crate::lazy_workspace::NativePublicationSnapshot>), E>
+    ) -> Result<(NativeSourcePublicationAck, Option<crate::lazy_workspace::NativePublicationSnapshot>), E,
+    >
     where A: AsyncAuthorityStore, O: AsyncObjectStore,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
@@ -2865,10 +2918,16 @@ impl<A, O> SharedCheckout<A, O> {
                 match result {
                     Ok(ack) => {
                         let snapshot = ack.and_then(|ack| match ack {
-                            NativeSourcePublicationAck::Unchanged { generation } => retained_context.or(snapshot_context)
-                                .map(|context| crate::lazy_workspace::NativePublicationSnapshot::unchanged(context, generation)),
+                            NativeSourcePublicationAck::Unchanged { generation } => {
+                                retained_context.or(snapshot_context)
+                                .map(|context| {
+                                    crate::lazy_workspace::NativePublicationSnapshot::unchanged(context, generation)
+                                })
+                            }
                             NativeSourcePublicationAck::Published { operation, generation } => retained_context
-                                .map(|context| crate::lazy_workspace::NativePublicationSnapshot::published(context, operation, generation)),
+                                .map(|context| {
+                                crate::lazy_workspace::NativePublicationSnapshot::published(context, operation, generation)
+                            }),
                         });
                         if matches!(ack, Some(NativeSourcePublicationAck::Published { .. })) {
                             *acknowledged = snapshot;
@@ -2907,7 +2966,8 @@ impl<A, O> SharedCheckout<A, O> {
         cancellation: &CancellationToken, lifetime: Option<&CancellationToken>,
         callback_guard: Option<&Arc<dyn super::NativeMountCallbackGuard>>,
     ) -> Result<(), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         self.publish_mutation_with_carrier_guarded(
             carrier, cancellation, lifetime, source_publication_guard(
                 callback_guard.map(Arc::clone), lifetime.cloned(),
@@ -2989,10 +3049,12 @@ impl<A, O> SharedCheckout<A, O> {
             drop(old);
             *self.pending_allocation.lock().unwrap_or_else(PoisonError::into_inner) = Some(custody);
         }
-        carrier.with_work(|work| work.charge(crate::WorkCounters {
+        carrier.with_work(|work| {
+            work.charge(crate::WorkCounters {
             bytes_copied: std::mem::size_of::<Arc<PendingCreate>>() as u64,
             ..crate::WorkCounters::UNCHARGED
-        }).map_err(mount_demand_error))?;
+        }).map_err(mount_demand_error)
+        })?;
         let (slot, mut admission) = carrier.with_work(|work| self.ledger.take_for_work(work))?;
         let recorded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _origin = pending.origin.enter();
@@ -3259,7 +3321,8 @@ impl<A, O> SharedCheckout<A, O> {
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
     ) -> Result<(), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         use super::lazy::mount_demand_error;
         cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         if lifetime.is_some_and(CancellationToken::is_cancelled) {
@@ -3284,7 +3347,8 @@ impl<A, O> SharedCheckout<A, O> {
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
     ) -> Result<SharedCheckoutObservation<'_, A, O>, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         self.settle_pending_for_callback_with_carrier(owner, carrier, cancellation, lifetime).await?;
         self.observe_as_is(owner, carrier, cancellation, lifetime).await
     }
@@ -3296,7 +3360,8 @@ impl<A, O> SharedCheckout<A, O> {
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
     ) -> Result<SharedCheckoutOwnedObservation<A, O>, MountSourceError>
-    where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
+    where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+    {
         use super::lazy::{mount_accept, mount_demand_error, mount_engine_error};
         let observation = self.observe(
             owner, carrier, cancellation, lifetime,
@@ -3469,7 +3534,8 @@ impl<A, O> SharedCheckoutState<A, O> {
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
     ) -> Result<CheckoutCandidate<A, O>, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         use super::lazy::{mount_demand_error, mount_engine_error};
         match operation {
             Some(operation) if self.publication_operation == Some(operation) => {}
@@ -3518,7 +3584,8 @@ impl<A, O> SharedCheckout<A, O> {
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
     ) -> Result<(), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         use super::lazy::{mount_demand_error, mount_engine_error};
 
         struct UnpreparedRequests(Vec<GroupedRequest>);
@@ -3558,7 +3625,8 @@ impl<A, O> SharedCheckout<A, O> {
                 None => carrier.with_work(|work| work.check().map_err(mount_demand_error)),
             };
         }
-        let group_admission = Arc::clone(&requests.0.first().expect("nonempty original group").admission);
+        let group_admission = Arc::clone(&requests.0
+                .first().expect("nonempty original group").admission);
         let bindings = match GroupedCallbackBindings::prepare(&requests.0, &group_admission, carrier) {
             Ok(bindings) => bindings,
             Err(error) => return requests.reject(error),
@@ -3661,8 +3729,9 @@ impl<A, O> SharedCheckout<A, O> {
         let adopted = if native_result_custody.is_some() {
             Ok(())
         } else {
-            let adopted = carrier.with_work(|work|
-                work.record_adoption(result_bytes, &None).map_err(mount_demand_error));
+            let adopted = carrier.with_work(|work| {
+                work.record_adoption(result_bytes, &None).map_err(mount_demand_error)
+            });
             *bytes = bytes.checked_add(result_bytes)
                 .expect("grouped outcome slots have exact custody");
             adopted
@@ -3780,8 +3849,10 @@ impl InstalledCaptureAccounting<'_> {
     fn binding_history_bytes(&self, binding: &crate::DirectoryBindingChange) -> u64 {
         match self {
             Self::Ordinary(_) => 0,
-            Self::Native(_) => binding.before.as_ref().map_or(0, |entry| entry.name.retained_bytes() as u64)
-                + binding.after.as_ref().map_or(0, |entry| entry.name.retained_bytes() as u64),
+            Self::Native(_) => {
+                binding.before.as_ref().map_or(0, |entry| entry.name.retained_bytes() as u64)
+                + binding.after.as_ref().map_or(0, |entry| entry.name.retained_bytes() as u64)
+            }
         }
     }
 
@@ -3798,9 +3869,11 @@ impl InstalledCaptureAccounting<'_> {
                         name.encoding(), name.as_bytes(), limits, scratch,
                     )?);
                 }
-                NamespacePath::new(owned, limits).map_err(|error| MountSourceError::Filesystem(
+                NamespacePath::new(owned, limits).map_err(|error| {
+                    MountSourceError::Filesystem(
                     crate::FsError::Path(crate::kernel::PathLookupError::NamespacePath(error)),
-                ))
+                )
+                })
             }
         }
     }
@@ -3922,9 +3995,9 @@ async fn installed_changes_with_accounting<A: AsyncAuthorityStore, O: AsyncObjec
     if diff.truncated {
         if matches!(accounting, InstalledCaptureAccounting::Native(_)) {
             let bytes = file_buffer_bytes + binding_buffer_bytes
-                + diff.bindings.iter().map(|binding|
-                    accounting.name_bytes(&binding.name) + accounting.binding_history_bytes(binding)
-                ).sum::<u64>();
+                + diff.bindings.iter().map(|binding| {
+                        accounting.name_bytes(&binding.name) + accounting.binding_history_bytes(binding)
+                    }).sum::<u64>();
             drop(diff);
             accounting.release(bytes)?;
         } else {
@@ -4118,7 +4191,8 @@ impl<A, O> CheckoutDetachedFile<A, O> {
         logical_bytes: Option<u64>,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         use super::lazy::{mount_accept, mount_demand_error, mount_engine_error};
         let cancellation = carrier.cancellation();
         let mut state = await_lock(
@@ -4164,7 +4238,8 @@ impl<A, O> CheckoutDetachedFile<A, O> {
     async fn read_owned_async_with_carrier(
         &self, offset: u64, length: u32, clip: bool, carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         let cancellation = carrier.cancellation();
         let state = await_lock(
             self.state.lock(), carrier, &cancellation, Some(&self.cancellation),
@@ -4215,7 +4290,8 @@ impl<A, O> CheckoutDetachedFile<A, O> {
         change: ContentChange<std::convert::Infallible>,
         carrier: &mut NativeDemandCarrier<'_>, cancellation: &CancellationToken,
     ) -> Result<(), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         let epoch = state.mutation_epoch.checked_add(1).ok_or(MountSourceError::Stale)?;
         let mut metadata = state.metadata;
         let stamped = metadata.stamp_content_change(content_change_time()?).then_some(metadata);
@@ -4236,7 +4312,8 @@ impl<A, O> CheckoutDetachedFile<A, O> {
     async fn change_content_async_with_carrier(
         &self, change: ContentChange<std::convert::Infallible>, carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         let cancellation = carrier.cancellation();
         let mut state = await_lock(
             self.state.lock(), carrier, &cancellation, Some(&self.cancellation),
@@ -4248,7 +4325,8 @@ impl<A, O> CheckoutDetachedFile<A, O> {
         &self, name: &[u8], value: Option<(&crate::kernel::OwnedSourceChunk, MountAttributeWriteMode)>,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         let original = carrier.original_native_work().expect("detached attributes use native work");
         let owned_name = native_attribute_name(
             self.profile, self.limits, name, &original,
@@ -4264,12 +4342,19 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             &self.ledger, &ViewChange::Node(state.file.file_id()), carrier,
         )?;
         let result = match value {
-            Some((value, mode)) => state.file.change_named_attribute(&name, Some((&value.bytes, match mode {
+            Some((value, mode)) => {
+                state.file.change_named_attribute(&name, Some((&value.bytes, match mode {
                     MountAttributeWriteMode::Upsert => NamedAttributeWriteMode::Upsert,
                     MountAttributeWriteMode::Create => NamedAttributeWriteMode::Create,
-                    MountAttributeWriteMode::Replace => NamedAttributeWriteMode::Replace,
-                })), &original, &cancellation).await,
-            None => state.file.change_named_attribute(&name, None, &original, &cancellation).await,
+                    MountAttributeWriteMode::Replace => {
+                                    NamedAttributeWriteMode::Replace
+                                }
+                            },
+                        )), &original, &cancellation).await
+            }
+            None => {
+                state.file.change_named_attribute(&name, None, &original, &cancellation).await
+            }
         };
         if let Ok(metadata) = &result {
             state.metadata = *metadata;
@@ -4489,9 +4574,11 @@ where
         let meter = work.native_read_meter();
         self.runtime.block_on_measured(|| async {
             let original = work.clone();
-            let owned_cursor = cursor.map(|name| native_attribute_name(
+            let owned_cursor = cursor.map(|name| {
+                            native_attribute_name(
                 self.profile, self.limits, name, &original,
-            )).transpose()?;
+            )
+                        }).transpose()?;
             let (_cursor_allocation, cursor) = match owned_cursor {
                 Some((name, allocation)) => (Some(allocation), Some(name)),
                 None => (None, None),
@@ -4685,7 +4772,9 @@ where
         &self, operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, MountSourceError>,
     ) -> Result<T, MountSourceError> {
         let original = match &*self.pending.state() {
-            PendingState::Pending { bytes, .. } | PendingState::Applying { bytes, .. } => bytes.original_work(),
+            PendingState::Pending { bytes, .. } | PendingState::Applying { bytes, .. } => {
+                bytes.original_work()
+            }
             PendingState::Complete => None,
         };
         match original {
@@ -4752,11 +4841,17 @@ where
                     .map_err(MountSourceError::NativeWork)?;
                 let capacity = data.capacity() as u64;
                 let data = OwnedBytes::from_vec_with_guard(data, allocation, original.runtime_meter())
-                    .map_err(|error| MountSourceError::NativeWork(match error.into_error() {
-                        acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
-                        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                        => crate::NativeTreeMaterializationError::InvalidLayout,
-                    }))?;
+                    .map_err(|error| {
+                            MountSourceError::NativeWork(match error.into_error() {
+                        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                                    original.runtime_error(error)
+                                }
+                                acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+                        => {
+                                    crate::NativeTreeMaterializationError::InvalidLayout,
+                    }
+                            })
+                        })?;
                 return Ok(crate::kernel::OwnedSourceChunk::intrinsic(data, capacity));
             }
         }
@@ -5014,7 +5109,9 @@ where
             ).await.map_err(MountSourceError::Filesystem);
             let installed = self.checkout.finish_phase(
                 candidate, epoch, stamp, &mut carrier, &cancellation, Some(&self.cancellation),
-                |carrier| record_view_change(&self.checkout.ledger, &ViewChange::Node(self.file_id), carrier),
+                |carrier| {
+                                record_view_change(&self.checkout.ledger, &ViewChange::Node(self.file_id), carrier)
+                            },
                 None, |publication, _| publication,
             ).await.and_then(|installed| installed.ok_or(MountSourceError::Stale));
             accepted?;
@@ -5054,9 +5151,11 @@ where
         self.runtime.block_on_measured(|| async {
             use super::lazy::mount_demand_error;
             let original = work.clone();
-            let cursor = cursor.map(|name| native_attribute_name(
+            let cursor = cursor.map(|name| {
+                            native_attribute_name(
                 self.profile, self.limits, name, &original,
-            )).transpose()?;
+            )
+                        }).transpose()?;
             let (_view, mut observer) = self.observer(work).await?;
             let cancellation = meter.lock().cancellation().clone();
             let accepted = observer.list_named_attributes_by_id_with_accounting(
@@ -5092,10 +5191,16 @@ where
             let cancellation = carrier.cancellation();
             self.checkout.mutate_named_attribute_by_id_with_carrier(
                 self.file_id, name, Some((packet.bytes.clone(), match mode {
-                    MountAttributeWriteMode::Upsert => NamedAttributeWriteMode::Upsert,
-                    MountAttributeWriteMode::Create => NamedAttributeWriteMode::Create,
-                    MountAttributeWriteMode::Replace => NamedAttributeWriteMode::Replace,
-                })), carrier, &cancellation, Some(&self.cancellation),
+                    MountAttributeWriteMode::Upsert => {
+                                        NamedAttributeWriteMode::Upsert
+                                    }
+                                    MountAttributeWriteMode::Create => {
+                                        NamedAttributeWriteMode::Create
+                                    }
+                                    MountAttributeWriteMode::Replace => {
+                                        NamedAttributeWriteMode::Replace
+                                    }
+                                })), carrier, &cancellation, Some(&self.cancellation),
                 self.native_callback_guard.as_ref(),
             ).await
         }, meter.as_ref()).map_err(capture_io_error)?
@@ -5236,9 +5341,7 @@ fn native_mount_name_with_scratch<S: CaptureInputScratch>(
             Ok(bytes)
         }
         (NameEncoding::Utf8, "windows") => {
-            let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
-                MountSourceError::NativeText { kind: super::NativeSourceTextKind::Invalid, text: "authenticated UTF-8 name is malformed" }
-            })?;
+            let text = std::str::from_utf8(name.as_bytes()).map_err(|_| MountSourceError::NativeText { kind: super::NativeSourceTextKind::Invalid, text: "authenticated UTF-8 name is malformed" })?;
             let mut length = 0_usize;
             for scalar in text.chars() {
                 scratch.items(1)?;
@@ -5422,7 +5525,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             .wait(|| async { Ok(self.checkout.observe(owner, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())), &CancellationToken::new(), None).await?.generation_id()) })
     }
 
-    /// Records a composing sourceâ€™s projection change.
+    /// Records a composing source’s projection change.
     pub(super) fn record_projection_change(&self, change: &ViewChange<'_>) {
         self.checkout.ledger.record(change, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()), &mut super::view_ledger::ViewLedgerAdmission::default()).expect("unbounded view recording");
     }
@@ -5446,7 +5549,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         owner: CallbackOwner,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>
-    where A: 'static, O: 'static {
+    where A: 'static, O: 'static,
+    {
         use super::lazy::{mount_accept, mount_demand_error, mount_engine_error};
         let original = carrier.original_native_work();
         if let Some(original) = original.as_ref() {
@@ -5475,9 +5579,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                     let capacity = read.logical_owned_bytes();
                     crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity)
                 }),
-                None => observer.read_symbolic_link(
+                None => {
+                    observer.read_symbolic_link(
                     namespace, original, &cancellation,
-                ).await,
+                ).await
+                }
             }.map_err(MountSourceError::Filesystem)
         } else {
             let budget = observer.work.with_work(|work| {
@@ -5493,7 +5599,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                         },
                         work: receipt.work,
                     }),
-                None => observer.read_symbolic_link(namespace, budget, &cancellation).await,
+                None => {
+                    observer.read_symbolic_link(namespace, budget, &cancellation).await
+                }
             };
             observer.work.with_work(|work| mount_accept(work, result, mount_engine_error))
         };
@@ -5561,7 +5669,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         carrier: &mut NativeDemandCarrier<'_>,
         build: F,
     ) -> Result<MountLookup, MountSourceError>
-    where F: FnOnce(NamespacePath) -> AuthoredMutation {
+    where F: FnOnce(NamespacePath) -> AuthoredMutation,
+    {
         use super::lazy::mount_demand_error;
         let original = carrier.original_native_work().expect("creation uses native work");
         let cancellation = carrier.with_work(|work| {
@@ -5585,8 +5694,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 items_examined: 1,
                 ..crate::WorkCounters::UNCHARGED
             }).map_err(MountSourceError::NativeWork)?;
-            output.0.created_file_ids.first().copied().flatten()
-                .ok_or_else(|| MountSourceError::Engine("create omitted file identity".to_owned()))
+            output.0
+                    .created_file_ids
+                    .first().copied().flatten()
+                .ok_or_else(|| {
+                        MountSourceError::Engine("create omitted file identity".to_owned())
+                    })
         });
         let path = match input.0.first().expect("native create input is live") {
             AuthoredMutation::CreateDirectory { path, .. }
@@ -5597,7 +5710,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         };
         let installed = self.checkout.finish_phase(
             candidate, epoch, stamp, carrier, &cancellation, Some(&self.cancellation),
-            |carrier| record_view_change(&self.checkout.ledger, &ViewChange::Bound(path), carrier),
+            |carrier| {
+                    record_view_change(&self.checkout.ledger, &ViewChange::Bound(path), carrier)
+                },
             None, |publication, _| publication,
         ).await.and_then(|installed| installed.ok_or(MountSourceError::Stale));
         drop(input);
@@ -5683,7 +5798,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             let carrier = &mut *destination.carrier;
             self.checkout.finish_phase(
                 candidate, epoch, stamp, carrier, &cancellation, Some(&self.cancellation),
-                |carrier| record_view_change(&self.checkout.ledger, &ViewChange::Entry(destination_path, node), carrier),
+                |carrier| {
+                        record_view_change(&self.checkout.ledger, &ViewChange::Entry(destination_path, node), carrier)
+                    },
                 None, |publication, _| publication,
             ).await.and_then(|installed| installed.ok_or(MountSourceError::Stale))
         };
@@ -5763,7 +5880,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         };
         let installed = self.checkout.finish_phase(
             candidate, epoch, stamp, phase_carrier, &cancellation, Some(&self.cancellation),
-            |carrier| record_view_change(&self.checkout.ledger, &ViewChange::Entry(namespace, node), carrier),
+            |carrier| {
+                    record_view_change(&self.checkout.ledger, &ViewChange::Entry(namespace, node), carrier)
+                },
             None, |publication, _| publication,
         ).await.and_then(|installed| installed.ok_or(MountSourceError::Stale));
         drop(input);
@@ -5898,9 +6017,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 operations, &mut accounting, &cancellation,
             ).await.map_err(MountSourceError::Filesystem)
         } else {
-            let consumed_source = phase_carrier.with_work(|work| {
-                mount_clone_namespace(source.components(), self.limits, work)
-            })?;
+            let consumed_source = phase_carrier.with_work(|work| mount_clone_namespace(source.components(), self.limits, work))?;
             let bytes = consumed_source.retained_bytes();
             let mut consumed_source = NativeCarrierOwned {
                 value: Some(consumed_source), carrier: phase_carrier, bytes,
@@ -5925,7 +6042,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         };
         let installed = self.checkout.finish_phase(
             candidate, epoch, stamp, phase_carrier, &cancellation, Some(&self.cancellation),
-            |carrier| record_view_change(&self.checkout.ledger, &ViewChange::Moved { from: source, to: destination, moved, replaced }, carrier),
+            |carrier| {
+                    record_view_change(&self.checkout.ledger, &ViewChange::Moved { from: source, to: destination, moved, replaced }, carrier)
+                },
             None, |publication, _| publication,
         ).await.and_then(|installed| installed.ok_or(MountSourceError::Stale));
         drop(destination_input);
@@ -6051,7 +6170,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         &self, created: &MountLookup, work: &crate::NativeMaterializationWork,
     ) -> Result<Arc<dyn MountOpenFile>, MountSourceError>
     where A: AsyncAuthorityStore + Send + Sync + 'static,
-          O: AsyncObjectStore + Send + Sync + 'static {
+          O: AsyncObjectStore + Send + Sync + 'static,
+    {
         work.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         if created.node.kind != MountNodeKind::Regular {
@@ -6106,7 +6226,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         owner: CallbackOwner,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>
-    where A: 'static, O: 'static {
+    where A: 'static, O: 'static,
+    {
         use super::lazy::mount_engine_error;
         let original = carrier.original_native_work().expect("detaching uses native work");
         original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
@@ -6137,7 +6258,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         Ok((handle, 0))
     }
 
-    /// Resolves a mounted path using the callerâ€™s accounting scope.
+    /// Resolves a mounted path using the caller’s accounting scope.
     pub(super) async fn lookup_async(
         &self,
         path: &MountPath,
@@ -6157,9 +6278,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let bytes = if native_allocation.is_some() { 0 } else { namespace.retained_bytes() };
         let mut input = NativeCarrierOwned { value: Some(namespace), carrier, bytes };
         let (namespace, carrier) = input.parts();
-        if let Some(pending) = carrier.with_work(|work| {
-            self.checkout.pending_lookup_with_work(namespace, work)
-        })? {
+        if let Some(pending) = carrier.with_work(|work| self.checkout.pending_lookup_with_work(namespace, work))? {
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             return Ok(Some(pending));
         }
@@ -6245,7 +6364,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         })
     }
 
-    /// Checks an authored stamp using the callerâ€™s accounting scope.
+    /// Checks an authored stamp using the caller’s accounting scope.
     pub(super) fn unchanged_since_with_carrier(
         &self,
         path: &MountPath,
@@ -6538,7 +6657,8 @@ impl<A, O> CheckoutMountSource<A, O> {
 
     /// Whether the binding at `path` is unchanged since `stamp`.
     pub(super) fn binding_unchanged_since(&self, path: &MountPath, stamp: ViewStamp) -> bool
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+    where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    {
         self.namespace_path(path, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))).map(|(path, _)| path)
             .is_ok_and(|path| self.checkout.binding_unchanged_since(&path, stamp))
     }
@@ -6565,7 +6685,8 @@ impl<A, O> CheckoutMountSource<A, O> {
     fn cancel_capture_engine(
         &self,
         wait: Option<&CancellationToken>,
-        mut phase: impl FnMut(bool) -> Result<Option<crate::materializer::NativeWorkReservation>, MountSourceError>,
+        mut phase: impl FnMut(bool) -> Result<Option<crate::materializer::NativeWorkReservation>, MountSourceError,
+        >,
         mut cancel: impl FnMut(&CancellationToken) -> Result<crate::cancellation::PreparedCancellation, MountSourceError>,
     ) -> Result<(), MountSourceError> {
         if self.capture_retired() { return Ok(()); }
@@ -6681,16 +6802,20 @@ impl<A, O> CheckoutMountSource<A, O> {
             ))?;
             let loan = credit.loan(wait);
             loan.admit_completed(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map(Some).map_err(MountSourceError::NativeWork)
-        }, |token| match wait {
+        }, |token| {
+                match wait {
             Some(wait) => token.prepare_cancel_with_cleanup_wait(wait),
             None => token.prepare_cancel_accepted_cleanup(),
-        }.map_err(MountSourceError::NativeWork))
+        }.map_err(MountSourceError::NativeWork)
+            },
+        )
     }
 
     pub(crate) fn native_source_io_lease(
         self: &Arc<Self>,
     ) -> Result<NativeSourceIoLease, MountSourceError>
-    where Self: Send + Sync + 'static {
+    where Self: Send + Sync + 'static,
+    {
         let owner: Arc<dyn NativeSourceIoRetirement> = Arc::clone(self) as Arc<dyn NativeSourceIoRetirement>;
         self.native_source_io_lease_for_owner(owner)
     }
@@ -6724,9 +6849,11 @@ impl<A, O> CheckoutMountSource<A, O> {
     }
 
     fn reserve_capture_poll(&self) -> Result<Option<crate::materializer::NativeWorkReservation>, MountSourceError> {
-        self.native_original.as_ref().map(|original| original.reserve_work(crate::WorkCounters {
+        self.native_original.as_ref().map(|original| {
+                original.reserve_work(crate::WorkCounters {
             items_examined: 1, ..crate::WorkCounters::UNCHARGED
-        }).map_err(MountSourceError::NativeWork)).transpose()
+        }).map_err(MountSourceError::NativeWork)
+            }).transpose()
     }
 
     fn accept_capture_poll(
@@ -6754,9 +6881,12 @@ impl<A, O> CheckoutMountSource<A, O> {
                 work.check().map_err(super::lazy::mount_demand_error)?;
                 super::lazy::mount_items(work, 1).map(|()| None)
             })
-        }, |token| carrier.borrow_mut().with_work(|work| {
+        }, |token| {
+                carrier.borrow_mut().with_work(|work| {
             token.prepare_cancel_measured(&mut work.work, work.budget).map_err(MountSourceError::Work)
-        }))
+        })
+            },
+        )
     }
 
     /// Cancels future and in-flight canonical operations owned by this mount.
@@ -6860,7 +6990,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         acknowledged: &'a mut Option<crate::lazy_workspace::NativePublicationSnapshot>,
         accounting_failure: &'a mut Option<MountSourceError>,
     ) -> Pin<Box<dyn Future<Output = Result<(NativeSourcePublicationAck,
-        Option<crate::lazy_workspace::NativePublicationSnapshot>), E>> + Send + 'a>>
+        Option<crate::lazy_workspace::NativePublicationSnapshot>), E,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    >
     where A: AsyncAuthorityStore, O: AsyncObjectStore,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
@@ -6940,8 +7075,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             return;
         }
         let installed = match NamespacePath::new(Vec::new(), self.limits) {
-            Ok(root) => {
-                installed_changes(
+            Ok(root) => installed_changes(
                     base,
                     checkout,
                     InstallScope::Subtree(&root),
@@ -6949,8 +7083,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                     &self.cancellation,
                 )
                 .await.map(|(effect, _)| effect)
-                .unwrap_or_else(|_| ViewEffect { everything: true, ..ViewEffect::default() })
-            }
+                .unwrap_or_else(|_| ViewEffect { everything: true, ..ViewEffect::default() }),
             Err(_) => ViewEffect {
                 everything: true,
                 ..ViewEffect::default()
@@ -7237,9 +7370,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let native = capture_meter(crate::performance::BOUNDARY_BUDGET, &self.cancellation)
             .map_err(|failure| failure.error)?;
         self.runtime.block_on_measured(
-            || tokio::time::timeout(CALLBACK_TIMEOUT, self.capture_host(
+            || {
+                    tokio::time::timeout(CALLBACK_TIMEOUT, self.capture_host(
                 source_root, paths, expected_root_identity, scope, None, &native,
-            )),
+            ))
+                },
             native.runtime_meter().as_ref(),
         ).map_err(|error| MountSourceError::NativeWork(native.runtime_error(error)))?
             .map_err(|_| MountSourceError::Stale)?
@@ -7327,12 +7462,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                         let request = &resources.registration.as_ref().expect("capture registration remains owned").request;
                         let original = worker_native.clone();
                         source.runtime.block_on_measured(
-                            || source.capture_host_with_identity_async(
+                            || {
+                                        source.capture_host_with_identity_async(
                                 &inputs.paths, &inputs.options, scope,
                                 Some(&baseline), Some(request), &worker_native,
-                            ),
+                            )
+                                    },
                             original.runtime_meter().as_ref(),
-                        ).map_err(|error| MountSourceError::NativeWork(original.runtime_error(error)))
+                        ).map_err(|error| {
+                MountSourceError::NativeWork(original.runtime_error(error))
+            })
                             .and_then(std::convert::identity)
                     }));
                     drop(resources);
@@ -7410,17 +7549,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             let captured = {
                 let work = native.clone();
                 match scope {
-                    HostCaptureScope::ExactPaths => capture_paths_batched(
+                    HostCaptureScope::ExactPaths => {
+                        capture_paths_batched(
                         &mut candidate.checkout, paths, options, 64,
                         cancellation, baseline, &work,
-                    ).await,
-                    HostCaptureScope::Subtree => capture_subtrees_with_native_work(
+                    ).await
+                    }
+                    HostCaptureScope::Subtree => {
+                        capture_subtrees_with_native_work(
                         &mut candidate.checkout,
                         std::slice::from_ref(paths.first().ok_or(MountSourceError::Stale)?),
                         options, &crate::CapturePolicy::default(),
                         cancellation, baseline, &work,
                     ).await,
-                }.map_err(|failure| capture_mount_error(failure.error))
+                }
+                }
+                .map_err(|failure| capture_mount_error(failure.error))
             };
             if let Err(error) = captured {
                 drop(candidate);
@@ -7428,7 +7572,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             }
             let install_scope = match scope {
                 HostCaptureScope::ExactPaths => InstallScope::Paths(paths),
-                HostCaptureScope::Subtree => InstallScope::Subtree(paths.first().ok_or(MountSourceError::Stale)?),
+                HostCaptureScope::Subtree => {
+                    InstallScope::Subtree(paths.first().ok_or(MountSourceError::Stale)?)
+                }
             };
             let installed = self.commit_host_capture(
                 candidate, install_scope, request, &mut carrier, &mut view, cancellation,
@@ -7470,11 +7616,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         };
         let publication = self.checkout.install_candidate(
             candidate, epoch, stamp, carrier, cancellation, Some(&self.cancellation),
-            |carrier| self.with_capture_observer_dispatch(|| {
+            |carrier| {
+                    self.with_capture_observer_dispatch(|| {
                 self.checkout.ledger.record(
                     &ViewChange::Effect(&effect), carrier, view,
                 )
-            }),
+            })
+                },
             |checkout, candidate, prepared| {
                 let source_gate = self.capture_gate.lock().unwrap_or_else(PoisonError::into_inner);
                 if source_gate.cancelled {
@@ -7553,7 +7701,8 @@ where
         path: NamespacePath,
         change: ContentChange<NamespacePath>,
     ) -> Result<(), MountSourceError> {
-        boundary(&self.cancellation, |work| self.runtime.block_on_measured(|| async {
+        boundary(&self.cancellation, |work| {
+            self.runtime.block_on_measured(|| async {
             let carrier = &mut NativeDemandCarrier::Native(work);
             let cancellation = &self.cancellation;
             let (mut candidate, epoch, stamp) = self.checkout.prepare_native_phase_with_carrier(
@@ -7567,7 +7716,9 @@ where
             ).await.map_err(super::lazy::mount_engine_error);
             let installed = self.checkout.finish_phase(
                 candidate, epoch, stamp, carrier, cancellation, Some(cancellation),
-                |carrier| record_view_change(&self.checkout.ledger, &ViewChange::Node(node), carrier),
+                |carrier| {
+                                    record_view_change(&self.checkout.ledger, &ViewChange::Node(node), carrier)
+                                },
                 None, |publication, _| publication,
             ).await.and_then(|installed| installed.ok_or(MountSourceError::Stale));
             accepted?;
@@ -7575,7 +7726,8 @@ where
             self.checkout.publish_mutation_with_carrier(
                 carrier, cancellation, Some(cancellation), self.native_callback_guard.as_ref(),
             ).await
-        }, work.native_read_meter().as_ref()).map_err(capture_io_error)?)
+        }, work.native_read_meter().as_ref()).map_err(capture_io_error)?
+        })
     }
 
     async fn mutate_attribute_async_with_carrier(
@@ -7607,20 +7759,30 @@ where
             &candidate.checkout, &namespace, carrier, &cancellation,
         ).await?.ok_or(MountSourceError::NotFound)?;
         let accepted = match value {
-            Some((packet, write_mode)) => candidate.checkout.change_named_attribute_by_id(node, &attribute, Some((&packet.bytes, match write_mode {
+            Some((packet, write_mode)) => {
+                candidate.checkout.change_named_attribute_by_id(node, &attribute, Some((&packet.bytes, match write_mode {
                     MountAttributeWriteMode::Upsert => NamedAttributeWriteMode::Upsert,
                     MountAttributeWriteMode::Create => NamedAttributeWriteMode::Create,
-                    MountAttributeWriteMode::Replace => NamedAttributeWriteMode::Replace,
-                })), &original, &cancellation).await,
-            None => candidate.checkout.change_named_attribute_by_id(node, &attribute, None, &original, &cancellation).await,
-        }.map_err(MountSourceError::Filesystem);
+                    MountAttributeWriteMode::Replace => {
+                                    NamedAttributeWriteMode::Replace
+                                }
+                            },
+                        )), &original, &cancellation).await
+            }
+            None => {
+                candidate.checkout.change_named_attribute_by_id(node, &attribute, None, &original, &cancellation).await,
+        }
+        }
+        .map_err(MountSourceError::Filesystem);
         drop(attribute);
         drop(name_allocation);
         drop(namespace);
         drop(namespace_allocation);
         let installed = self.checkout.finish_phase(
             candidate, epoch, stamp, carrier, &cancellation, Some(&self.cancellation),
-            |carrier| record_view_change(&self.checkout.ledger, &ViewChange::Node(node), carrier),
+            |carrier| {
+                    record_view_change(&self.checkout.ledger, &ViewChange::Node(node), carrier)
+                },
             None, |publication, _| publication,
         ).await.and_then(|installed| installed.ok_or(MountSourceError::Stale));
         accepted?;
@@ -7689,17 +7851,21 @@ where
             (MountNodeKind::Socket, None) => FileKind::Socket,
             (MountNodeKind::CharacterDevice, Some(_)) => FileKind::CharacterDevice,
             (MountNodeKind::BlockDevice, Some(_)) => FileKind::BlockDevice,
-            _ => return Err(MountSourceError::Unsupported(
+            _ => {
+                return Err(MountSourceError::Unsupported(
                 "special-file kind and device identity disagree".to_owned(),
-            )),
+            ));
+            }
         };
         self.create_authored_async_with_carrier(
             path, metadata, kind, 0, device, carrier,
-            |path| match device {
+            |path| {
+            match device {
                 Some((major, minor)) => AuthoredMutation::CreateDevice {
                     path, kind: file_kind, major, minor, metadata,
                 },
                 None => AuthoredMutation::CreateEmptySpecial { path, kind: file_kind, metadata },
+            },
             },
         ).await
     }
@@ -7748,7 +7914,9 @@ where
         drop(namespace_allocation);
         let installed = self.checkout.finish_phase(
             candidate, epoch, stamp, carrier, &cancellation, Some(&self.cancellation),
-            |carrier| record_view_change(&self.checkout.ledger, &ViewChange::Node(node), carrier),
+            |carrier| {
+                    record_view_change(&self.checkout.ledger, &ViewChange::Node(node), carrier)
+                },
             None, |publication, _| publication,
         ).await.and_then(|installed| installed.ok_or(MountSourceError::Stale));
         accepted?;
@@ -8181,7 +8349,9 @@ where
     }
 
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
-        boundary(&self.cancellation, |work| self.lookup_with_meter(path, work))
+        boundary(&self.cancellation, |work| {
+            self.lookup_with_meter(path, work)
+        })
     }
 
     fn lookup_with_meter(
@@ -8226,7 +8396,9 @@ where
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        boundary(&self.cancellation, |work| self.open_file_with_meter(path, work).map(|(handle, _)| handle))
+        boundary(&self.cancellation, |work| {
+            self.open_file_with_meter(path, work).map(|(handle, _)| handle)
+        })
     }
 
     fn open_file_with_meter(
@@ -8240,7 +8412,9 @@ where
     fn open_file_with_lookup(
         &self, path: &MountPath,
     ) -> Result<(Arc<dyn MountOpenFile>, MountLookup), MountSourceError> {
-        boundary(&self.cancellation, |work| self.open_file_with_lookup_with_meter(path, work).map(|((handle, _), lookup)| (handle, lookup)))
+        boundary(&self.cancellation, |work| {
+            self.open_file_with_lookup_with_meter(path, work).map(|((handle, _), lookup)| (handle, lookup))
+        })
     }
 
     fn open_file_with_lookup_with_meter(
@@ -8264,7 +8438,9 @@ where
     }
 
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        boundary(&self.cancellation, |work| self.detach_file_with_meter(path, work).map(|(handle, _)| handle))
+        boundary(&self.cancellation, |work| {
+            self.detach_file_with_meter(path, work).map(|(handle, _)| handle)
+        })
     }
 
     fn detach_file_with_meter(
@@ -8649,9 +8825,11 @@ where
             let namespace_pair = self.namespace_path(path, &mut carrier)?;
             let _namespace_allocation = namespace_pair.1;
             let namespace = namespace_pair.0;
-            let cursor_pair = cursor.map(|name| native_attribute_name(
+            let cursor_pair = cursor.map(|name| {
+                            native_attribute_name(
                 self.profile, self.limits, name, &original,
-            )).transpose()?;
+            )
+                        }).transpose()?;
             let (_cursor_allocation, cursor) = match cursor_pair {
                 Some((name, allocation)) => (Some(allocation), Some(name)),
                 None => (None, None),
@@ -8854,7 +9032,9 @@ where
     ) -> Result<(), MountSourceError> {
         let original = work.clone();
         self.runtime.block_on_measured(
-            || self.capture_host(source_root, paths, expected_root_identity, HostCaptureScope::ExactPaths, None, work),
+            || {
+                    self.capture_host(source_root, paths, expected_root_identity, HostCaptureScope::ExactPaths, None, work)
+                },
             original.runtime_meter().as_ref(),
         ).map_err(|error| MountSourceError::NativeWork(original.runtime_error(error)))?
     }
@@ -8868,7 +9048,9 @@ where
     ) -> Result<(), MountSourceError> {
         let original = work.clone();
         self.runtime.block_on_measured(
-            || self.capture_host(source_root, std::slice::from_ref(path), expected_root_identity, HostCaptureScope::Subtree, None, work),
+            || {
+                    self.capture_host(source_root, std::slice::from_ref(path), expected_root_identity, HostCaptureScope::Subtree, None, work)
+                },
             original.runtime_meter().as_ref(),
         ).map_err(|error| MountSourceError::NativeWork(original.runtime_error(error)))?
     }
@@ -9006,9 +9188,10 @@ mod tests {
             std::fs::write(&path, b"not admitted")
         }, &meter);
         let error = result.expect_err("future allocation must be admitted before polling");
-        assert!(error.get_ref().is_some_and(|cause|
+        assert!(error.get_ref().is_some_and(|cause| {
             cause.downcast_ref::<crate::DemandError>()
-                .is_some_and(|cause| matches!(cause, crate::DemandError::Work(_)))));
+                .is_some_and(|cause| matches!(cause, crate::DemandError::Work(_)))
+        }));
         assert!(!issued.load(Ordering::Acquire));
         assert!(!path.exists());
         assert_eq!(meter.lock().work.allocation_operations, 0);
@@ -9115,56 +9298,165 @@ mod tests {
             &self,
             object_id: ObjectId,
             bytes: OwnedBytes,
-            budget: WorkBudget,
-            cancellation: &crate::CancellationToken,
-        ) -> crate::storage::ObjectResult<()> {
-            cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
-            self.admit(object_id)?;
-            crate::async_storage::AsyncObjectStore::put(&self.inner, object_id, bytes, budget, cancellation).await
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<(), crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let cancellation = context.cancellation;
+            let result = async {
+                cancellation.check().map_err(|_| {
+                    crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+                })?;
+                self.admit(object_id)?;
+                {
+                    let __object_args = (object_id, bytes, budget, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = crate::async_storage::AsyncObjectStore::put(&self.inner,
+                        __object_args.0,
+                        __object_args.1,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result)
         }
 
         async fn put_many(
             &self,
             writes: &[crate::storage::ObjectWrite],
-            budget: WorkBudget,
-            cancellation: &crate::CancellationToken,
-        ) -> crate::storage::ObjectResult<()> {
-            cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<(), crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let cancellation = context.cancellation;
+            let result = async {
+                cancellation.check().map_err(|_| {
+                    crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+                })?;
             for write in writes {
                 self.admit(write.object_id)?;
             }
-            crate::async_storage::AsyncObjectStore::put_many(&self.inner, writes, budget, cancellation).await
+                {
+                    let __object_args = (writes, budget, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = crate::async_storage::AsyncObjectStore::put_many(&self.inner,
+                        __object_args.0,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result)
         }
 
         async fn read(
             &self,
             object_id: ObjectId,
             maximum_bytes: u64,
-            budget: WorkBudget,
-            cancellation: &crate::CancellationToken,
-        ) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {
-            cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
-            crate::async_storage::AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, budget, cancellation).await
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let cancellation = context.cancellation;
+            let result = async {
+                cancellation.check().map_err(|_| {
+                    crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+                })?;
+                {
+                    let __object_args = (object_id, maximum_bytes, budget, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = crate::async_storage::AsyncObjectStore::read(&self.inner,
+                        __object_args.0,
+                        __object_args.1,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result)
         }
 
         async fn read_many(
             &self,
             requests: &[crate::storage::ObjectReadRequest],
-            budget: WorkBudget,
-            cancellation: &crate::CancellationToken,
-        ) -> crate::storage::ObjectResult<Vec<crate::storage::ObjectRead>> {
-            cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
-            crate::async_storage::AsyncObjectStore::read_many(&self.inner, requests, budget, cancellation).await
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>
+        {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let cancellation = context.cancellation;
+            let result = async {
+                cancellation.check().map_err(|_| {
+                    crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+                })?;
+                {
+                    let __object_args = (requests, budget, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = crate::async_storage::AsyncObjectStore::read_many(&self.inner,
+                        __object_args.0,
+                        &mut __object_work,
+                    )
+                    .await
+                    .map(|(values, _allocation)| values);
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result).map(|values| (values, None))
         }
 
         async fn contains(
             &self,
             object_id: ObjectId,
-            budget: WorkBudget,
-            cancellation: &crate::CancellationToken,
-        ) -> crate::storage::ObjectResult<bool> {
-            cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
-            crate::async_storage::AsyncObjectStore::contains(&self.inner, object_id, budget, cancellation).await
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<bool, crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let cancellation = context.cancellation;
+            let result = async {
+                cancellation.check().map_err(|_| {
+                    crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
+                })?;
+                {
+                    let __object_args = (object_id, budget, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = crate::async_storage::AsyncObjectStore::contains(&self.inner,
+                        __object_args.0,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result)
         }
     }
 
@@ -9207,7 +9499,9 @@ mod tests {
             changed_ns: crate::kernel::MetadataField::Value(1),
             ..metadata()
         };
-        boundary(source.cancellation(), |work| source.create_file(&path, timed, None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&path, timed, None, work)
+        })?;
         source.write_range(&path, 0, Bytes::from_static(b"before"))?;
         let detached = source.detach_file(&path)?;
         let before = detached.lookup()?;
@@ -9239,20 +9533,28 @@ mod tests {
     fn a_candidate_never_installs_over_a_publication() -> Result<(), Box<dyn std::error::Error>> {
         let (source, _) =
             shared_sources(FilesystemProfile::Portable, MountPublication::Manual)?;
-        boundary(source.cancellation(), |work| source.create_file(&native_test_path("first"), FileMetadata::default(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&native_test_path("first"), FileMetadata::default(), None, work)
+        })?;
         let cancellation = CancellationToken::new();
         let mut work = crate::demand::DemandWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
         let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
-        let (candidate, epoch, stamp) = source.runtime.block_on(|| source.checkout.prepare_native_phase_with_carrier(
+        let (candidate, epoch, stamp) = source.runtime.block_on(|| {
+            source.checkout.prepare_native_phase_with_carrier(
             &mut carrier, &cancellation, None,
-        ))?;
+        )
+        })?;
         source.sync()?;
-        let installed = source.runtime.block_on(|| source.checkout.finish_phase(
+        let installed = source.runtime.block_on(|| {
+            source.checkout.finish_phase(
             candidate, epoch, stamp, &mut carrier, &cancellation, None,
             |_| Ok(()), None, |publication, _| publication,
-        ))?;
+        )
+        })?;
         assert!(installed.is_none(), "a candidate installed over a publication");
-        boundary(source.cancellation(), |work| source.create_file(&native_test_path("second"), FileMetadata::default(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&native_test_path("second"), FileMetadata::default(), None, work)
+        })?;
         source.sync()?;
         Ok(())
     }
@@ -9286,10 +9588,12 @@ mod tests {
                 drop(CancelCaptureOnDrop(Arc::clone(&request)));
             }
             assert!(request.cancellation.is_cancelled());
-            let result = source.runtime.block_on_measured(|| source.commit_host_capture(
+            let result = source.runtime.block_on_measured(|| {
+                        source.commit_host_capture(
                 candidate, InstallScope::Paths(&[]), Some(&request), &mut carrier, &mut view,
                 &request.cancellation,
-            ), original.runtime_meter().as_ref()).map_err(capture_io_error)?;
+            )
+                    }, original.runtime_meter().as_ref()).map_err(capture_io_error)?;
             drop(registration);
             assert!(result.is_err());
             assert_eq!(source.checkout.revision(), revision);
@@ -9396,7 +9700,9 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = native_test_path("file");
         std::fs::write(directory.path().join("file"), b"host-after")?;
-        boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         source.write_range(&path, 0, Bytes::from_static(b"before"))?;
         let file_id = source.lookup(&path)?.ok_or("missing original file")?.node.file_id;
         let revision = source.checkout.revision();
@@ -9597,10 +9903,14 @@ mod tests {
         let (source, _) =
             shared_sources(FilesystemProfile::Portable, MountPublication::Manual)?;
         let path = native_test_path("actual");
-        boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         source.write_range(&path, 0, Bytes::from_static(b"content"))?;
         let link = native_test_path("link");
-        boundary(&source.cancellation, |work| source.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((Bytes::from_static(b"actual")).into(), 0), metadata(), work))?;
+        boundary(&source.cancellation, |work| {
+            source.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((Bytes::from_static(b"actual")).into(), 0), metadata(), work)
+        })?;
         let cancellation = CancellationToken::new();
         let budget = crate::performance::BOUNDARY_BUDGET;
         let work = crate::NativeMaterializationWork::new(budget, &cancellation)
@@ -9760,11 +10070,17 @@ mod tests {
             .runtime
             .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
         let zero_result = crate::NativeMaterializationWork::new(WorkBudget::default(), &cancellation)
-            .map_err(|(error, work)| OperationFailure::new(crate::CaptureError::from(error), work))
-            .and_then(|work| source.runtime.block_on(|| capture_paths_batched(
+            .map_err(|(error, work)| {
+                    OperationFailure::new(crate::CaptureError::from(error), work)
+                })
+                .and_then(|work| {
+                    source.runtime.block_on(|| {
+                        capture_paths_batched(
                 &mut zero_candidate, std::slice::from_ref(&first), &options, 1,
                 &cancellation, None, &work,
-            )));
+            )
+                    })
+                });
         let Err(zero_failure) = zero_result else {
             return Err(std::io::Error::other("zero budget admitted host observation").into());
         };
@@ -9775,10 +10091,12 @@ mod tests {
             .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let single = source.runtime.block_on(|| capture_paths_batched(
+        let single = source.runtime.block_on(|| {
+            capture_paths_batched(
             &mut candidate, std::slice::from_ref(&first), &options, 1,
             &cancellation, None, &original,
-        ))?;
+        )
+        })?;
         assert!(single.work.source_bytes_read > 0);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.source_bytes_read = single.work.source_bytes_read;
@@ -9788,9 +10106,11 @@ mod tests {
         let paths = [first, second];
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let result = source.runtime.block_on(|| capture_paths_batched(
+        let result = source.runtime.block_on(|| {
+            capture_paths_batched(
             &mut candidate, &paths, &options, 1, &cancellation, None, &original,
-        ));
+        )
+        });
         let Err(failure) = result else {
             return Err(std::io::Error::other("aggregate source budget was ignored").into());
         };
@@ -10207,7 +10527,9 @@ mod tests {
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let context = crate::lazy_workspace::NativeSnapshotContext::Authored { workspace_id, config };
         let path = native_test_path("qualified-guard-original");
-        let created = boundary(borrowed.cancellation(), |work| borrowed.create_file(&path, metadata(), None, work))?;
+        let created = boundary(borrowed.cancellation(), |work| {
+            borrowed.create_file(&path, metadata(), None, work)
+        })?;
         let file = borrowed.open_created(&path, &created)?;
         let reached = Arc::new(AtomicBool::new(false));
         let observed_prefix = Arc::new(StdMutex::new(None));
@@ -10252,7 +10574,9 @@ mod tests {
         }).expect_err("the actual Root guard must reject the prepared SDK DATA CAS");
         match failure.0 {
             GuardFailure::RootPublicationRejected(code) => assert_eq!(code, 0x51_0c),
-            GuardFailure::Source(cause) => panic!("SDK failure replaced the Root primary: {cause:?}"),
+            GuardFailure::Source(cause) => {
+                panic!("SDK failure replaced the Root primary: {cause:?}")
+            }
         }
         assert!(matches!(failure.1, Some(MountSourceError::Cancelled)),
             "the original post-restore accounting record must preserve its real local-stop failure");
@@ -10288,7 +10612,9 @@ mod tests {
             source.sync_async_with_permit_carrier_guarded_context_with_ack(
                 crate::PublicationPermit::Unrestricted, false, &mut NativeDemandCarrier::Native(&retry_native),
                 &mut super::super::view_ledger::ViewLedgerAdmission::default(), &retry_stop,
-                &mut |_original: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), GuardFailure>(())),
+                &mut |_original: &crate::NativeMaterializationWork| {
+                            std::future::ready(Ok::<(), GuardFailure>(()))
+                        },
                 Some(context), &mut acknowledged,
             ).await
         }).expect("healthy current invocation retries the original retained SDK operation");
@@ -10378,7 +10704,9 @@ mod tests {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("once");
         let stale = source.view_stamp().ok_or("ledger stamp")?;
-        boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         assert!(matches!(
             boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work)),
             Err(MountSourceError::AlreadyExists)
@@ -10404,7 +10732,9 @@ mod tests {
             native_test_path("large"),
         );
 
-        let created = boundary(source.cancellation(), |work| source.create_file(&held, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&held, metadata(), None, work)
+        })?;
         let file = source.open_created(&held, &created)?;
         file.write_range(0, Bytes::from_static(b"first bytes"))?;
         assert_eq!(file.lookup()?.node.logical_bytes, 11);
@@ -10416,7 +10746,9 @@ mod tests {
         assert_eq!(applied.metadata, file.lookup()?.metadata);
 
         // Another reader applies a creation its handle still holds.
-        let created = boundary(source.cancellation(), |work| source.create_file(&read, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&read, metadata(), None, work)
+        })?;
         let file = source.open_created(&read, &created)?;
         file.write_range(4, Bytes::from_static(b"tail"))?;
         let reopened = source.open_file(&read)?;
@@ -10425,7 +10757,9 @@ mod tests {
         assert_eq!(reopened.read_up_to(0, 64)?.as_ref(), b"headtail");
 
         // Bytes past the bound apply the creation and continue in place.
-        let created = boundary(source.cancellation(), |work| source.create_file(&large, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&large, metadata(), None, work)
+        })?;
         let file = source.open_created(&large, &created)?;
         let past = usize::try_from(PENDING_CREATE_BYTES)? + 1;
         file.write_range(0, Bytes::from(vec![7_u8; past]))?;
@@ -10445,7 +10779,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("bounded-queued");
-        let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         let file = source.open_created(&path, &created)?;
         file.write_range(0, Bytes::from_static(b"first bytes"))?;
         file.resize(3)?;
@@ -10457,9 +10793,11 @@ mod tests {
         };
         assert!(capacity > 3, "the real queued buffer has spare capacity");
         let second_path = native_test_path("bounded-queued-second");
-        let second_created = boundary(&source.cancellation, |work| source.create_file(
+        let second_created = boundary(&source.cancellation, |work| {
+            source.create_file(
             &second_path, metadata(), Some(source.checkout.ledger.stamp()), work,
-        ))?;
+        )
+        })?;
         let second_file = source.open_created(&second_path, &second_created)?;
         second_file.write_range(0, Bytes::from_static(b"two"))?;
         let second_pending = source.checkout.pending_create(second_created.node.file_id)
@@ -10537,7 +10875,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("shared-queued");
-        let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         let file = source.open_created(&path, &created)?;
         file.write_range(0, Bytes::from_static(b"immutable original"))?;
         file.resize(9)?;
@@ -10595,7 +10935,9 @@ mod tests {
         acyclic_native_runtime::initialize_native_io_services()?;
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("native-held-body");
-        let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         let file = source.open_created(&path, &created)?;
         let pending = source.checkout.pending_create(created.node.file_id).ok_or("missing pending creation")?;
         let cancellation = CancellationToken::new();
@@ -10612,7 +10954,9 @@ mod tests {
                 assert!(allocation.work().shares_ledger(&original));
                 (bytes.as_ptr(), bytes.capacity())
             }
-            _ => return Err("native held write lost mutable body custody or applied prematurely".into()),
+            _ => {
+                return Err("native held write lost mutable body custody or applied prematurely".into());
+            }
         };
         assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations);
         assert_eq!(original.receipt().object_bytes_written, before.object_bytes_written);
@@ -10664,7 +11008,9 @@ mod tests {
         acyclic_native_runtime::initialize_native_io_services()?;
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("native-held-cow");
-        let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         let file = source.open_created(&path, &created)?;
         let pending = source.checkout.pending_create(created.node.file_id).ok_or("missing pending creation")?;
         let cancellation = CancellationToken::new();
@@ -10736,7 +11082,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("native-queued");
-        let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         let file = source.open_created(&path, &created)?;
         file.write_range(0, Bytes::from_static(b"original native queue"))?;
         file.resize(8)?;
@@ -10769,10 +11117,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("cancelled-queued");
-        let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         let file = source.open_created(&path, &created)?;
         file.write_range(0, Bytes::from_static(b"untouched"))?;
-        let (result, measured) = source.runtime.block_on(|| futures::FutureExt::boxed_local(async {
+        let (result, measured) = source.runtime.block_on(|| {
+            futures::FutureExt::boxed_local(async {
             let cancellation = CancellationToken::new();
             cancellation.cancel();
             let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -10780,7 +11131,8 @@ mod tests {
             let result = source.checkout.lock_measured(&mut work, &mut view, &cancellation, None)
                 .await.map(drop);
             (result, work.work)
-        }));
+        })
+        });
         assert!(matches!(result, Err(MountSourceError::Cancelled)));
         assert_eq!(measured, crate::WorkCounters::default());
         assert_eq!(file.read_up_to(0, 64)?.as_ref(), b"untouched");
@@ -10809,7 +11161,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("retained-queued");
-        let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         let file = source.open_created(&path, &created)?;
         file.write_range(0, Bytes::from_static(b"immutable"))?;
         let pending = source.checkout.pending_create(created.node.file_id)
@@ -10856,13 +11210,19 @@ mod tests {
         let source = source(FilesystemProfile::Posix)?;
         let from_path = native_test_path("metered-detached-source");
         let to_path = native_test_path("metered-detached-target");
-        let created = boundary(source.cancellation(), |work| source.create_file(&from_path, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&from_path, metadata(), None, work)
+        })?;
         source.resize(&from_path, 128)?;
         source.write_range(&from_path, 64, Bytes::from_static(b"payload"))?;
-        boundary(source.cancellation(), |work| source.create_file(&to_path, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&to_path, metadata(), None, work)
+        })?;
         let from = source.detach_file(&from_path)?;
         let to = source.detach_file(&to_path)?;
-        boundary(source.cancellation(), |work| source.remove(&from_path, Some(created.node.file_id), work))?;
+        boundary(source.cancellation(), |work| {
+            source.remove(&from_path, Some(created.node.file_id), work)
+        })?;
         let caller = CancellationToken::new();
         let work = crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &caller)
             .map_err(|(error, _)| error)?;
@@ -10968,9 +11328,15 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("snapshot-cancellation");
-        let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
-        let record = boundary(&source.cancellation, |work| source.runtime.wait(|| async { source.record_by_id(created.node.file_id, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await }))?;
-        let detached = boundary(&source.cancellation, |work| source.runtime.wait(|| async { source.detached_file_from_record(record, created.metadata, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await }))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
+        let record = boundary(&source.cancellation, |work| {
+            source.runtime.wait(|| async { source.record_by_id(created.node.file_id, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await })
+        })?;
+        let detached = boundary(&source.cancellation, |work| {
+            source.runtime.wait(|| async { source.detached_file_from_record(record, created.metadata, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await })
+        })?;
         source.runtime.block_on(|| async {
             let caller = CancellationToken::new();
             let mut work = crate::demand::DemandWork::new(WorkBudget::default(), &caller);
@@ -11023,9 +11389,15 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("snapshot-held");
-        let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
-        let record = boundary(&source.cancellation, |work| source.runtime.wait(|| async { source.record_by_id(created.node.file_id, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await }))?;
-        let detached = boundary(&source.cancellation, |work| source.runtime.wait(|| async { source.detached_file_from_record(record, created.metadata, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await }))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
+        let record = boundary(&source.cancellation, |work| {
+            source.runtime.wait(|| async { source.record_by_id(created.node.file_id, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await })
+        })?;
+        let detached = boundary(&source.cancellation, |work| {
+            source.runtime.wait(|| async { source.detached_file_from_record(record, created.metadata, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await })
+        })?;
         source.runtime.block_on(|| async {
             let held = detached.state.lock().await;
             let budget = WorkBudget::UNBOUNDED;
@@ -11103,7 +11475,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("reentrant-measured-pending");
-        let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         let pending = source.checkout.pending_create(created.node.file_id)
             .ok_or("original creation was not queued")?;
         source.runtime.block_on(|| async {
@@ -11126,9 +11500,7 @@ mod tests {
             drop(outer);
             drop(nested);
             drop(writer.await);
-            let receipt = work.finish(Ok(())).map_err(|failure| {
-                super::super::lazy::mount_demand_error(failure.error)
-            })?;
+            let receipt = work.finish(Ok(())).map_err(|failure| super::super::lazy::mount_demand_error(failure.error))?;
             assert_eq!(receipt.work.items_examined, before + 2);
             Ok::<_, MountSourceError>(())
         })?;
@@ -11271,12 +11643,16 @@ mod tests {
         source.observe_view(weak);
         let (requester, applier) = (ViewOrigin::new(), ViewOrigin::new());
         let target = native_test_path("applied");
-        boundary(source.cancellation(), |work| source.create_file(&target, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&target, metadata(), None, work)
+        })?;
         // Applies the creation, which waits for its first bytes.
         assert!(source.lookup(&target)?.is_some());
         {
             let _requester = requester.enter();
-            boundary(source.cancellation(), |work| source.create_file(&native_test_path("queued"), metadata(), None, work))?;
+            boundary(source.cancellation(), |work| {
+                source.create_file(&native_test_path("queued"), metadata(), None, work)
+            })?;
         }
         {
             let _applier = applier.enter();
@@ -11353,7 +11729,9 @@ mod tests {
         let (completed, receive) = std::sync::mpsc::sync_channel(1);
         let task = std::thread::spawn(move || {
             let result =
-                boundary(&writer.cancellation, |work| writer.create_directory(&MountPath::root().child(b"leased".to_vec()), metadata(), work));
+                boundary(&writer.cancellation, |work| {
+                writer.create_directory(&MountPath::root().child(b"leased".to_vec()), metadata(), work)
+            });
             assert!(completed.send(result).is_ok(), "mutation result receiver");
         });
         assert!(
@@ -11372,7 +11750,9 @@ mod tests {
         let (source, _) = tracking_sources(FilesystemProfile::Portable)?;
         let source = Arc::new(source);
         let path = native_test_path("shared.bin");
-        boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         source.write_range(&path, 0, Bytes::from_static(b"shared"))?;
         let owner = ViewGate::callback_owner();
         let held = source.runtime.block_on(|| async { source.checkout.observe(owner, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())), &CancellationToken::new(), None).await })?;
@@ -11403,7 +11783,9 @@ mod tests {
             native_test_path("second.bin"),
         ];
         for path in &pair {
-            boundary(source.cancellation(), |work| source.create_file(path, metadata(), None, work))?;
+            boundary(source.cancellation(), |work| {
+                source.create_file(path, metadata(), None, work)
+            })?;
             source.write_range(path, 0, Bytes::from_static(&[0]))?;
         }
         let pair = [source.namespace_path(&pair[0], &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))).map(|(path, _)| path)?, source.namespace_path(&pair[1], &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))).map(|(path, _)| path)?];
@@ -11488,7 +11870,9 @@ mod tests {
     {
         let (source, _) = tracking_sources(FilesystemProfile::Portable)?;
         let path = native_test_path("observed.bin");
-        boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         let path = source.namespace_path(&path, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))).map(|(path, _)| path)?;
         let owner = ViewGate::callback_owner();
         let (write, refresh) = source.runtime.block_on(|| async {
@@ -11518,7 +11902,9 @@ mod tests {
         let binding = source.binding_epoch();
         let created = native_test_path("new-file");
         let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
-        boundary(source.cancellation(), |work| source.create_file(&created, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&created, metadata(), None, work)
+        })?;
         assert_eq!(source.binding_epoch(), binding);
         assert!(!source.unchanged_since(&created, None, stamp));
         let _lease = source.acquire_binding_lease(binding)?;
@@ -11541,13 +11927,23 @@ mod tests {
             child(&directory, "c"),
             child(&other, "x"),
         );
-        let directory_id = boundary(&source.cancellation, |work| source.create_directory(&directory, metadata(), work))?
+        let directory_id = boundary(&source.cancellation, |work| {
+            source.create_directory(&directory, metadata(), work)
+        })?
             .node
             .file_id;
-        let other_id = boundary(&source.cancellation, |work| source.create_directory(&other, metadata(), work))?.node.file_id;
-        let a_id = boundary(source.cancellation(), |work| source.create_file(&a, metadata(), None, work))?.node.file_id;
-        let b_id = boundary(source.cancellation(), |work| source.create_file(&b, metadata(), None, work))?.node.file_id;
-        let x_id = boundary(source.cancellation(), |work| source.create_file(&x, metadata(), None, work))?.node.file_id;
+        let other_id = boundary(&source.cancellation, |work| {
+            source.create_directory(&other, metadata(), work)
+        })?.node.file_id;
+        let a_id = boundary(source.cancellation(), |work| {
+            source.create_file(&a, metadata(), None, work)
+        })?.node.file_id;
+        let b_id = boundary(source.cancellation(), |work| {
+            source.create_file(&b, metadata(), None, work)
+        })?.node.file_id;
+        let x_id = boundary(source.cancellation(), |work| {
+            source.create_file(&x, metadata(), None, work)
+        })?.node.file_id;
         let current = |stamp| {
             [
                 source.unchanged_since(&directory, Some(directory_id), stamp),
@@ -11565,11 +11961,15 @@ mod tests {
         assert_eq!(current(stamp), [true, false, true, true, true, true]);
 
         let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
-        boundary(source.cancellation(), |work| source.create_file(&c, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&c, metadata(), None, work)
+        })?;
         assert_eq!(current(stamp), [false, true, true, false, true, true]);
 
         let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
-        boundary(source.cancellation(), |work| source.remove(&b, Some(b_id), work))?;
+        boundary(source.cancellation(), |work| {
+            source.remove(&b, Some(b_id), work)
+        })?;
         assert_eq!(current(stamp), [false, true, false, true, true, true]);
         Ok(())
     }
@@ -11582,7 +11982,9 @@ mod tests {
         let host = tempfile::tempdir()?;
         for directory in ["captured", "untouched"] {
             std::fs::create_dir(host.path().join(directory))?;
-            boundary(&source.cancellation, |work| source.create_directory(&native_test_path(directory), metadata(), work))?;
+            boundary(&source.cancellation, |work| {
+                source.create_directory(&native_test_path(directory), metadata(), work)
+            })?;
             for name in ["a", "b"] {
                 std::fs::write(host.path().join(directory).join(name), b"host")?;
             }
@@ -11638,7 +12040,9 @@ mod tests {
                 native_test_path(&format!("published-{round}")),
                 native_test_path(&format!("written-{round}")),
             );
-            let written_id = boundary(writer.cancellation(), |work| writer.create_file(&written, metadata(), None, work))?.node.file_id;
+            let written_id = boundary(writer.cancellation(), |work| {
+                writer.create_file(&written, metadata(), None, work)
+            })?.node.file_id;
             writer.sync()?;
             advance()?;
 
@@ -11653,7 +12057,9 @@ mod tests {
             let root = reader
                 .lookup(&MountPath::root())?
                 .map(|lookup| lookup.node.file_id);
-            boundary(writer.cancellation(), |work| writer.create_file(&published, metadata(), None, work))?;
+            boundary(writer.cancellation(), |work| {
+                writer.create_file(&published, metadata(), None, work)
+            })?;
             writer.write_range(&written, 0, Bytes::from_static(b"changed"))?;
             writer.sync()?;
             advance()?;
@@ -11673,8 +12079,12 @@ mod tests {
     {
         let source = source(FilesystemProfile::Portable)?;
         let (first, alias) = (native_test_path("first"), native_test_path("alias"));
-        let file_id = boundary(source.cancellation(), |work| source.create_file(&first, metadata(), None, work))?.node.file_id;
-        boundary(&source.cancellation, |work| source.hard_link(&first, &alias, work))?;
+        let file_id = boundary(source.cancellation(), |work| {
+            source.create_file(&first, metadata(), None, work)
+        })?.node.file_id;
+        boundary(&source.cancellation, |work| {
+            source.hard_link(&first, &alias, work)
+        })?;
         let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
         let attached = source.open_file(&first)?;
         attached.write_range(0, Bytes::from_static(b"shared"))?;
@@ -11706,7 +12116,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("clipped-read");
-        boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         source.write_range(&path, 0, Bytes::from_static(b"abc"))?;
         let open = source.open_file(&path)?;
         assert_eq!(open.read_up_to(0, 128)?.as_ref(), b"abc");
@@ -11830,13 +12242,17 @@ mod tests {
                 assert_eq!(value, 42);
                 let path = native_test_path("runtime.bin");
                 source.volume_id()?;
-                let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+                let created = boundary(source.cancellation(), |work| {
+                    source.create_file(&path, metadata(), None, work)
+                })?;
                 source.write_range(&path, 0, Bytes::from_static(b"base"))?;
                 let attached = source.open_file(&path)?;
                 attached.write_range(4, Bytes::from_static(b"-open"))?;
                 assert_eq!(attached.read_range(0, 9)?.as_ref(), b"base-open");
                 let detached = source.detach_file(&path)?;
-                boundary(source.cancellation(), |work| source.remove(&path, Some(created.node.file_id), work))?;
+                boundary(source.cancellation(), |work| {
+                    source.remove(&path, Some(created.node.file_id), work)
+                })?;
                 detached.write_range(0, Bytes::from_static(b"live"))?;
                 assert_eq!(detached.read_range(0, 9)?.as_ref(), b"live-open");
                 source.sync()?;
@@ -11856,7 +12272,9 @@ mod tests {
         };
         let (manual, _) = shared_sources(profile, MountPublication::Manual)?;
         let initial = checkout_state(&manual).0;
-        boundary(&manual.cancellation, |work| manual.create_directory(&native_test_path("src"), metadata(), work))?;
+        boundary(&manual.cancellation, |work| {
+            manual.create_directory(&native_test_path("src"), metadata(), work)
+        })?;
         boundary(&manual.cancellation, |work| manual.flush(work))?;
         assert_eq!(checkout_state(&manual), (initial, true));
         manual.sync()?;
@@ -11871,7 +12289,9 @@ mod tests {
         let root = manual.namespace_path(&native_test_path("src"), &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))).map(|(path, _)| path)?;
         let subtree = CheckoutMountSource::new_at(Arc::clone(&manual.checkout), config, root)?;
         let nested = native_test_path("nested.bin");
-        boundary(subtree.cancellation(), |work| subtree.create_file(&nested, metadata(), None, work))?;
+        boundary(subtree.cancellation(), |work| {
+            subtree.create_file(&nested, metadata(), None, work)
+        })?;
         assert!(manual.lookup(&native_test_path("nested.bin"))?.is_none());
         assert!(
             manual
@@ -11883,9 +12303,13 @@ mod tests {
         let (per_mutation, _) =
             shared_sources(profile, MountPublication::PerMutation)?;
         let before = checkout_state(&per_mutation).0;
-        boundary(per_mutation.cancellation(), |work| per_mutation.create_file(&native_test_path("published.bin"), metadata(), None, work))?;
+        boundary(per_mutation.cancellation(), |work| {
+            per_mutation.create_file(&native_test_path("published.bin"), metadata(), None, work)
+        })?;
         let published_directory = native_test_path("published-directory");
-        let created_directory = boundary(&per_mutation.cancellation, |work| per_mutation.create_directory(&published_directory, metadata(), work))?;
+        let created_directory = boundary(&per_mutation.cancellation, |work| {
+            per_mutation.create_directory(&published_directory, metadata(), work)
+        })?;
         assert_eq!(
             per_mutation.lookup(&published_directory)?,
             Some(created_directory)
@@ -11899,7 +12323,9 @@ mod tests {
             MountPublication::PerMutation,
         )?;
         let portable_directory = native_test_path("portable-directory");
-        let created_directory = boundary(&portable.cancellation, |work| portable.create_directory(&portable_directory, metadata(), work))?;
+        let created_directory = boundary(&portable.cancellation, |work| {
+            portable.create_directory(&portable_directory, metadata(), work)
+        })?;
         assert_eq!(
             portable.lookup(&portable_directory)?,
             Some(created_directory)
@@ -11917,7 +12343,9 @@ mod tests {
         };
         let (reader, writer) = tracking_sources(profile)?;
         let path = native_test_path("observed.bin");
-        boundary(writer.cancellation(), |work| writer.create_file(&path, metadata(), None, work))?;
+        boundary(writer.cancellation(), |work| {
+            writer.create_file(&path, metadata(), None, work)
+        })?;
         writer.write_range(&path, 0, Bytes::from_static(b"first"))?;
         writer.sync()?;
         let binding_before = reader.binding_epoch();
@@ -11949,13 +12377,17 @@ mod tests {
         };
         let source = source(profile)?;
         let file = native_test_path("detached.bin");
-        boundary(source.cancellation(), |work| source.create_file(&file, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&file, metadata(), None, work)
+        })?;
         source.resize(&file, 64)?;
         source.write_range(&file, 8, Bytes::from_static(b"visible"))?;
 
         let detached = source.detach_file(&file)?;
         let expected = source.lookup(&file)?.map(|lookup| lookup.node.file_id);
-        boundary(source.cancellation(), |work| source.remove(&file, expected, work))?;
+        boundary(source.cancellation(), |work| {
+            source.remove(&file, expected, work)
+        })?;
         assert_eq!(source.lookup(&file)?, None);
         assert_eq!(detached.lookup()?.node.link_count, 0);
         assert_eq!(detached.read_range(8, 7)?.as_ref(), b"visible");
@@ -11966,7 +12398,9 @@ mod tests {
             modified_ns: crate::kernel::MetadataField::Value(42),
             ..metadata()
         };
-        boundary(source.cancellation(), |work| detached.set_attributes(changed, Some(40), work))?;
+        boundary(source.cancellation(), |work| {
+            detached.set_attributes(changed, Some(40), work)
+        })?;
         let lookup = detached.lookup()?;
         assert_eq!(lookup.node.logical_bytes, 40);
         assert_eq!(lookup.metadata, changed);
@@ -11975,14 +12409,18 @@ mod tests {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let attribute = b"user.acyclic.detached";
-            boundary(source.cancellation(), |work| detached.write_attribute(attribute, crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"retained").into(), 0), MountAttributeWriteMode::Create, work))?;
+            boundary(source.cancellation(), |work| {
+                detached.write_attribute(attribute, crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"retained").into(), 0), MountAttributeWriteMode::Create, work)
+            })?;
             assert_eq!(
                 boundary(source.cancellation(), |work| detached.read_attribute(attribute, work))?.map(|packet| packet.bytes).as_deref(),
                 Some(b"retained".as_slice())
             );
             let attributes = detached.list_attributes(None, 8)?;
             assert_eq!(attributes.names, vec![attribute.to_vec()]);
-            boundary(source.cancellation(), |work| detached.remove_attribute(attribute, work))?;
+            boundary(source.cancellation(), |work| {
+                detached.remove_attribute(attribute, work)
+            })?;
             assert!(boundary(source.cancellation(), |work| detached.read_attribute(attribute, work))?.is_none());
         }
         Ok(())
@@ -12017,7 +12455,9 @@ mod tests {
                 .await
                 .clear_retained_operation(operation_id);
         });
-        boundary(second.cancellation(), |work| second.create_file(&path, metadata(), None, work))?;
+        boundary(second.cancellation(), |work| {
+            second.create_file(&path, metadata(), None, work)
+        })?;
         Ok(())
     }
 
@@ -12032,10 +12472,14 @@ mod tests {
         let source = source(profile)?;
         let from = native_test_path("sparse-source.bin");
         let to = native_test_path("sparse-destination.bin");
-        boundary(source.cancellation(), |work| source.create_file(&from, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&from, metadata(), None, work)
+        })?;
         source.resize(&from, 128)?;
         source.write_range(&from, 64, Bytes::from_static(b"payload"))?;
-        boundary(source.cancellation(), |work| source.create_file(&to, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&to, metadata(), None, work)
+        })?;
         source.write_range(&to, 0, Bytes::from_static(b"dense"))?;
         let from = source.detach_file(&from)?;
         let to = source.detach_file(&to)?;
@@ -12056,8 +12500,12 @@ mod tests {
     {
         let source = source(FilesystemProfile::Posix)?;
         let path = native_test_path("metadata.bin");
-        boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
-        boundary(source.cancellation(), |work| source.write_attribute(&path, b"user.acyclic.retained", crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"opaque").into(), 0), MountAttributeWriteMode::Create, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
+        boundary(source.cancellation(), |work| {
+            source.write_attribute(&path, b"user.acyclic.retained", crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"opaque").into(), 0), MountAttributeWriteMode::Create, work)
+        })?;
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join("metadata.bin"), b"host")?;
         source.capture_host_path(root.path(), &path)?;
@@ -12083,18 +12531,26 @@ mod tests {
         let original = native_test_path("original.bin");
         let alias = native_test_path("alias.bin");
         let renamed = native_test_path("renamed.bin");
-        let created = boundary(source.cancellation(), |work| source.create_file(&original, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&original, metadata(), None, work)
+        })?;
         source.write_range(&original, 0, Bytes::from_static(b"base"))?;
         let open = source.open_file(&original)?;
-        boundary(&source.cancellation, |work| source.hard_link(&original, &alias, work))?;
-        boundary(source.cancellation(), |work| source.remove(&original, Some(created.node.file_id), work))?;
+        boundary(&source.cancellation, |work| {
+            source.hard_link(&original, &alias, work)
+        })?;
+        boundary(source.cancellation(), |work| {
+            source.remove(&original, Some(created.node.file_id), work)
+        })?;
 
         assert_eq!(source.lookup(&original)?, None);
         assert_eq!(open.lookup()?.node.link_count, 1);
         open.write_range(4, Bytes::from_static(b"-open"))?;
         assert_eq!(source.read_range(&alias, 0, 9)?.as_ref(), b"base-open");
 
-        boundary(source.cancellation(), |work| source.rename(&alias, &renamed, false, work))?;
+        boundary(source.cancellation(), |work| {
+            source.rename(&alias, &renamed, false, work)
+        })?;
         open.write_range(0, Bytes::from_static(b"live"))?;
         assert_eq!(source.lookup(&alias)?, None);
         assert_eq!(source.read_range(&renamed, 0, 9)?.as_ref(), b"live-open");
@@ -12103,7 +12559,9 @@ mod tests {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let name = b"user.acyclic.attached";
-            boundary(source.cancellation(), |work| open.write_attribute(name, crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"identity").into(), 0), MountAttributeWriteMode::Create, work))?;
+            boundary(source.cancellation(), |work| {
+                open.write_attribute(name, crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"identity").into(), 0), MountAttributeWriteMode::Create, work)
+            })?;
             assert_eq!(
                 boundary(source.cancellation(), |work| open.read_attribute(name, work))?.map(|packet| packet.bytes).as_deref(),
                 Some(b"identity".as_slice())
@@ -12177,7 +12635,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Posix)?;
         let file = MountPath::root().child(b"sparse".to_vec());
-        boundary(source.cancellation(), |work| source.create_file(&file, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&file, metadata(), None, work)
+        })?;
         source.resize(&file, 100)?;
         source.write_range(&file, 20, Bytes::from_static(b"data"))?;
         assert_eq!(source.seek(&file, 0, MountSeekTarget::Data)?, Some(20));
@@ -12186,12 +12646,16 @@ mod tests {
         assert_eq!(source.seek(&file, 100, MountSeekTarget::Hole)?, Some(100));
 
         let fifo = MountPath::root().child(b"fifo".to_vec());
-        let created = boundary(&source.cancellation, |work| source.create_special(&fifo, MountNodeKind::Fifo, None, metadata(), work))?;
+        let created = boundary(&source.cancellation, |work| {
+            source.create_special(&fifo, MountNodeKind::Fifo, None, metadata(), work)
+        })?;
         assert_eq!(created.node.kind, MountNodeKind::Fifo);
         let device = MountPath::root().child(b"device".to_vec());
-        let created = boundary(&source.cancellation, |work| source.create_special(
+        let created = boundary(&source.cancellation, |work| {
+            source.create_special(
             &device, MountNodeKind::CharacterDevice, Some((12, 34)), metadata(), work,
-        ))?;
+        )
+        })?;
         assert_eq!(created.node.device, Some((12, 34)));
         assert_eq!(source.lookup(&device)?, Some(created));
         Ok(())
@@ -12204,7 +12668,7 @@ mod tests {
         let source = source(FilesystemProfile::Windows)?;
         let (initial, pending) = checkout_state(&source);
         assert!(!pending);
-        let name = "exact-Î±-ðŸ˜€"
+        let name = "exact-α-😀"
             .encode_utf16()
             .flat_map(u16::to_le_bytes)
             .collect::<Vec<_>>();
@@ -12215,7 +12679,9 @@ mod tests {
             modified_ns: crate::kernel::MetadataField::Value(2_345_600),
             ..metadata()
         };
-        let created = boundary(source.cancellation(), |work| source.create_file(&path, exact_metadata, None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&path, exact_metadata, None, work)
+        })?;
         assert_eq!(source.lookup(&path)?, Some(created));
         let page = source.read_directory(&MountPath::root(), None, 8)?;
         assert_eq!(page.entries.len(), 1);
@@ -12229,7 +12695,7 @@ mod tests {
         assert!(!pending);
 
         let host = tempfile::tempdir()?;
-        let captured_text = "captured-Î².bin";
+        let captured_text = "captured-β.bin";
         std::fs::write(host.path().join(captured_text), b"captured")?;
         let captured_name = captured_text
             .encode_utf16()
@@ -12266,9 +12732,9 @@ mod tests {
             Arc::clone(&source) as Arc<dyn MountFilesystem>,
         )?;
 
-        let first_name = "written-Î±.bin";
-        let second_name = "renamed-Î².bin";
-        let linked_name = "linked-Î³.bin";
+        let first_name = "written-α.bin";
+        let second_name = "renamed-β.bin";
+        let linked_name = "linked-γ.bin";
         let write_status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
             .args([
                 "-NoProfile",
@@ -12475,7 +12941,9 @@ mod tests {
             std::fs::metadata(&external).err().map(|error| error.kind()),
             Some(std::io::ErrorKind::NotFound)
         );
-        boundary(source.cancellation(), |work| source.create_file(&MountPath::root().child(b"created-by-source".to_vec()) , metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&MountPath::root().child(b"created-by-source".to_vec()) , metadata(), None, work)
+        })?;
         mount.invalidate(b"/created-by-source")?;
         assert!(
             external.is_file(),
@@ -12491,9 +12959,11 @@ mod tests {
                 .map(|error| error.kind()),
             Some(std::io::ErrorKind::NotFound)
         );
-        boundary(source.cancellation(), |work| source.create_file(&MountPath::root()
+        boundary(source.cancellation(), |work| {
+            source.create_file(&MountPath::root()
                 .child(b"nested".to_vec())
-                .child(b"created-by-source".to_vec()) , metadata(), None, work))?;
+                .child(b"created-by-source".to_vec()) , metadata(), None, work)
+        })?;
         mount.invalidate(b"/nested/created-by-source")?;
         assert!(
             nested_external.is_file(),
@@ -12501,7 +12971,9 @@ mod tests {
         );
 
         let data_path = MountPath::root().child(b"changed-by-source".to_vec());
-        boundary(source.cancellation(), |work| source.create_file(&data_path, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&data_path, metadata(), None, work)
+        })?;
         source.write_range(&data_path, 0, Bytes::from_static(b"before"))?;
         mount.invalidate(b"/changed-by-source")?;
         let mut opened = std::fs::File::open(temporary.path().join("changed-by-source"))?;
@@ -12975,9 +13447,13 @@ mod tests {
         assert!(!pending);
         let name = vec![b'r', 0xff, b'w'];
         let path = MountPath::root().child(name.clone());
-        let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        let created = boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         assert_eq!(source.lookup(&path)?, Some(created));
-        boundary(source.cancellation(), |work| source.write_attribute(&path, b"user.acyclic", crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"native-xattr").into(), 0), MountAttributeWriteMode::Create, work))?;
+        boundary(source.cancellation(), |work| {
+            source.write_attribute(&path, b"user.acyclic", crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"native-xattr").into(), 0), MountAttributeWriteMode::Create, work)
+        })?;
         assert_eq!(
             boundary(source.cancellation(), |work| source.read_attribute(&path, b"user.acyclic", work))?.map(|packet| packet.bytes).as_deref(),
             Some(b"native-xattr".as_slice())
@@ -12985,7 +13461,9 @@ mod tests {
         let attributes = source.list_attributes(&path, None, 8)?;
         assert_eq!(attributes.names, vec![b"user.acyclic".to_vec()]);
         assert_eq!(attributes.next_cursor, None);
-        boundary(source.cancellation(), |work| source.remove_attribute(&path, b"user.acyclic", work))?;
+        boundary(source.cancellation(), |work| {
+            source.remove_attribute(&path, b"user.acyclic", work)
+        })?;
         assert!(boundary(source.cancellation(), |work| source.read_attribute(&path, b"user.acyclic", work))?.is_none());
         let page = source.read_directory(&MountPath::root(), None, 8)?;
         assert_eq!(page.entries.len(), 1);
@@ -13008,14 +13486,18 @@ mod tests {
         };
         let source = source(profile)?;
         let path = native_test_path("payload.bin");
-        boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&path, metadata(), None, work)
+        })?;
         let open = source.open_file(&path)?;
         open.write_range(0, Bytes::from_static(b"BRAVO"))?;
         drop(open);
         boundary(&source.cancellation, |work| source.flush(work))?;
         boundary(&source.cancellation, |work| source.flush(work))?;
         let renamed = native_test_path("renamed.bin");
-        boundary(source.cancellation(), |work| source.rename(&path, &renamed, true, work))?;
+        boundary(source.cancellation(), |work| {
+            source.rename(&path, &renamed, true, work)
+        })?;
         assert!(source.lookup(&path)?.is_none());
         let landed = source.lookup(&renamed)?;
         assert!(landed.is_some());
@@ -13032,31 +13514,45 @@ mod tests {
         };
         let source = source(profile)?;
         let seed = native_test_path("shared-seed.bin");
-        boundary(source.cancellation(), |work| source.create_file(&seed, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&seed, metadata(), None, work)
+        })?;
         source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
         boundary(&source.cancellation, |work| source.flush(work))?;
 
         let payload = native_test_path("payload.bin");
-        boundary(source.cancellation(), |work| source.create_file(&payload, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&payload, metadata(), None, work)
+        })?;
         source.write_range(&payload, 0, Bytes::from_static(b"BRAVO"))?;
         boundary(&source.cancellation, |work| source.flush(work))?;
         let renamed = native_test_path("renamed.bin");
-        boundary(source.cancellation(), |work| source.rename(&payload, &renamed, true, work))?;
+        boundary(source.cancellation(), |work| {
+            source.rename(&payload, &renamed, true, work)
+        })?;
         let link = native_test_path("link.bin");
-        boundary(&source.cancellation, |work| source.hard_link(&renamed, &link, work))?;
+        boundary(&source.cancellation, |work| {
+            source.hard_link(&renamed, &link, work)
+        })?;
         let renamed_id = source
             .lookup(&renamed)?
             .ok_or("renamed file is absent")?
             .node
             .file_id;
-        boundary(source.cancellation(), |work| source.remove(&renamed, Some(renamed_id), work))?;
+        boundary(source.cancellation(), |work| {
+            source.remove(&renamed, Some(renamed_id), work)
+        })?;
         let link_id = source
             .lookup(&link)?
             .ok_or("linked file is absent")?
             .node
             .file_id;
-        boundary(source.cancellation(), |work| source.remove(&link, Some(link_id), work))?;
-        boundary(source.cancellation(), |work| source.create_file(&link, metadata(), None, work))?;
+        boundary(source.cancellation(), |work| {
+            source.remove(&link, Some(link_id), work)
+        })?;
+        boundary(source.cancellation(), |work| {
+            source.create_file(&link, metadata(), None, work)
+        })?;
         source.write_range(&link, 0, Bytes::from_static(b"replacement"))?;
         boundary(&source.cancellation, |work| source.flush(work))?;
 
@@ -13108,7 +13604,9 @@ fn capture_meter(
     cancellation: &CancellationToken,
 ) -> Result<crate::NativeMaterializationWork, OperationFailure<MountSourceError>> {
     crate::NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(error, completed)| OperationFailure::new(MountSourceError::NativeWork(error), completed))
+        .map_err(|(error, completed)| {
+        OperationFailure::new(MountSourceError::NativeWork(error), completed)
+    })
 }
 
 fn capture_request(
@@ -13142,7 +13640,9 @@ fn capture_name_layout<S: CaptureInputScratch>(
         source_path_components: 1, items_examined: 1, ..crate::WorkCounters::UNCHARGED
     })?;
     match (profile, std::env::consts::OS) {
-        (FilesystemProfile::Posix, "linux" | "macos") => Ok((NameEncoding::PosixBytes, bytes.len())),
+        (FilesystemProfile::Posix, "linux" | "macos") => {
+            Ok((NameEncoding::PosixBytes, bytes.len()))
+        }
         (FilesystemProfile::Windows, "windows") => Ok((NameEncoding::WindowsUtf16Le, bytes.len())),
         (FilesystemProfile::Portable | FilesystemProfile::Browser, "linux" | "macos") => {
             let value = std::str::from_utf8(bytes).map_err(|_| MountSourceError::NativeText {
@@ -13150,7 +13650,9 @@ fn capture_name_layout<S: CaptureInputScratch>(
                 text: "portable volume cannot represent a non-UTF-8 native name",
             })?;
             let length = LogicalName::validate_unicode(NameEncoding::Utf8, value, limits.maximum_component_bytes)
-                .map_err(|error| MountSourceError::Filesystem(crate::kernel::NamespacePathError::Name(error).into()))?;
+                .map_err(|error| {
+                MountSourceError::Filesystem(crate::kernel::NamespacePathError::Name(error).into())
+            })?;
             Ok((NameEncoding::Utf8, length))
         }
         (FilesystemProfile::Portable | FilesystemProfile::Browser, "windows") => {
@@ -13189,7 +13691,9 @@ fn capture_copy_name<S: CaptureInputScratch>(
     owned.extend_from_slice(bytes);
     scratch.record(delta)?;
     LogicalName::new(encoding, owned, limits.maximum_component_bytes)
-        .map_err(|error| MountSourceError::Filesystem(crate::kernel::NamespacePathError::Name(error).into()))
+        .map_err(|error| {
+        MountSourceError::Filesystem(crate::kernel::NamespacePathError::Name(error).into())
+    })
 }
 
 fn capture_native_name<S: CaptureInputScratch>(
@@ -13213,7 +13717,9 @@ fn capture_native_name<S: CaptureInputScratch>(
             scratch.record(crate::WorkCounters { bytes_encoded: encoded.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
         }
         LogicalName::new(encoding, owned, limits.maximum_component_bytes)
-            .map_err(|error| MountSourceError::Filesystem(crate::kernel::NamespacePathError::Name(error).into()))
+            .map_err(|error| {
+            MountSourceError::Filesystem(crate::kernel::NamespacePathError::Name(error).into())
+        })
     } else {
         capture_copy_name(encoding, bytes, limits, scratch)
     }
@@ -13224,7 +13730,9 @@ fn capture_mount_error(error: crate::CaptureError) -> MountSourceError {
         crate::CaptureError::Kernel(crate::FsError::Work(error)
             | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error))) => MountSourceError::Work(error),
         crate::CaptureError::Kernel(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error))) => MountSourceError::Allocation(error),
-        crate::CaptureError::Kernel(crate::FsError::NativeKernel(error)) => MountSourceError::NativeWork(error),
+        crate::CaptureError::Kernel(crate::FsError::NativeKernel(error)) => {
+            MountSourceError::NativeWork(error)
+        }
         crate::CaptureError::Kernel(crate::FsError::Cancelled(_)) => MountSourceError::Cancelled,
         crate::CaptureError::Kernel(crate::FsError::SourceSnapshotStale) => MountSourceError::Stale,
         crate::CaptureError::Kernel(error) => MountSourceError::Filesystem(error),
