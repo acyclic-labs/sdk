@@ -102,8 +102,8 @@ fn limits() -> ClosureLimits {
     }
 }
 
-#[test]
-fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std::error::Error>> {
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([2; 16]);
@@ -129,7 +129,8 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         request,
         limits(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(&first.outcome, AppendOutcome::Committed(_)));
     let retry = publish_generation(
         &objects,
@@ -137,7 +138,8 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         request,
         limits(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(retry.outcome, AppendOutcome::AlreadyCommitted(_)));
     assert!(retry.work.authority_records_read > 0);
     let conflicting_expected_epoch = publish_generation(
@@ -152,7 +154,8 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         },
         limits(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(
         conflicting_expected_epoch.outcome,
         AppendOutcome::IdempotencyConflict { .. }
@@ -177,7 +180,8 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         request,
         limits(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(
         post_fence_retry.outcome,
         AppendOutcome::AlreadyCommitted(_)
@@ -194,7 +198,8 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         },
         limits(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(
         post_fence_altered.outcome,
         AppendOutcome::IdempotencyConflict { .. }
@@ -208,7 +213,8 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         },
         limits(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(
         post_fence_fresh.outcome,
         AppendOutcome::Fenced { .. }
@@ -269,8 +275,8 @@ fn publication_payload_rejects_unknown_and_non_generation_object_kinds() {
     ));
 }
 
-#[test]
-fn invalid_closure_never_touches_authority() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn invalid_closure_never_touches_authority() -> Result<(), Box<dyn std::error::Error>> {
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([6; 16]);
@@ -298,7 +304,8 @@ fn invalid_closure_never_touches_authority() -> Result<(), Box<dyn std::error::E
         },
         limits(),
         WorkBudget::UNBOUNDED,
-    );
+        &CancellationToken::new(),
+    ).await;
     assert!(matches!(
         result,
         Err(OperationFailure {
@@ -316,8 +323,8 @@ fn invalid_closure_never_touches_authority() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-#[test]
-fn mismatched_authority_rejects_before_closure_or_authority_work()
+#[tokio::test]
+async fn mismatched_authority_rejects_before_closure_or_authority_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
@@ -338,7 +345,8 @@ fn mismatched_authority_rejects_before_closure_or_authority_work()
         },
         limits(),
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("mismatched authority unexpectedly published")?;
     assert!(matches!(
@@ -349,8 +357,8 @@ fn mismatched_authority_rejects_before_closure_or_authority_work()
     Ok(())
 }
 
-#[test]
-fn authenticated_foreign_volume_never_reaches_authority_mutation()
+#[tokio::test]
+async fn authenticated_foreign_volume_never_reaches_authority_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
@@ -377,7 +385,8 @@ fn authenticated_foreign_volume_never_reaches_authority_mutation()
         },
         limits(),
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("foreign-volume generation published")?;
     assert!(matches!(
@@ -394,8 +403,8 @@ fn authenticated_foreign_volume_never_reaches_authority_mutation()
     Ok(())
 }
 
-#[test]
-fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutation()
+#[tokio::test]
+async fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
@@ -409,7 +418,7 @@ fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutation()
     };
     let generation_root = fixture(&objects, volume_id)?;
     let closure =
-        prove_generation_closure(&objects, generation_root, limits(), WorkBudget::UNBOUNDED)?;
+        prove_generation_closure(&objects, generation_root, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     let request = PublishGenerationRequest {
         authority_id,
         volume_id,
@@ -445,7 +454,7 @@ fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutation()
             }
             _ => return Err("unknown test counter".into()),
         }
-        let failure = publish_generation(&objects, &authority, request, limits(), budget)
+        let failure = publish_generation(&objects, &authority, request, limits(), budget, &CancellationToken::new()).await
             .err()
             .ok_or("unadmitted publication succeeded")?;
         assert!(matches!(failure.error, PublicationError::Work(_)
@@ -459,56 +468,30 @@ fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutation()
 }
 
 #[test]
-fn async_and_sync_publication_are_identical_and_pre_cancel_is_inert()
+fn pre_cancelled_publication_is_inert()
 -> Result<(), Box<dyn std::error::Error>> {
-    let sync_objects = MemoryObjectStore::default();
     let async_objects = MemoryObjectStore::default();
-    let sync_authority = MemoryAuthorityStore::default();
     let async_authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([22; 16]);
     let authority_id = volume_authority_id(volume_id);
-    let sync_head = sync_authority
-        .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED)?
-        .value;
     let async_head = async_authority
         .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED)?
         .value;
-    assert_eq!(sync_head, async_head);
-    let crate::storage::CreateAuthorityOutcome::Created(head) = sync_head else {
+    let crate::storage::CreateAuthorityOutcome::Created(head) = async_head else {
         return Err("authority unexpectedly existed".into());
     };
-    let sync_root = fixture(&sync_objects, volume_id)?;
     let async_root = fixture(&async_objects, volume_id)?;
-    assert_eq!(sync_root, async_root);
     let request = PublishGenerationRequest {
         authority_id,
         volume_id,
         epoch: Epoch::GENESIS,
         expected: head,
         operation_id: OperationId::from_bytes([23; 16]),
-        generation_root: sync_root,
+        generation_root: async_root,
     };
-    let synchronous = publish_generation(
-        &sync_objects,
-        &sync_authority,
-        request,
-        limits(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = crate::async_storage::poll_ready(publish_generation_async(
-        &async_objects,
-        &async_authority,
-        request,
-        limits(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous publication unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
-
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = crate::async_storage::poll_ready(publish_generation_async(
+    let failure = crate::async_storage::poll_ready(publish_generation(
         &async_objects,
         &async_authority,
         PublishGenerationRequest {
@@ -533,7 +516,7 @@ fn async_and_sync_publication_are_identical_and_pre_cancel_is_inert()
     Ok(())
 }
 
-fn evidence_fixture() -> Result<
+async fn evidence_fixture() -> Result<
     (PublishGenerationRequest, GenerationProof, GuardedAppend, VolumeConfig),
     Box<dyn std::error::Error>,
 > {
@@ -618,7 +601,7 @@ fn evidence_fixture() -> Result<
         operation_id: OperationId::from_bytes([63; 16]),
         generation_root: root,
     };
-    let proof = prove_generation_closure(&objects, root, limits(), WorkBudget::UNBOUNDED)?;
+    let proof = prove_generation_closure(&objects, root, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     let mut expected_objects = vec![metadata, extents, tree, table, root];
     expected_objects.sort_unstable();
     assert_eq!(proof.objects, expected_objects);
@@ -641,10 +624,10 @@ fn evidence_fixture() -> Result<
     Ok((request, proof, append, config))
 }
 
-#[test]
-fn publication_evidence_preserves_original_complete_closure_and_every_permit()
+#[tokio::test]
+async fn publication_evidence_preserves_original_complete_closure_and_every_permit()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (request, proof, mut append, config) = evidence_fixture()?;
+    let (request, proof, mut append, config) = evidence_fixture().await?;
     for permit in [
         PublicationPermit::Unrestricted,
         PublicationPermit::Lease {
@@ -691,10 +674,10 @@ fn publication_evidence_preserves_original_complete_closure_and_every_permit()
     Ok(())
 }
 
-#[test]
-fn publication_evidence_rejects_tampering_and_byte_and_object_bounds()
+#[tokio::test]
+async fn publication_evidence_rejects_tampering_and_byte_and_object_bounds()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (request, proof, append, config) = evidence_fixture()?;
+    let (request, proof, append, config) = evidence_fixture().await?;
     let encoded =
         encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
     let mut digest = encoded.sha256;
@@ -747,10 +730,10 @@ fn publication_evidence_rejects_tampering_and_byte_and_object_bounds()
     Ok(())
 }
 
-#[test]
-fn publication_evidence_rejects_disagreeing_request_proof_and_exact_append()
+#[tokio::test]
+async fn publication_evidence_rejects_disagreeing_request_proof_and_exact_append()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (request, proof, append, config) = evidence_fixture()?;
+    let (request, proof, append, config) = evidence_fixture().await?;
     for changed in [
         PublishGenerationRequest { authority_id: AuthorityId::from_bytes([81; 16]), ..request },
         PublishGenerationRequest { volume_id: VolumeId::from_bytes([81; 16]), ..request },
@@ -810,10 +793,10 @@ fn publication_evidence_rejects_disagreeing_request_proof_and_exact_append()
     Ok(())
 }
 
-#[test]
-fn publication_evidence_rejects_noncanonical_manifest_and_trailing_data_with_fresh_digests()
+#[tokio::test]
+async fn publication_evidence_rejects_noncanonical_manifest_and_trailing_data_with_fresh_digests()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (request, proof, append, config) = evidence_fixture()?;
+    let (request, proof, append, config) = evidence_fixture().await?;
     let encoded =
         encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
     let mut reversed_proof = proof.clone();

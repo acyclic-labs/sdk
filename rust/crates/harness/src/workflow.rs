@@ -119,21 +119,9 @@ impl WorkflowCommand {
             observer.check_cancellation()?;
             observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let native = work.as_ref().is_some_and(|observer| {
-            observer.original_native_work().is_some()
-        });
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let native = false;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if native && !crate::contract::is_valid_component_label(&self.kind) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "workflow command kind is invalid",
-            });
-        }
-        if !native {
-            crate::contract::validate_component_label(&self.kind, "workflow command kind")?;
+        if !crate::contract::is_valid_component_label(&self.kind) {
+            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid,
+                "workflow command kind is invalid"));
         }
         self.payload.validate(work)
     }
@@ -328,9 +316,6 @@ impl MachineRegistry {
     pub fn register_with_native_work(
         &mut self, machine: Arc<dyn ResumableMachine>, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_fs::NativeAllocation> {
-        if !machine.supports_native_work() {
-            return Err(native_workflow_unsupported("machine has no native state callbacks"));
-        }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = crate::executor::with_history_io(Some(&io), |work| self.register(machine, work));
         let retained = io.owned_bytes()?;
@@ -459,7 +444,6 @@ impl MachineRegistry {
         input: Value,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(MachineCheckpoint, MachineTransition, acyclic_fs::NativeAllocation)> {
-        self.require_native_work(&checkpoint.machine)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = self.step_with_io(checkpoint, &Value::Null, Some(input), Some(&io));
         let retained = result.as_ref().map_or(0, |(_, _, checkpoint, transition)| {
@@ -474,7 +458,6 @@ impl MachineRegistry {
     pub fn validate_checkpoint_with_native_work(
         &self, checkpoint: &MachineCheckpoint, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        self.require_native_work(&checkpoint.machine)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = self.validate_checkpoint(checkpoint, Some(&io));
         let (_, _temporary_custody) = finish_native_io(result, io, 0)?;
@@ -1427,7 +1410,7 @@ mod tests {
         };
         let payload = FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("workflow-test", "filesystem", "2")?,
+                ProviderRef::new("workflow-test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([4; 16])), &mut None

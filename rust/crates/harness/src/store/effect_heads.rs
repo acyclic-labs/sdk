@@ -35,10 +35,9 @@ fn decode_certificate_with_work(
     bytes: &[u8],
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Certificate> {
-    if work.is_some() {
-        operations::validate_canonical_json_with_work(bytes, MAX_CERTIFICATE_BYTES, work)?;
-    }
-    let Some(observer) = work.as_deref_mut() else { return crate::executor::decode_json(bytes); };
+    operations::validate_canonical_json_with_work(bytes, MAX_CERTIFICATE_BYTES, work)?;
+    let Some(observer) = work.as_deref_mut() else { return crate::contract::json_from_slice(bytes)
+        .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}"))); };
     let mut reservation = 0;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
         bytes.len() as u64,
@@ -114,10 +113,9 @@ fn decode_node_with_work(
     bytes: &[u8],
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Node> {
-    if work.is_some() {
-        operations::validate_canonical_json_with_work(bytes, MAX_NODE_BYTES, work)?;
-    }
-    let Some(observer) = work.as_deref_mut() else { return crate::executor::decode_json(bytes); };
+    operations::validate_canonical_json_with_work(bytes, MAX_NODE_BYTES, work)?;
+    let Some(observer) = work.as_deref_mut() else { return crate::contract::json_from_slice(bytes)
+        .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}"))); };
     let mut items = 0u64;
     let mut reservation = 0;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(

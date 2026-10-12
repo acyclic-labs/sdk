@@ -241,7 +241,7 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let provider = ProviderRef::new("example", "filesystem", "1")?;
+    let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
     let files = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
     let agent = AgentId::from_bytes([1; 16]);
     let volume = |name| {
@@ -499,6 +499,7 @@ where
         SchemaRegistry::new(),
         content.clone(),
         registry,
+        None, None,
     )?);
     let mut restart = Restart {
         task: task_id,
@@ -720,6 +721,7 @@ where
         SchemaRegistry::new(),
         content.clone(),
         registry,
+        None, None,
     )?);
     Ok(Recovery {
         owner,

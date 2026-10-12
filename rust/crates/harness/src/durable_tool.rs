@@ -255,7 +255,7 @@ impl ResumableTool {
         identity: &crate::workflow::MachineIdentity,
         io: &crate::executor::PreparationIo,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeWorkflowAdmission> {
+    ) -> Result<(ToolPayload<WorkflowAdmission>, MachineRegistry, acyclic_fs::NativeAllocation)> {
         crate::executor::with_history_io(Some(io), |work| self.definition.validate(work))?;
         crate::executor::with_history_io(Some(io), |work|
             ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
@@ -312,7 +312,7 @@ impl ResumableTool {
             operation_id: invocation.operation_id, request_digest, initial,
         }, admission_custody);
         admission.value.validate(Some(io))?;
-        Ok(NativeWorkflowAdmission { admission, registry, registry_custody })
+        Ok((admission, registry, registry_custody))
     }
 
     /// Admits the same exact workflow on its original native ledger.
@@ -341,32 +341,25 @@ impl ResumableTool {
                 return Err(Error::Indeterminate(operation));
             }
             let copied_custody;
-            let (copied, hold) = clone_admission_with_native_work(&built.admission.value, work)?;
+            let (copied, hold) = clone_admission_with_native_work(&built.0.value, work)?;
             copied_custody = hold;
             let (observed, observed_custody) = journal.admit_with_native_work(copied, work)?.await?;
             let observed = ToolPayload::native(observed, observed_custody);
             drop(copied_custody);
-            if observed.value != built.admission.value {
+            if observed.value != built.0.value {
                 return Err(tool_error(Some(&io), crate::wire::ErrorCode::Conflict,
                     "tool workflow identity belongs to another admission"));
             }
             drop(observed);
             let metadata_custody = work.retain_owned(std::mem::size_of::<NativeResumableToolSession<'a>>() as u64)?;
             let host = DurableWorkflowHost::open_with_native_work(
-                built.registry, built.admission.value.initial, journal, work).await?;
+                built.1, built.0.value.initial, journal, work).await?;
             Ok(NativeResumableToolSession {
                 definition: &self.definition, invocation, host,
-                registry_custody: built.registry_custody, metadata_custody,
+                registry_custody: built.2, metadata_custody,
             })
         })
     }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativeWorkflowAdmission {
-    admission: ToolPayload<WorkflowAdmission>,
-    registry: MachineRegistry,
-    registry_custody: acyclic_fs::NativeAllocation,
 }
 
 /// Owner-bound durable session for one exact tool invocation.

@@ -3,7 +3,7 @@
 use acyclic_fs::storage::ObjectWrite;
 use acyclic_fs::{
     AsyncObjectStore, CancellationToken, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId,
-    ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult,
+    ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult,
     ObjectStoreError, WorkBudget, WorkCounters, object_digest,
 };
 use acyclic_stream::OwnedBytes;
@@ -188,7 +188,7 @@ impl OpfsAcceleratedObjectStore {
                 work,
             ));
         }
-        Ok(ObjectReceipt {
+        Ok(acyclic_fs::OperationReceipt {
             value: (blob, length),
             work,
         })
@@ -213,7 +213,7 @@ impl OpfsAcceleratedObjectStore {
         {
             return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
         }
-        Ok(ObjectReceipt {
+        Ok(acyclic_fs::OperationReceipt {
             value: ObjectRead {
                 bytes,
                 retention: ObjectReadRetention::Owned {
@@ -272,7 +272,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
         self.write(object_id, &bytes, cancellation)
             .await
             .map_err(|error| ObjectFailure::new(error, work))?;
-        Ok(ObjectReceipt { value: (), work })
+        Ok(acyclic_fs::OperationReceipt { value: (), work })
     }
 
     async fn put_many(
@@ -320,7 +320,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
             let results = join_all(std::iter::once(first).chain(futures)).await;
             total = fold_unit_results(total, results, budget)?;
         }
-        Ok(ObjectReceipt {
+        Ok(acyclic_fs::OperationReceipt {
             value: (),
             work: total,
         })
@@ -453,7 +453,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
             retained = retained.checked_add(window_retained)
                 .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
         }
-        Ok(ObjectReceipt {
+        Ok(acyclic_fs::OperationReceipt {
             value: values,
             work: total,
         })
@@ -488,7 +488,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
-        Ok(ObjectReceipt { value, work })
+        Ok(acyclic_fs::OperationReceipt { value, work })
     }
 }
 

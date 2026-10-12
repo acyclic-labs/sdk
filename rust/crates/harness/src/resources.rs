@@ -51,23 +51,15 @@ impl ProviderRef {
             version: copy_metadata_string(&self.version, io)?,
         })
     }
-    /// Creates a validated provider identity.
+    /// Creates a provider identity from owned fields on the optional observer.
     pub fn new(
-        namespace: impl Into<String>,
-        family: impl Into<String>,
-        version: impl Into<String>,
-    ) -> Result<Self> {
-        Self::new_with_work(namespace.into(), family.into(), version.into(), &mut None)
-    }
-
-    pub(crate) fn new_with_work(
         namespace: String,
         family: String,
         version: String,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         let value = Self { namespace, family, version };
-        value.validate_with_work(work)?;
+        value.validate(work)?;
         Ok(value)
     }
 
@@ -107,27 +99,16 @@ impl ProviderRef {
                 native_owned_wire_field(&mut object, "family", work)?, work)?;
             let version = native_owned_wire_text(
                 native_owned_wire_field(&mut object, "version", work)?, work)?;
-            return Self::new_with_work(namespace, family, version, work);
+            return Self::new(namespace, family, version, work);
         }
         let provider: Self = serde_json::from_value(value)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        provider.validate_with_work(work)?;
+        provider.validate(work)?;
         Ok(provider)
     }
 
-    /// Validates a value received through an untrusted serialization boundary.
-    pub fn validate(&self) -> Result<()> {
-        self.validation_reason().map_or(Ok(()), |reason| Err(Error::Invalid(reason.into())))
-    }
-
-    /// Validates the same identity fields on the original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.validate_with_work(&mut Some(&mut io))
-    }
-    pub(crate) fn validate_with_work(
+    /// Validates the reference on the optional history observer.
+    pub fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -215,7 +196,7 @@ struct ProviderRefWire {
 impl<'de> Deserialize<'de> for ProviderRef {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         let wire = ProviderRefWire::deserialize(deserializer)?;
-        Self::new(wire.namespace, wire.family, wire.version).map_err(serde::de::Error::custom)
+        Self::new(wire.namespace, wire.family, wire.version, &mut None).map_err(serde::de::Error::custom)
     }
 }
 
@@ -262,7 +243,7 @@ struct ResourceRefWire {
 impl<'de> Deserialize<'de> for ResourceRef {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         let wire = ResourceRefWire::deserialize(deserializer)?;
-        Self::new(wire.kind, wire.provider, wire.key, wire.version)
+        Self::new(wire.kind, wire.provider, wire.key, wire.version, &mut None)
             .map_err(serde::de::Error::custom)
     }
 }
@@ -283,17 +264,8 @@ impl ResourceRef {
             })
     }
 
-    /// Creates a validated opaque reference without embedding credentials or endpoints.
+    /// Creates a resource reference from owned fields on the optional observer.
     pub fn new(
-        kind: ResourceKind,
-        provider: ProviderRef,
-        key: impl Into<Vec<u8>>,
-        version: Option<String>,
-    ) -> Result<Self> {
-        Self::new_with_work(kind, provider, key.into(), version, &mut None)
-    }
-
-    pub(crate) fn new_with_work(
         kind: ResourceKind,
         provider: ProviderRef,
         key: Vec<u8>,
@@ -301,21 +273,17 @@ impl ResourceRef {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         let value = Self { kind, provider, key, version };
-        value.validate_with_work(work)?;
+        value.validate(work)?;
         Ok(value)
     }
 
-    /// Validates a value received through an untrusted serialization boundary.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    /// Validates the reference on the optional history observer.
+    pub fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
-        self.provider.validate_with_work(work)?;
+        self.provider.validate(work)?;
         if self.key.is_empty() {
             return Err(resource_validation_error("resource key is empty", work));
         }
@@ -380,7 +348,7 @@ macro_rules! typed_reference {
                 key: impl Into<Vec<u8>>,
                 version: Option<String>,
             ) -> Result<Self> {
-                ResourceRef::new(ResourceKind::$kind, provider, key, version).map(Self)
+                ResourceRef::new(ResourceKind::$kind, provider, key.into(), version, &mut None).map(Self)
             }
 
             pub(crate) fn from_resource_with_work(
@@ -388,7 +356,7 @@ macro_rules! typed_reference {
                 work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
             ) -> Result<Self> {
                 let value = Self(resource);
-                value.validate_with_work(work)?;
+                value.validate(work)?;
                 Ok(value)
             }
 
@@ -402,16 +370,12 @@ macro_rules! typed_reference {
                 self.0.logical_owned_bytes()
             }
 
-            /// Validates an untrusted serialized reference and its semantic kind.
-            pub fn validate(&self) -> Result<()> {
-                self.validate_with_work(&mut None)
-            }
-
-            pub(crate) fn validate_with_work(
+            /// Validates the reference on the optional history observer.
+            pub fn validate(
                 &self,
                 work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
             ) -> Result<()> {
-                self.0.validate_with_work(work)?;
+                self.0.validate(work)?;
                 if self.0.kind() != ResourceKind::$kind {
                     return Err(resource_validation_error("typed resource kind mismatch", work));
                 }
@@ -456,7 +420,7 @@ impl GenerationRef {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        provider.validate_with_native_work(work)?;
+        provider.validate(&mut Some(&mut crate::store::native_work_io(work)?))?;
         if key.is_empty() { return Err(io.invalid("resource key is empty")); }
         if let Some(version) = version {
             crate::conversation::inspect_native_metadata(work, version.len())?;
@@ -559,13 +523,6 @@ impl GenerationRef {
         Ok(value)
     }
 
-    /// Validates the same immutable reference and semantic kind on native work.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.validate_with_work(&mut Some(&mut io))
-    }
 }
 typed_reference!(
     ArtifactRef,
@@ -594,7 +551,7 @@ impl CheckpointRef {
         let key = crate::core::copy_copy_vector(reference.key(), &mut quota)?;
         let version = reference.version()
             .map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
-        let reference = ResourceRef::new_with_work(
+        let reference = ResourceRef::new(
             reference.kind(), provider, key, version, quota.work())?;
         let output = Self::from_resource_with_work(reference, quota.work())?;
         quota.transfer();
@@ -624,7 +581,7 @@ mod tests {
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .expect("original provider ledger");
         let (provider, custody) = ProviderRef::new_with_native_work("acyclic", "filesystem", "2", &work)?;
-        assert_eq!(provider, ProviderRef::new("acyclic", "filesystem", "2")?);
+        assert_eq!(provider, ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?);
         assert_eq!(custody.bytes(), provider.logical_owned_bytes()?);
         drop(provider);
         drop(custody);
@@ -646,14 +603,14 @@ mod tests {
 
     #[test]
     fn references_are_typed_bounded_and_provider_owned() -> Result<()> {
-        let provider = ProviderRef::new("acyclic", "filesystem", "2")?;
+        let provider = ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?;
         let workspace = WorkspaceRef::new(provider.clone(), [7; 16], None)?;
         let generation = GenerationRef::new(provider, [8; 32], Some("immutable".into()))?;
         assert_eq!(workspace.as_resource().kind(), ResourceKind::Workspace);
         assert_eq!(generation.as_resource().kind(), ResourceKind::Generation);
         assert!(
             WorkspaceRef::new(
-                ProviderRef::new("acyclic", "filesystem", "2")?,
+                ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?,
                 Vec::new(),
                 None
             )

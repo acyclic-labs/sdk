@@ -367,7 +367,7 @@ impl NativeSession {
 
     pub async fn cancel_task(&self, task: TaskId) -> Result<String> {
         let admission = self.runtime.task_host().observe_admission(task).await?;
-        self.runtime.task_host().cancel(task).await?;
+        self.runtime.task_host().cancel(task, None).await?;
         Ok(format!("cancellation requested task={task} admission-operation={}; completion requires authoritative observation\n", admission.operation_id))
     }
 
@@ -449,14 +449,14 @@ impl NativeSession {
         )?);
         let mut parent = StreamAggregate::open(
             &self.stream, parent_binding.owner.authority.clone(), parent_binding.owner.verifier()?,
-            SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_content_verifier(content)
+            SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_content_verifier(content)
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
                 Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
             ], &mut None)?));
         let mut child = StreamAggregate::open(
             &self.stream, child_binding.authority.clone(), child_binding.verifier()?,
-            SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
+            SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         let seed = child.spawn_from_report(&mut parent, report,
             parent_binding.owner.scope.clone(), child_binding.scope.clone()).await?;
         let operation = input.child.operation_id;
@@ -532,7 +532,7 @@ impl HarnessWireApi for NativeSession {
             let reader = Arc::new(FilesystemContentVerifier::new(
                 self.files.clone(), &verifier, &binding.scope, MAX_FRAME_BYTES as u64, None,
             )?);
-            let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
+            let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
                 .with_content_verifier(reader)
                 .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                     Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
@@ -561,7 +561,7 @@ impl HarnessWireApi for NativeSession {
             }
             let authority = cursor.authority.as_ref().ok_or_else(|| Error::Invalid("cursor authority missing".into()))?;
             let binding = self.binding(authority)?;
-            let reader = HistoryReader::new(&self.stream, &binding.authority, binding.verifier()?)?;
+            let reader = HistoryReader::new(&self.stream, &binding.authority, &(binding.verifier()?), &mut None)?;
             let pinned = reader.pin(cursor.revision, None).await?;
             let page = reader.read_page(&pinned, HistoryReadLimits {
                 maximum_events: MAX_PAGE_EVENTS as u32,

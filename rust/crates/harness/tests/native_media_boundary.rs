@@ -542,7 +542,7 @@ fn only_file(file: &FileRef, policy: &NativeMediaPolicy) -> Vec<ModelMessage> {
 }
 
 async fn exercise_live_native_boundary() -> Result<()> {
-    let provider = ProviderRef::new("native-boundary", "filesystem", "2")?;
+    let provider = ProviderRef::new("native-boundary".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent_id = AgentId::new();
     let volume = VolumeRef::new(
@@ -593,7 +593,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         version: 1,
     };
     let mut schemas = SchemaRegistry::new();
-    schemas.register_configured(extension.name.clone(),1,json!({"type":"object"}),[31;32],ExtensionForkPolicy::Inherit,[],Some(json!({"type":"object","required":["mode","scale"],"properties":{"mode":{"const":"strict"},"scale":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false})))?;
+    schemas.register(extension.name.clone(),1,json!({"type":"object"}),[31;32],ExtensionForkPolicy::Inherit,[],Some(json!({"type":"object","required":["mode","scale"],"properties":{"mode":{"const":"strict"},"scale":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false})))?;
     let mut agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schemas.clone());
     agent.validate_configuration_bytes(&extension, &options_file, options_bytes, None)?;
     for (revision, action) in [
@@ -717,7 +717,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         output_schema: json!({"type":"object","required":["files"]}),
         projection_schema: json!({"type":"object","required":["kind","parts"],"properties":{"kind":{"const":"parts"},"parts":{"type":"array"}},"additionalProperties":false}),
     };
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(Tool {
         definition: definition.clone(),
         executor: projector.clone(),
@@ -1693,7 +1693,7 @@ where
     use acyclic_harness::resources::StreamRef;
     use acyclic_harness::store::StreamAggregate;
     let stream = Arc::new(MemoryStream::default());
-    let stream_provider = ProviderRef::new("media-fork", "stream", "2")?;
+    let stream_provider = ProviderRef::new("media-fork".into(), "stream".into(), "2".into(), &mut None)?;
     let parent = Authority {
         kind: AggregateKind::Conversation,
         id: "media-parent".into(),
@@ -1773,7 +1773,7 @@ where
     ))
         as Arc<dyn acyclic_harness::context::ContextStage>]);
     let tool_scope = RuntimeScope::new(Capabilities::new(["tool:call:example.convert_image"]), Limits::default())?;
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(tool)?;
     let executor = StockExecutor::new(
         model.clone(),

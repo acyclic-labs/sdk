@@ -40,7 +40,7 @@ mod bindings {
         StorageLocationId, StorageTier, StreamAuthorityStore, Transaction, TransactionCommit,
         RebaseConflict, DependencyState, DependencyRegion, DependencyUse,
         TransactionRebase, ExtentSeekTarget, Volume, VolumeId, WorkBudget, Workspace,
-        WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
+        WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, DirectoryPage,
         WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase,
         WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
         canonicalize_git_pending_transition_json, decode_generation_export_manifest,
@@ -1080,7 +1080,7 @@ mod bindings {
                 if_target,
                 idempotency_key,
             };
-            let result = browser_join_result(self.engine.apply(options).await.map_err(js_error)?);
+            let result = browser_join_result(self.engine.apply(options, acyclic_fs::PublicationPermit::Unrestricted).await.map_err(js_error)?);
             ts(result)
         }
     }
@@ -1670,7 +1670,7 @@ mod bindings {
     }
 
     fn browser_workspace_directory_page(
-        value: WorkspaceDirectoryPage,
+        value: DirectoryPage,
     ) -> BrowserWorkspaceDirectoryPage {
         BrowserWorkspaceDirectoryPage {
             entries: value
@@ -4591,7 +4591,7 @@ mod bindings {
                 .engine
                 .list_directory_records(
                     &path,
-                    after.as_ref(),
+                    after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                     maximum_entries,
                     acyclic_fs::performance::BOUNDARY_BUDGET,
                     &cancellation,

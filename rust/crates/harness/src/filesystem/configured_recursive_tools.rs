@@ -27,9 +27,6 @@ use std::sync::{Arc, OnceLock, Weak};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::store::history::HistoryIo;
 
-type Owner<P, A, O> = RecursiveToolOwner<P, A, O>;
-type ForkBinding<P, A, O> = RecursiveForkToolBinding<P, A, O>;
-type MergeBinding<P, A, O> = RecursiveMergeToolBinding<P, A, O>;
 
 /// Host-owned conversation signing credentials and its exact signed actor.
 #[derive(Clone)]
@@ -104,7 +101,7 @@ pub struct ConfiguredRecursiveFork {
 
 fn canonical_admission<'de, D: serde::Deserializer<'de>>(deserializer: D)
     -> std::result::Result<TaskAdmissionRecord, D::Error> {
-    TaskAdmissionRecord::from_canonical_value(Value::deserialize(deserializer)?)
+    TaskAdmissionRecord::from_canonical_value(Value::deserialize(deserializer)?, &mut None).map(|(admission, _)| admission)
         .map_err(serde::de::Error::custom)
 }
 
@@ -256,7 +253,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             verifier(&fork.child)?;
             fork.project.validate(&mut None)?;
             fork.private_volume.validate(&mut None)?;
-            fork.admission.validate()?;
+            fork.admission.validate(&mut None)?;
             let agent = fork.child.scope.agent().ok_or_else(|| Error::Unauthorized("configured child has no signed agent".into()))?;
             if let Some(result) = &fork.result_volume {
                 validate_result_volume(result, &fork.private_volume, agent, provider)?;
@@ -489,7 +486,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 
     async fn fork_binding(&self, context: &ToolContext, arguments: &ForkToolArguments,
         intent: &RecursiveForkSourceIntent, original: Option<&RecursiveForkToolPlan>,
-        cancellation: &CancellationToken) -> Result<ForkBinding<P, A, O>> {
+        cancellation: &CancellationToken) -> Result<RecursiveForkToolBinding<P, A, O>> {
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         let caller = self.authenticate_caller(context,
             arguments.source.is_none_or(|source| Some(source) == context.durable_task_id())).await?;
@@ -565,7 +562,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let read = context.read_file_measured(file, remaining, cancellation).await.map_err(|failure| failure.error)?;
             content_work = content_work.checked_add(read.work).map_err(work_error)?;
         }
-        Ok(ForkBinding { source, source_checkpoint, child, child_message_pointer: allocation.child_message_pointer.clone(),
+        Ok(RecursiveForkToolBinding { source, source_checkpoint, child, child_message_pointer: allocation.child_message_pointer.clone(),
             child_message_file_pointer: allocation.child_message_file_pointer.clone(), input_files: allocation.input_files.clone(),
             parent: self.aggregate(&caller.owner, &caller.owner.scope,
                 Some(self.ordinary_resolver(context.task(), cancellation).await?), cancellation).await?,
@@ -574,7 +571,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     async fn merge_binding(&self, context: &ToolContext, arguments: &MergeToolArguments,
-        original: Option<&RecursiveMergeToolPlan>, cancellation: &CancellationToken) -> Result<MergeBinding<P, A, O>> {
+        original: Option<&RecursiveMergeToolPlan>, cancellation: &CancellationToken) -> Result<RecursiveMergeToolBinding<P, A, O>> {
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         let caller = self.authenticate_caller(context, true).await?;
         let source_owner = self.caller(arguments.source, None)?;
@@ -615,7 +612,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         } else { None };
         context.read_file_measured(&notice.content, self.config.content_budget, cancellation)
             .await.map_err(|failure| failure.error)?;
-        Ok(MergeBinding { filesystem: self.filesystem.clone(), destination: self.aggregate(
+        Ok(RecursiveMergeToolBinding { filesystem: self.filesystem.clone(), destination: self.aggregate(
             &caller.owner, &caller.owner.scope, Some(self.ordinary_resolver(context.task(), cancellation).await?),
             cancellation).await?, verifier: verifier(&caller.owner)?,
             scope: caller.owner.scope.clone(), project: caller.project.clone(), source: source_owner.owner.authority().clone(), source_project: project,
@@ -700,7 +697,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             return Err(Error::Unauthorized("configured checkpoint is not original authenticated caller cut".into()));
         }
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        let page = HistoryReader::new(&self.stream, binding.authority(), verifier(binding)?)?.read_page(&HistoryCursor {
+        let page = HistoryReader::new(&self.stream, binding.authority(), &(verifier(binding)?), &mut None)?.read_page(&HistoryCursor {
             authority: binding.authority().clone(), after_revision: snapshot.revision - 1, through_revision: snapshot.revision,
         }, HistoryReadLimits { maximum_events: 1, maximum_bytes: self.config.history_limits.maximum_bytes }).await?;
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
@@ -867,12 +864,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         drop(observer);
         drop(history);
         let provider = crate::resources::ProviderRef::new(
-            crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.namespace(), Some(&io))?, crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.family(), Some(&io))?,
-            crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.version(), Some(&io))?,
+            crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.namespace(), Some(&io))?.into(), crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.family(), Some(&io))?.into(),
+            crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.version(), Some(&io))?.into(), &mut None
         )?;
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        let reference = crate::resources::ResourceRef::new_with_work(
+        let reference = crate::resources::ResourceRef::new(
             crate::resources::ResourceKind::Stream, provider, path, Some(version), &mut observer,
         )?;
         let reference = crate::resources::StreamRef::from_resource_with_work(reference, &mut observer)?;
@@ -1013,10 +1010,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
         let verifier = binding.issuer().verifier(&mut observer)?;
-        let reader = HistoryReader::new_with_native_work(&self.stream, binding.authority(), &verifier, work)?;
+        let mut reader_io = crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+        let reader = HistoryReader::new(&self.stream, binding.authority(), &verifier, &mut Some(&mut reader_io))?;
+        let _reader_custody = reader_io.into_custody();
         let expected = snapshot.events.last().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized, reason: "native checkpoint has no canonical head" })?;
-        let (head, retained) = reader.0.operation_event(
+        let (head, retained) = reader.operation_event(
             expected.operation_id, self.config.history_limits.maximum_bytes, &mut observer,
         ).await?;
         let head_hold = io.guard_owned(retained)?;
@@ -1142,7 +1141,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let temporary = capabilities.logical_owned_bytes()?;
         drop(capabilities);
         observer.as_deref_mut().expect("native child issuer observer").release_owned(temporary)?;
-        child.validate_with_work(&mut observer)?;
+        child.validate(&mut observer)?;
         drop(observer);
         drop(history);
         let retained = io.owned_bytes()?;
@@ -1262,7 +1261,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         &self, context: &ToolContext, arguments: &MergeToolArguments,
         original: Option<&RecursiveMergeToolPlan>, cancellation: &CancellationToken,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(MergeBinding<P, A, O>, acyclic_fs::NativeAllocation)> {
+    ) -> Result<(RecursiveMergeToolBinding<P, A, O>, acyclic_fs::NativeAllocation)> {
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let owner = self.native_source_owner(context.task(), cancellation, work).await?;
         let caller = self.authenticate_native_caller(context.task(), owner.as_ref(), true, work).await?;
@@ -1309,7 +1308,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
         }
         let generation = original.map_or(&selected.generation, |original| &original.source_generation).clone_with_io(&io)?;
-        let notice = original.map_or(&allocation.notice, |original| &original.notice).copy(&mut Some(&mut io.history_io()))?;
+        let mut observer = io.history_io();
+        let mut history_work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut history_work, 0)?;
+        let notice = original.map_or(&allocation.notice, |original| &original.notice).clone_in_quota(&mut quota)?;
+        quota.transfer();
+        drop(quota);
         let source_read = if let Some(authorization) = original.and_then(|plan| plan.authorized_source.as_ref()) {
             Some(owner.restore_project_source_authorization_with_native_work(
                 context.task(), authorization, work,
@@ -1369,7 +1373,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             None => None,
         };
         let retained = io.owned_bytes()?;
-        Ok((MergeBinding { filesystem: Arc::clone(&self.filesystem), destination: aggregate,
+        Ok((RecursiveMergeToolBinding { filesystem: Arc::clone(&self.filesystem), destination: aggregate,
             verifier, scope, project, source, source_project, source_generation: generation, source_read, notice,
         }, io.into_native_custody(retained)?))
     }
@@ -1378,7 +1382,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         &self, context: &ToolContext, arguments: &ForkToolArguments,
         intent: &RecursiveForkSourceIntent, original: Option<&RecursiveForkToolPlan>,
         cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(ForkBinding<P, A, O>, acyclic_fs::NativeAllocation)> {
+    ) -> Result<(RecursiveForkToolBinding<P, A, O>, acyclic_fs::NativeAllocation)> {
         use std::fmt::Write;
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let owner = self.native_source_owner(context.task(), cancellation, work).await?;
@@ -1511,7 +1515,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             crate::executor::stock_vec_push(&mut input_files, file, Some(&io))?;
         }
         let retained = io.owned_bytes()?;
-        Ok((ForkBinding {
+        Ok((RecursiveForkToolBinding {
             source: source.0, source_checkpoint, child: claims.0.0, child_message_pointer,
             child_message_file_pointer, input_files, parent: parent_aggregate, child_conversation: child_aggregate,
             parent_scope: scope, child_scope: claims.0.1, limits: allocation.limits,
@@ -1622,14 +1626,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     fn owner<'a>(&'a self, context: &'a ToolContext, tool: &'a ResumableTool, invocation: &'a ToolInvocation,
-        cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<Owner<P, A, O>>> {
+        cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<RecursiveToolOwner<P, A, O>>> {
         Box::pin(async move { self.authenticate_caller(context, false).await?; self.runtime(None)?.recursive_tool_owner(context, tool, invocation, cancellation).await })
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn owner_with_native_work<'a>(&'a self, context: &'a ToolContext,
         tool: &'a ResumableTool, invocation: &'a ToolInvocation,
         cancellation: &'a CancellationToken, work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, (Owner<P, A, O>, acyclic_fs::NativeAllocation)>> {
+        -> Result<crate::NativeFutureBundle<'a, (RecursiveToolOwner<P, A, O>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let runtime = self.runtime(Some(&super::PreparationIo::from_native_work(work)?))?;
             let owner = runtime.recursive_tool_owner_with_native_work(
@@ -1655,7 +1659,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
     fn fork<'a>(&'a self, context: &'a ToolContext, arguments: &'a ForkToolArguments,
         intent: &'a RecursiveForkSourceIntent, original: Option<&'a RecursiveForkToolPlan>, cancellation: &'a CancellationToken)
-        -> BoxProviderFuture<'a, Result<ForkBinding<P, A, O>>> {
+        -> BoxProviderFuture<'a, Result<RecursiveForkToolBinding<P, A, O>>> {
         Box::pin(self.fork_binding(context, arguments, intent, original, cancellation))
     }
 
@@ -1664,7 +1668,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         arguments: &'a ForkToolArguments, intent: &'a RecursiveForkSourceIntent,
         original: Option<&'a RecursiveForkToolPlan>, cancellation: &'a CancellationToken,
         work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, (ForkBinding<P, A, O>, acyclic_fs::NativeAllocation)>> {
+        -> Result<crate::NativeFutureBundle<'a, (RecursiveForkToolBinding<P, A, O>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || self.native_fork_binding(context, arguments, intent, original, cancellation, work))
     }
     fn preparation<'a>(&'a self, context: &'a TaskContext, token: &'a TaskResourcePreparation,
@@ -1689,7 +1693,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         crate::NativeFutureBundle::new(work, || self.native_preparation_source(context, token, cancellation, work, true))
     }
     fn merge<'a>(&'a self, context: &'a ToolContext, arguments: &'a MergeToolArguments, original: Option<&'a RecursiveMergeToolPlan>,
-        cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<MergeBinding<P, A, O>>> {
+        cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<RecursiveMergeToolBinding<P, A, O>>> {
         Box::pin(self.merge_binding(context, arguments, original, cancellation))
     }
 
@@ -1697,7 +1701,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     fn merge_with_native_work<'a>(&'a self, context: &'a ToolContext,
         arguments: &'a MergeToolArguments, original: Option<&'a RecursiveMergeToolPlan>,
         cancellation: &'a CancellationToken, work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, (MergeBinding<P, A, O>, acyclic_fs::NativeAllocation)>> {
+        -> Result<crate::NativeFutureBundle<'a, (RecursiveMergeToolBinding<P, A, O>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || self.native_merge_binding(context, arguments, original, cancellation, work))
     }
 }
@@ -1723,17 +1727,6 @@ fn allocation_digest(
     io: Option<&crate::filesystem::PreparationIo>,
 ) -> Result<[u8; 32]> {
     admission.resource_proofs.clear();
-    let descriptor = allocation_descriptor(allocation, &admission, scope);
-    match io {
-        Some(io) => crate::contract::canonical_json_digest_with_work(
-            &descriptor, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut io.history_io())),
-        None => crate::contract::canonical_json_digest(&descriptor),
-    }
-}
-
-fn allocation_descriptor<'a>(
-    allocation: &'a ConfiguredRecursiveFork, child: &'a TaskAdmissionRecord, scope: &'a Scope,
-) -> impl Serialize + 'a {
     #[derive(Serialize)]
     struct Descriptor<'a, T: Serialize> {
         contract: &'static str, admission: T, authority: &'a Authority, issuer: &'a str,
@@ -1741,13 +1734,14 @@ fn allocation_descriptor<'a>(
         message_file_pointer: Option<&'a str>, input_files: &'a [crate::conversation::FileRef],
         limits: ForkPreparationLimits,
     }
-    Descriptor {
-        contract: "harness.configured-recursive-allocation.v2", admission: child.canonical_payload(),
+    let descriptor = Descriptor {
+        contract: "harness.configured-recursive-allocation.v2", admission: admission.canonical_payload(),
         authority: allocation.child.authority(), issuer: allocation.child.issuer().id(),
         agent: scope.agent(), grants: scope.capabilities(), message_pointer: &allocation.child_message_pointer,
         message_file_pointer: allocation.child_message_file_pointer.as_deref(),
         input_files: &allocation.input_files, limits: allocation.limits,
-    }
+    };
+    super::task_runtime::observed::digest(&descriptor, io, acyclic_stream::MAX_RECORD_BYTES as u64)
 }
 
 fn checkpoint_operation(effect: OperationId) -> OperationId {
