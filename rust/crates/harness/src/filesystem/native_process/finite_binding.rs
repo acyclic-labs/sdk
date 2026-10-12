@@ -28,20 +28,11 @@ pub(super) fn require_view_family<P: StreamProvider>(
 pub(super) fn copy_plan_with_io(
     plan: &TaskEffectPlan, io: &PreparationIo,
 ) -> Result<TaskEffectPlan> {
-    let allowance = (plan.provider.capacity() as u64)
-        .checked_add(plan.effect_kind.capacity() as u64)
-        .ok_or_else(|| io.invalid("native binding plan ownership overflow"))?;
-    io.retain_owned(allowance)?;
-    let held = io.guard_owned(allowance)?;
-    let provider = crate::resources::copy_metadata_string(&plan.provider, io)?;
-    let effect_kind = crate::resources::copy_metadata_string(&plan.effect_kind, io)?;
-    let actual = (provider.capacity() as u64).checked_add(effect_kind.capacity() as u64)
-        .ok_or_else(|| io.invalid("native binding plan ownership overflow"))?;
-    io.release(allowance.checked_sub(actual)
-        .ok_or_else(|| io.invalid("native plan copy exceeded source capacity"))?)?;
-    held.into_retained();
+    let mut observer = io.history_io();
     Ok(TaskEffectPlan {
-        provider, guarantee: plan.guarantee, effect_kind,
+        provider: crate::store::history::HistoryIo::clone_text(&mut observer, &plan.provider)?,
+        guarantee: plan.guarantee,
+        effect_kind: crate::store::history::HistoryIo::clone_text(&mut observer, &plan.effect_kind)?,
         request: plan.request.clone_with_io(io)?,
         result_schema: plan.result_schema.clone_with_io(io)?,
     })
@@ -88,8 +79,8 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
     require_view_family(view.as_ref(), work)?;
     owner.verify_with_native_work(false, work).await?;
     owner.require_effect_grants(&plan.provider, false, &mut Some(&mut io.history_io()))?;
-    owner.validate_input_file_with_io(&plan.request, &io)?;
-    owner.validate_input_file_with_io(&plan.result_schema, &io)?;
+    owner.validate_input_file(&plan.request, Some(&io))?;
+    owner.validate_input_file(&plan.result_schema, Some(&io))?;
     if authority.history_limits.maximum_events == 0 || authority.history_limits.maximum_bytes == 0 {
         return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid,
             "native effect history allowances must be finite and positive"));
@@ -102,7 +93,7 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
         return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid, "native request must be JSON content"));
     }
     let bytes = authority.content.read_with_native_work(&plan.request, owner.input_limits().file_bytes, work)?.await?;
-    let request = io.decode_preparation_with_code::<NativeProcessRequest>(
+    let request = io.decode_preparation::<NativeProcessRequest>(
         bytes.as_ref(), crate::wire::ErrorCode::Invalid)?.into_retained();
     drop(bytes);
     request.view.validate_with_io(Some(&io))?;
@@ -130,7 +121,7 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
             "effect schema must be JSON schema content"));
     }
     let schema = authority.content.read_with_native_work(&plan.result_schema, owner.input_limits().file_bytes, work)?.await?;
-    let decoded = io.decode_preparation_with_code::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
+    let decoded = io.decode_preparation::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
     crate::contract::compile_json_schema(&decoded.value, "effect result", Some(&io))?;
     let result_schema = decoded.into_retained();
     drop(schema);
@@ -139,18 +130,18 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
     }
     let approval_digest = request.approval_digest_with_io(owner.task_binding().0, command, Some(&io))?;
     authority.approvals.verify_with_native_work(approval, command, approval_digest, work)?.await?;
-    let admission = NativeAdmission::Executable {
-        request: arc(request, &io)?, result_schema: arc(result_schema, &io)?, approval_digest,
+    let invocation = Invocation {
+        view, request: arc(request, &io)?, result_schema: arc(result_schema, &io)?, approval_digest,
     };
-    let provider = assemble(io, owner, command, plan, admission, Some(view), approval, authority, work)?;
+    let provider = assemble(io, owner, command, plan, Some(invocation), approval, authority, work)?;
     provider.owner.verify_with_native_work(false, work).await?;
-    require_view_family(provider.view.as_ref().expect("executable binding retains its view").as_ref(), work)?;
+    require_view_family(provider.invocation()?.view.as_ref(), work)?;
     Ok(provider)
 }
 
 pub(super) fn assemble<P: StreamProvider + 'static>(
     io: PreparationIo, owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: TaskEffectPlan,
-    admission: NativeAdmission, view: Option<Arc<dyn NativeProcessView<P>>>, approval: InteractionId,
+    invocation: Option<Invocation<P>>, approval: InteractionId,
     authority: NativeProcessAuthority, work: &NativeMaterializationWork,
 ) -> Result<NativeProcessProvider<P>> {
     let effect_id = crate::effect_host::task_effect_id_with_native_work(owner.task_binding().0, command, work)?;
@@ -161,7 +152,7 @@ pub(super) fn assemble<P: StreamProvider + 'static>(
     let history = arc(history, &io)?;
     let supervisor = arc(NativeSupervisorControl::new(), &io)?;
     let retained = io.owned_bytes()?;
-    Ok(NativeProcessProvider { owner, command, plan, admission, view, approval, authority,
+    Ok(NativeProcessProvider { owner, command, plan, invocation, approval, authority,
         supervisor, effect_id, history, _native_work: work.clone(),
         _custody: shared_custody(io.into_native_custody(retained)?, work)? })
 }

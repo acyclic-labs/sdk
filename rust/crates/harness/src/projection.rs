@@ -108,7 +108,7 @@ pub fn select_turn_delta(
         ));
     }
     let (after, checkpoint) = if let Some((envelope, reference)) = checkpoint {
-        envelope.validate(limits)?;
+        envelope.validate(limits, None)?;
         limits.validate_file(&reference)?;
         reference
             .descriptor()
@@ -239,9 +239,9 @@ impl SelectedModelContext {
                 "selected context must end with the current user message".into(),
             ));
         }
-        last.content.validate_user_input()?;
+        last.content.validate_user_input(&mut None)?;
         for message in &self.messages {
-            message.content.validate_limits(limits)?;
+            message.content.validate_limits(limits, &mut None)?;
         }
         Ok(())
     }
@@ -366,8 +366,8 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             let projection = projection_result_attachment(attachments.as_slice(), io)?;
             let value =
                 read_projected_tool_result(resolver, &projection.file, maximum_render_bytes, io).await?;
-            let call_id = crate::model::model_string_clone_with_io(call_id, io)?;
-            let name = crate::model::model_string_clone_with_io(name, io)?;
+            let call_id = crate::executor::stock_string_copy(call_id, io)?;
+            let name = crate::executor::stock_string_copy(name, io)?;
             messages.push(ModelMessage {
                 role: ModelRole::Tool,
                 content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -426,7 +426,7 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
         let capacity = 1 + projected_count + usize::from(omitted_count != 0);
         let mut parts = projection_vec::<ModelContentPart>(capacity, io)?;
         parts.push(ModelContentPart::File {
-            file: crate::model::model_file_clone_with_io(&message.content, io)?,
+            file: crate::model::clone_file(&message.content, io)?,
             policy: primary_policy,
         });
         for file in attachments.into_projected(projected_count, io)? {
@@ -839,7 +839,7 @@ impl Iterator for ProjectionFiles<'_> {
                 Some((|| {
                     projection_step(self.io, 1)?;
                     validate_projection_attachment(attachment, self.io)?;
-                    crate::model::model_file_clone_with_io(&attachment.file, self.io)
+                    crate::model::clone_file(&attachment.file, self.io)
                 })())
             }
             ProjectionFileSource::Owned(items) => {
@@ -848,7 +848,7 @@ impl Iterator for ProjectionFiles<'_> {
                     projection_step(self.io, 1)?;
                     validate_projection_attachment(&attachment, self.io)?;
                     if self.move_files { Ok(attachment.file) }
-                    else { crate::model::model_file_clone_with_io(&attachment.file, self.io) }
+                    else { crate::model::clone_file(&attachment.file, self.io) }
                 })())
             }
         }
@@ -1088,7 +1088,7 @@ async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
         return Err(projection_invalid(Some(io), "resolved tool artifact exceeds rendering limit"));
     }
     file.descriptor().verify_with_io(&bytes, Some(io))?;
-    let parsed = io.decode_preparation_with_code::<serde_json::Value>(
+    let parsed = io.decode_preparation::<serde_json::Value>(
         &bytes, crate::wire::ErrorCode::Invalid,
     )?;
     validate_model_json_numbers(&parsed.value, Some(io))?;

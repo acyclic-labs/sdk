@@ -60,7 +60,7 @@ pub struct SessionLimits {
 
 impl SessionLimits {
     /// Rejects empty or inconsistent session ceilings.
-    pub(crate) fn validate(
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         observe(work)?;
@@ -2133,35 +2133,33 @@ impl TaskInbox {
         )
     )]
     pub fn apply(&mut self, item: InboxItem) -> Result<()> {
-        crate::obs::outcome(self.apply_item(item))
-    }
-
-    fn apply_item(&mut self, item: InboxItem) -> Result<()> {
-        if item.task_id != self.task_id || item.message_id.trim().is_empty() {
-            return Err(Error::Invalid(
-                "inbox item has the wrong task or an empty message identity".into(),
-            ));
-        }
-        item.payload.validate()?;
-        if let Some(existing) = self
-            .items
-            .iter()
-            .find(|existing| existing.message_id == item.message_id)
-        {
-            return if existing == &item {
-                Ok(())
-            } else {
-                Err(Error::Conflict("inbox message identity reused".into()))
-            };
-        }
-        let expected = self.items.len() as u64 + 1;
-        if item.sequence != expected {
-            return Err(Error::Conflict(format!(
-                "expected inbox sequence {expected}"
-            )));
-        }
-        self.items.push(item);
-        Ok(())
+        crate::obs::outcome((|| {
+            if item.task_id != self.task_id || item.message_id.trim().is_empty() {
+                return Err(Error::Invalid(
+                    "inbox item has the wrong task or an empty message identity".into(),
+                ));
+            }
+            item.payload.validate()?;
+            if let Some(existing) = self
+                .items
+                .iter()
+                .find(|existing| existing.message_id == item.message_id)
+            {
+                return if existing == &item {
+                    Ok(())
+                } else {
+                    Err(Error::Conflict("inbox message identity reused".into()))
+                };
+            }
+            let expected = self.items.len() as u64 + 1;
+            if item.sequence != expected {
+                return Err(Error::Conflict(format!(
+                    "expected inbox sequence {expected}"
+                )));
+            }
+            self.items.push(item);
+            Ok(())
+        })())
     }
 
     /// Reads a bounded page after a sequence.

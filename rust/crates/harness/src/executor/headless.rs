@@ -37,7 +37,7 @@ impl StockExecution<'_> {
             _ => return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict,
                 "tool settlement has another execution identity")),
         }
-        let retained = retained_model_step_with_io(
+        let retained = retained_model_step(
             journal, &records, step, ModelPurpose::Response, self.limits, self.io(),
         ).await?;
         if !retained.admission.completed() {
@@ -54,10 +54,10 @@ impl StockExecution<'_> {
                     content: ModelContent::Part(ModelContentPart::ToolCall {
                         call_id: stock_string_copy(&invocation.call_id, self.io())?,
                         name: stock_string_copy(&invocation.name, self.io())?,
-                        arguments: stock_value_copy(&invocation.arguments, self.io())?,
+                        arguments: crate::model::clone_value(&invocation.arguments, self.io())?,
                     }),
                 };
-                message.content.validate_limits_with_io(self.limits, self.io())?;
+                crate::executor::with_history_io(self.io(), |work| message.content.validate_limits(self.limits, work))?;
                 stock_vec_push(&mut messages, message, self.io())?;
                 match self.resolve_tool_call(journal, input.operation_id, step, invocation, &mut messages).await? {
                     ToolCallProgress::Settled => {}

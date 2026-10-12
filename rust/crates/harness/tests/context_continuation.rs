@@ -209,7 +209,7 @@ async fn fixture() -> Result<Fixture> {
     )
     .await?;
     let (compacted, reference) =
-        DurableContextProvider::compact(&source, 2, Some(summary), CompactionRetention::default())?;
+        DurableContextProvider::compact(&source, 2, Some(summary), CompactionRetention::default(), None)?;
     Ok(Fixture {
         stream,
         storage,
@@ -562,17 +562,17 @@ async fn checkpoint_envelope_binds_real_published_context_and_admitted_summary()
         retained: records[1].content.clone(),
         compaction: proof,
     };
-    checkpoint.validate_projection(&source, &compacted, &reference, Limits::default())?;
+    checkpoint.validate_projection(&source, &compacted, &reference, Limits::default(), None)?;
     assert!(
         checkpoint
-            .validate_projection(&source, &source, &reference, Limits::default())
+            .validate_projection(&source, &source, &reference, Limits::default(), None)
             .is_err()
     );
     let mut changed = checkpoint.clone();
     changed.operation_id = OperationId::new();
     assert!(
         changed
-            .validate_projection(&source, &compacted, &reference, Limits::default())
+            .validate_projection(&source, &compacted, &reference, Limits::default(), None)
             .is_err()
     );
     let encoded = checkpoint.encode(Limits::default())?;
@@ -598,7 +598,7 @@ async fn checkpoint_envelope_binds_real_published_context_and_admitted_summary()
             .compaction
             .as_ref()
             .ok_or_else(|| Error::Invalid("missing published proof".into()))?,
-        Limits::default(),
+        Limits::default(), None,
     )?;
     Ok(())
 }
@@ -764,12 +764,12 @@ async fn default_canonical_continuation_keeps_stages_fresh_beyond_history_bound(
     let reference = acyclic_harness::executor::canonical_checkpoint_for_operation(
         journal.as_ref(),
         *operation,
-        limits,
+        limits, None,
     )
     .await?
     .ok_or_else(|| Error::Invalid("default path did not publish checkpoint".into()))?;
     let (checkpoint, retained) =
-        acyclic_harness::executor::load_canonical_checkpoint(journal.as_ref(), &reference, limits)
+        acyclic_harness::executor::load_canonical_checkpoint(journal.as_ref(), &reference, limits, None, None)
             .await?;
     let source: Context = serde_json::from_slice(&storage.read(&checkpoint.source).await?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -961,10 +961,7 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             ),
         ] {
             assert!(matches!(
-                load_canonical_checkpoint_through(
-                    journal, reference, limits, original, history, cursor, through, allowance,
-                    content,
-                )
+                load_canonical_checkpoint_through(journal, reference, limits, original, history, cursor, through, allowance, content, None)
                 .await,
                 Err(Error::Invalid(_))
             ));
@@ -978,9 +975,7 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             .collect::<Result<Vec<_>>>()?;
         let denied = RuntimeScope::new(Capabilities::new(grants.clone()), limits)?;
         assert!(matches!(
-            load_canonical_checkpoint_through(
-                journal, reference, limits, &denied, history, cursor, 20, budget, content,
-            )
+            load_canonical_checkpoint_through(journal, reference, limits, &denied, history, cursor, 20, budget, content, None)
             .await,
             Err(Error::Unauthorized(_))
         ));
@@ -993,17 +988,7 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             limits,
         )?;
         assert_eq!(
-            load_canonical_checkpoint_through(
-                journal,
-                reference,
-                Limits::default(),
-                &exact,
-                history,
-                cursor,
-                20,
-                budget,
-                content,
-            )
+            load_canonical_checkpoint_through(journal, reference, Limits::default(), &exact, history, cursor, 20, budget, content, None)
             .await?
             .1,
             *imported
@@ -1031,28 +1016,16 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             ..
         } = *self;
         assert_eq!(
-            load_canonical_checkpoint_through(
-                journal, reference, limits, exact, history, cursor, 20, budget, content,
-            )
+            load_canonical_checkpoint_through(journal, reference, limits, exact, history, cursor, 20, budget, content, None)
             .await?
             .1,
             *imported
         );
         assert!(
-            load_canonical_checkpoint_through(
-                journal,
-                reference,
-                limits,
-                original,
-                history,
-                cursor,
-                21,
-                HistoryReadLimits {
+            load_canonical_checkpoint_through(journal, reference, limits, original, history, cursor, 21, HistoryReadLimits {
                     maximum_events: 3,
                     ..budget
-                },
-                content,
-            )
+                }, content, None)
             .await
             .is_err()
         );
@@ -1073,29 +1046,17 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
         assert_eq!(prepared_summary.context(), imported);
         let later = history.pin(0).await?;
         assert_eq!(
-            load_canonical_checkpoint_through(
-                journal,
-                reference,
-                limits,
-                exact,
-                history,
-                &later,
-                21,
-                HistoryReadLimits {
+            load_canonical_checkpoint_through(journal, reference, limits, exact, history, &later, 21, HistoryReadLimits {
                     maximum_events: 3,
                     ..budget
-                },
-                content,
-            )
+                }, content, None)
             .await?
             .1,
             *imported,
             "canonical interaction record consumes work but is not a model message"
         );
         assert!(matches!(
-            load_canonical_checkpoint_through(
-                journal, reference, limits, exact, history, &later, 21, budget, content,
-            )
+            load_canonical_checkpoint_through(journal, reference, limits, exact, history, &later, 21, budget, content, None)
             .await,
             Err(Error::Invalid(_))
         ));
@@ -1128,9 +1089,7 @@ async fn assert_checkpoint_tail_source(
         maximum_bytes: MAX_RECORD_BYTES as u64 * 4,
     };
     let original = RuntimeScope::new(storage.owner_scope().capabilities().clone(), limits)?;
-    let (checkpoint, imported) = load_canonical_checkpoint_through(
-        journal, reference, limits, &original, &history, &cursor, 20, budget, &content,
-    )
+    let (checkpoint, imported) = load_canonical_checkpoint_through(journal, reference, limits, &original, &history, &cursor, 20, budget, &content, None)
     .await?;
     assert_eq!(checkpoint.selection.conversation_revision, 19);
     assert_eq!(imported.current_input_index, None);
@@ -1267,7 +1226,7 @@ async fn assert_checkpoint_tail_source(
                     extensions: Default::default(),
                 }),
             },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     read.assert_later_cut_controls(
         aggregate.reducer(),
@@ -1286,7 +1245,7 @@ async fn assert_scoped_checkpoint_source(
     limits: Limits,
     retained: &Context,
 ) -> Result<()> {
-    use acyclic_harness::executor::load_canonical_checkpoint_for_scope;
+    use acyclic_harness::executor::load_canonical_checkpoint;
     use acyclic_harness::{Capabilities, runtime::RuntimeScope};
 
     let grants = retained
@@ -1302,7 +1261,7 @@ async fn assert_scoped_checkpoint_source(
     );
     let scope = RuntimeScope::new(Capabilities::new(grants.clone()), limits)?;
     let (_, imported) =
-        load_canonical_checkpoint_for_scope(journal, reference, Limits::default(), &scope).await?;
+        load_canonical_checkpoint(journal, reference, Limits::default(), Some(&scope), None).await?;
     assert_eq!(&imported, retained);
     let denied = scope.narrow(
         scope
@@ -1313,7 +1272,7 @@ async fn assert_scoped_checkpoint_source(
         limits,
     )?;
     assert!(matches!(
-        load_canonical_checkpoint_for_scope(journal, reference, Limits::default(), &denied).await,
+        load_canonical_checkpoint(journal, reference, Limits::default(), Some(&denied), None).await,
         Err(Error::Unauthorized(_))
     ));
     let narrow = scope.narrow(
@@ -1324,7 +1283,7 @@ async fn assert_scoped_checkpoint_source(
         },
     )?;
     assert!(matches!(
-        load_canonical_checkpoint_for_scope(journal, reference, Limits::default(), &narrow).await,
+        load_canonical_checkpoint(journal, reference, Limits::default(), Some(&narrow), None).await,
         Err(Error::Invalid(_))
     ));
 
@@ -1370,7 +1329,7 @@ async fn assert_scoped_checkpoint_source(
         );
     }
     let (_, unchanged) =
-        load_canonical_checkpoint_for_scope(journal, reference, Limits::default(), &scope).await?;
+        load_canonical_checkpoint(journal, reference, Limits::default(), Some(&scope), None).await?;
     assert_eq!(&unchanged, retained);
     Ok(())
 }
@@ -1476,7 +1435,7 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
     };
     let pipeline =
         ContextPipeline::new([stage.clone() as Arc<dyn acyclic_harness::context::ContextStage>]);
-    let composed = pipeline.run_bounded(&input, limits).await?;
+    let composed = pipeline.run(&input, limits, None).await?;
     assert_eq!(composed.metadata, snapshot.metadata);
     assert_eq!(composed.current_input_index, Some(1));
     assert_eq!(composed.messages.first(), snapshot.messages.first());
@@ -1485,7 +1444,7 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
         Some(&input.input)
     );
     let verifies = reader.verifies.load(Ordering::SeqCst);
-    let mut collision = ContextPipeline::base_context(&input, limits)?;
+    let mut collision = ContextPipeline::base_context(&input, limits, None)?;
     collision.metadata = snapshot.metadata.clone();
     assert!(matches!(
         stage.apply(&input, collision, limits).await,
@@ -1511,12 +1470,12 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
     assert_eq!(reader.reads.load(Ordering::SeqCst), reads);
     assert!(matches!(
         pipeline
-            .run_bounded(
+            .run(
                 &input,
                 Limits {
                     context_messages: 1,
                     ..limits
-                }
+                }, None
             )
             .await,
         Err(Error::Invalid(_))
@@ -1538,12 +1497,12 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
     );
     assert!(matches!(
         pipeline
-            .run_bounded(
+            .run(
                 &input,
                 Limits {
                     file_bytes: narrow_file_bytes,
                     ..limits
-                }
+                }, None
             )
             .await,
         Err(Error::Invalid(_))
@@ -1564,7 +1523,7 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
         metadata: BTreeMap::from([("fresh.state".into(), metadata.clone())]),
         current_input_index: Some(0),
     };
-    let continued = ContextPipeline::continue_base(snapshot.clone(), delta.clone(), limits)?;
+    let continued = ContextPipeline::continue_base(snapshot.clone(), delta.clone(), limits, None)?;
     assert_eq!(continued.metadata.len(), 2);
     assert_eq!(continued.metadata.get("snapshot.state"), Some(&metadata));
     assert_eq!(continued.metadata.get("fresh.state"), Some(&metadata));
@@ -1576,7 +1535,7 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
             Limits {
                 attachments: 1,
                 ..limits
-            },
+            }, None,
         ),
         Err(Error::Invalid(_))
     ));
@@ -1602,14 +1561,14 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
             Limits {
                 render_bytes: combined_bytes - 1,
                 ..limits
-            },
+            }, None,
         ),
         Err(Error::Invalid(_))
     ));
     let mut duplicate = delta;
     duplicate.metadata = snapshot.metadata.clone();
     assert!(matches!(
-        ContextPipeline::continue_base(snapshot.clone(), duplicate, limits),
+        ContextPipeline::continue_base(snapshot.clone(), duplicate, limits, None),
         Err(Error::Conflict(_))
     ));
 
@@ -1894,7 +1853,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
         acyclic_harness::executor::canonical_checkpoint_for_operation(
             storage.journal().as_ref(),
             operation,
-            Limits::default()
+            Limits::default(), None
         )
         .await?
         .is_some()
@@ -1957,14 +1916,14 @@ async fn assert_checkpoint_read_admission(
 ) -> Result<()> {
     let limits = Limits::default();
     let reference =
-        acyclic_harness::executor::canonical_checkpoint_for_operation(journal, operation, limits)
+        acyclic_harness::executor::canonical_checkpoint_for_operation(journal, operation, limits, None)
             .await?
             .ok_or_else(|| Error::Invalid("recovered checkpoint missing".into()))?;
     let (mut envelope, _) =
-        acyclic_harness::executor::load_canonical_checkpoint(journal, &reference, limits).await?;
+        acyclic_harness::executor::load_canonical_checkpoint(journal, &reference, limits, None, None).await?;
     journal.deny_reads.store(true, Ordering::SeqCst);
     assert!(
-        matches!(acyclic_harness::executor::load_canonical_checkpoint(journal, &reference, limits).await,
+        matches!(acyclic_harness::executor::load_canonical_checkpoint(journal, &reference, limits, None, None).await,
         Err(Error::Unauthorized(message)) if message.contains("retained payload"))
     );
     journal.deny_reads.store(false, Ordering::SeqCst);
@@ -1979,7 +1938,7 @@ async fn assert_checkpoint_read_admission(
         )
         .await?;
     assert!(
-        matches!(acyclic_harness::executor::load_canonical_checkpoint(journal, &unpublished, limits).await,
+        matches!(acyclic_harness::executor::load_canonical_checkpoint(journal, &unpublished, limits, None, None).await,
         Err(Error::Conflict(message)) if message.contains("not published"))
     );
     Ok(())
@@ -2218,12 +2177,7 @@ async fn fabricate_checkpoint(
             )
             .await?;
     }
-    let (retained, proof) = DurableContextProvider::compact(
-        &source,
-        proof.maximum_messages as usize,
-        Some(summary),
-        proof.retention,
-    )?;
+    let (retained, proof) = DurableContextProvider::compact(&source, proof.maximum_messages as usize, Some(summary), proof.retention, None)?;
     if mode == 1 {
         envelope.source = stage_fixture_json(journal, operation, "poison-source", &source).await?;
     }
@@ -2237,7 +2191,7 @@ async fn fabricate_checkpoint(
             "application/json",
         )
         .await?;
-    envelope.validate_projection(&source, &retained, &proof, Limits::default())?;
+    envelope.validate_projection(&source, &retained, &proof, Limits::default(), None)?;
     let checkpoint = journal
         .stage(
             operation,
@@ -2347,15 +2301,11 @@ async fn canonical_publication_rejects_fabricated_source_and_summary_then_recove
         let previous_reference = acyclic_harness::executor::canonical_checkpoint_for_operation(
             storage.journal().as_ref(),
             operation,
-            Limits::default(),
+            Limits::default(), None,
         )
         .await?
         .ok_or_else(|| Error::NotFound("previous published checkpoint".into()))?;
-        let (_, previous_retained) = acyclic_harness::executor::load_canonical_checkpoint(
-            storage.journal().as_ref(),
-            &previous_reference,
-            Limits::default(),
-        )
+        let (_, previous_retained) = acyclic_harness::executor::load_canonical_checkpoint(storage.journal().as_ref(), &previous_reference, Limits::default(), None, None)
         .await?;
         assert_checkpoint_metadata_continuation(
             &storage,
@@ -2423,7 +2373,7 @@ async fn append_private_checkpoint_metadata(
                         extensions: Default::default(),
                     }),
                 },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
     }
     Ok((metadata, metadata_ids))
@@ -2454,15 +2404,11 @@ async fn assert_checkpoint_metadata_continuation(
     let next_reference = acyclic_harness::executor::canonical_checkpoint_for_operation(
         storage.journal().as_ref(),
         next_operation,
-        Limits::default(),
+        Limits::default(), None,
     )
     .await?
     .ok_or_else(|| Error::NotFound("next published checkpoint".into()))?;
-    let (next_envelope, _) = acyclic_harness::executor::load_canonical_checkpoint(
-        storage.journal().as_ref(),
-        &next_reference,
-        Limits::default(),
-    )
+    let (next_envelope, _) = acyclic_harness::executor::load_canonical_checkpoint(storage.journal().as_ref(), &next_reference, Limits::default(), None, None)
     .await?;
     assert_eq!(
         next_envelope.selection.checkpoint.as_ref(),

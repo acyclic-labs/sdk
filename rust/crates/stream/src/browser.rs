@@ -152,8 +152,6 @@ impl BrowserStream {
             cache.provider = memory(self.inner.limits.memory, Arc::clone(&self.inner.clock));
             cache.cursor = 0;
         }
-        // Keep invalid throughout every await: cancellation cannot retain a
-        // partially recovered or unpublished state as an authoritative cache.
         cache.valid = false;
         let store = transaction.object_store(JOURNAL).map_err(backend)?;
         let metadata = store
@@ -223,17 +221,17 @@ impl BrowserStream {
     ) -> Result<Outcome, StreamError> {
         match &mut command {
             Command::Append(request) => {
-                memory::validate_records(&request.records)?;
+                memory::provider_result(memory::validate_records(&request.records, &memory::MemoryObserver::default()))?;
                 memory::validate_append_size(request)?;
             }
             Command::Fork(request) => memory::validate_fork_size(request)?,
             Command::Commit(request) => {
-                memory::normalize_commit(request)?;
-                memory::validate_commit_shape(request)?;
+                memory::provider_result(memory::normalize_commit(request, &memory::MemoryObserver::default()))?;
+                memory::provider_result(memory::validate_commit_shape(request, &memory::MemoryObserver::default()))?;
             }
         }
         let journal = journal_command(&command);
-        if journal.encoded_len().map_err(|_| StreamError::InvalidArgument)? > MAX_COMMAND_BYTES {
+        if journal.encoded_len(None, None).map_err(|_| StreamError::InvalidArgument)? > MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
         let encoded = journal.encode_to_vec().map_err(|_| StreamError::Capacity)?;
@@ -401,9 +399,6 @@ impl StreamProvider for BrowserStream {
         if from > self.tail(path.clone()).await? {
             return Err(StreamError::OutOfRange);
         }
-        // Durable polling is the wakeup transport. It observes publication even
-        // when the publishing context dies before sending any notification.
-        // A dropped cursor stops polling; no detached task owns its lifetime.
         Ok(stream::try_unfold(
             (self.clone(), path, memory::HistoryCursor::at(from)),
             |(provider, path, mut cursor)| async move {
