@@ -245,7 +245,7 @@ where
         };
         let reference = self.stage(id, "request", request, io).await?;
         let ticket = InteractionTicket {
-            id: interaction_uuid(id)?,
+            id: Uuid::from_bytes(id.into_bytes()),
             kind: request.kind(),
             request: reference,
             deadline_unix_ms,
@@ -508,7 +508,7 @@ where
                 "interaction aggregate custody underflows"))?)).transpose()?;
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let value = aggregate.reducer().interaction(&interaction_uuid(id)?)
+        let value = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes()))
             .map(|(ticket, resolution)| -> Result<_> {
                 let ticket = crate::core::native_interaction_ticket_clone_with_custody(ticket, &mut work)?.0;
                 let resolution = resolution.as_ref().map(|value|
@@ -532,7 +532,7 @@ where
                 "interaction aggregate custody underflows"))?)).transpose()?;
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let outcome = aggregate.reducer().interaction(&interaction_uuid(id)?)
+        let outcome = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes()))
             .and_then(|(_, resolution)| resolution.as_ref())
             .map(|resolution| resolution.outcome.clone_with_work(&mut work))
             .transpose()?;
@@ -551,7 +551,7 @@ where
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
-        let Some((ticket, _)) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
+        let Some((ticket, _)) = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes())) else {
             return Ok(None);
         };
         let request = match io {
@@ -590,7 +590,7 @@ where
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
-        let Some((_, Some(resolution))) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
+        let Some((_, Some(resolution))) = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes())) else {
             return Ok(None);
         };
         let reference = if detail { resolution.detail.as_ref() } else {
@@ -669,7 +669,7 @@ where
         replay_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "approval replay custody underflows"))?)).transpose()?;
-        let Some((ticket, Some(resolution))) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
+        let Some((ticket, Some(resolution))) = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes())) else {
             return Err(interaction_boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "tool installation lacks a resolved approval"));
         };
@@ -810,10 +810,6 @@ where
         drop(bytes_hold);
         result
     }
-}
-
-fn interaction_uuid(id: InteractionId) -> Result<Uuid> {
-    Ok(Uuid::from_bytes(id.into_bytes()))
 }
 
 pub(super) fn interaction_boundary(

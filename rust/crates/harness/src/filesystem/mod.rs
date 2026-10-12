@@ -232,56 +232,38 @@ pub struct FilesystemSchedulerPayloadStore<A, O> {
 }
 
 impl<A, O> FilesystemSchedulerPayloadStore<A, O> {
-    /// Binds the exact private volume and authenticated write capability.
+    /// Binds private-volume write authority with optional metadata accounting.
     pub fn new(
-        host: Arc<FilesystemHost<A, O>>,
-        volume: VolumeRef,
-        verifier: &AuthorityVerifier,
-        scope: &Scope,
-        maximum_bytes: u64,
-    ) -> Result<Self> {
-        Self::validate_configuration(&host, &volume, maximum_bytes, None)?;
-        let grant = ContentGrant::verify(verifier, scope, &volume, VolumeOperation::Write)?;
-        Ok(Self {
-            host,
-            volume,
-            grant,
-            maximum_bytes,
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_metadata: None,
-        })
-    }
-
-    fn validate_configuration(
-        host: &FilesystemHost<A, O>, volume: &VolumeRef, maximum_bytes: u64,
+        host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
+        verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
         io: Option<&PreparationIo>,
-    ) -> Result<()> {
+    ) -> Result<Self> {
         if volume.class() != VolumeClass::AgentPrivate
             || volume.provider() != &host.provider || maximum_bytes == 0
         {
             return Err(fork_preparer_io::invalid(io,
                 "scheduler payload store requires a private volume and positive limit"));
         }
-        Ok(())
-    }
-
-    /// Funds only newly owned SDK metadata using the caller's original ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_with_native_work(
-        host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
-        verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        let io = PreparationIo::from_native_work(work)?;
-        Self::validate_configuration(&host, volume, maximum_bytes, Some(&io))?;
-        let grant = ContentGrant::verify_with_io(
-            verifier, scope, volume, VolumeOperation::Write, &io,
-        )?;
-        let volume = volume.clone_with_io(&io)?;
-        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-        let retained = io.owned_bytes()?;
-        let _native_metadata = Some(io.into_native_custody(retained)?);
-        Ok(Self { host, volume, grant, maximum_bytes, _native_metadata })
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let grant = match io {
+            Some(io) => ContentGrant::verify_with_io(verifier, scope, volume, VolumeOperation::Write, io)?,
+            None => ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write)?,
+        };
+        let mut observer = io.map(PreparationIo::history_io);
+        let volume = volume.clone_with_work(&mut observer.as_mut().map(
+            |observer| observer as &mut dyn crate::store::history::HistoryIo))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
+            Some(io) => {
+                io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+                Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
+                    .ok_or_else(|| fork_preparer_io::invalid(Some(io), "scheduler payload custody underflows"))?)?)
+            }
+            None => None,
+        };
+        Ok(Self { host, volume, grant, maximum_bytes,
+            #[cfg(not(target_arch = "wasm32"))] _native_metadata })
     }
 
     /// The intrinsic guard covers Self and deep metadata, not opaque Arc nodes.
@@ -1113,19 +1095,6 @@ fn fork_verify_insert<T>(
     Ok(true)
 }
 
-fn fork_verify_digest(value: &impl serde::Serialize, io: &PreparationIo) -> Result<[u8; 32]> {
-    let bytes_guard;
-    let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
-    bytes_guard = io.guard_bytes(&bytes)?;
-    let hashed = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
-    io.preflight(hashed)?;
-    io.charge(hashed)?;
-    let digest = *blake3::hash(&bytes).as_bytes();
-    drop(bytes);
-    drop(bytes_guard);
-    Ok(digest)
-}
-
 fn fork_verify_contains<T: Ord>(values: &[T], value: &T, io: &PreparationIo) -> Result<bool> {
     let mut low = 0;
     let mut high = values.len();
@@ -1392,7 +1361,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     {
                         let mut examine = |file: &FileRef| -> Result<()> {
                             fork_preparer_io::item(Some(&io), 0)?;
-                            let digest = fork_verify_digest(file, &io)?;
+                            let digest = task_runtime::observed::digest(file, Some(&io), u64::MAX)?;
                             fork_verify_insert(&mut observed, digest, Ord::cmp, &io).map(|_| ())
                         };
                         for message in &context.messages {
@@ -1407,7 +1376,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     let mut declared = Vec::new();
                     for file in summary.payloads.iter().chain(&summary.references) {
                         fork_preparer_io::item(Some(&io), 0)?;
-                        let digest = fork_verify_digest(file, &io)?;
+                        let digest = task_runtime::observed::digest(file, Some(&io), u64::MAX)?;
                         fork_verify_insert(&mut declared, digest, Ord::cmp, &io)?;
                     }
                     _declared_hold = io.guard_owned((declared.capacity() * std::mem::size_of::<[u8; 32]>()) as u64)?;
@@ -2184,11 +2153,7 @@ impl<A, O> ParentMergePlan<A, O> {
         self.plan.source_head()
     }
 
-    /// Exact common ancestor used for the three-way merge.
-    #[must_use]
-    pub const fn common_ancestor(&self) -> GenerationId {
-        self.plan.common_ancestor()
-    }
+
 }
 
 impl<'a, A, O> ParentProjectController<'a, A, O> {
@@ -3046,9 +3011,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     ) -> Result<(JoinOutcome<A, O>, acyclic_fs::NativeAllocation)> {
         let _io = self.require_merge_plan_with_native_work(plan, work)?;
         let owner = NativeParentMergePublicationOwner::new(&self.verifier, &self.scope, &self.project, work)?;
-        let guard_owner = Arc::clone(&owner);
         let mut guard = move |original: &acyclic_fs::NativeMaterializationWork|
-            std::future::ready(guard_owner.check(original));
+            std::future::ready(owner.check(original));
         plan.plan.apply_with_permit_guarded_with_native_work(
             Self::merge_options(plan, native_project_join_key(operation, work)?),
             acyclic_fs::PublicationPermit::Unrestricted, work, work.cancellation(),
@@ -3064,9 +3028,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     ) -> Result<(JoinOutcome<A, O>, acyclic_fs::NativeAllocation)> {
         let _io = self.require_merge_plan_with_native_work(plan, work)?;
         let owner = NativeParentMergePublicationOwner::new(&self.verifier, &self.scope, &self.project, work)?;
-        let guard_owner = Arc::clone(&owner);
         let mut guard = move |original: &acyclic_fs::NativeMaterializationWork|
-            std::future::ready(guard_owner.check(original));
+            std::future::ready(owner.check(original));
         plan.plan.apply_sides_with_permit_guarded_with_native_work(
             Self::merge_options(plan, native_project_join_key(operation, work)?),
             selections, acyclic_fs::PublicationPermit::Unrestricted, work, work.cancellation(),
