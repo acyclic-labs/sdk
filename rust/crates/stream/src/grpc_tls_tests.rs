@@ -62,14 +62,14 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
         if mode == "file" || mode == "dir" {
             let client = platform?;
             assert_eq!(client.tail(StreamPath::new("platform/roots")?).await, Err(StreamError::NotFound));
-            let installed = crate::StreamClient::new(Arc::new(Client::connect(&endpoint, "exact-token").await?));
+            let installed = crate::StreamClient::new(Arc::new(Client::connect([&endpoint], "exact-token", None).await?));
             assert_eq!(installed.stream("platform/roots")?.tail().await, Err(StreamError::NotFound));
         } else {
             let error = platform.err().ok_or("private endpoint unexpectedly trusted")?;
             assert!(std::error::Error::source(&error).is_some(), "cause lost: {error:?}");
         }
         for client in [
-            Client::connect_with_ca_certificate(&endpoint, "exact-token", pem.as_bytes()).await?,
+            Client::connect([&endpoint], "exact-token", Some(pem.as_bytes())).await?,
             Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", pem.as_bytes()).await?,
         ] {
             assert_eq!(client.tail(StreamPath::new("explicit/roots")?).await, Err(StreamError::NotFound));
