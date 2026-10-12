@@ -3753,8 +3753,8 @@ mod tests {
         };
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let cancellation = CancellationToken::new();
         let checkout = runtime.block_on(async {
-            let cancellation = CancellationToken::new();
             let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
             private_checkout(&volume, &cancellation).await
         })?;
