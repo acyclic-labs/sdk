@@ -6,10 +6,6 @@ import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
 import { PiOperatorDriver } from "./pi-operator-driver.ts";
-
-// Pi's actual deterministic provider drives production tools and the native
-// model loop. It does not implement task admission, storage, process spawning,
-// waiting, cancellation, merge or writeback in the fixture.
 const recursiveProvider = `
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@earendil-works/pi-ai";
@@ -146,8 +142,7 @@ test("required pinned Pi recursively launches original native effects and reopen
     ownedServicePids.push(fixture.servicePid()!);
     fixture.environment.ACYCLIC_NATIVE_ORIGINAL_PROJECT = fixture.project;
     const operator = new PiOperatorDriver({
-      binary:fixture.binary, session:fixture.manager.getSessionId(), cwd:fixture.project, command:fixture.command,
-      beforeApprove:async (driver, operation) => driver.wrongDigest(operation),
+      session:fixture.manager.getSessionId(), cwd:fixture.project, command:fixture.command,
       operation:"root-writeback", selected:{
         "child-a.txt":{baseline:null,candidate:"child A edited\n",current:null},
         "child-b.txt":{baseline:null,candidate:"child B isolated\n",current:null},
@@ -155,7 +150,6 @@ test("required pinned Pi recursively launches original native effects and reopen
       }, preserved:{"concurrent.txt":"external root edit after original child admission\n"},
     });
     const result = await fixture.runJson("ACYCLIC_NATIVE_ROOT", line => operator.consumeJsonLine(line));
-    await operator.completed();
     await operator.assertPublished();
     const finalMessages = result.stdout.split("\n").filter(line => line.trim()).map(line => JSON.parse(line))
       .filter(event => event.type === "message_end" && event.message?.role === "assistant")

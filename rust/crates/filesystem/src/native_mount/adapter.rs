@@ -604,13 +604,11 @@ fn record_view_change_with_carrier(
     if let Some(original) = carrier.original_native_work() {
         // Native map backing carries its real intrinsic allocation guard.
         // Borrowed service maps are not imported into this operation.
-        return ledger.record_with_native_work(
-            change, &original, &mut super::view_ledger::ViewLedgerAdmission::default(),
-        );
+        return ledger.record(change, &mut NativeDemandCarrier::Native(&super::NativeMountMeterWork::from_native_materialization_work(&original)), &mut super::view_ledger::ViewLedgerAdmission::default());
     }
     let (slot, mut admission) = carrier.with_work(|work| ledger.take_for_work(work))?;
     let recorded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        ledger.record_with_carrier(change, carrier, &mut admission)
+        ledger.record(change, carrier, &mut admission)
     }));
     carrier.with_work(|work| work.restore_view_ledger_admission(slot, admission));
     match recorded {
@@ -1541,7 +1539,7 @@ impl<A, O> DetachedMountState<A, O> {
             .mutation_epoch
             .checked_add(1)
             .ok_or(MountSourceError::Stale)?;
-        ledger.record(&ViewChange::Node(self.file.file_id()));
+        ledger.record(&ViewChange::Node(self.file.file_id()), &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()), &mut super::view_ledger::ViewLedgerAdmission::default()).expect("unbounded view recording");
         Ok(())
     }
 }
@@ -2854,7 +2852,7 @@ impl<A, O> SharedCheckout<A, O> {
                     claimed
                 };
                 drop(checkout);
-                self.apply_grouped_requests(requests, &cancellation).await;
+                self.apply_grouped_requests(requests, cancellation.clone()).await;
             }
         })
     }
@@ -3936,7 +3934,7 @@ impl<A, O> SharedCheckout<A, O> {
         }
         if let Some(stamp) = absent_since {
             let unchanged = self.view_gate.is_stable() && carrier.with_work(|work| {
-                self.ledger.binding_unchanged_since_measured(&pending.path, stamp, work)
+                self.ledger.binding_unchanged_since(&pending.path, stamp, work)
             })?;
             if !unchanged { return Ok(false); }
         }
@@ -3974,7 +3972,7 @@ impl<A, O> SharedCheckout<A, O> {
         let (slot, mut admission) = carrier.with_work(|work| self.ledger.take_for_work(work))?;
         let recorded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _origin = pending.origin.enter();
-            self.ledger.record_with_carrier(&ViewChange::Bound(&pending.path), carrier, &mut admission)
+            self.ledger.record(&ViewChange::Bound(&pending.path), carrier, &mut admission)
         }));
         carrier.with_work(|work| work.restore_view_ledger_admission(slot, admission));
         match recorded {
@@ -4456,7 +4454,7 @@ impl<A, O> SharedCheckout<A, O> {
         file_id: Option<FileId>,
         stamp: ViewStamp,
     ) -> bool {
-        self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp)
+        self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 
     fn reported_unchanged_since(
@@ -4465,19 +4463,19 @@ impl<A, O> SharedCheckout<A, O> {
         file_id: Option<FileId>,
         stamp: ViewStamp,
     ) -> bool {
-        self.view_gate.is_stable() && self.ledger.reported_unchanged_since(path, file_id, stamp)
+        self.view_gate.is_stable() && self.ledger.reported_unchanged_since(path, file_id, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp)
+        self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 
     fn listing_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.listing_unchanged_since(path, stamp)
+        self.view_gate.is_stable() && self.ledger.listing_unchanged_since(path, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 
     fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.binding_unchanged_since(path, stamp)
+        self.view_gate.is_stable() && self.ledger.binding_unchanged_since(path, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
     }
 }
 
@@ -4675,7 +4673,7 @@ impl<A, O> SharedCheckoutState<A, O> {
     /// Records one change to the checkout's view. The exclusive guard keeps
     /// every lookup from overlapping the change it records.
     pub(super) fn record(&mut self, change: &ViewChange<'_>) {
-        self.ledger.record(change);
+        self.ledger.record(change, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()), &mut super::view_ledger::ViewLedgerAdmission::default()).expect("unbounded view recording");
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.recorded_view = self.checkout.root().file_table;
     }
@@ -4688,13 +4686,13 @@ impl<A, O> SharedCheckout<A, O> {
     fn apply_grouped_requests<'a>(
         &'a self,
         requests: Vec<GroupedRequest>,
-        cancellation: &'a CancellationToken,
+        cancellation: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
         Box::pin(async move {
-            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, cancellation);
+            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
             let _ = self.apply_grouped_requests_measured(
-                requests, &mut work, cancellation, None,
+                requests, &mut work, &cancellation, None,
             ).await;
         })
     }
@@ -6368,7 +6366,7 @@ where
         self.attached
             .checkout
             .ledger
-            .record(&ViewChange::Node(self.pending.file_id));
+            .record(&ViewChange::Node(self.pending.file_id), &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()), &mut super::view_ledger::ViewLedgerAdmission::default()).expect("unbounded view recording");
         self.attached
             .checkout
             .revision
@@ -6476,7 +6474,7 @@ where
                 if let Some(prepared) = prepared { drop(std::mem::replace(bytes, prepared)); }
                 if shared_truncate {
                     let PendingBytes::Shared { bytes, .. } = bytes else { unreachable!("original shared body"); };
-                    bytes.truncate(length);
+                    *bytes = bytes.slice(..length);
                 } else {
                     bytes.resize(length, 0);
                 }
@@ -7837,7 +7835,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     /// this checkout. The caller holds that source's exclusive view, so no
     /// lookup through it overlaps the change.
     pub(super) fn record_projection_change(&self, change: &ViewChange<'_>) {
-        self.checkout.ledger.record(change);
+        self.checkout.ledger.record(change, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()), &mut super::view_ledger::ViewLedgerAdmission::default()).expect("unbounded view recording");
     }
 
     pub(super) fn record_projection_change_with_carrier(
@@ -7854,7 +7852,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         mut private_check: impl FnMut() -> Result<(), MountSourceError>,
     ) -> Result<(), MountSourceError> {
         private_check()?;
-        let recorded = self.checkout.ledger.record_with_native_work(change, original, view);
+        let recorded = self.checkout.ledger.record(change, &mut NativeDemandCarrier::Native(&super::NativeMountMeterWork::from_native_materialization_work(original)), view);
         // The canonical ledger records its real prefix before notifying.
         // A stop raised by an observer prevents subsequent source publication,
         // but cannot erase keys, notifications or work already performed.
@@ -9460,7 +9458,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
             }).map_err(mount_demand_error)?;
             if !self.checkout.view_gate.is_stable() { return Ok(false); }
-            let unchanged = self.checkout.ledger.unchanged_since_measured(namespace, file_id, stamp, work)?;
+            let unchanged = self.checkout.ledger.unchanged_since(namespace, file_id, stamp, work)?;
             work.check().map_err(mount_demand_error)?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             Ok(unchanged)
@@ -11243,7 +11241,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let publication = self.checkout.finish_native_phase_with_commit(
             candidate, epoch, stamp, carrier, cancellation, Some(&self.cancellation),
             |carrier| self.with_capture_observer_dispatch(|| {
-                self.checkout.ledger.record_with_carrier(
+                self.checkout.ledger.record(
                     &ViewChange::Effect(&installed.value), carrier, view,
                 )
             }),
@@ -12143,7 +12141,7 @@ where
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         mount_items(&mut work, 1)?;
         let unchanged = if self.checkout.view_gate.is_stable() {
-            self.checkout.ledger.node_unchanged_since_measured(file_id, stamp, &mut work)?
+            self.checkout.ledger.node_unchanged_since(file_id, stamp, &mut work)?
         } else {
             false
         };
@@ -12171,7 +12169,7 @@ where
         carrier.with_work(|work| {
             mount_items(work, 1)?;
             let unchanged = if self.checkout.view_gate.is_stable() {
-                self.checkout.ledger.listing_unchanged_since_measured(namespace, stamp, work)?
+                self.checkout.ledger.listing_unchanged_since(namespace, stamp, work)?
             } else {
                 false
             };
@@ -12318,7 +12316,7 @@ where
         carrier.with_work(|work| {
             mount_items(work, 1)?;
             let unchanged = if self.checkout.view_gate.is_stable() {
-                self.checkout.ledger.reported_unchanged_since_measured(
+                self.checkout.ledger.reported_unchanged_since(
                     namespace, file_id, stamp, work,
                 )?
             } else {

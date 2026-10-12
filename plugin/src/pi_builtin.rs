@@ -8,8 +8,7 @@ pub(crate) const PI_BUILTIN_COMMAND_KIND: &str = "acyclic.pi.builtin";
 pub(crate) const MAXIMUM_BUILTIN_BYTES: u64 = 262_144;
 pub(crate) const PI_BUILTIN_TOOL_REVISION: &str = "1.1.0";
 
-/// Static contracts are decoded by the original guarded SDK constructor, not
-/// assembled as unobserved JSON values and adopted after allocation.
+/// Static contracts are decoded by the original guarded SDK constructor, not assembled as unobserved JSON values and adopted after allocation.
 pub(crate) fn builtin_tool_definition_with_native_work(
     work: &NativeMaterializationWork,
 ) -> Result<(acyclic_harness::tool::ToolDefinition, NativeAllocation)> {
@@ -171,8 +170,7 @@ fn validate_path(value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Lexical selection only. Success is NOT IO authority: the original held-root
-/// SDK producer independently rejects symlinks and replaced native roots.
+/// Lexical selection only.
 pub(crate) fn relative_path<'a>(path: &'a str, root: &Path) -> Result<&'a Path> {
     validate_path(path)?;
     if !root.is_absolute() {
@@ -281,7 +279,6 @@ fn decoded_tool_request(
 }
 
 /// This executor owns no session, runtime, provider, credentials, or view.
-/// The canonical SDK runner supplies the sole accepted owner-bound context.
 struct PiBuiltinToolExecutor;
 
 pub(crate) fn builtin_tool_executor_with_native_work(
@@ -492,8 +489,7 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
 
 type Owner = acyclic_harness::durable_host::TaskJournalOwner<acyclic_stream::LocalStream>;
 
-/// Borrows original providers and creator handles; it owns no second journal,
-/// route registry, root credential, or independent filesystem.
+/// Borrows original providers and creator handles; it owns no second journal, route registry, root credential, or independent filesystem.
 pub(crate) struct PiBuiltinHost<'a> {
     runtime: std::sync::Arc<crate::pi_native_host::PiNativeRuntime>,
     filesystem: std::sync::Arc<crate::pi_native_host::PiNativeFilesystem>,
@@ -528,7 +524,7 @@ impl<'a> PiBuiltinHost<'a> {
         request.require_root_source_read(self.protected.policy().root_task)?;
         let context = native_context.context();
         authorize_owner(context, &owner, request.caller, &self.work).await?;
-        let selected = crate::pi_selected_host::PiSelectedHost::new_with_native_work(
+        let selected = crate::pi_selected_host::PiSelectedHost::new(
             self.runtime.clone(), self.filesystem.clone(), self.stream.clone(), self.resources,
             std::sync::Arc::clone(&self.protected), self.retained, self.roots,
             self.native.clone(), &self.work)?;
@@ -551,7 +547,7 @@ impl<'a> PiBuiltinHost<'a> {
         // Every alternative is proved inside the SAME root before any bytes are
         // read. A missing file cannot redirect fallback to another host root.
         let relatives = scoped_variants(variants, root)?;
-        let selection = selected.selected(context, Some(&native_context), &owner, request.caller,
+        let selection = selected.selected(context, &native_context, &owner, request.caller,
             Some(key), None, request.operation(self.protected.policy().root_task),
             self.work.cancellation(), &self.work).await?;
         let (_, volume, workspace, frozen, inspection, _) = &selection;

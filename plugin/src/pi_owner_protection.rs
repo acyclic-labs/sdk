@@ -110,7 +110,6 @@ pub(super) fn unprotect(bytes: &[u8]) -> io::Result<Vec<u8>> {
 }
 
 /// The managed copy belongs to the original caller's guarded SDK producer.
-/// Unix protection has no foreign buffer; no intermediate plaintext is made.
 #[cfg(unix)]
 pub(super) fn unprotect_with_copy<T, E>(
     bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,
@@ -160,9 +159,7 @@ pub(super) fn unprotect(bytes: &[u8]) -> io::Result<Vec<u8>> {
     windows_protect(bytes, false)
 }
 
-/// DPAPI owns its opaque foreign allocation. The original native copy callback
-/// admits the managed output before growth; denial still clears and frees the
-/// foreign plaintext in the same protection engine.
+/// DPAPI owns its opaque foreign allocation.
 #[cfg(windows)]
 pub(super) fn unprotect_with_copy<T, E: From<io::Error>>(
     bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,

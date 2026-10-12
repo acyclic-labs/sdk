@@ -107,9 +107,7 @@ impl PiScratchCreation {
     }
 }
 
-/// Reject malformed retained selections before reopening any workspace. This
-/// checks references only; dispatch still needs the admitted task owner and its
-/// exact grants, and workspace IDs must be verified against the owning store.
+/// Reject malformed retained selections before reopening any workspace.
 pub(crate) fn validate_pi_bindings(state: &AdapterState) -> Result<(), String> {
     validate_pi_bindings_inner(state, None).map_err(|error| match error {
         acyclic_harness::Error::NativeBoundary { reason, .. } => reason.to_owned(),
