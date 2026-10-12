@@ -456,7 +456,7 @@ where G: FnMut() -> F + Send,
         shared.source.inner().validate_root(root, expected, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(self.work))
             .map_err(native_source_error)?;
         shared.watcher.lock().map_err(|_| self.rejection(AcquisitionRejection::PoisonedWatcher, root))?
-            .verify_root_identity_with_native_work(expected, self.work).map_err(native_watch_error)?;
+            .verify_root_identity(expected, self.work).map_err(native_watch_error)?;
         shared.observe_native_transaction(self.work).map(Some)
     }
     fn settle_pending(&mut self, registration: &mut SharedRootRegistration, root: &Path) -> RootResult<()> {

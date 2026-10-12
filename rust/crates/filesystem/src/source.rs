@@ -253,7 +253,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         }
         let capture = session.capture.clone();
         let policy = session.capture_policy.clone();
-        crate::capture_watch_batch_with_policy(
+        crate::capture_watch_batch(
             &mut session.checkout,
             batch,
             &capture,
@@ -371,7 +371,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         loop {
             session.watcher.begin_rescan().map_err(engine)?;
             let policy = session.capture_policy.clone();
-            let capture = crate::capture_baseline_with_policy(
+            let capture = crate::capture_baseline(
                 &mut session.checkout,
                 &session.capture,
                 &policy,
@@ -420,7 +420,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     let capture = session.capture.clone();
     let policy = session.capture_policy.clone();
-    crate::capture_watch_batch_with_policy(
+    crate::capture_watch_batch(
         &mut session.checkout,
         trailing,
         &capture,
@@ -1612,7 +1612,7 @@ mod tests {
         session.watcher.begin_rescan()?;
         let capture = session.capture.clone();
         let policy = session.capture_policy.clone();
-        crate::capture_baseline_with_policy(
+        crate::capture_baseline(
             &mut session.checkout,
             &capture,
             &policy,
@@ -1621,7 +1621,7 @@ mod tests {
         )
         .await?;
         let trailing = session.watcher.finish_rescan()?;
-        crate::capture_watch_batch_with_policy(
+        crate::capture_watch_batch(
             &mut session.checkout,
             trailing,
             &capture,
