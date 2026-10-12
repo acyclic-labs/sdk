@@ -89,7 +89,7 @@ pub(super) fn prepare_restore(
             Some(relative.0.parent().unwrap_or_else(|| Path::new(""))),
         )?,
     };
-    let stage_parent_root = match replacement {
+    let stage_owner = match replacement {
         HostPathReplacement::Atomic => {
             HostRoot::open(&stage_parent_path.0, work).map_err(restore_demand_error)?
         }
@@ -97,9 +97,6 @@ pub(super) fn prepare_restore(
             .open_child(Path::new(""), work)
             .map_err(restore_demand_error)?,
     };
-    let stage_owner = stage_parent_root
-        .create_dir_all_held(Path::new(""), work)
-        .map_err(restore_demand_error)?;
     let (stage_name, stage_root) = create_restore_stage(&stage_owner, &allocation_work, work)?;
     let stage_path = match allocation_work
         .path(&stage_parent_path.0, Some(&stage_name.0))
@@ -290,7 +287,8 @@ pub(super) fn restore_artifact_name(
         ..WorkCounters::UNCHARGED
     };
     work.admit(delta).map_err(restore_demand_error)?;
-    work.claim_allocation(bytes as u64, u64::from(bytes != 0), WorkCounters::UNCHARGED).map_err(restore_demand_error)?;
+    work.claim_allocation(bytes as u64, u64::from(bytes != 0), WorkCounters::UNCHARGED)
+        .map_err(restore_demand_error)?;
     let mut name = String::with_capacity(bytes);
     write!(name, "{prefix}{}", hasher.finalize().to_hex()).expect("String formatting cannot fail");
     if let Err(error) = work.record(delta) {

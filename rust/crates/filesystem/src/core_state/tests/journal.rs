@@ -2,65 +2,51 @@ use super::*;
 
 #[tokio::test]
 async fn materialization_operations_are_discoverable_and_terminal_cleanup_is_safe() {
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
-    let operation_id = OperationId::new();
-    let journal = materialization_journal(operation_id);
-    assert!(
-        MaterializationJournalStore::compare_and_swap(&store, operation_id, 0, {
-            let mut journal =
-                crate::materializer::duplicate_journal(&journal).expect("ordinary journal copy");
-            journal.custody = None;
-            journal
-        })
-        .await
-        .expect("write journal")
-        .0
-    );
+    let operation = OperationId::new();
+    let (stored, mut journal) = MaterializationJournalStore::compare_and_swap(
+        &store,
+        operation,
+        0,
+        materialization_journal(operation),
+    )
+    .await
+    .unwrap();
+    assert!(stored);
     assert_eq!(
-        store
-            .materialization_operations_async()
-            .await
-            .expect("list materializations"),
-        [operation_id]
+        store.materialization_operations_async().await.unwrap(),
+        [operation]
     );
     assert!(matches!(
-        store.remove_materialization_async(operation_id).await,
+        store.remove_materialization_async(operation).await,
         Err(LocalCoreStateStoreError::MaterializationInProgress)
     ));
-    let mut terminal = journal;
-    terminal.revision = 2;
-    terminal.phase = crate::MaterializationPhase::Applied;
+    journal.revision = 2;
+    journal.phase = crate::MaterializationPhase::Applied;
     assert!(
-        MaterializationJournalStore::compare_and_swap(&store, operation_id, 1, {
-            let mut journal = terminal;
-            journal.custody = None;
-            journal
-        })
-        .await
-        .expect("finish journal")
-        .0
+        MaterializationJournalStore::compare_and_swap(&store, operation, 1, journal)
+            .await
+            .unwrap()
+            .0
     );
-    store
-        .remove_materialization_async(operation_id)
-        .await
-        .expect("remove terminal journal");
+    store.remove_materialization_async(operation).await.unwrap();
     assert!(
         store
             .materialization_operations_async()
             .await
-            .expect("list cleaned materializations")
+            .unwrap()
             .is_empty()
     );
 }
 
 #[tokio::test]
 async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
-    let namespace = store.namespace().expect("admitted namespace");
-    let operation_id = OperationId::from_bytes([0x73; 16]);
-    let mut journal = materialization_journal(operation_id);
+    let namespace = store.namespace().unwrap();
+    let operation = OperationId::from_bytes([0x73; 16]);
+    let mut journal = materialization_journal(operation);
     journal
         .plan
         .edits
@@ -73,94 +59,62 @@ async fn previous_only_materialization_journal_is_discoverable_and_recovered() {
         custody: None,
     });
     let paths = namespace
-        .record("materialization", &operation_id.into_bytes())
-        .expect("record paths");
-    std::fs::create_dir_all(&paths.directory).expect("journal directory");
-    std::fs::write(
-        &paths.previous,
-        serde_json::to_vec(&journal).expect("serialize journal"),
-    )
-    .expect("write previous journal");
-
+        .record(MATERIALIZATION_FAMILY, &operation.into_bytes())
+        .unwrap();
+    std::fs::create_dir_all(&paths.directory).unwrap();
+    std::fs::write(&paths.previous, serde_json::to_vec(&journal).unwrap()).unwrap();
     assert_eq!(
-        store
-            .materialization_operations_async()
-            .await
-            .expect("discover journal"),
-        [operation_id]
+        store.materialization_operations_async().await.unwrap(),
+        [operation]
     );
     assert_eq!(
-        MaterializationJournalStore::load(&store, operation_id)
+        MaterializationJournalStore::load(&store, operation)
             .await
-            .expect("recover journal")
-            .map(|record| record),
+            .unwrap(),
         Some(journal)
     );
     assert!(paths.current.exists());
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let mut value =
-            serde_json::to_value(crate::WorkBudget::UNBOUNDED).expect("canonical budget fixture");
-        for field in value.as_object_mut().expect("budget fields").values_mut() {
-            *field = serde_json::Value::from(100_000_000_u64);
-        }
-        let mut budget: crate::WorkBudget = serde_json::from_value(value).expect("finite budget");
-        budget.source_bytes_read = std::fs::metadata(&paths.current)
-            .expect("actual durable record")
-            .len();
-        let cancellation = crate::CancellationToken::new();
-        let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation)
-            .expect("original finite meter");
+        let budget = crate::WorkBudget {
+            source_bytes_read: std::fs::metadata(&paths.current).unwrap().len(),
+            ..native::finite_budget()
+        };
+        let cxl = crate::CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(budget, &cxl).unwrap();
         let baseline = work.live_allocation_bytes();
         let record =
-            MaterializationJournalStore::load(&store.materialization(work.clone()), operation_id)
+            MaterializationJournalStore::load(&store.materialization(work.clone()), operation)
                 .await
-                .expect("bounded original durable decoder")
-                .expect("original journal");
-        let allocation = record
-            .custody
-            .as_ref()
-            .expect("actual decoded payload custody");
-        assert!(
-            allocation.bytes() > 0,
-            "actual path and image buffers retain decoder custody"
-        );
+                .unwrap()
+                .unwrap();
+        let allocation = record.custody.as_ref().unwrap();
+        assert!(allocation.bytes() > 0);
         assert!(allocation.work().shares_ledger(&work));
         assert_eq!(work.live_allocation_bytes(), baseline + allocation.bytes());
         assert_eq!(work.receipt().source_bytes_read, budget.source_bytes_read);
-        work.receipt()
-            .verify(budget)
-            .expect("exact record read and all finite work");
-        cancellation.cancel();
+        work.receipt().verify(budget).unwrap();
+        cxl.cancel();
         let prefix = work.receipt();
         drop(record);
         assert_eq!(work.live_allocation_bytes(), baseline);
-        assert_eq!(
-            work.receipt(),
-            prefix,
-            "original decoded guard retires without a second admission or cancellation check"
-        );
+        assert_eq!(work.receipt(), prefix);
     }
 }
 
 #[tokio::test]
 async fn accepted_materialization_completion_survives_cancellation_without_new_allocation() {
-    let directory = tempfile::tempdir().expect("real journal namespace");
+    let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("checkout");
-    std::fs::create_dir(&root).expect("original checkout allocation");
+    std::fs::create_dir(&root).unwrap();
     let effect = root.join("file.txt");
-    std::fs::write(&effect, b"before").expect("actual staged action fixture");
-    let state_root = directory.path().join("state");
-    let store = LocalCoreStateStore::new(&state_root);
-    let cancellation = crate::CancellationToken::new();
-    let mut value = serde_json::to_value(crate::WorkBudget::UNBOUNDED).expect("canonical budget");
-    for field in value.as_object_mut().expect("budget fields").values_mut() {
-        *field = serde_json::Value::from(100_000_000_u64);
-    }
-    let budget: crate::WorkBudget = serde_json::from_value(value).expect("all finite");
-    let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation)
-        .expect("original finite work");
-    let held = crate::native_host::HostRoot::open(&root, &mut &work).expect("actual root identity");
+    std::fs::write(&effect, b"before").unwrap();
+    let state = directory.path().join("state");
+    let store = LocalCoreStateStore::new(&state);
+    let cxl = crate::CancellationToken::new();
+    let budget = native::finite_budget();
+    let work = crate::NativeMaterializationWork::new(budget, &cxl).unwrap();
+    let held = crate::native_host::HostRoot::open(&root, &mut &work).unwrap();
     let operation = OperationId::new();
     let mut journal = materialization_journal(operation);
     journal.root_identity = Some(held.identity().to_bytes());
@@ -173,82 +127,56 @@ async fn accepted_materialization_completion_survives_cancellation_without_new_a
             image: vec![1],
         });
     assert!(
-        crate::materializer::MaterializationJournalStore::compare_and_swap(&store, operation, 0, {
-            let mut journal = journal;
-            journal.custody = None;
-            journal
-        })
-        .await
-        .expect("original durable preparing intent")
-        .0
+        MaterializationJournalStore::compare_and_swap(&store, operation, 0, journal)
+            .await
+            .unwrap()
+            .0
     );
     let measured = store.materialization(work.clone());
-    let original = measured
-        .load(operation)
+    let original = MaterializationJournalStore::load(&measured, operation)
         .await
-        .expect("original decoder")
-        .expect("same operation");
+        .unwrap()
+        .unwrap();
     let root_identity = original.root_identity;
-    let file = std::fs::OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .write(true)
-        .create(true)
-        .truncate(false)
-        .open(root.join("file.txt"))
-        .expect("authorized fixture file");
-    let completion = measured
-        .prepare_action(original)
-        .await
-        .expect("accepted exact original completion");
+        .open(&effect)
+        .unwrap();
+    let completion = measured.prepare_action(original).await.unwrap();
     acyclic_native_runtime::write_all_at(
         &file,
         0,
         b"after",
         Some((work.runtime_meter().as_ref(), false)),
     )
-    .expect("actual bounded SDK action");
-    cancellation.cancel();
-    let known_prefix = work.journal_work().expect("actual post-action prefix");
+    .unwrap();
+    cxl.cancel();
+    let prefix = work.journal_work().unwrap();
     let allocations = work.receipt().allocation_operations;
-    let completed = completion
-        .await
-        .expect("only the previously accepted metadata completion");
-    assert_eq!(
-        work.receipt().allocation_operations,
-        allocations,
-        "completion allocates no buffer, filename, request or boxed future"
-    );
+    let completed = completion.await.unwrap();
+    assert_eq!(work.receipt().allocation_operations, allocations);
     assert_eq!(completed.revision, 2);
     assert_eq!(completed.root_identity, root_identity);
-    assert_eq!(completed.work, known_prefix);
+    assert_eq!(completed.work, prefix);
     assert_eq!(completed.phase, crate::MaterializationPhase::Preparing);
     assert!(
         completed
             .custody
             .as_ref()
-            .expect("original packet")
+            .unwrap()
             .work()
             .shares_ledger(&work)
     );
-    work.receipt()
-        .verify(budget)
-        .expect("all completion work remains within original finite budget");
-    drop(completed);
-    drop(measured);
-    drop(store);
-    let restarted = LocalCoreStateStore::new(&state_root);
-    let recovered = crate::materializer::MaterializationJournalStore::load(&restarted, operation)
+    work.receipt().verify(budget).unwrap();
+    drop((completed, measured, store));
+    let reopened = LocalCoreStateStore::new(&state);
+    let recovered = MaterializationJournalStore::load(&reopened, operation)
         .await
-        .expect("real process-style restart")
-        .expect("same durable operation");
+        .unwrap()
+        .unwrap();
     assert_eq!(recovered.revision, 2);
     assert_eq!(recovered.root_identity, root_identity);
-    assert_eq!(
-        recovered.work, known_prefix,
-        "durable prefix is a lower bound, not the later commit work"
-    );
-    assert_eq!(
-        std::fs::read(effect).expect("real completed source effect"),
-        b"aftere"
-    );
+    assert_eq!(recovered.work, prefix);
+    assert_eq!(std::fs::read(effect).unwrap(), b"aftere");
 }
