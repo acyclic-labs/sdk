@@ -4,7 +4,7 @@ use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{GenerationId, OperationId, VolumeId};
 use crate::performance::WorkBudget;
-use crate::storage::{ObjectReadRequest, ObjectReceipt, ObjectResult};
+use crate::storage::{ObjectReadRequest, ObjectResult};
 use std::collections::{BTreeMap, VecDeque};
 use thiserror::Error;
 
@@ -552,7 +552,7 @@ pub async fn execute_residency<S: AsyncObjectStore>(
         )
         .await?;
     let byte_length = crate::foundation::usize_to_u64(receipt.value.bytes.len());
-    Ok(ObjectReceipt {
+    Ok(crate::OperationReceipt {
         value: byte_length,
         work: receipt.work,
     })

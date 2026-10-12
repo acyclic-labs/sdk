@@ -322,7 +322,7 @@ pub(crate) fn resource_creation_proof_clone_with_custody(
             Some(version) => Some(super::native_custody::copy_text(version, quota)?),
             None => None,
         };
-        crate::resources::ResourceRef::new_with_work(source.kind(), provider, key, version, quota.work())
+        crate::resources::ResourceRef::new(source.kind(), provider, key, version, quota.work())
     }
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     quota.work().as_deref_mut().expect("proof copy observer").check_cancellation()?;

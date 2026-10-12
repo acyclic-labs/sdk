@@ -6,7 +6,7 @@ use crate::cancellation::CancellationToken;
 use crate::foundation::{GenerationId, OperationId, VolumeId};
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
-    ObjectFailure, ObjectId, ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult,
+    ObjectFailure, ObjectId, ObjectReadRequest, ObjectReadRetention, ObjectResult,
     ObjectStoreError,
 };
 use std::collections::{BTreeMap, VecDeque};
@@ -654,7 +654,7 @@ impl<S: AsyncObjectStore, D: AsyncObjectStore> PromotionExecutor for StorePromot
             .map_err(|error| ObjectFailure::new(error.into(), prior))?;
         work.verify(budget)
             .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        Ok(ObjectReceipt { value: (), work })
+        Ok(crate::OperationReceipt { value: (), work })
     }
 }
 
@@ -695,7 +695,7 @@ fn validate_executor_plan(
             "promotion plan does not match configured stores".to_owned(),
         )));
     }
-    Ok(ObjectReceipt {
+    Ok(crate::OperationReceipt {
         value: (),
         work: WorkCounters::default(),
     })

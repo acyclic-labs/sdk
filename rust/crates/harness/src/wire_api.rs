@@ -303,7 +303,7 @@ mod tests {
             cancellation_requested: false,
             revision: 3,
         };
-        validate_operation_status(&observe, &status)?;
+        validate_operation_status(&observe.operation_id, observe.owner.as_ref(), &status)?;
 
         let mut mismatched_error = status.clone();
         mismatched_error.error = Some(wire::Error {
@@ -312,7 +312,7 @@ mod tests {
             operation_id: OperationId::from_bytes([9; 16]).to_string(),
         });
         assert!(matches!(
-            validate_operation_status(&observe, &mismatched_error),
+            validate_operation_status(&observe.operation_id, observe.owner.as_ref(), &mismatched_error),
             Err(Error::Conflict(_))
         ));
 

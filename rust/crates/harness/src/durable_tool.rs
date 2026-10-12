@@ -231,7 +231,9 @@ impl ResumableTool {
         journal: Arc<dyn WorkflowJournal>,
     ) -> Result<ResumableToolSession> {
         let admission = self.workflow_admission(&context, &invocation)?;
-        context.task().authorize_tool(&self.definition, &invocation).await?;
+        if let Some(operation) = context.task().authorize_tool(&self.definition, &invocation).await? {
+            return Err(Error::Indeterminate(operation));
+        }
         if journal.admit(admission.clone()).await? != admission {
             return Err(Error::Conflict("tool workflow identity belongs to another admission".into()));
         }
@@ -253,7 +255,7 @@ impl ResumableTool {
         identity: &crate::workflow::MachineIdentity,
         io: &crate::executor::PreparationIo,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeWorkflowAdmission> {
+    ) -> Result<(ToolPayload<WorkflowAdmission>, MachineRegistry, acyclic_fs::NativeAllocation)> {
         crate::executor::with_history_io(Some(io), |work| self.definition.validate(work))?;
         crate::executor::with_history_io(Some(io), |work|
             ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
@@ -310,7 +312,7 @@ impl ResumableTool {
             operation_id: invocation.operation_id, request_digest, initial,
         }, admission_custody);
         admission.value.validate(Some(io))?;
-        Ok(NativeWorkflowAdmission { admission, registry, registry_custody })
+        Ok((admission, registry, registry_custody))
     }
 
     /// Admits the same exact workflow on its original native ledger.
@@ -335,34 +337,29 @@ impl ResumableTool {
         crate::NativeFutureBundle::new(work, || async move {
             let io = crate::executor::PreparationIo::from_native_work(work)?;
             let built = self.build_native_admission(context, invocation, identity, &io, work)?;
-            context.authorize_tool_with_native_work(&self.definition, invocation, work).await?;
+            if let Some(operation) = context.authorize_tool(&self.definition, invocation, work).await? {
+                return Err(Error::Indeterminate(operation));
+            }
             let copied_custody;
-            let (copied, hold) = clone_admission_with_native_work(&built.admission.value, work)?;
+            let (copied, hold) = clone_admission_with_native_work(&built.0.value, work)?;
             copied_custody = hold;
             let (observed, observed_custody) = journal.admit_with_native_work(copied, work)?.await?;
             let observed = ToolPayload::native(observed, observed_custody);
             drop(copied_custody);
-            if observed.value != built.admission.value {
+            if observed.value != built.0.value {
                 return Err(tool_error(Some(&io), crate::wire::ErrorCode::Conflict,
                     "tool workflow identity belongs to another admission"));
             }
             drop(observed);
             let metadata_custody = work.retain_owned(std::mem::size_of::<NativeResumableToolSession<'a>>() as u64)?;
             let host = DurableWorkflowHost::open_with_native_work(
-                built.registry, built.admission.value.initial, journal, work).await?;
+                built.1, built.0.value.initial, journal, work).await?;
             Ok(NativeResumableToolSession {
                 definition: &self.definition, invocation, host,
-                registry_custody: built.registry_custody, metadata_custody,
+                registry_custody: built.2, metadata_custody,
             })
         })
     }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativeWorkflowAdmission {
-    admission: ToolPayload<WorkflowAdmission>,
-    registry: MachineRegistry,
-    registry_custody: acyclic_fs::NativeAllocation,
 }
 
 /// Owner-bound durable session for one exact tool invocation.
@@ -905,7 +902,10 @@ impl DurableToolRunner {
             tool.executor.authorize_with_native_context(context, invocation, work)?;
             drop(grant);
             drop(grant_hold);
-            return context.authorize_tool_with_native_work(definition, invocation, work).await;
+            return match context.authorize_tool(definition, invocation, work).await? {
+                Some(operation) => Err(Error::Indeterminate(operation)),
+                None => Ok(()),
+            };
         }
         let required = capability::tool_call(&definition.name);
         if !scope.grants().contains(&required) {
@@ -913,7 +913,10 @@ impl DurableToolRunner {
         }
         validate_value(&definition.input_schema, &invocation.arguments, "tool input", None)?;
         tool.executor.authorize_with_context(context, invocation)?;
-        context.task().authorize_tool(definition, invocation).await
+        match context.task().authorize_tool(definition, invocation).await? {
+            Some(operation) => Err(Error::Indeterminate(operation)),
+            None => Ok(()),
+        }
     }
 
     async fn replay(

@@ -13,6 +13,7 @@ use crate::wire::filesystem::v2 as wire;
 use crate::workspace::{
     JoinHistory, WorkspaceExtentKind,
 };
+use crate::{DependencyUse, ExtentSeekTarget};
 use serde_json::{Value, json};
 use strum::IntoEnumIterator;
 

@@ -27,7 +27,7 @@ pub(crate) fn copy_provider(
     let namespace = copy_text(source.namespace(), quota)?;
     let family = copy_text(source.family(), quota)?;
     let version = copy_text(source.version(), quota)?;
-    crate::resources::ProviderRef::new_with_work(namespace, family, version, quota.work())
+    crate::resources::ProviderRef::new(namespace, family, version, quota.work())
 }
 
 pub(crate) fn copy_file(

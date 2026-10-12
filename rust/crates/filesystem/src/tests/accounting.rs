@@ -491,7 +491,7 @@ impl crate::AsyncObjectStore for OriginalArchive {
         maximum_bytes: u64, _maximum_objects: u64, budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::storage::ObjectResult<Option<crate::kernel::HistoricalGenerationEvidence>> {
-        use crate::storage::{ObjectFailure, ObjectReceipt, ObjectStoreError};
+        use crate::storage::{ObjectFailure, ObjectStoreError};
         cancellation.check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         if self.evidence.bytes.len() as u64 > maximum_bytes {
@@ -507,7 +507,7 @@ impl crate::AsyncObjectStore for OriginalArchive {
             ..crate::WorkCounters::default()
         };
         work.verify(budget).map_err(|error| ObjectFailure::new(error.into(), work))?;
-        Ok(ObjectReceipt { value, work })
+        Ok(crate::OperationReceipt { value, work })
     }
 }
 

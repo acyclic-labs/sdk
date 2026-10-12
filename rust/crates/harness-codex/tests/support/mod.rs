@@ -599,7 +599,7 @@ impl ExecutionJournal for Journal {
                 };
             }
             let volume = VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "journal",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([0; 16])),

@@ -104,7 +104,7 @@ impl Fixture {
             || package.get("version").and_then(Value::as_str) != Some(PI_NATIVE_VERSION) {
             return Err(invalid("native provider qualification did not select Pi 1.1.0"));
         }
-        let provider = ProviderRef::new("pi-native-provider-test", "filesystem", "1")?;
+        let provider = ProviderRef::new("pi-native-provider-test".into(), "filesystem".into(), "1".into(), &mut None)?;
         let agent = AgentId::from_bytes([21; 16]);
         let task = TaskId::from_bytes([22; 16]);
         let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;

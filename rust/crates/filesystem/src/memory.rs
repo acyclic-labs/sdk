@@ -6,9 +6,9 @@ use crate::foundation::{
 };
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
-    AppendOutcome, AuthorityFailure, AuthorityReceipt, AuthorityResult, AuthorityStore,
+    AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStore,
     AuthorityStoreError, CreateAuthorityOutcome, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure,
-    ObjectId, ObjectRead, ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStore,
+    ObjectId, ObjectRead, ObjectReadRetention, ObjectResult, ObjectStore,
     ObjectStoreError, ObjectWrite, ReplayLimit, object_digest,
 };
 use acyclic_stream::OwnedBytes;
@@ -619,13 +619,13 @@ impl AuthorityStore for MemoryAuthorityStore {
     ) -> AuthorityResult<CreateAuthorityOutcome> {
         let mut accounting = AuthorityAccounting::ordinary(budget, None);
         let value = self.create_accounted(authority_id, genesis_epoch, &mut accounting)?;
-        Ok(AuthorityReceipt { value, work: accounting.spent() })
+        Ok(crate::OperationReceipt { value, work: accounting.spent() })
     }
 
     fn head(&self, authority_id: AuthorityId, budget: WorkBudget) -> AuthorityResult<Head> {
         let mut accounting = AuthorityAccounting::ordinary(budget, None);
         let value = self.head_accounted(authority_id, &mut accounting)?;
-        Ok(AuthorityReceipt { value, work: accounting.spent() })
+        Ok(crate::OperationReceipt { value, work: accounting.spent() })
     }
 
     fn compare_and_append(
@@ -643,7 +643,7 @@ impl AuthorityStore for MemoryAuthorityStore {
         let mut accounting = AuthorityAccounting::ordinary(budget, None);
         let plan = self.plan_append(&request, &mut accounting)?;
         let value = self.publish_append(&request, plan, &mut accounting)?;
-        Ok(AuthorityReceipt { value, work: accounting.spent() })
+        Ok(crate::OperationReceipt { value, work: accounting.spent() })
     }
 
     fn replay(
@@ -651,7 +651,7 @@ impl AuthorityStore for MemoryAuthorityStore {
     ) -> AuthorityResult<Vec<DurableCommit>> {
         let mut accounting = AuthorityAccounting::ordinary(budget, None);
         let (value, _allocation) = self.replay_accounted(authority_id, after, limit, &mut accounting)?;
-        Ok(AuthorityReceipt { value, work: accounting.spent() })
+        Ok(crate::OperationReceipt { value, work: accounting.spent() })
     }
 
     fn fence(
@@ -659,7 +659,7 @@ impl AuthorityStore for MemoryAuthorityStore {
     ) -> AuthorityResult<crate::storage::FenceOutcome> {
         let mut accounting = AuthorityAccounting::ordinary(budget, None);
         let value = self.fence_accounted(authority_id, expected, &mut accounting)?;
-        Ok(AuthorityReceipt { value, work: accounting.spent() })
+        Ok(crate::OperationReceipt { value, work: accounting.spent() })
     }
 
     fn find_operation(
@@ -667,7 +667,7 @@ impl AuthorityStore for MemoryAuthorityStore {
     ) -> AuthorityResult<Option<DurableCommit>> {
         let mut accounting = AuthorityAccounting::ordinary(budget, None);
         let value = self.find_operation_accounted(authority_id, operation_id, &mut accounting)?;
-        Ok(AuthorityReceipt { value, work: accounting.spent() })
+        Ok(crate::OperationReceipt { value, work: accounting.spent() })
     }
 }
 
@@ -678,7 +678,7 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
     ) -> AuthorityResult<Option<crate::PublicationReservation>> {
         let mut accounting = AuthorityAccounting::ordinary(budget, Some(cancellation));
         let value = self.publication_reservation_accounted(authority, operation, &mut accounting)?;
-        Ok(AuthorityReceipt { value, work: accounting.spent() })
+        Ok(crate::OperationReceipt { value, work: accounting.spent() })
     }
 
     fn reserve_publication(
@@ -687,7 +687,7 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
     ) -> AuthorityResult<crate::ReservationOutcome> {
         let mut accounting = AuthorityAccounting::ordinary(budget, Some(cancellation));
         let value = self.reserve_publication_accounted(authority, expected, operation, &mut accounting)?;
-        Ok(AuthorityReceipt { value, work: accounting.spent() })
+        Ok(crate::OperationReceipt { value, work: accounting.spent() })
     }
 
     fn release_publication(
@@ -696,7 +696,7 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
     ) -> AuthorityResult<()> {
         let mut accounting = AuthorityAccounting::ordinary(budget, Some(cancellation));
         let value = self.release_publication_accounted(reservation, &mut accounting)?;
-        Ok(AuthorityReceipt { value, work: accounting.spent() })
+        Ok(crate::OperationReceipt { value, work: accounting.spent() })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -804,7 +804,7 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
         cancellation.check().map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
         let mut accounting = AuthorityAccounting::ordinary(budget, Some(cancellation));
         let value = self.first_record_accounted(authority, commit, &mut accounting)?;
-        Ok(AuthorityReceipt { value, work: accounting.spent() })
+        Ok(crate::OperationReceipt { value, work: accounting.spent() })
     }
 
     async fn create_authority_with_first_record_guarded<F, Fut>(
@@ -1489,14 +1489,14 @@ impl ObjectStore for MemoryObjectStore {
     fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()> {
         let mut accounting = MemoryObjectAccounting::portable(&budget);
         let result = self.put_admitted(&[ObjectWrite { object_id, bytes }], false, &mut accounting);
-        result.map(|value| ObjectReceipt { value, work: accounting.portable_work() })
+        result.map(|value| crate::OperationReceipt { value, work: accounting.portable_work() })
             .map_err(|error| ObjectFailure::new(error, accounting.portable_work()))
     }
 
     fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()> {
         let mut accounting = MemoryObjectAccounting::portable(&budget);
         let result = self.put_admitted(writes, false, &mut accounting);
-        result.map(|value| ObjectReceipt { value, work: accounting.portable_work() })
+        result.map(|value| crate::OperationReceipt { value, work: accounting.portable_work() })
             .map_err(|error| ObjectFailure::new(error, accounting.portable_work()))
     }
 
@@ -1508,7 +1508,7 @@ impl ObjectStore for MemoryObjectStore {
     ) -> ObjectResult<ObjectRead> {
         let mut accounting = MemoryObjectAccounting::portable(&budget);
         let result = self.read_admitted(object_id, maximum_bytes, &mut accounting);
-        result.map(|value| ObjectReceipt { value, work: accounting.portable_work() })
+        result.map(|value| crate::OperationReceipt { value, work: accounting.portable_work() })
             .map_err(|error| ObjectFailure::new(error, accounting.portable_work()))
     }
 
@@ -1531,7 +1531,7 @@ impl ObjectStore for MemoryObjectStore {
     ) -> ObjectResult<Vec<ObjectRead>> {
         let mut accounting = MemoryObjectAccounting::portable(&budget);
         let result = self.read_many_admitted(requests, &mut accounting);
-        result.map(|value| ObjectReceipt { value: value.0, work: accounting.portable_work() })
+        result.map(|value| crate::OperationReceipt { value: value.0, work: accounting.portable_work() })
             .map_err(|error| ObjectFailure::new(error, accounting.portable_work()))
     }
 
@@ -1559,7 +1559,7 @@ impl ObjectStore for MemoryObjectStore {
             Err(ObjectStoreError::Missing) => Ok(false),
             Err(error) => Err(error),
         };
-        result.map(|value| ObjectReceipt { value, work: accounting.portable_work() })
+        result.map(|value| crate::OperationReceipt { value, work: accounting.portable_work() })
             .map_err(|error| ObjectFailure::new(error, accounting.portable_work()))
     }
 }
