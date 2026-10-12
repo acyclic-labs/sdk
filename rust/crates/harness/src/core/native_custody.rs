@@ -415,11 +415,13 @@ pub(super) fn retain_entry<T>(quota: &mut crate::wire_codec::CodecQuota<'_, '_>)
     quota.adopt(bytes)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn clone_reducer(
+pub(super) fn copy_reducer(
     source: &Reducer, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Reducer> {
-    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let native = work.as_deref().is_some_and(is_native);
+    let conversation = if native { None } else { Some(source.conversation.copy(work, None)?.0) };
+    let mut portable = None;
+    let mut quota = crate::wire_codec::CodecQuota::new(if native { work } else { &mut portable }, 0)?;
     let authority = copy_authority(&source.authority, &mut quota)?;
     let verifier = source.authority_verifier.copy(quota.work())?;
     quota.adopt(verifier.logical_owned_bytes()?)?;
@@ -481,8 +483,9 @@ pub(super) fn clone_reducer(
     output.indexed_terminal_effects = VecDeque::from(component!(NativeComponentRef::TerminalEffectBuffer,
         |quota| copy_iter(source.indexed_terminal_effects.len(), source.indexed_terminal_effects.iter(), quota,
             |id, quota| {
-                quota.work().as_deref_mut().expect("terminal id copy observer")
-                    .copy_bytes(std::mem::size_of::<EffectId>() as u64)?;
+                if let Some(io) = quota.work().as_deref_mut() {
+                    io.copy_bytes(std::mem::size_of::<EffectId>() as u64)?;
+                }
                 Ok(*id)
             })));
     for (authority, seed) in &source.forks {
@@ -499,22 +502,28 @@ pub(super) fn clone_reducer(
         });
         output.published_merges.insert(entry);
     }
-    for message in &source.conversation.messages {
-        let retired = output.native_custody.install(NativeComponentCustody::prepare(
-            NativeComponentRef::ConversationMessage(message.sequence), 0, quota.work(),
-        )?, quota.work())?;
-        drop(retired);
+    if let Some(conversation) = conversation {
+        output.conversation = conversation;
     }
-    let (conversation, remaining) = source.conversation.copy(
-        quota.work(), Some(&mut |sequence, produced, work| {
-            output.native_custody.absorb_produced(NativeComponentRef::ConversationMessage(sequence),
-                produced, work.as_deref_mut().expect("message producing observer"))
-        }),
-    )?;
-    output.conversation = conversation;
-    if remaining != 0 {
-        output.native_custody.absorb_produced(NativeComponentRef::Base, remaining,
-            quota.work().as_deref_mut().expect("conversation remainder observer"))?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if native {
+        for message in &source.conversation.messages {
+            let retired = output.native_custody.install(NativeComponentCustody::prepare(
+                NativeComponentRef::ConversationMessage(message.sequence), 0, quota.work(),
+            )?, quota.work())?;
+            drop(retired);
+        }
+        let (conversation, remaining) = source.conversation.copy(
+            quota.work(), Some(&mut |sequence, produced, work| {
+                output.native_custody.absorb_produced(NativeComponentRef::ConversationMessage(sequence),
+                    produced, work.as_deref_mut().expect("message producing observer"))
+            }),
+        )?;
+        output.conversation = conversation;
+        if remaining != 0 {
+            output.native_custody.absorb_produced(NativeComponentRef::Base, remaining,
+                quota.work().as_deref_mut().expect("conversation remainder observer"))?;
+        }
     }
     if let Some(file) = &source.latest_context_checkpoint {
         output.latest_context_checkpoint = Some(component!(NativeComponentRef::ContextCheckpoint,

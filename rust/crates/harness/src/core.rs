@@ -1906,33 +1906,7 @@ impl Reducer {
                 reason: "native reducer cloning requires explicit native work",
             });
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().is_some_and(native_custody::is_native) {
-            return native_custody::clone_reducer(self, work);
-        }
-        let native_custody = NativeComponentCustody::default();
-        let conversation = self.conversation.copy(work, None)?.0;
-        Ok(Self {
-            authority: self.authority.clone(),
-            authority_verifier: self.authority_verifier.clone(),
-            schemas: self.schemas.clone(),
-            revision: self.revision, lifecycle: self.lifecycle,
-            active_extensions: self.active_extensions.clone(),
-            extension_states: self.extension_states.clone(),
-            configured_extensions: self.configured_extensions.clone(),
-            active_configurations: self.active_configurations.clone(),
-            events: self.events.clone(), operation_positions: self.operation_positions.clone(),
-            resident_event_limit: self.resident_event_limit,
-            active_extension_revision: self.active_extension_revision,
-            effects: self.effects.clone(), indexed_terminal_effects: self.indexed_terminal_effects.clone(),
-            effects_archived: self.effects_archived,
-            resident_terminal_effect_limit: self.resident_terminal_effect_limit,
-            forks: self.forks.clone(), published_merges: self.published_merges.clone(),
-            conversation,
-            latest_context_checkpoint: self.latest_context_checkpoint.clone(),
-            interactions: self.interactions.clone(),
-            native_custody,
-        })
+        native_custody::copy_reducer(self, work)
     }
 
     fn replace_extension_state_with_work(
