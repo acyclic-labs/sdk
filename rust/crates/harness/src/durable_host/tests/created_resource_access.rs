@@ -649,7 +649,7 @@ impl CreationFixture {
         if current.phase == crate::scheduler::OperationPhase::Running {
             let reservation = current.reservation.ok_or_else(|| Error::NotFound("preparation completion lease".into()))?;
             self.host.settle_task(preparation, (&reservation).into(),
-                Outcome::Succeeded(serde_json::json!({"prepared":true}))).await?;
+                Outcome::Succeeded(serde_json::json!({"prepared":true})), &mut None).await?;
         }
         let admitted = self.host.admit_owned(child, (&self.root_lease.reservation).into()).await?;
         if let Admission::Accepted(task) = &admitted {
@@ -1264,7 +1264,7 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     let reservation = observation.reservation
         .ok_or_else(|| Error::NotFound("created child reservation".into()))?;
     let owner = fixture.host.journal_owner(task,(&reservation).into()).await?;
-    assert_eq!(owner.authenticated_binding_agent()?,Some(created.seed.child_agent));
+    assert_eq!(owner.authenticated_binding_agent(&mut None)?,Some(created.seed.child_agent));
     owner.authenticate_fork_parent(&created.seed.child, &mut None)?;
     assert!(owner.authenticate_fork_parent(&fixture.host.authority, &mut None).is_err());
     let proof = owner.child_scratch_creation_proof()?;
@@ -1356,20 +1356,20 @@ async fn uncertain_root_choice_is_denial_only_and_rejects_identity_substitution(
     let operation = OperationId::from_bytes([113;16]);
     let intent = [114;32];
     let audience = [115;32];
-    owner.pin_root_binding_choice(operation,intent,audience)?;
-    owner.pin_root_binding_choice(operation,intent,audience)?;
+    owner.pin_root_binding_choice(operation,intent,audience, &mut None)?;
+    owner.pin_root_binding_choice(operation,intent,audience, &mut None)?;
     for offset in 0..32 {
         let mut changed_intent = intent;
         changed_intent[offset] ^= 1;
-        assert!(matches!(owner.pin_root_binding_choice(operation,changed_intent,audience),
+        assert!(matches!(owner.pin_root_binding_choice(operation,changed_intent,audience, &mut None),
             Err(Error::Conflict(_))));
         let mut changed_audience = audience;
         changed_audience[offset] ^= 1;
-        assert!(matches!(owner.pin_root_binding_choice(operation,intent,changed_audience),
+        assert!(matches!(owner.pin_root_binding_choice(operation,intent,changed_audience, &mut None),
             Err(Error::Conflict(_))));
     }
     assert!(matches!(owner.pin_root_binding_choice(
-        OperationId::from_bytes([116;16]),intent,audience),Err(Error::Conflict(_))));
+        OperationId::from_bytes([116;16]),intent,audience, &mut None),Err(Error::Conflict(_))));
     assert!(owner.root_binding.as_ref().and_then(|state| state.proof.get()).is_none());
     assert!(owner.authenticate_fork_parent(&fixture.host.authority, &mut None).is_err());
     #[cfg(not(target_arch = "wasm32"))]

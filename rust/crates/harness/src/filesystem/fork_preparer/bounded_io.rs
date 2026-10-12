@@ -1226,7 +1226,9 @@ pub(in crate::filesystem) async fn operation_generation<A: AsyncAuthorityStore, 
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef, key: &IdempotencyKey, io: Option<&PreparationIo>,
 ) -> Result<Option<acyclic_fs::Generation<A, O>>> {
     let Some(io) = io else {
-        return host.open(reference).await?.operation_generation(super::super::filesystem_key(key)).await.map_err(map_error);
+        return host.open(reference).await?.operation_generation(super::super::filesystem_key(key),
+            WorkBudget::UNBOUNDED, &CancellationToken::new()).await
+            .map(|receipt| receipt.value).map_err(|failure| map_error(failure.error));
     };
     let workspace = open(host, reference, io).await?;
     let operation = operation_key(key, Some(io))?;

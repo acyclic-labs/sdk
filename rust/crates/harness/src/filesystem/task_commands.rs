@@ -11,7 +11,7 @@ use crate::{
     projection::SelectedModelContext,
     runtime::{DurableTaskHost, TaskContext, ToolContext},
     scheduler::LeaseFence,
-    tool::{ToolInvocation, validate_value},
+    tool::ToolInvocation,
     workflow::WorkflowCommand,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
@@ -235,68 +235,50 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         }
     }
 
-    /// Selects the model provider, context pipeline and compaction policy used by stock commands.
-    #[must_use]
+    /// Copies the selected model configuration with optional native accounting.
     pub fn with_model(
-        mut self,
-        model: Model,
-        provider: Arc<dyn ModelProvider>,
-        context: ContextPipeline,
-        compaction: crate::context::CompactionPolicy,
-    ) -> Self {
-        self.model = Some(ModelBinding {
-            model,
-            provider,
-            context,
-            compaction,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None,
-        });
-        self
-    }
-
-    /// Copies the original selected model configuration on its native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_model_with_native_work(
         mut self, model: &Model, provider: Arc<dyn ModelProvider>,
         context: &ContextPipeline, compaction: &crate::context::CompactionPolicy,
-        work: &acyclic_fs::NativeMaterializationWork,
+        io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
-        if let Some(custody) = &self.native_custody
-            && !custody.matches_work(work)
-        {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "command configuration belongs to another original work" });
-        }
-        let io = super::PreparationIo::from_native_work(work)?;
-        let self_bytes = if self.native_custody.is_none() {
-            std::mem::size_of::<Self>() as u64
-        } else { 0 };
-        io.retain_owned(self_bytes)?;
-        io.retain_owned(std::mem::size_of::<ModelBinding>() as u64)?;
-        let model = crate::model::model_model_clone_with_io(model, Some(&io))?;
-        let context = context.clone_with_native_work(work)?;
-        io.absorb_native_custody(context.1)?;
-        let compaction = match compaction {
-            crate::context::CompactionPolicy::Disabled => crate::context::CompactionPolicy::Disabled,
-            crate::context::CompactionPolicy::Threshold(policy) => {
-                let (retention, custody) = crate::context::clone_retention_native(&policy.retention, work)?;
-                io.absorb_native_custody(custody)?;
-                crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
-                    response_reserve_tokens: policy.response_reserve_tokens, recent_tokens: policy.recent_tokens, retention,
-                })
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
+                Some(io), crate::wire::ErrorCode::Unsupported, "model configuration requires original native work"))?;
+            if self.native_custody.as_ref().is_some_and(|custody| !custody.matches_work(work)) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "command configuration belongs to another original work" });
             }
-        };
-        let binding_bytes = io.owned_bytes()?.checked_sub(self_bytes)
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "native model configuration custody underflows" })?;
-        let custody = io.take_native_custody(binding_bytes)?;
-        self.model = Some(ModelBinding {
-            model, provider, context: context.0, compaction, native_custody: Some(custody),
-        });
-        if self_bytes != 0 {
-            self.native_custody = Some(io.take_native_custody(self_bytes)?);
+            let before = io.owned_bytes()?;
+            let self_bytes = if self.native_custody.is_none() { std::mem::size_of::<Self>() as u64 } else { 0 };
+            io.retain_owned(self_bytes)?;
+            io.retain_owned(std::mem::size_of::<ModelBinding>() as u64)?;
+            let model = crate::model::model_model_clone_with_io(model, Some(io))?;
+            let context = context.clone_with_native_work(work)?;
+            io.absorb_native_custody(context.1)?;
+            let compaction = match compaction {
+                crate::context::CompactionPolicy::Disabled => crate::context::CompactionPolicy::Disabled,
+                crate::context::CompactionPolicy::Threshold(policy) => {
+                    let (retention, custody) = crate::context::clone_retention_native(&policy.retention, work)?;
+                    io.absorb_native_custody(custody)?;
+                    crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
+                        response_reserve_tokens: policy.response_reserve_tokens, recent_tokens: policy.recent_tokens, retention,
+                    })
+                }
+            };
+            let binding_bytes = io.owned_bytes()?.checked_sub(before).and_then(|bytes| bytes.checked_sub(self_bytes))
+                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "native model configuration custody underflows" })?;
+            self.model = Some(ModelBinding { model, provider, context: context.0, compaction,
+                native_custody: Some(io.take_native_custody(binding_bytes)?) });
+            if self_bytes != 0 { self.native_custody = Some(io.take_native_custody(self_bytes)?); }
+            return Ok(self);
         }
+        let _ = io;
+        self.model = Some(ModelBinding {
+            model: model.clone(), provider, context: context.clone(), compaction: compaction.clone(),
+            #[cfg(not(target_arch = "wasm32"))] native_custody: None,
+        });
         Ok(self)
     }
 
@@ -840,15 +822,13 @@ where
                     let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
                         Some(io), crate::wire::ErrorCode::Unsupported, "native timer wait requires original observer",
                     ))?;
-                    return self.runtime.task_host().timer_ready_with_native_work(
-                        task, command.operation_id, input.deadline_unix_ms, work,
-                    ).await;
+                    return self.runtime.task_host().timer_ready(task, command.operation_id, input.deadline_unix_ms, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
                 }
                 let input: TimerTaskCommand = serde_json::from_value(payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 self.runtime
                     .task_host()
-                    .timer_ready(task, command.operation_id, input.deadline_unix_ms)
+                    .timer_ready(task, command.operation_id, input.deadline_unix_ms, &mut None)
                     .await
             }
             MAIL_RECEIVE_TASK_COMMAND_KIND => {
@@ -900,9 +880,10 @@ where
                         Some(io), crate::wire::ErrorCode::Unsupported, "native tool wait requires original observer",
                     ))?;
                     let definition = self.runtime.tool_definition_with_native_work(&input.name, &input.revision, work)?;
-                    let invocation = tool_invocation_with_native_work(
-                        context, command.operation_id, definition, input.arguments, io, work,
-                    )?;
+                    let task = context.durable_task_id().ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized, reason: "tool has no original task" })?;
+                    let operation = super::task_runtime::execution_operation_with_native_work(task, command.operation_id, work)?;
+                    let invocation = tool_invocation(context, operation, definition, input.arguments, Some(io))?;
                     return self.runtime.tool_approval_ready_with_native_work(
                         context, definition, &invocation, work,
                     ).await;
@@ -910,8 +891,9 @@ where
                 let input: ToolTaskCommand = serde_json::from_value(payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 let definition = self.runtime.tool_definition(&input.name, &input.revision)?;
-                let invocation =
-                    tool_invocation(context, command.operation_id, &definition, input.arguments)?;
+                let task = context.durable_task_id().ok_or_else(|| Error::Unauthorized("tool has no task".into()))?;
+                let operation = super::task_runtime::execution_operation(task, command.operation_id);
+                let invocation = tool_invocation(context, operation, &definition, input.arguments, None)?;
                 Box::pin(
                     self.runtime
                         .tool_approval_ready(context, &definition, &invocation),
@@ -1180,7 +1162,7 @@ where
                 return mail::reconciled(Some(io));
             }
         }
-        let invocation = tool_invocation_with_native_operation(context.context(), operation, definition, input.arguments, io, work)?;
+        let invocation = tool_invocation(context.context(), operation, definition, input.arguments, Some(io))?;
         let tool_context = ToolContext::new_with_native_work(Arc::clone(&context), operation, &invocation.call_id, work)?;
         let tool_context = self.runtime.bind_native_tool_interactions(
             tool_context, task, fence, turn, Arc::clone(&journal), work,
@@ -1424,7 +1406,7 @@ where
             .bind_context_interactions(context, task, journal.clone())?;
         let operation = super::task_runtime::execution_operation(task, turn);
         if journal.replay(operation, 0, 1).await?.is_empty() {
-            let invocation = tool_invocation(&context, turn, &definition, input.arguments.clone())?;
+            let invocation = tool_invocation(&context, operation, &definition, input.arguments.clone(), None)?;
             match context
                 .authorize_tool_pending(&definition, &invocation)
                 .await
@@ -1459,32 +1441,28 @@ where
 }
 
 fn tool_invocation(
-    context: &TaskContext,
-    turn: OperationId,
-    definition: &crate::tool::ToolDefinition,
-    arguments: Value,
+    context: &TaskContext, operation: OperationId,
+    definition: &crate::tool::ToolDefinition, arguments: Value,
+    io: Option<&super::PreparationIo>,
 ) -> Result<ToolInvocation> {
-    if !context
-        .scope()
-        .grants()
-        .contains(&crate::contract::capability::tool_call(&definition.name))
-    {
-        return Err(Error::Unauthorized(
-            "task scope lacks tool call grant".into(),
-        ));
+    let grant_hold;
+    let grant = super::fork_preparer_io::format_text(format_args!("tool:call:{}", definition.name), io)?;
+    grant_hold = io.map(|io| io.guard_owned(grant.capacity() as u64)).transpose()?;
+    if !context.scope().grants().contains(&grant) {
+        return Err(super::task_runtime::observed::boundary(io,
+            crate::wire::ErrorCode::Unauthorized, "task scope lacks tool call grant"));
     }
-    validate_value(&definition.input_schema, &arguments, "tool input", None)?;
-    let task = context
-        .durable_task_id()
-        .ok_or_else(|| Error::Unauthorized("tool has no task".into()))?;
-    let operation = super::task_runtime::execution_operation(task, turn);
+    drop(grant);
+    drop(grant_hold);
+    crate::contract::validate_json_schema_value(&definition.input_schema, &arguments, "tool input", io)?;
+    if let Some(io) = io { io.retain_owned(std::mem::size_of::<ToolInvocation>() as u64)?; }
     let invocation = ToolInvocation {
         operation_id: operation,
-        call_id: operation.to_string(),
-        name: definition.name.clone(),
+        call_id: super::fork_preparer_io::format_text(format_args!("{operation}"), io)?,
+        name: super::fork_preparer_io::clone_text(&definition.name, io)?,
         arguments,
     };
-    invocation.validate()?;
+    ToolInvocation::validate_identity_with_io(&invocation.call_id, &invocation.name, io)?;
     Ok(invocation)
 }
 
@@ -1512,47 +1490,4 @@ fn child_operation(
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
     Ok(OperationId::from_bytes(bytes))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn tool_invocation_with_native_work(
-    context: &TaskContext,
-    turn: OperationId,
-    definition: &crate::tool::ToolDefinition,
-    arguments: Value,
-    io: &super::PreparationIo,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<ToolInvocation> {
-    let task = context.durable_task_id().ok_or(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Unauthorized,
-        reason: "tool has no original task",
-    })?;
-    let operation = super::task_runtime::execution_operation_with_native_work(task, turn, work)?;
-    tool_invocation_with_native_operation(context, operation, definition, arguments, io, work)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn tool_invocation_with_native_operation(
-    context: &TaskContext, operation: OperationId, definition: &crate::tool::ToolDefinition,
-    arguments: Value, io: &super::PreparationIo,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<ToolInvocation> {
-    let grant = work.display(&format_args!("tool:call:{}", definition.name))?;
-    if !context.scope().grants().contains(&grant.0) {
-        return Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "task scope lacks tool call grant",
-        });
-    }
-    drop(grant);
-    crate::contract::validate_json_schema_value(
-        &definition.input_schema, &arguments, "tool input", Some(io),
-    )?;
-    let (call_id, custody) = work.display(&operation)?;
-    io.absorb_native_custody(custody)?;
-    let (name, custody) = work.display(&definition.name)?;
-    io.absorb_native_custody(custody)?;
-    io.retain_owned(std::mem::size_of::<ToolInvocation>() as u64)?;
-    crate::tool::ToolInvocation::validate_call_id_with_native_work(&call_id, work)?;
-    Ok(ToolInvocation { operation_id: operation, call_id, name, arguments })
 }
