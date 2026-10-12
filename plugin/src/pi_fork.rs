@@ -679,7 +679,7 @@ impl PiForkCoordinator {
             let seed = report.0.clone_with_native_work(work)?;
             let seed_value = seed.0.into_seed()?;
             child.0.verify_published_child_with_native_work(&parent.0, &seed_value, plan.history_limits, work).await?;
-            source.validate_snapshot_with_native_work(plan.frozen, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+            source.validate_snapshot(plan.frozen, &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, (work).cancellation()).map_err(crate::pi_lazy_capture::native_lazy_error)?).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
             return Ok(Some(self.created_fork(plan, report.0, admission.0, source, &cancel, report.1, admission.1).await?));
          }}
 
@@ -693,8 +693,7 @@ impl PiForkCoordinator {
                 let value = request.0.preparation.child_project_volume.storage_name(&mut Some(&mut io))?;
                 (value, io.into_custody())
             };
-            let prepared = source.prepare_fork_snapshot_with_native_work(&name.0, plan.frozen,
-                plan.project_creation, work, cancel).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+            let prepared = source.prepare_fork_snapshot(&name.0, plan.frozen, plan.project_creation, &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, cancel).map_err(crate::pi_lazy_capture::native_lazy_error)?).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
             if prepared != plan.frozen { return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "native preparation changed its immutable source cut" }); }
             (owner).verify_with_native_work(false, &self.work).await?;
@@ -813,7 +812,13 @@ impl PiForkCoordinator {
         }
         if self.runtime.runtime.task_host().outcome_with_native_work(plan.preparation.task_id(), &self.work).await?.0.is_none() {
             let commands = self.runtime.runtime.commands().with_fork_preparer(preparer);
-            let recovered = host.recover_work_with_native_work(plan.preparation.task_id(), work).await?;
+            let recovered = (async {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                    std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+                let value = host.recover_work(plan.preparation.task_id(), &mut Some(&mut io)).await?;
+                Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+            }).await?;
             match recovered.0 {
                 WorkPull::Claimed(lease) | WorkPull::Unresolved { lease, .. } => {
                     let result = self.runtime.runtime.resume_task_with_native_work(lease, recovered.1, &commands, 8, work).await?;
@@ -910,8 +915,7 @@ impl PiForkCoordinator {
                 reason: "Pi creator report lost its exact child project generation" })?;
             let generation: [u8; 32] = generation.as_resource().key().try_into().map_err(|_| Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi created project generation has a different identity shape" })?;
-            let (workspace, native_lazy) = source.bind_prepared_fork_with_native_work(plan.frozen, project,
-                GenerationId::new(Digest::from_bytes(generation)), plan.project_creation, work, cancel)
+            let (workspace, native_lazy) = source.bind_prepared_fork(plan.frozen, project, GenerationId::new(Digest::from_bytes(generation)), plan.project_creation, &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, cancel).map_err(crate::pi_lazy_capture::native_lazy_error)?)
                 .await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
             let scratch_name = {
                 let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
@@ -1165,7 +1169,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                     reason: "Pi selected source changed its originally admitted project" });
             }
             self.caller_owner.verify_with_native_work(false, work).await?;
-            self.source.validate_snapshot_with_native_work(self.frozen, work).await
+            self.source.validate_snapshot(self.frozen, &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, (work).cancellation()).map_err(crate::pi_lazy_capture::native_lazy_error)?).await
                 .map_err(crate::pi_lazy_capture::native_lazy_error)?;
             self.caller_owner.verify_with_native_work(false, work).await?;
             if !context.created_project_authenticated {

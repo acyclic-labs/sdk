@@ -209,8 +209,7 @@ impl<'a> PiControlHost<'a> {
         if !context.scope().grants().contains(&scratch.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut None)?) {
             return Err(denied("selected native context lacks its original private scratch WRITE grant"));
         }
-        owner.native_view_owner().require_volume_grant_with_native_work(scratch,
-            acyclic_harness::conversation::VolumeOperation::Write, work)?;
+        owner.native_view_owner().require_volume_grant(scratch, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let cancellation = work.cancellation();
         let encoded = crate::pi_root_provider::guarded_pi_bytes(&payload,
             crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)?;

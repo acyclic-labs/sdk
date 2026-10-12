@@ -180,7 +180,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work<P: StreamProv
     let project = request.binding.project_volumes.get(root_key).ok_or(Error::NativeBoundary {
         code: ErrorCode::Unauthorized, reason: "root source is not selected by its original admission",
     })?;
-    current_owner.require_volume_grant_with_native_work(project, VolumeOperation::Read, work)?;
+    current_owner.require_volume_grant(project, VolumeOperation::Read, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
     context.verify_original_volume_read_with_native_work(current_owner, project, work).await?;
     if current_owner.task_id() != request.binding.task_id
         || preparation.command.operation_id != super::pi_root_inputs::preparation_operation(request.binding.task_id, work)?
@@ -386,8 +386,7 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
         || binding.task_id != owner.policy().root_task {
         return Err(invalid());
     }
-    current_owner.require_volume_grant_with_native_work(&binding.scratch.volume,
-        VolumeOperation::Write, work)?;
+    current_owner.require_volume_grant(&binding.scratch.volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
     current_owner.verify_with_native_work(false, work).await?;
     let preparation = load_original_preparation_with_native_work(&owner, &filesystem, binding, root,
         Arc::clone(&context), work).await?;
@@ -433,7 +432,7 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
     context: Arc<acyclic_harness::runtime::NativeTaskContext>, current_owner: &TaskJournalOwner<P>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    current_owner.require_volume_grant_with_native_work(project, VolumeOperation::Read, work)?;
+    current_owner.require_volume_grant(project, VolumeOperation::Read, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
     context.context().verify_original_volume_read_with_native_work(current_owner, project, work).await?;
     let preparation = load_original_preparation_with_native_work(&owner, &filesystem, binding, intent,
         Arc::clone(&context), work).await?;
@@ -1178,7 +1177,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         }
         owner.verify_with_native_work(false, work).await?;
         let volume = &self.preparation.request.binding.scratch.volume;
-        owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)?;
+        owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         if self.creation_with_native_work(effect, attempt, "scratch", volume,
             VolumeConfig::portable(Lifecycle::Durable), work).await?.is_none() {
             owner.verify_with_native_work(false, work).await?;

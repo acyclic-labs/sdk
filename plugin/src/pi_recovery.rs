@@ -219,7 +219,13 @@ where
     let mut observations = Vec::with_capacity(tasks.0.len());
     for task in tasks.0 {
         if let Some(preparation) = task.preparation {
-            let recovered = runtime.task_host().recover_work_with_native_work(preparation, work).await?;
+            let recovered = (async {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                    std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+                let value = runtime.task_host().recover_work(preparation, &mut Some(&mut io)).await?;
+                Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+            }).await?;
             let phase = match recovered.0 {
                 WorkPull::Claimed(_) => PiPreparationPhase::Reserved,
                 WorkPull::Unresolved { .. } => PiPreparationPhase::Uncertain,
@@ -240,7 +246,13 @@ where
             continue;
         }
         let task_id = task.binding.task_id;
-        let mut recovered = runtime.task_host().recover_work_with_native_work(task_id, work).await?;
+        let mut recovered = (async {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+            let value = runtime.task_host().recover_work(task_id, &mut Some(&mut io)).await?;
+            Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+        }).await?;
         custody.absorb(&mut recovered.1).map_err(native_error)?;
         let observation = match recovered.0 {
             WorkPull::Claimed(lease) => PiTaskObservation::Reserved { lease },

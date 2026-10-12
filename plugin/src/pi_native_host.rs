@@ -76,7 +76,7 @@ impl NativeGate {
     ) -> Result<PublicationPermit> {
         if let Some(reservation) = self.reservation.as_ref() {
             owner.native_view_owner().verify_with_native_work(meter).await?;
-            owner.native_view_owner().require_volume_grant_with_native_work(volume, VolumeOperation::Write, meter)?;
+            owner.native_view_owner().require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
             return Ok(reservation.0);
         }
         let recover_original = existing_only || self.requires_original_recovery;
@@ -618,7 +618,13 @@ impl PiNativeCommandHost {
         let _run = entry.run.lock().await;
         let work = self.preparation_work(&entry).await?;
         self.child_admission(task, &work).await?;
-        let observed = self.runtime.runtime.task_host().recover_work_with_native_work(task, &work).await?;
+        let observed = (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+            let value = self.runtime.runtime.task_host().recover_work(task, &mut Some(&mut io)).await?;
+            Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+        }).await?;
         match observed.0 {
             WorkPull::Claimed(lease) => {
                 let attempted = self.runtime.runtime.resume_task_with_native_work(
@@ -655,7 +661,13 @@ impl PiNativeCommandHost {
         let _run = entry.run.lock().await;
         let work = self.preparation_work(&entry).await?;
         self.child_admission(task, &work).await?;
-        let observed = self.runtime.runtime.task_host().recover_work_with_native_work(task, &work).await?;
+        let observed = (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+            let value = self.runtime.runtime.task_host().recover_work(task, &mut Some(&mut io)).await?;
+            Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+        }).await?;
         match observed.0 {
             WorkPull::Claimed(lease) => {
                 let attempted = self.runtime.runtime.resume_task_with_native_work(
@@ -1040,7 +1052,13 @@ impl PiNativeCommandHost {
                 || !handles.project_gate.is_settled() || self.live_view(task).is_some()
             { return Ok(false); }
         }
-        let observed = self.runtime.runtime.task_host().recover_work_with_native_work(task, meter).await?;
+        let observed = (async {
+            let mut io = acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+            let value = self.runtime.runtime.task_host().recover_work(task, &mut Some(&mut io)).await?;
+            Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+        }).await?;
         let lease = match observed.0 {
             WorkPull::Claimed(lease) => lease,
             WorkPull::Unresolved { error, .. } => return Err(error),

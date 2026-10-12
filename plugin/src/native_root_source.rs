@@ -777,7 +777,7 @@ mod tests {
         let before = work.receipt().backend_read_operations;
         let error = registry.acquire_with_native_work(path, SharedRootAdmission::Resume(original),
             &work, || async {
-                fixture.journal.require_volume_grant_with_native_work(&foreign, VolumeOperation::Read, &work)?;
+                fixture.journal.require_volume_grant(&foreign, VolumeOperation::Read, &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
                 Ok(expected)
             }).await.err().unwrap();
         assert_eq!(error.code(), acyclic_harness::wire::ErrorCode::Unauthorized);

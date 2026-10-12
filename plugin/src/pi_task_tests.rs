@@ -991,7 +991,13 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
     let task = fixture.owner.policy().root_task;
     let host = fixture.runtime.runtime.task_host();
     let original = work();
-    let recovery = host.recover_work_with_native_work(task, &original).await.unwrap();
+    let recovery = (async {
+        let mut io = acyclic_harness::store::history::native_work_io(&original).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+            std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+        let value = host.recover_work(task, &mut Some(&mut io)).await?;
+        Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+    }).await.unwrap();
     let WorkPull::Claimed(lease) = recovery.0 else {
         panic!("fixture retains original root control owner");
     };

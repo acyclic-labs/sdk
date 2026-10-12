@@ -143,9 +143,13 @@ impl PiWritebackPublicationGuard {
             return Err(selected_unauthorized("writeback retained another original Root creator"));
         }
         owner.verify_with_native_work(false, work).await?;
-        let write_capability = request.0.binding.project_volumes.get(key)
-            .ok_or_else(|| selected_unauthorized("writeback lost its original project"))?
-            .capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+        let write_capability = {
+            let volume = request.0.binding.project_volumes.get(key)
+                .ok_or_else(|| selected_unauthorized("writeback lost its original project"))?;
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let capability = volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+            (capability, io.into_custody())
+        };
         let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
             &protected, &filesystem, &request.0.binding, &request.0.root, std::sync::Arc::clone(&context), work).await?;
         let original = crate::pi_root_provider::observe_root_allocation(
@@ -176,8 +180,7 @@ impl PiWritebackPublicationGuard {
         {
             return Err(selected_unauthorized("writeback original context lost its project WRITE grant"));
         }
-        self.owner.require_volume_grant_with_native_work(volume,
-            acyclic_harness::conversation::VolumeOperation::Write, work)?;
+        self.owner.require_volume_grant(volume, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
             &self.protected, &self.filesystem, &self.request.binding, &self.request.root,
             std::sync::Arc::clone(&self.context), work).await?;
@@ -188,8 +191,7 @@ impl PiWritebackPublicationGuard {
         if identity != self.identity {
             return Err(selected_unauthorized("writeback changed its held original native Root identity"));
         }
-        self.owner.require_volume_grant_with_native_work(volume,
-            acyclic_harness::conversation::VolumeOperation::Write, work)?;
+        self.owner.require_volume_grant(volume, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         self.owner.verify_with_native_work(false, work).await
     }
 }
@@ -342,8 +344,7 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
             {
                 return Err(selected_unauthorized("selected publication lost its original caller or destination WRITE grant"));
             }
-            owner.require_volume_grant_with_native_work(
-                &self.volume, acyclic_harness::conversation::VolumeOperation::Write, work)?;
+            owner.require_volume_grant(&self.volume, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
             owner.verify_with_native_work(false, work).await?;
         }
         Ok(())
@@ -526,8 +527,7 @@ async fn authenticate_root(
         let grant = acyclic_harness::conversation::ContentGrant::verify(verifier, scope, &root.volume, acyclic_harness::conversation::VolumeOperation::Write, u64::MAX, &mut Some(&mut io))?;
         (grant, io.into_custody())
     };
-    native_owner.require_volume_grant_with_native_work(&root.volume,
-        acyclic_harness::conversation::VolumeOperation::Write, native_work)?;
+    native_owner.require_volume_grant(&root.volume, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
     Ok(())
 }
 

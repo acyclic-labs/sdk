@@ -915,7 +915,7 @@ impl PiNativeRootSeed {
         creator.authorize_settlement_with_native_work(owner, meter).await?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             ContentGrant::verify(bindings[0].verifier, bindings[0].scope, &self.scratch, operation, u64::MAX, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| Error::NativeWork { cause, custody: None })?))?;
-            owner.require_volume_grant_with_native_work(&self.scratch, operation, meter)?;
+            owner.require_volume_grant(&self.scratch, operation, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         }
         let bytes = shared.context().read_file_with_native_work(session, meter).await?;
         if bytes.as_ref() != intent.session_bytes.as_bytes() {
@@ -1002,7 +1002,7 @@ impl PiNativeRootSeed {
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             if operation == VolumeOperation::Write && !writable { continue; }
             ContentGrant::verify(&authority.0, &authority.1, volume, operation, u64::MAX, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| Error::NativeWork { cause, custody: None })?))?;
-            owner.require_volume_grant_with_native_work(volume, operation, meter)?;
+            owner.require_volume_grant(volume, operation, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         }
         let allocation = self.witnessed_allocation()?;
         let route = native_root_route(root_key, meter)?;

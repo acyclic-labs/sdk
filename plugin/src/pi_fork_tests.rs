@@ -674,7 +674,7 @@ async fn root_freeze_uses_actual_original_callback_context_and_watcher_epoch() {
         fixture.filesystem.clone(), fixture.stream.clone(), &context, &fixture.journal,
         &input.0, key, &fixture.root_handle, &work).await.unwrap();
     assert_eq!(frozen.0.workspace_id, fixture.root_handle.workspace.workspace().id());
-    fixture.root_handle.workspace.validate_snapshot_with_native_work(frozen.0, &work).await.unwrap();
+    fixture.root_handle.workspace.validate_snapshot(frozen.0, &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(&work, (&work).cancellation()).unwrap()).await.unwrap();
     assert!(crate::pi_lazy_capture::freeze_root_source_with_native_work(TaskId::from_bytes([9; 16]),
         context.context(), &fixture.journal, &fixture.root_handle.physical, &fixture.root_handle.workspace, &work,
         || async { panic!("foreign root must be rejected before the original creator callback") }).await.is_err());
