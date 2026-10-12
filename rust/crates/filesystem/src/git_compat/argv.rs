@@ -35,7 +35,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
             maximum: parse_log_maximum(args)?,
         }),
         "show" => Ok(GitCommand::Show {
-            object: optional_single_value(command, args)?.map(GitObjectName),
+            object: optional_single_value(command, args)?,
         }),
         "add" => {
             if args.is_empty() {
@@ -134,7 +134,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
                     ));
                 }
                 return Ok(GitCommand::Restore {
-                    source: args.first().map(|source| GitObjectName(source.clone())),
+                    source: args.first().cloned(),
                     paths,
                 });
             }
@@ -164,7 +164,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
                                     "restore requires an object after --source".to_owned(),
                                 )
                             })?;
-                        if source.replace(GitObjectName(value)).is_some() {
+                        if source.replace(value).is_some() {
                             return Err(GitCompatError::InvalidCommand(
                                 "restore accepts only one --source".to_owned(),
                             ));
@@ -218,7 +218,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
                 )),
             };
             Ok(GitCommand::Reset {
-                target: GitObjectName(target),
+                target: target,
                 mode,
             })
         }
@@ -237,7 +237,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
             }
         }
         "cherry-pick" | "revert" => {
-            let object = GitObjectName(exactly_one(command, args)?);
+            let object = exactly_one(command, args)?;
             if command == "cherry-pick" {
                 Ok(GitCommand::CherryPick { object })
             } else {
@@ -266,7 +266,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
             }
             Ok(GitCommand::Tag {
                 name: values.first().cloned(),
-                target: values.get(1).cloned().map(GitObjectName),
+                target: values.get(1).cloned(),
                 delete,
             })
         }
@@ -306,7 +306,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
             Ok(GitCommand::Clean { dry_run })
         }
         "archive" => Ok(GitCommand::Archive {
-            object: optional_single_value(command, args)?.map(GitObjectName),
+            object: optional_single_value(command, args)?,
         }),
         "apply" => Err(GitCompatError::Unsupported {
             command: command.to_owned(),
@@ -352,8 +352,8 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
         }
         "merge-base" => match args {
             [left, right] => Ok(GitCommand::MergeBase {
-                left: GitObjectName(left.clone()),
-                right: GitObjectName(right.clone()),
+                left: left.clone(),
+                right: right.clone(),
             }),
             _ => Err(GitCompatError::InvalidCommand(
                 "merge-base requires exactly two objects".to_owned(),

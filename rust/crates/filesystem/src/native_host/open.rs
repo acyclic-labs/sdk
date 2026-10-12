@@ -18,8 +18,7 @@ pub(crate) fn create_directories<W: NativeHostWork>(
         base = path;
         while let Some(parent) = base.parent() {
             let delta = ITEM;
-            work.admit(delta)?;
-            work.record(delta)?;
+            work.started_io(delta)?;
             base = parent;
         }
     }
@@ -43,32 +42,6 @@ pub(crate) fn create_directories_held<W: NativeHostWork>(
     create_directories_owned(current, relative, work)
 }
 
-pub(crate) fn create_new_directory_held<W: NativeHostWork>(
-    parent: &Dir,
-    leaf: &Path,
-    work: &mut W,
-) -> Result<Dir, W::Error> {
-    require_leaf(leaf)?;
-    #[cfg(unix)]
-    let directory = unix_name(leaf.as_os_str(), work, |leaf, work| {
-        create_unix_directory_leaf(parent, leaf, work)?;
-        let file = open_unix(
-            parent.as_raw_fd(),
-            leaf,
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            work,
-        )?;
-        Ok(Dir::from_std_file(file))
-    })?;
-    #[cfg(windows)]
-    let directory = with_wide_path(leaf, work, |leaf, work| {
-        let file = create_windows_wide_at(parent, leaf, true, false, false, false, work)?;
-        Ok(Dir::from_std_file(file))
-    })?;
-    sync_directory_held(parent, work)?;
-    Ok(directory)
-}
-
 pub(super) fn create_directories_owned<W: NativeHostWork>(
     mut current: Dir,
     relative: &Path,
@@ -76,8 +49,7 @@ pub(super) fn create_directories_owned<W: NativeHostWork>(
 ) -> Result<Dir, W::Error> {
     for component in relative.components() {
         let delta = ITEM;
-        work.admit(delta)?;
-        work.record(delta)?;
+        work.started_io(delta)?;
         let name = match component {
             std::path::Component::CurDir => continue,
             std::path::Component::Normal(name) => name,
@@ -127,14 +99,7 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
         unix_name(name.as_os_str(), work, |name, work| {
             let file = open_unix(parent.as_raw_fd(), name, flags, work)?;
             loop {
-                let result = work.attempt_io(READ, || {
-                    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-                    // SAFETY: held descriptor and complete output storage remain live.
-                    if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(unsafe { stat.assume_init() })
-                });
+                let result = fstat(file.as_raw_fd(), work);
                 match result {
                     Ok(stat)
                         if stat.st_mode & libc::S_IFMT as libc::mode_t
@@ -159,56 +124,31 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
     }
 }
 
-pub(crate) fn open_builtin_directory<W: NativeHostWork>(
-    parent: &Dir,
-    name: &Path,
-    create: bool,
-    work: &mut W,
-) -> Result<Dir, W::Error> {
-    require_leaf(name)?;
-    #[cfg(unix)]
-    {
-        open_unix_directory(parent, name.as_os_str(), create, work)
-    }
-    #[cfg(windows)]
-    {
-        with_wide_path(name, work, |name, work| {
-            if create {
-                return create_windows_directory(parent, name, work).map(Dir::from_std_file);
-            }
-            use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
-            open_windows_leaf_handle(parent, name, FILE_GENERIC_READ, Some(true), work)
-                .map(Dir::from_std_file)
-        })
-    }
-}
-
 pub(crate) fn read_builtin_file(
     file: &File,
     destination: &mut [u8],
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<usize, crate::materializer::NativeTreeMaterializationError> {
+    work: &NativeMaterializationWork,
+) -> Result<usize, NativeTreeMaterializationError> {
     use std::io::Read as _;
     let mut transfer = acyclic_native_runtime::NativeByteReservation::new(
-        work.native_read_meter().as_ref(),
+        work.runtime_meter(),
         acyclic_native_runtime::NativeOperationKind::Read,
         destination.len(),
     )
-    .map_err(native_builtin_runtime_error)?;
-    let copy = work.reserve_work(crate::WorkCounters {
+    .map_err(|error| work.runtime_error(error))?;
+    let copy = work.reserve_work(WorkCounters {
         bytes_copied: destination.len() as u64,
-        ..crate::WorkCounters::UNCHARGED
+        ..WorkCounters::UNCHARGED
     })?;
     work.charge(READ)?;
     let count = (&*file).read(destination)?;
-    let transferred = transfer.record(count).map_err(native_builtin_runtime_error);
-    let copied = {
-        let mut copy = copy;
-        copy.record_completed(crate::WorkCounters {
-            bytes_copied: count as u64,
-            ..crate::WorkCounters::UNCHARGED
-        })
-    };
+    let transferred = transfer
+        .record(count)
+        .map_err(|error| work.runtime_error(error));
+    let copied = copy.record_completed(WorkCounters {
+        bytes_copied: count as u64,
+        ..WorkCounters::UNCHARGED
+    });
     transferred?;
     copied?;
     Ok(count)
@@ -217,47 +157,38 @@ pub(crate) fn read_builtin_file(
 pub(crate) fn write_builtin_file(
     file: &File,
     source: &[u8],
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<usize, crate::materializer::NativeTreeMaterializationError> {
+    work: &NativeMaterializationWork,
+) -> Result<usize, NativeTreeMaterializationError> {
     use std::io::Write as _;
     let mut transfer = acyclic_native_runtime::NativeByteReservation::new(
-        work.native_read_meter().as_ref(),
+        work.runtime_meter(),
         acyclic_native_runtime::NativeOperationKind::Write,
         source.len(),
     )
-    .map_err(native_builtin_runtime_error)?;
-    let copy = work.reserve_work(crate::WorkCounters {
+    .map_err(|error| work.runtime_error(error))?;
+    let copy = work.reserve_work(WorkCounters {
         bytes_copied: source.len() as u64,
-        ..crate::WorkCounters::UNCHARGED
+        ..WorkCounters::UNCHARGED
     })?;
     work.charge(WRITE)?;
     let count = (&*file).write(source)?;
-    let transferred = transfer.record(count).map_err(native_builtin_runtime_error);
-    let copied = {
-        let mut copy = copy;
-        copy.record_completed(crate::WorkCounters {
-            bytes_copied: count as u64,
-            ..crate::WorkCounters::UNCHARGED
-        })
-    };
+    let transferred = transfer
+        .record(count)
+        .map_err(|error| work.runtime_error(error));
+    let copied = copy.record_completed(WorkCounters {
+        bytes_copied: count as u64,
+        ..WorkCounters::UNCHARGED
+    });
     transferred?;
     copied?;
     Ok(count)
 }
 
-pub(super) fn native_builtin_runtime_error(
-    error: io::Error,
-) -> crate::materializer::NativeTreeMaterializationError {
-    crate::materializer::native_materialization_work_error(crate::demand::native_demand_error(
-        error,
-    ))
-}
-
 pub(crate) fn lock_builtin_file(
     file: &File,
     writable: bool,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(), crate::materializer::NativeTreeMaterializationError> {
+    work: &NativeMaterializationWork,
+) -> Result<(), NativeTreeMaterializationError> {
     use crate::materializer::NativeTreeMaterializationError;
     work.charge(READ)?;
     let result = if writable {
@@ -334,10 +265,10 @@ pub(crate) struct NativePreparedAsciiLeaf<const N: usize> {
 impl<const N: usize> NativePreparedAsciiLeaf<N> {
     pub(crate) fn new(
         bytes: [u8; N],
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<Self, crate::NativeTreeMaterializationError> {
+        work: &NativeMaterializationWork,
+    ) -> Result<Self, NativeTreeMaterializationError> {
         if N < 2 || bytes[N - 1] != 0 {
-            return Err(crate::NativeTreeMaterializationError::InvalidLayout);
+            return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         #[cfg(windows)]
         let encoded = (N - 1)
@@ -349,7 +280,6 @@ impl<const N: usize> NativePreparedAsciiLeaf<N> {
             bytes_encoded: encoded,
             ..WorkCounters::UNCHARGED
         })?;
-        let mut copied = copied;
         #[cfg(windows)]
         let mut wide = [0u16; N];
         for index in 0..N - 1 {
@@ -367,11 +297,11 @@ impl<const N: usize> NativePreparedAsciiLeaf<N> {
                 ..WorkCounters::UNCHARGED
             })?;
             if !valid {
-                return Err(crate::NativeTreeMaterializationError::InvalidLayout);
+                return Err(NativeTreeMaterializationError::InvalidLayout);
             }
         }
         if &bytes[..N - 1] == b"." || &bytes[..N - 1] == b".." {
-            return Err(crate::NativeTreeMaterializationError::InvalidLayout);
+            return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         Ok(Self {
             #[cfg(unix)]
@@ -400,12 +330,12 @@ pub(crate) fn remove_prepared_ascii_leaf<W: NativeHostWork, const N: usize>(
 }
 
 #[cfg(unix)]
-pub(super) fn unix_mutation<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn unix_mutation<W: SourceDemandReadWork>(
     work: &mut W,
     mut operation: impl FnMut() -> libc::c_int,
 ) -> Result<(), DemandError> {
     loop {
-        native_write(work)?;
+        work.charge(WRITE)?;
         if operation() == 0 {
             return Ok(());
         }

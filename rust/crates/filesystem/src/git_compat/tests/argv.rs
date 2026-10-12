@@ -57,7 +57,7 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
         (
             (&["show", "HEAD"] as &[&str]),
             GitCommand::Show {
-                object: Some(GitObjectName("HEAD".to_owned())),
+                object: Some("HEAD".to_owned()),
             },
         ),
         (
@@ -88,14 +88,14 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
         (
             (&["restore", "--source=HEAD", "--", "file"] as &[&str]),
             GitCommand::Restore {
-                source: Some(GitObjectName("HEAD".to_owned())),
+                source: Some("HEAD".to_owned()),
                 paths: vec!["file".to_owned()],
             },
         ),
         (
             (&["reset", "--hard", "HEAD"] as &[&str]),
             GitCommand::Reset {
-                target: GitObjectName("HEAD".to_owned()),
+                target: "HEAD".to_owned(),
                 mode: GitResetMode::Hard,
             },
         ),
@@ -116,20 +116,20 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
         (
             (&["cherry-pick", "HEAD"] as &[&str]),
             GitCommand::CherryPick {
-                object: GitObjectName("HEAD".to_owned()),
+                object: "HEAD".to_owned(),
             },
         ),
         (
             (&["revert", "HEAD"] as &[&str]),
             GitCommand::Revert {
-                object: GitObjectName("HEAD".to_owned()),
+                object: "HEAD".to_owned(),
             },
         ),
         (
             (&["tag", "v1", "HEAD"] as &[&str]),
             GitCommand::Tag {
                 name: Some("v1".to_owned()),
-                target: Some(GitObjectName("HEAD".to_owned())),
+                target: Some("HEAD".to_owned()),
                 delete: false,
             },
         ),
@@ -153,7 +153,7 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
         (
             (&["archive", "HEAD"] as &[&str]),
             GitCommand::Archive {
-                object: Some(GitObjectName("HEAD".to_owned())),
+                object: Some("HEAD".to_owned()),
             },
         ),
         (
@@ -179,7 +179,7 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
         (
             (&["checkout", "HEAD", "--", "src/lib.rs"] as &[&str]),
             GitCommand::Restore {
-                source: Some(GitObjectName("HEAD".to_owned())),
+                source: Some("HEAD".to_owned()),
                 paths: vec!["src/lib.rs".to_owned()],
             },
         ),
@@ -196,8 +196,8 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
         (
             (&["merge-base", "HEAD", "topic"] as &[&str]),
             GitCommand::MergeBase {
-                left: GitObjectName("HEAD".to_owned()),
-                right: GitObjectName("topic".to_owned()),
+                left: "HEAD".to_owned(),
+                right: "topic".to_owned(),
             },
         ),
         ((&["ls-files"] as &[&str]), GitCommand::LsFiles),

@@ -318,12 +318,8 @@ impl NativeTreeMaterializationBackend {
             );
             let directory = match step {
                 MaterializationPreparationAllocation::Operation => {
-                    crate::native_host::create_new_directory_held_with_work(
-                        &parent,
-                        leaf,
-                        &mut &*work,
-                    )
-                    .map_err(backend)?
+                    crate::native_host::create_new_directory_held(&parent, leaf, &mut &*work)
+                        .map_err(backend)?
                 }
                 _ => {
                     let operation = recorded_child(
@@ -335,7 +331,7 @@ impl NativeTreeMaterializationBackend {
                         work,
                     )
                     .map_err(backend)?;
-                    crate::native_host::create_new_directory_held_with_work(
+                    crate::native_host::create_new_directory_held(
                         &operation,
                         if step == MaterializationPreparationAllocation::Target {
                             Path::new("target")

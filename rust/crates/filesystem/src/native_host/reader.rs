@@ -130,15 +130,14 @@ impl HostStatReader {
                 if self.exhausted {
                     return Ok(None);
                 }
-                native_read(work)?;
+                work.started_io(READ)?;
                 if !self.refill()? {
                     return Ok(None);
                 }
                 continue;
             };
             let item = ITEM;
-            work.admit(item)?;
-            work.record(item)?;
+            work.started_io(item)?;
             let (next, name) = decode_host_directory_record(&self.buffer, offset)?;
             let dot = u16::from(b'.');
             if name == [dot] || name == [dot, dot] {
@@ -280,7 +279,7 @@ impl HostStatReader {
                 if self.exhausted {
                     return Ok(None);
                 }
-                native_read(work)?;
+                work.started_io(READ)?;
                 // SAFETY: the descriptor and aligned owned buffer are live; neither platform call writes more than its specified length.
                 #[cfg(target_os = "linux")]
                 let count = unsafe {
@@ -324,8 +323,7 @@ impl HostStatReader {
                 }
             }
             let item = ITEM;
-            work.admit(item)?;
-            work.record(item)?;
+            work.started_io(item)?;
             let bytes = unsafe {
                 std::slice::from_raw_parts(self.buffer.as_ptr().cast::<u8>(), self.filled)
             };

@@ -25,7 +25,7 @@ pub(super) fn filesystem_is_local<W: NativeHostWork>(
 ) -> Result<bool, W::Error> {
     let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
     // SAFETY: `fstatfs` fills the provided out-struct for a live descriptor.
-    native_read(work)?;
+    work.started_io(READ)?;
     if unsafe { libc::fstatfs(directory.as_raw_fd(), stats.as_mut_ptr()) } != 0 {
         return Ok(false);
     }
@@ -57,7 +57,7 @@ pub(super) fn filesystem_is_local<W: NativeHostWork>(
     let mut device = [0_u32; 2];
     let mut status = IO_STATUS_BLOCK::default();
     // SAFETY: the handle is live for the call, and the buffer is exactly one `FILE_FS_DEVICE_INFORMATION` of the length passed.
-    native_read(work)?;
+    work.started_io(READ)?;
     let queried = unsafe {
         NtQueryVolumeInformationFile(
             HANDLE(directory.as_raw_handle()),
@@ -157,7 +157,7 @@ pub fn punch_hole(
 }
 
 #[cfg(windows)]
-pub(super) fn clone_windows_file<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
     source: &File,
     target: &File,
     length: u64,
@@ -181,7 +181,7 @@ pub(super) fn clone_windows_file<W: crate::demand::SourceDemandReadWork>(
                 )
                 .into());
             }
-            native_write(work)?;
+            work.charge(WRITE)?;
             // SAFETY: live synchronous target handle; this control has no buffers.
             unsafe {
                 DeviceIoControl(
@@ -209,7 +209,7 @@ pub(super) fn clone_windows_file<W: crate::demand::SourceDemandReadWork>(
                         .map_err(|_| crate::WorkError::Overflow)?,
                     ByteCount: i64::try_from(count).map_err(|_| crate::WorkError::Overflow)?,
                 };
-                native_write(work)?;
+                work.charge(WRITE)?;
                 // SAFETY: both held handles and complete fixed-size input remain live.
                 unsafe {
                     DeviceIoControl(
@@ -293,7 +293,7 @@ pub(crate) fn truncate_file<W: NativeHostWork>(
 }
 
 #[cfg(windows)]
-pub(super) fn windows_copy_tail<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn windows_copy_tail<W: SourceDemandReadWork>(
     source: &File,
     target: &File,
     offset: u64,
@@ -310,7 +310,7 @@ pub(super) fn windows_copy_tail<W: crate::demand::SourceDemandReadWork>(
             source_bytes_read: length as u64,
             ..WorkCounters::UNCHARGED
         })?;
-        native_read(work)?;
+        work.started_io(READ)?;
         let position = i64::try_from(
             offset
                 .checked_add(consumed as u64)
@@ -354,7 +354,7 @@ pub(super) fn windows_copy_tail<W: crate::demand::SourceDemandReadWork>(
     }
     let mut consumed = 0usize;
     while consumed < buffer.len() {
-        native_write(work)?;
+        work.charge(WRITE)?;
         let position = i64::try_from(
             offset
                 .checked_add(consumed as u64)

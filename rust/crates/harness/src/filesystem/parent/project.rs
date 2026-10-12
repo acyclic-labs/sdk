@@ -275,7 +275,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         if !plan
             .native_custody
             .as_ref()
-            .is_some_and(|guard| guard.matches_work(work))
+            .is_some_and(|guard| guard.work().shares_allocation_context(work))
             || plan.parent_project != self.project
             || plan.parent_scope != self.scope
         {
@@ -312,7 +312,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let owner = Arc::new((binding, project, io.into_native_custody(retained)?));
             let mut guard = move |original: &acyclic_fs::NativeMaterializationWork| {
                 std::future::ready((|| {
-                    if !owner.2.matches_work(original) {
+                    if !owner.2.work().shares_allocation_context(original) {
                         return Err(Error::NativeBoundary {
                             code: crate::wire::ErrorCode::Unauthorized,
                             reason: "merge publication owner belongs to another original resource",

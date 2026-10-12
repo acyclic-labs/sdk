@@ -1548,7 +1548,7 @@ impl PiNativeCommandHost {
                 .project_work
                 .as_ref()
                 .ok_or(Error::Indeterminate(command))?;
-            project.abandon(&volume_work).map_err(Error::from)?;
+            project.retire(volume_work.cancellation()).map_err(Error::from)?;
             handles.project = None;
         }
         if let Some(seed) = handles.root_seed.as_ref() {
