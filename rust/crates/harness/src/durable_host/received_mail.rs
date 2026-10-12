@@ -357,8 +357,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 if let Some(io) = quota.work().as_deref_mut() {
                     io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
                 }
-                if &binding.file == payload {
-                    reader = Some(binding.reader.as_ref());
+                if &binding.0 == payload {
+                    reader = Some(binding.1.as_ref());
                     break;
                 }
             }
@@ -381,7 +381,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .or_else(|| {
                 scope
                     .created_content(Some(payload.volume()))
-                    .map(|binding| binding.reader.as_ref())
+                    .map(|binding| binding.1.as_ref())
             });
         let reader = reader.unwrap_or(self.reader.as_ref());
         let bytes = match quota.work().as_deref_mut() {

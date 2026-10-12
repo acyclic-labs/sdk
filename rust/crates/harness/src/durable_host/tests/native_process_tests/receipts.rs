@@ -49,7 +49,7 @@ async fn cold_native_snapshot_and_drain_never_relaunch() -> Result<()> {
     ));
     let outcome = fixture
         .effects(process.clone())?
-        .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, &original)
+        .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(&original))
         .await?;
     assert!(matches!(outcome.0, EffectStatus::Succeeded { .. }));
     let receipt = process.receipt(attempt, &original, None).await?.unwrap();
@@ -158,7 +158,7 @@ async fn original_supervisor_stop_and_cleanup_preserve_the_attempt() -> Result<(
         let work = original.clone();
         let dispatch = tokio::spawn(async move {
             effects
-                .run_task_effect_with_native_work(&owner, command, &plan, &work)
+                .run_task_effect(&owner, command, &plan, Some(&work))
                 .await
         });
         let root = &fixture.view.manifest().options.root;
@@ -291,7 +291,7 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
     assert!(
         fixture
             .effects(process.clone())?
-            .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, &work)
+            .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(&work))
             .await
             .is_err()
     );
@@ -342,12 +342,7 @@ async fn receipt_commit_faults_never_replay_an_unknown_native_attempt() -> Resul
         *stream.fault.lock().await = Some((kind, lost_reply));
         assert!(
             effects
-                .run_task_effect_with_native_work(
-                    &fixture.owner,
-                    fixture.command,
-                    &fixture.plan,
-                    &work
-                )
+                .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(&work))
                 .await
                 .is_err()
         );
@@ -370,12 +365,7 @@ async fn receipt_commit_faults_never_replay_an_unknown_native_attempt() -> Resul
         );
         let effects = fixture.effects(recovered.clone())?;
         let status = effects
-            .reconcile_task_effect_with_native_work(
-                &fixture.owner,
-                fixture.command,
-                &fixture.plan,
-                &work,
-            )
+            .reconcile_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(&work))
             .await?;
         assert_eq!(
             matches!(status.0, EffectStatus::Succeeded { .. }),
@@ -393,12 +383,7 @@ async fn receipt_commit_faults_never_replay_an_unknown_native_attempt() -> Resul
         }
         assert_eq!(
             effects
-                .run_task_effect_with_native_work(
-                    &fixture.owner,
-                    fixture.command,
-                    &fixture.plan,
-                    &work
-                )
+                .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(&work))
                 .await?
                 .0,
             status.0
@@ -433,7 +418,7 @@ async fn native_precapture_identity_failure_retains_work_and_never_replays() -> 
         .map_err(|e| Error::Storage(e.to_string()))?;
     let status = fixture
         .effects(process.clone())?
-        .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, work)
+        .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(work))
         .await?;
     assert_eq!(status.0, EffectStatus::Indeterminate);
     let attempt = process.original_attempt();
@@ -470,12 +455,7 @@ async fn native_precapture_identity_failure_retains_work_and_never_replays() -> 
     assert_eq!(
         fixture
             .effects(recovered)?
-            .reconcile_task_effect_with_native_work(
-                &fixture.owner,
-                fixture.command,
-                &fixture.plan,
-                work
-            )
+            .reconcile_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(work))
             .await?
             .0,
         EffectStatus::Indeterminate
@@ -522,12 +502,7 @@ async fn receipt_reconciliation_reopens_all_local_stores_after_provider_objects_
     let weak_process = Arc::downgrade(&process);
     let status = fixture
         .effects(process.clone())?
-        .run_task_effect_with_native_work(
-            &fixture.owner,
-            seed.command,
-            &seed.plan,
-            fixture.view.work(),
-        )
+        .run_task_effect(&fixture.owner, seed.command, &seed.plan, Some(fixture.view.work()))
         .await?;
     assert!(matches!(status.0, EffectStatus::Succeeded { .. }));
     drop(process);
@@ -559,7 +534,7 @@ async fn receipt_reconciliation_reopens_all_local_stores_after_provider_objects_
     } = reopen_native(storage.path(), &seed, &query).await?;
     assert_eq!(
         effects
-            .reconcile_task_effect_with_native_work(&owner, seed.command, &seed.plan, &query)
+            .reconcile_task_effect(&owner, seed.command, &seed.plan, Some(&query))
             .await?
             .0,
         status.0
@@ -568,7 +543,7 @@ async fn receipt_reconciliation_reopens_all_local_stores_after_provider_objects_
     std::fs::remove_file(&output).map_err(|e| Error::Storage(e.to_string()))?;
     assert_eq!(
         effects
-            .run_task_effect_with_native_work(&owner, seed.command, &seed.plan, &query)
+            .run_task_effect(&owner, seed.command, &seed.plan, Some(&query))
             .await?
             .0,
         status.0

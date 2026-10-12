@@ -67,6 +67,7 @@ where
     pub(super) fn detached_for_path(
         &self,
         path: &MountPath,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<Option<Arc<CheckoutDetachedFile<A, O>>>, MountSourceError> {
         if self
             .detached
@@ -76,18 +77,15 @@ where
         {
             return Ok(None);
         }
-        if let Some(authored) = self.authored.lookup(path)? {
+        if let Some(authored) = self.authored.lookup_with_meter(path, work)? {
             return self.detached_by_id(authored.node.file_id);
         }
-        let text = self.path(path, None)?.0;
+        let (text, _allocation) = self.path(path, work)?;
         if self.is_removed(&text)? {
             return Err(MountSourceError::NotFound);
         }
         let file_id = self.runtime.wait(|| async {
-            let mut accounting = crate::kernel::KernelAccounting::standalone(
-                WorkBudget::UNBOUNDED,
-                self.authored.cancellation(),
-            );
+            let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
             let lookup = self
                 .lazy
                 .lookup(&text, &mut accounting)
@@ -195,6 +193,8 @@ where
         dirty: &[DirtyDetachedRecord],
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
+        let owner = ViewGate::callback_owner();
+        let mut carrier = adapter::NativeDemandCarrier::Native(work);
         for (record, metadata) in records {
             let exists = self
                 .detached
@@ -204,12 +204,7 @@ where
             if !exists {
                 let file = self
                     .authored
-                    .detached_file_from_record(
-                        *record,
-                        *metadata,
-                        ViewGate::callback_owner(),
-                        &mut adapter::NativeDemandCarrier::Native(work),
-                    )
+                    .detached_file_from_record(*record, *metadata, owner, &mut carrier)
                     .await?;
                 self.detached
                     .lock()

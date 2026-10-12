@@ -1043,7 +1043,7 @@ pub(super) async fn reopen_native(
         )
         .await?,
     );
-    let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
+    let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
     registry.register(process.clone(), None)?;
     let effects = ConversationEffectHost::new(
         owner.stream(),
@@ -1060,7 +1060,7 @@ pub(super) async fn reopen_native(
         None,
         None,
     )?
-    .clone_with_native_work(work)?;
+    .copy(work)?;
     Ok(LocalNativeRecovery {
         files,
         task,

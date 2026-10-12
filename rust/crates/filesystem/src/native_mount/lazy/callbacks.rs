@@ -271,7 +271,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
-        let (text, _allocation) = self.path(path, Some(work))?;
+        let (text, _allocation) = self.path(path, work)?;
         let owner = ViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
@@ -286,16 +286,14 @@ where
                         Some(self.authored.cancellation()),
                     )
                     .await?;
-                match self.resolve(path, &text, owner, Some(work)).await? {
-                    Resolution::Authored(lookup) => Ok(Some((
-                        self.project_authored(lookup, Some(work)).await?,
-                        None,
-                    ))),
+                match self.resolve(path, &text, owner, work).await? {
+                    Resolution::Authored(lookup) => {
+                        Ok(Some((self.project_authored(lookup, work).await?, None)))
+                    }
                     Resolution::Absent => Ok(None),
-                    Resolution::Unauthored(lookup, _allocation) => self
-                        .project_unauthored(&text, lookup, Some(work))
-                        .await
-                        .map(Some),
+                    Resolution::Unauthored(lookup, _allocation) => {
+                        self.project_unauthored(&text, lookup, work).await.map(Some)
+                    }
                 }
             })
         })
@@ -358,7 +356,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        let (text, _allocation) = self.path(path, Some(work))?;
+        let (text, _allocation) = self.path(path, work)?;
         let owner = ViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
@@ -373,7 +371,7 @@ where
                         Some(self.authored.cancellation()),
                     )
                     .await?;
-                match self.resolve(path, &text, owner, Some(work)).await? {
+                match self.resolve(path, &text, owner, work).await? {
                     Resolution::Absent => Err(MountSourceError::NotFound),
                     Resolution::Authored(_) => self.authored.read_link(path, work),
                     Resolution::Unauthored(lookup, _allocation) => {
@@ -553,10 +551,10 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
         let _lease = self.view_lease(None, Some(work))?;
-        if let Some(file) = self.detached_for_path(path)? {
+        if let Some(file) = self.detached_for_path(path, work)? {
             return file.read_attribute(name, work);
         }
-        if self.is_source_projection(path, Some(work))? {
+        if self.is_source_projection(path, work)? {
             return Ok(None);
         }
         self.authored.read_attribute(path, name, work)
@@ -582,10 +580,10 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
         let _lease = self.view_lease(None, Some(work))?;
-        if let Some(file) = self.detached_for_path(path)? {
+        if let Some(file) = self.detached_for_path(path, work)? {
             return file.list_attributes_with_meter(cursor, maximum_entries, work);
         }
-        if self.is_source_projection(path, Some(work))? {
+        if self.is_source_projection(path, work)? {
             return Ok((
                 MountAttributePage {
                     names: Vec::new(),

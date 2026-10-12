@@ -409,7 +409,7 @@ pub(super) fn clone_authored_path(
     path: &NamespacePath,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
 ) -> Result<crate::kernel::Owned<NamespacePath>, FsError> {
-    let cancellation = name_cancellation(accounting);
+    let cancellation = super::names::name_cancellation(accounting);
     let (path, allocation) = path.clone_with_accounting(accounting, cancellation)?;
     let bytes = path.retained_bytes();
     Ok(crate::kernel::Owned::new(path, allocation, bytes))

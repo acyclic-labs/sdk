@@ -43,7 +43,7 @@ where
     let result = future.as_mut().await;
     drop(future);
     drop(custody);
-    let work = meter.lock().receipt();
+    let work = meter.receipt();
     match result {
         Ok(mut receipt) => {
             receipt.work = work;

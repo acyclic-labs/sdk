@@ -175,21 +175,37 @@ where
                     .has_retained_operation()
                     .then(|| checkout.retained_operation_id())
             };
-            if retained == Some(operation)
-                && !self
-                    .authored
+            if retained == Some(operation) {
+                let context = crate::lazy_workspace::NativeSnapshotContext::Selected {
+                    cut: self
+                        .lazy
+                        .publication_cut(Some(operation), &mut accounting)
+                        .await
+                        .map_err(lazy_error)?,
+                    input,
+                };
+                let mut acknowledged = None;
+                self.authored
                     .shared_checkout()
-                    .recover_publication(
-                        operation,
-                        generation,
+                    .publish(
+                        crate::PublicationPermit::Unrestricted,
                         original,
                         cancellation,
                         Some(self.authored.cancellation()),
-                        self.authored.callback_guard().cloned(),
+                        &mut adapter::source_publication_guard(
+                            self.authored.callback_guard().cloned(),
+                            Some(self.authored.cancellation().clone()),
+                        ),
+                        Some(context),
+                        &mut acknowledged,
                     )
-                    .await?
-            {
-                return Err(MountSourceError::Indeterminate);
+                    .await
+                    .map_err(|(error, _)| error)?;
+                if !acknowledged.is_some_and(|snapshot| {
+                    snapshot.operation() == Some(operation) && snapshot.generation() == generation
+                }) {
+                    return Err(MountSourceError::Indeterminate.into());
+                }
             }
             self.lazy
                 .finish_selected_import(

@@ -24,7 +24,7 @@ where
     where
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
-        E: From<MountSourceError> + Send + 'static,
+        E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
     {
         use crate::lazy_workspace::NativeSnapshotContext;
 
@@ -111,21 +111,29 @@ where
                 *acknowledged = Some(crate::NativePublicationSnapshot::published(
                     context, operation, generation,
                 ));
-                if retained == Some(operation)
-                    && !self
-                        .authored
+                if retained == Some(operation) {
+                    self.authored
                         .shared_checkout()
-                        .recover_publication(
-                            operation,
-                            generation,
+                        .publish(
+                            permit,
                             work,
                             cancellation,
                             Some(self.authored.cancellation()),
-                            self.authored.callback_guard().cloned(),
+                            before_publication,
+                            Some(context),
+                            acknowledged,
                         )
-                        .await?
-                {
-                    return Err(MountSourceError::Indeterminate.into());
+                        .await
+                        .map_err(|(error, accounting)| {
+                            accounting_failure = accounting;
+                            error
+                        })?;
+                    if !acknowledged.is_some_and(|snapshot| {
+                        snapshot.operation() == Some(operation)
+                            && snapshot.generation() == generation
+                    }) {
+                        return Err(MountSourceError::Indeterminate.into());
+                    }
                 }
                 if let Some((destination, source, source_config, input)) = proof {
                     self.lazy
@@ -167,12 +175,10 @@ where
                         Some((_, _, _, input)) => NativeSnapshotContext::Selected { cut, input },
                         None => NativeSnapshotContext::Lazy(cut),
                     };
-                    let published = self
-                        .authored
+                    self.authored
                         .shared_checkout()
                         .publish(
                             permit,
-                            true,
                             work,
                             cancellation,
                             Some(self.authored.cancellation()),
@@ -185,6 +191,7 @@ where
                             accounting_failure = accounting;
                             error
                         })?;
+                    let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
                     if let Some((destination, source, config, input)) =
                         remembered.and_then(|(_, proof)| proof)
                     {
@@ -253,12 +260,10 @@ where
                         .await
                         .map_err(lazy_error)?,
                 );
-                let published = self
-                    .authored
+                self.authored
                     .shared_checkout()
                     .publish(
                         permit,
-                        false,
                         work,
                         cancellation,
                         Some(self.authored.cancellation()),
@@ -271,6 +276,7 @@ where
                         accounting_failure = accounting;
                         error
                     })?;
+                let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
                 self.prune_detached()?;
                 return Ok(published);
             }
@@ -416,12 +422,10 @@ where
             {
                 return Err(MountSourceError::Stale.into());
             }
-            let published = self
-                .authored
+            self.authored
                 .shared_checkout()
                 .publish(
                     permit,
-                    true,
                     work,
                     cancellation,
                     Some(self.authored.cancellation()),
@@ -434,6 +438,7 @@ where
                     accounting_failure = accounting;
                     error
                 })?;
+            let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
             if let Some((destination, source, config, input)) = selected_proof {
                 self.lazy
                     .finish_selected_import(

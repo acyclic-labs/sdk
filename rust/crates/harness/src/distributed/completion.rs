@@ -216,16 +216,19 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
                 let mut optional = Some(&mut observer as &mut dyn HistoryIo);
                 let mut custody = CodecQuota::from_retained(&mut optional, 0);
                 let committed = receive_native_commit(&original, committed, None, 0, &mut custody)?;
-                resolve_commit(
+                let outcome = resolve_commit(
                     committed,
                     &client,
                     key,
                     Some(operation),
                     None,
                     Some(sdk_recovery),
-                    custody.work(),
+                    &mut custody,
                 )
-                .await?
+                .await?;
+                let retained = custody.retained();
+                custody.transfer();
+                (outcome, retained)
             };
             let committed = matches!(&outcome, acyclic_stream::CommitOutcome::Committed(_));
             drop(outcome);

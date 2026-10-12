@@ -660,16 +660,16 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
         "acyclic.fork",
         "acyclic.merge",
     ] {
-        assert!(registry.tools.get(expected, None)?.is_some());
+        assert!(registry.tools.get(expected, None, None)?.is_some());
         assert_eq!(
-            ordinary.get(expected, None)?.unwrap().definition,
-            registry.tools.get(expected, None)?.unwrap().definition
+            ordinary.get(expected, None, None)?.unwrap().definition,
+            registry.tools.get(expected, None, None)?.unwrap().definition
         );
     }
     for name in ["acyclic.fork", "acyclic.merge"] {
         let tool = registry
             .tools
-            .get(name, None)?
+            .get(name, None, None)?
             .ok_or_else(|| Error::NotFound(name.into()))?;
         let durable = registry
             .resumable_tools
@@ -690,7 +690,7 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
         assert!(tool.executor.execute(invocation.clone()).await.is_err());
         assert!(tool.executor.reconcile(invocation).await.is_err());
     }
-    assert!(registry.tools.get("bash", None)?.is_none());
+    assert!(registry.tools.get("bash", None, None)?.is_none());
     Ok(())
 }
 

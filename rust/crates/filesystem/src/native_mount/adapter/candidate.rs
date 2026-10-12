@@ -23,7 +23,7 @@ impl InstallScope<'_> {
 }
 
 impl InputBuffers<'_, '_> {
-    fn clone_namespace(
+    pub(super) fn clone_namespace(
         &mut self,
         names: &[LogicalName],
         limits: VolumeLimits,

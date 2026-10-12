@@ -41,9 +41,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 work,
                 cancellation,
                 Some(lifetime),
-                guard,
+                &mut source_publication_guard(guard, Some(lifetime.clone())),
+                None,
+                &mut None,
             )
-            .await?;
+            .await.map_err(|(cause, _)| cause)?;
         }
         Ok(())
     }

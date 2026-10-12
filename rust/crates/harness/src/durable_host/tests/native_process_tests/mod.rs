@@ -241,7 +241,7 @@ where
     }
 
     fn effects(&self, process: Arc<Process<P>>) -> Result<ConversationEffectHost<P>> {
-        let mut registry = EffectRegistry::default().with_result_resolver(self.content.clone());
+        let mut registry = EffectRegistry::new(None, Some(self.content.clone()))?;
         registry.register(process, None)?;
         ConversationEffectHost::new(
             self.owner.stream(),
@@ -541,8 +541,8 @@ async fn native_host_child() -> Result<()> {
     .map_err(|error| Error::Storage(error.to_string()))?;
     fixture
         .effects(fixture.provider(fixture.view.work()).await?)?
-        .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
-        .await?;
+        .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, None)
+        .await.map(|result| result.0)?;
     Err(Error::Storage(
         "host-death controller failed to terminate host".into(),
     ))
