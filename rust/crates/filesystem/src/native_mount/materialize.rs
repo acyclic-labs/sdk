@@ -2963,8 +2963,7 @@ mod restore_recovery_tests {
         let missing = NamespacePath::new(vec![LogicalName::new(
             NameEncoding::Utf8, b"z-missing".to_vec(), limits.maximum_component_bytes,
         )?], limits)?;
-        checkout.create_file(first.clone(), Bytes::from_static(b"first"),
-            WorkBudget::UNBOUNDED, &cancellation).await?;
+        checkout.create(crate::AuthoredMutation::CreateFile { path: first.clone(), bytes: (Bytes::from_static(b"first")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation).await?;
         let zero_output = tempfile::tempdir()?;
         let zero = materialize_checkout(
             &mut checkout, &MaterializeOptions::native(zero_output.path()),
@@ -3641,7 +3640,7 @@ mod clone_tests {
                 limits,
             )?;
             checkout
-                .create_file(path, bytes.clone(), WorkBudget::UNBOUNDED, &cancellation)
+                .create(crate::AuthoredMutation::CreateFile { path: path, bytes: (bytes.clone()).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
                 .await?;
         }
         let destination = directory.path().join("view");

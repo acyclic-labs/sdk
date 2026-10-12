@@ -72,7 +72,7 @@ const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     /write FILE Stage bounded content in an explicit caller-owned volume\n\
     /read FILE  Read exact pinned content: caller,lease,file (max 64 KiB)\n\
     /read-path FILE Read granted head/explicit cut: caller,lease,volume,path,generation? (max 64 KiB)\n\
-    /publication-open FILE Prepare original SDK plan: operation_id,caller,caller_lease\n\
+    /publication-open FILE Prepare original SDK plan: operation_id,caller_lease\n\
     /publication-observe FILE Observe retained publication/approval journal\n\
     /publication-apply FILE Publish only the actual approved original plan\n\
     /publication-reconcile FILE Reconcile the original publication, never replan\n\

@@ -344,7 +344,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         "baseline_file": producer.references["native_import_baseline"]
     });
     persist(&publication_path, &json!({ "operation_id": publication_operation,
-        "caller": logical_root.task, "caller_lease": logical_root.lease })).await?;
+        "caller_lease": logical_root.lease })).await?;
     let manifest = root.join("native-scenario.json");
     persist(&manifest, &json!({
         "format_version": 1,
@@ -679,10 +679,10 @@ async fn aggregate(stream: &StreamClient<LocalStream>, files: Arc<Files>,
 {
     let verifier = AuthorityIssuer::new(&owner.issuer, owner.key, owner.authority.clone()).verifier(&mut None).expect("verifier copy");
     let content = Arc::new(FilesystemContentVerifier::new(files.clone(), &verifier, &owner.scope, PAYLOAD_BYTES, None)?);
-    let forks = Arc::new(CompositeForkVerifier::new(vec![
+    let forks = Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES)?),
-        Arc::new(StreamHistoryForkVerifier::new(config.stream_provider.clone())?),
-    ])?);
+        Arc::new(StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?),
+    ], &mut None)?);
     StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new()).await?
         .with_content_verifier(content).with_fork_verifier(forks)
         .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(files)))

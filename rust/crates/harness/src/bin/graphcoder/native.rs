@@ -454,10 +454,10 @@ impl NativeSession {
             &self.stream, parent_binding.owner.authority.clone(), parent_binding.owner.verifier()?,
             SchemaRegistry::default(), HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
         ).await?.with_content_verifier(content)
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
+            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
-                Arc::new(StreamHistoryForkVerifier::new(self.config.stream_provider.clone())?),
-            ])?));
+                Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
+            ], &mut None)?));
         let mut child = StreamAggregate::open_with_read_limits(
             &self.stream, child_binding.authority.clone(), child_binding.verifier()?,
             SchemaRegistry::default(), HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
@@ -539,10 +539,10 @@ impl HarnessWireApi for NativeSession {
             )?);
             let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new()).await?
                 .with_content_verifier(reader)
-                .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
+                .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                     Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
-                    Arc::new(StreamHistoryForkVerifier::new(self.config.stream_provider.clone())?),
-                ])?))
+                    Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
+                ], &mut None)?))
                 .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.files.clone())));
             let (state, error) = match aggregate.execute(command).await {
                 Ok(_) => (wire::AdmissionState::Accepted, None),

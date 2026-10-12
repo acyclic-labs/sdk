@@ -266,21 +266,21 @@ impl<'w> MountSyncWork<'w> {
     fn reserve_items(&mut self, count: u64) -> Result<(), MountSourceError> {
         let reserved = self.reserved_items.checked_add(count)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        self.with_work(|work| work.reserve_pending_items(count)).map_err(mount_demand_error)?;
+        self.with_work(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, count)).map_err(mount_demand_error)?;
         self.reserved_items = reserved;
         Ok(())
     }
     fn restore_items(&mut self, count: u64) -> Result<(), MountSourceError> {
         let remaining = self.reserved_items.checked_sub(count)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        self.with_work(|work| work.refund_pending_items(count));
+        self.with_work(|work| work.refund(crate::materializer::NativeResourceCredit::Items, count).expect("original reservation is balanced"));
         self.reserved_items = remaining;
         Ok(())
     }
     fn complete_items(&mut self, count: u64) -> Result<(), MountSourceError> {
         let remaining = self.reserved_items.checked_sub(count)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        self.with_work(|work| work.record_pending_items(count)).map_err(mount_demand_error)?;
+        self.with_work(|work| work.complete(crate::materializer::NativeResourceCredit::Items, count, count)).map_err(mount_demand_error)?;
         self.reserved_items = remaining;
         Ok(())
     }
@@ -370,7 +370,7 @@ impl Drop for MountSyncWork<'_> {
         let view = std::mem::take(&mut self.view);
         let reserved = std::mem::take(&mut self.reserved_items);
         self.meter.with_work(|work| {
-            work.refund_pending_items(reserved);
+            work.refund(crate::materializer::NativeResourceCredit::Items, reserved).expect("original reservation is balanced");
             work.restore_view_ledger_admission(self.view_slot, view);
         });
     }
@@ -1039,7 +1039,7 @@ where
                         Ok((lookup, _)) => {
                             let owned = lookup.logical_owned_bytes();
                             scratch.track(owned)?;
-                            scratch.carrier.with_work(|work| work.record_adoption(owned)).map_err(mount_demand_error)?;
+                            scratch.carrier.with_work(|work| work.record_adoption(owned, &None)).map_err(mount_demand_error)?;
                             let budget = scratch.carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
                             let result = lazy.stable_file_id_for_lookup_measured(text, &lookup, budget, &cancellation).await;
                             let file_id = scratch.carrier.with_work(|work| mount_accept(work, result, lazy_error));
@@ -1220,9 +1220,9 @@ impl<'a, 'w> DirectoryCarrierScratch<'a, 'w> {
         let copies = self.reserved_copies.checked_add(delta.bytes_copied)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         self.carrier.with_work(|work| {
-            work.reserve_pending_items(delta.items_examined).map_err(mount_demand_error)?;
-            if let Err(error) = work.reserve_copy(delta.bytes_copied) {
-                work.refund_pending_items(delta.items_examined);
+            work.reserve(crate::materializer::NativeResourceCredit::Items, delta.items_examined).map_err(mount_demand_error)?;
+            if let Err(error) = work.reserve(crate::materializer::NativeResourceCredit::Copy, delta.bytes_copied) {
+                work.refund(crate::materializer::NativeResourceCredit::Items, delta.items_examined).expect("original reservation is balanced");
                 return Err(mount_demand_error(error));
             }
             Ok::<_, MountSourceError>(())
@@ -1233,8 +1233,8 @@ impl<'a, 'w> DirectoryCarrierScratch<'a, 'w> {
     }
 
     fn restore_final_allowances(work: &mut crate::demand::DemandWork, items: u64, copies: u64) {
-        work.refund_pending_items(items);
-        work.cancel_reserved_copy(copies);
+        work.refund(crate::materializer::NativeResourceCredit::Items, items).expect("original reservation is balanced");
+        work.refund(crate::materializer::NativeResourceCredit::Copy, copies).expect("original reservation is balanced");
     }
 
     fn restore_final_work(&mut self) {
@@ -2833,7 +2833,7 @@ where
                         let merged = carrier.with_work(|work| work.merge_with_prior_live(receipt.work, prior_live));
                         if let Some(watch) = owner.watch.as_ref() {
                             let bytes = watch.logical_owned_bytes();
-                            let adopted = carrier.with_work(|work| work.record_adoption(bytes));
+                            let adopted = carrier.with_work(|work| work.record_adoption(bytes, &None));
                             let retained_watch = carrier.with_work(|work|
                                 owner.custody.as_ref().expect("ordinary receipt custody")
                                     .retain_completed_admitted(bytes, work)).map_err(DemandError::from);
@@ -4429,9 +4429,7 @@ where
                     .await.map_err(mount_engine_error)?;
             } else {
                 let (budget, prior_live) = work.sdk_scope()?;
-                let result = candidate.remove(
-                    namespace.value.take().expect("original removal namespace"), Some(*removed_id), budget, cancellation,
-                ).await;
+                let result = candidate.mutate(vec![crate::kernel::Mutation::Remove { path: namespace.value.take().expect("original removal namespace"), expected_file_id: (Some(*removed_id)).map_or(crate::kernel::MetadataField::Unavailable, crate::kernel::MetadataField::Value) }], budget, cancellation).await;
                 work.accept_sdk(result, prior_live, mount_engine_error)?;
             }
             work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
@@ -5012,9 +5010,9 @@ where
         let items = std::mem::take(&mut scratch.reserved_items);
         let copies = std::mem::take(&mut scratch.reserved_copies);
         let accounted = scratch.carrier.with_work(|work| {
-            let copied = work.record_reserved_copy(copies, completed.bytes_copied);
-            let examined = work.record_pending_items(completed.items_examined);
-            work.refund_pending_items(items - completed.items_examined);
+            let copied = work.complete(crate::materializer::NativeResourceCredit::Copy, copies, completed.bytes_copied);
+            let examined = work.complete(crate::materializer::NativeResourceCredit::Items, completed.items_examined, completed.items_examined);
+            work.refund(crate::materializer::NativeResourceCredit::Items, items - completed.items_examined).expect("original reservation is balanced");
             copied.and(examined)
         });
         match (result, accounted) {
@@ -5254,7 +5252,7 @@ where
         let lookup = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
         let owned = lookup.legacy_owned_bytes();
         scratch.track(owned)?;
-        scratch.carrier.with_work(|work| work.record_adoption(owned)).map_err(mount_demand_error)?;
+        scratch.carrier.with_work(|work| work.record_adoption(owned, &None)).map_err(mount_demand_error)?;
         let expected_source = self.mutation_file_id_with_carrier(
             &path, &lookup.value, scratch.carrier,
         ).await?;
@@ -5662,7 +5660,7 @@ where
     ) -> Result<(MountLookup, Option<MountContentPin>), MountSourceError> {
         let lookup = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
         let retained = lookup.legacy_owned_bytes();
-        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained)) {
+        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
             drop(lookup);
             carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
             return Err(mount_demand_error(error));
@@ -6715,7 +6713,7 @@ where
         let read = self.source_file.read_range(offset, length, budget, &caller);
         let output = carrier.with_work(|work| mount_accept(work, read, mount_demand_error))?;
         let retained = output.logical_owned_bytes;
-        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained)) {
+        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
             drop(output);
             carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
             return Err(mount_demand_error(error));
@@ -8405,7 +8403,7 @@ where
         let opened = self.lazy.open_source_file_measured(text, *source, *node, budget, &caller).await;
         let file = carrier.with_work(|work| mount_accept(work, opened, lazy_error))?;
         let retained = file.logical_owned_bytes();
-        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained)) {
+        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
             drop(file);
             carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
             return Err(mount_demand_error(error));
@@ -8426,7 +8424,7 @@ where
                 if allocation.is_none() { lookup.logical_owned_bytes() } else { 0 },
             Resolution::Authored(_) | Resolution::Absent => 0,
         };
-        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained)) {
+        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
             drop(resolution);
             carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
             return Err(mount_demand_error(error));
@@ -8459,7 +8457,7 @@ where
                 if allocation.is_none() { lookup.logical_owned_bytes() } else { 0 },
             Resolution::Authored(_) | Resolution::Absent => 0,
         };
-        if let Err(error) = carrier.with_work(|work| work.record_adoption(lookup_bytes)) {
+        if let Err(error) = carrier.with_work(|work| work.record_adoption(lookup_bytes, &None)) {
             drop(resolution);
             carrier.with_work(|work| work.release(lookup_bytes)).map_err(mount_demand_error)?;
             return Err(mount_demand_error(error));
@@ -8499,7 +8497,7 @@ where
                             let read = file.read_range(next, u64::from(wanted), budget, &caller);
                             let output = carrier.with_work(|work| mount_accept(work, read, mount_demand_error))?;
                             let retained = output.logical_owned_bytes;
-                            if let Err(error) = carrier.with_work(|work| work.record_adoption(retained)) {
+                            if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
                                 drop(output);
                                 carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
                                 return Err(mount_demand_error(error));
@@ -8523,7 +8521,7 @@ where
                                     ).await;
                                     let output = carrier.with_work(|work| mount_accept(work, read, lazy_error))?;
                                     let retained = output.logical_owned_bytes;
-                                    if let Err(error) = carrier.with_work(|work| work.record_adoption(retained)) {
+                                    if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
                                         drop(output);
                                         carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
                                         return Err(mount_demand_error(error));
@@ -8575,7 +8573,7 @@ where
                 Resolution::Unauthored(lookup, source, allocation) => {
                     let lookup = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
                     let lookup_bytes = lookup.legacy_owned_bytes();
-                    if let Err(error) = carrier.with_work(|work| work.record_adoption(lookup_bytes)) {
+                    if let Err(error) = carrier.with_work(|work| work.record_adoption(lookup_bytes, &None)) {
                         drop(lookup);
                         carrier.with_work(|work| work.release(lookup_bytes)).map_err(mount_demand_error)?;
                         return Err(mount_demand_error(error));
@@ -8593,7 +8591,7 @@ where
                         let read = self.lazy.read_unauthored_link_owned_measured(&lookup.value, source, &text, budget, &caller).await;
                         let output = carrier.with_work(|work| mount_accept(work, read, lazy_error))?;
                         let retained = output.logical_owned_bytes;
-                        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained)) {
+                        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
                             drop(output);
                             carrier.with_work(|work| work.release(retained)).map_err(mount_demand_error)?;
                             return Err(mount_demand_error(error));
@@ -9567,7 +9565,7 @@ mod tests {
             "an advance that moved nothing keeps every binding"
         );
 
-        demand.invalidate();
+        demand.invalidate(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))?;
         view.advance_to_head_async().await?;
         assert!(
             changes().map_err(|_| "poisoned observer")? > 0,
@@ -11007,7 +11005,7 @@ mod tests {
                     view.remove(&path, Some(held.lookup()?.node.file_id))?;
                     held.write_range(0, Bytes::from_static(b"detached"))?;
                 }
-                _ => { demand.invalidate(); }
+                _ => { demand.invalidate(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))?; }
             }
             let stopped_snapshot = view.publication_snapshot(super::super::adapter::NativeDemandCarrier::Native(&native), &caller).await
                 .expect_err("pending directories, detached writes and changed source epochs are not readonly checkpoints");

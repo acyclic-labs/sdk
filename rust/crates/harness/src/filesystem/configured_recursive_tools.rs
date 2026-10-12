@@ -362,10 +362,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             Some(content) => content,
             None => Arc::new(FilesystemContentVerifier::new(self.filesystem.clone(), &(verifier(binding)?), &scope, self.limits.file_bytes, None)?),
         };
-        let forks = Arc::new(CompositeForkVerifier::new(vec![
+        let forks = Arc::new(CompositeForkVerifier::new(&[
             Arc::new(FilesystemForkVerifier::new(self.filesystem.clone(), self.limits.file_bytes)?),
-            Arc::new(StreamHistoryForkVerifier::new(self.config.stream_provider.clone())?),
-        ])?);
+            Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
+        ], &mut None)?);
         aggregate.with_content_verifier(content).with_fork_verifier(forks)
             .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.filesystem.clone())))
             .with_limits(self.limits)
@@ -1161,10 +1161,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let filesystem: Arc<dyn crate::fork::ForkSeedVerifier> = FilesystemForkVerifier::new_with_native_work(
             Arc::clone(&self.filesystem), self.limits.file_bytes, &verifier, scope, work,
         )?.into_native_shared(work)?;
-        let history: Arc<dyn crate::fork::ForkSeedVerifier> = StreamHistoryForkVerifier::new_with_native_work(
-            &self.config.stream_provider, work,
-        )?.into_native_shared(work)?;
-        let forks = CompositeForkVerifier::new_with_native_work(&[filesystem, history], work)?.into_native_shared(work)?;
+        let history: Arc<dyn crate::fork::ForkSeedVerifier> = StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut Some(&mut io.history_io()))?.into_native_shared(work)?;
+        let forks = CompositeForkVerifier::new(&[filesystem, history], &mut Some(&mut io.history_io()))?.into_native_shared(work)?;
         let merge = FilesystemProjectMergeVerifier::new_with_native_work(
             Arc::clone(&self.filesystem), &verifier, scope, work,
         )?.into_native_shared(work)?;
@@ -1385,7 +1383,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
         };
         let retained = context.read_file_with_native_work(&source_checkpoint, work).await?;
-        let capture = io.decode_preparation::<SourceCheckpoint>(retained.as_ref())?.into_retained();
+        let capture = io.decode_preparation::<SourceCheckpoint>(retained.as_ref(), crate::wire::ErrorCode::Storage)?.into_retained();
         if capture.caller != caller.task || capture.arguments != *arguments || capture.request != intent.request {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native published checkpoint differs from immutable source intent" });
@@ -1481,7 +1479,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         let restored = if let Some(checkpoint) = &preparation.source_checkpoint {
             let retained = context.context().read_file_with_native_work(checkpoint, work).await?;
-            let capture = io.decode_preparation::<SourceCheckpoint>(&retained)?.into_retained();
+            let capture = io.decode_preparation::<SourceCheckpoint>(&retained, crate::wire::ErrorCode::Storage)?.into_retained();
             if capture.request != request || capture.caller != caller_task {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native preparation checkpoint changed original caller or request" });

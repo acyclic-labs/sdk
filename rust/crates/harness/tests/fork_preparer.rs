@@ -142,10 +142,10 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     .await?
     .with_resident_event_limit(1)?
     .with_content_verifier(resolver.clone())
-    .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
+    .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
-        Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-    ])?));
+        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+    ], &mut None)?));
     aggregate
         .execute(Command {
             operation_id: OperationId::from_bytes([3; 16]),

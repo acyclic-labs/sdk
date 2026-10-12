@@ -281,11 +281,11 @@ impl ToolDefinition {
             name: crate::executor::stock_string_copy(name, Some(&io))?,
             revision: crate::executor::stock_string_copy(revision, Some(&io))?,
             description: crate::executor::stock_string_copy(description, Some(&io))?,
-            input_schema: io.decode_preparation_with_code::<Value>(
+            input_schema: io.decode_preparation::<Value>(
                 input_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
-            output_schema: io.decode_preparation_with_code::<Value>(
+            output_schema: io.decode_preparation::<Value>(
                 output_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
-            projection_schema: io.decode_preparation_with_code::<Value>(
+            projection_schema: io.decode_preparation::<Value>(
                 projection_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
         };
         definition.validate_schemas_with_io(Some(&io))?;

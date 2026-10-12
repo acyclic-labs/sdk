@@ -78,7 +78,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native source selection belongs to another original ledger" });
         }
         original.remaining()?;
-        self.io.cancellation.check()
+        self.io.cancellation().check()
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let selected = self.authorization();
         self.handle.require_selection_with_native_work(
@@ -110,7 +110,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
         original.remaining()?;
-        self.io.cancellation.check()
+        self.io.cancellation().check()
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         work.remaining()?;
         Ok(())
@@ -127,19 +127,19 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "selected source has no original invocation token",
             })?;
-            if cancellation.is_cancelled() || io.cancellation.is_cancelled() {
+            if cancellation.is_cancelled() || io.cancellation().is_cancelled() {
                 return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
             }
             work.remaining()?;
             owner.verify_with_native_work(false, work).await?;
-            if cancellation.is_cancelled() || io.cancellation.is_cancelled() {
+            if cancellation.is_cancelled() || io.cancellation().is_cancelled() {
                 return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
             }
             return Ok(());
         }
-        io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
+        io.cancellation().check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
         owner.verify(false, &mut None).await?;
-        io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))
+        io.cancellation().check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))
     }
 
     fn path(&self, volume: &VolumeRef, prefix: &str, path: &str, generation: &GenerationRef) -> Result<()> {
@@ -176,7 +176,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.file(file)?;
         self.guard().await?;
         let result = self.host.read_content_measured(file, self.handle.grant(), self.limits.file_bytes,
-            self.io.remaining()?, &self.io.cancellation).await;
+            self.io.remaining()?, self.io.cancellation()).await;
         let result = self.io.receive_content(result);
         self.guard().await?;
         result
@@ -217,7 +217,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
         self.guard().await?;
         let result = self.generation.read(&requested, self.limits.file_bytes,
-            self.io.remaining()?, &self.io.cancellation).await;
+            self.io.remaining()?, self.io.cancellation()).await;
         let bytes = self.io.receive(result);
         self.guard().await?;
         let bytes = bytes?;
@@ -226,7 +226,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let _metadata_path_hold = self.io.guard_owned(metadata_path.len() as u64)?;
         self.guard().await?;
         let metadata = self.generation.read(&metadata_path, self.io.remaining()?.source_bytes_read,
-            self.io.remaining()?, &self.io.cancellation).await;
+            self.io.remaining()?, self.io.cancellation()).await;
         let metadata = self.io.receive(metadata);
         self.guard().await?;
         let display_name = path.rsplit('/').next().unwrap_or(path);
@@ -286,7 +286,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             .ok_or_else(|| Error::Invalid("selected root page limit overflows".into()))?;
         self.guard().await?;
         let result = self.generation.list_directory(&requested, after.as_ref(), engine_maximum,
-            self.io.remaining()?, &self.io.cancellation).await;
+            self.io.remaining()?, self.io.cancellation()).await;
         let page = self.io.receive(result);
         self.guard().await?;
         let page = page?;

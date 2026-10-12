@@ -16656,7 +16656,7 @@ mod tests {
                 move |work| {
                     if work.receipt().source_bytes_read != 0 {
                         if mode == 0 {
-                            guard_source.invalidate_with_native_work(work).expect("actual source epoch change");
+                            guard_source.invalidate(&mut crate::demand::NativeSourceWork::from_native_materialization_work(work)).expect("actual source epoch change");
                         } else {
                             guard_cancellation.cancel();
                         }
@@ -17672,12 +17672,7 @@ mod tests {
                 .workspace().checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("checkout");
             checkout
-                .create_file(
-                    path.clone(),
-                    content.clone(),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
+                .create(crate::AuthoredMutation::CreateFile { path: path.clone(), bytes: (content.clone()).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .expect("stage content");
             let identity = checkout
@@ -17687,7 +17682,7 @@ mod tests {
                 .value
                 .expect("staged file");
             checkout
-                .remove(path.clone(), None, WorkBudget::UNBOUNDED, &cancellation)
+                .mutate(vec![crate::kernel::Mutation::Remove { path: path.clone(), expected_file_id: (None).map_or(crate::kernel::MetadataField::Unavailable, crate::kernel::MetadataField::Value) }], WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .expect("remove");
             root.prepare_mount_removals(&[], &[(identity.record, identity.metadata)], removal)
@@ -19686,7 +19681,7 @@ mod tests {
         let before = root.snapshot().await.expect("snapshot before change");
 
         std::fs::write(&path, b"after").expect("external write");
-        source.invalidate();
+        source.invalidate(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source invalidation");
         root.rebind_source().await.expect("rebind source");
 
         assert_eq!((root.read("/file.txt", 64).await.expect("refreshed read")).as_ref(), b"after");

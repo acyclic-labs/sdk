@@ -11,16 +11,11 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 
 #[cfg(feature = "filesystem")]
 pub(crate) const fn model_serde_diagnostic_label_bytes() -> u64 {
-    const LABEL_BYTES: u64 = {
-        let labels = ["ModelPrefix", "version", "parent", "binding_digest", "message_digest",
-            "total_messages", "messages", "ModelRequestManifest", "version", "request_digest",
-            "wire_bytes", "binding_digest", "message_digests"];
-        let mut bytes = crate::contract::preparation_serde_diagnostic_label_bytes();
-        let mut index = 0;
-        while index < labels.len() { bytes += labels[index].len() as u64 + 4; index += 1; }
-        bytes
-    };
-    LABEL_BYTES
+    crate::contract::preparation_serde_diagnostic_label_bytes() + concat!(
+        "ModelPrefix", "version", "parent", "binding_digest", "message_digest", "total_messages",
+        "messages", "ModelRequestManifest", "version", "request_digest", "wire_bytes",
+        "binding_digest", "message_digests",
+    ).len() as u64 + 13 * 4
 }
 
 #[cfg(feature = "filesystem")]
@@ -1278,7 +1273,7 @@ impl ModelRequest {
                             let _bytes;
                             let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
                             _bytes = io.guard_bytes(&bytes)?;
-                            let envelope = io.decode_preparation::<Value>(&bytes)?;
+                            let envelope = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
                             crate::contract::validate_json_schema_value(
                                 &tool.projection_schema, &envelope, "model tool result", Some(io),
                             )?;
@@ -1329,7 +1324,7 @@ impl PreparedModelRequest {
     ) -> Result<Self> {
         let request = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => io.decode_preparation::<ModelRequest>(bytes)?.into_retained(),
+            Some(io) => io.decode_preparation::<ModelRequest>(bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
             _ => crate::contract::json_from_slice(bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
@@ -1594,9 +1589,9 @@ impl PreparedModelRequest {
                 #[cfg(feature = "filesystem")]
                 Some(io) => {
                     io.receive_content(verifier.verify_measured(&reference,
-                        reference.descriptor().byte_length(), io.remaining()?, &io.cancellation).await)?;
+                        reference.descriptor().byte_length(), io.remaining()?, io.cancellation()).await)?;
                     io.receive_content(verifier.read_measured(&reference,
-                        reference.descriptor().byte_length(), io.remaining()?, &io.cancellation).await)?
+                        reference.descriptor().byte_length(), io.remaining()?, io.cancellation()).await)?
                 }
                 _ => {
                     verifier.verify(&reference).await?;
@@ -1613,7 +1608,7 @@ impl PreparedModelRequest {
             reference.descriptor().verify(&bytes)?;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
-                Some(io) => io.decode_preparation::<ModelPrefix>(&bytes)?.into_retained(),
+                Some(io) => io.decode_preparation::<ModelPrefix>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
                 _ => crate::contract::json_from_slice(&bytes)
                     .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?,
             };
@@ -1711,7 +1706,7 @@ async fn model_verify_content_files(
             #[cfg(feature = "filesystem")]
             Some(io) => {
                 io.receive_content(verifier.verify_measured(file, file.descriptor().byte_length(),
-                    io.remaining()?, &io.cancellation).await)?;
+                    io.remaining()?, io.cancellation()).await)?;
             }
             _ => verifier.verify(file).await?,
         }
@@ -1760,31 +1755,6 @@ pub struct ModelDispatch {
     pub step: u32,
     /// Digest of the exact canonical request supplied with this dispatch.
     pub request_digest: [u8; 32],
-}
-
-/// Durable identity and observed prefix of one interrupted model attempt.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ModelAttempt {
-    /// Owning turn execution.
-    pub operation_id: OperationId,
-    /// Zero-based stock-executor step.
-    pub step: u32,
-    /// Canonical digest of the complete model request.
-    pub request_digest: [u8; 32],
-    /// Durable event prefix already observed.
-    pub observed: Vec<ModelEvent>,
-}
-
-impl ModelAttempt {
-    /// Returns the same identity supplied when the attempt was first dispatched.
-    #[must_use]
-    pub const fn dispatch(&self) -> ModelDispatch {
-        ModelDispatch {
-            operation_id: self.operation_id,
-            step: self.step,
-            request_digest: self.request_digest,
-        }
-    }
 }
 
 /// An actual concrete stream box admitted before invoking its builder.
@@ -1857,7 +1827,7 @@ impl ModelEvent {
     /// Produces a paid closed SDK event directly from borrowed provider bytes.
     pub fn decode_with_native_work(bytes: &[u8], work: &NativeMaterializationWork) -> Result<(Self, NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let event = io.decode_preparation::<Self>(bytes)?.into_retained();
+        let event = io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Storage)?.into_retained();
         let retained = event.logical_owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         Ok((event, custody))
@@ -1937,9 +1907,10 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
 
     /// Continues or reconciles an interrupted run without starting another model request.
     fn reconcile<'a>(
-        &'a self,
-        attempt: ModelAttempt,
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>>;
+        &'a self, _dispatch: ModelDispatch, _observed: &'a [ModelEvent],
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 #[cfg(test)]

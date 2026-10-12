@@ -106,10 +106,10 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             scope.clone(),
             64 * 1_024,
         )?);
-        let forks = Arc::new(CompositeForkVerifier::new(vec![
+        let forks = Arc::new(CompositeForkVerifier::new(&[
             Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
-            Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-        ])?);
+            Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+        ], &mut None)?);
         let mut aggregate = StreamAggregate::open(
             &stream,
             parent.clone(),

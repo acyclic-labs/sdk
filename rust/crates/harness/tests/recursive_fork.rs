@@ -194,10 +194,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         grant_scope.clone(),
         1_024,
     )?))
-    .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
+    .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
-        Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-    ])?));
+        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+    ], &mut None)?));
     aggregate
         .execute(command(
             1,
@@ -823,13 +823,13 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 SchemaRegistry::new(),
             )
             .await?
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
+            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 Arc::new(
                     FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?
                         .with_total_reference_bytes(1)?,
                 ),
-                Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-            ])?));
+                Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+            ], &mut None)?));
             assert!(
                 over_budget
                     .execute(fork_command(
@@ -849,9 +849,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 SchemaRegistry::new(),
             )
             .await?
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![Arc::new(
+            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[Arc::new(
                 FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?,
-            )])?));
+            )], &mut None)?));
             assert!(
                 incomplete
                     .execute(fork_command(
@@ -1027,10 +1027,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         attachment_manifests: seed.attachment_manifests.clone(), };
         assert_eq!(report.clone().into_seed(&mut None)?, seed);
         if level == 1 {
-            let verifier = CompositeForkVerifier::new(vec![
+            let verifier = CompositeForkVerifier::new(&[
                 Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
-                Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-            ])?;
+                Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+            ], &mut None)?;
             let fence = verifier.activate(&seed).await?;
             assert!(
                 host.put_content(
@@ -1062,10 +1062,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             child_scope.clone(),
             1_024,
         )?))
-        .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
+        .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
             Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
-            Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-        ])?));
+            Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+        ], &mut None)?));
         if level == 1 {
             let prebound_stream = StreamClient::new(Arc::new(MemoryStream::default()));
             let mut prebound_child = StreamAggregate::open(
@@ -1291,10 +1291,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 grant_scope.clone(),
                 1_024,
             )?))
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
+            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
-                Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-            ])?));
+                Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+            ], &mut None)?));
             child_aggregate = StreamAggregate::open(
                 &stream,
                 child_authority.clone(),
@@ -1308,10 +1308,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 child_scope.clone(),
                 1_024,
             )?))
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
+            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
-                Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-            ])?));
+                Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+            ], &mut None)?));
             assert_eq!(aggregate.reducer().fork(&child_authority), Some(&seed));
         }
         if level == 1 || level == DEEP_RETRY {

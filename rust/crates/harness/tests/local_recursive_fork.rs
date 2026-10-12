@@ -27,7 +27,7 @@ use acyclic_harness::fork::{
 };
 use acyclic_harness::merge::{ProjectJoinOutcome, ProjectWorkspaceProvider};
 use acyclic_harness::model::{
-    FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
+    FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent,
     ModelMessage, ModelPrefix, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
 };
 use acyclic_harness::resources::{ProviderRef, StreamRef};
@@ -106,9 +106,7 @@ impl ModelProvider for PrefixModel {
         }));
         Box::pin(futures::stream::iter(events))
     }
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 #[allow(
@@ -440,10 +438,10 @@ where
         scope,
         64 * 1_024,
     )?);
-    let forks = Arc::new(CompositeForkVerifier::new(vec![
+    let forks = Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
-        Arc::new(StreamHistoryForkVerifier::new(stream_provider)?),
-    ])?);
+        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+    ], &mut None)?);
     Ok(
         StreamAggregate::open(stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new())
             .await?

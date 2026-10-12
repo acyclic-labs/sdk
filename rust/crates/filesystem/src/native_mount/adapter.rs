@@ -239,7 +239,7 @@ impl<'a> CaptureScratchAllocation<'a> {
             return Err(MountSourceError::Work(crate::WorkError::Overflow));
         };
         if extra != 0 {
-            let retained = self.work.record_capture_adoption(extra);
+            let retained = self.work.record_adoption(extra, &self.work.capture_custody());
             self.track(extra);
             if let Err(error) = retained {
                 drop(vector);
@@ -478,8 +478,8 @@ impl<T> Drop for CaptureMeterOwned<T> {
 }
 
 /// Owns one canonical observer and its original invocation's proof attribution.
-pub(super) struct LookupObserverOwned<'a, 'w, A, O> {
-    value: Option<crate::facade::CheckoutObserver<'a, A, O>>,
+pub(super) struct LookupObserverOwned<'w, A, O> {
+    value: Option<crate::Checkout<A, O>>,
     work: NativeDemandCarrier<'w>,
     bytes: u64,
     finished: bool,
@@ -514,7 +514,7 @@ impl NativeDemandCarrier<'_> {
 
     pub(super) fn new_custody(&mut self) -> Result<super::NativeMountAllocationCustody, MountSourceError> {
         if let Some(original) = self.original_native_work() {
-            super::NativeMountAllocationCustody::new_on_original(&original.original_demand_work())
+            super::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&original))
                 .map_err(super::lazy::mount_demand_error)
         } else {
             self.with_work(super::NativeMountAllocationCustody::new).map_err(super::lazy::mount_demand_error)
@@ -758,18 +758,18 @@ impl<T> Drop for NativeCarrierOwned<'_, '_, T> {
     }
 }
 
-impl<'a, 'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'a, 'w, A, O> {
+impl<'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'w, A, O> {
     pub(super) fn new(
-        observer: crate::facade::CheckoutObserver<'a, A, O>,
+        observer: crate::Checkout<A, O>,
         meter: &'w Arc<crate::demand::NativeDemandReadMeter>,
     ) -> Result<Self, MountSourceError> {
         Self::new_in(observer, NativeDemandCarrier::Shared(meter))
     }
 }
 
-impl<'a, 'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'a, 'w, A, O> {
+impl<'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'w, A, O> {
     fn new_in(
-        observer: crate::facade::CheckoutObserver<'a, A, O>,
+        observer: crate::Checkout<A, O>,
         work: NativeDemandCarrier<'w>,
     ) -> Result<Self, MountSourceError> {
         use super::lazy::mount_demand_error;
@@ -782,7 +782,7 @@ impl<'a, 'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'a
         let mut owned = Self { value: Some(observer), work, bytes: 0, finished: false };
         let retained_bytes = &mut owned.bytes;
         owned.work.with_work(|work| {
-            let adopted = work.record_adoption(bytes).map_err(mount_demand_error);
+            let adopted = work.record_adoption(bytes, &None).map_err(mount_demand_error);
             *retained_bytes = bytes;
             adopted?;
             work.retain_observer_custody(custody).map_err(mount_demand_error)?;
@@ -795,7 +795,7 @@ impl<'a, 'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'a
     }
 }
 
-impl<'a, 'w, A, O> LookupObserverOwned<'a, 'w, A, O> {
+impl<'w, A, O> LookupObserverOwned<'w, A, O> {
     /// Called after merging each SDK receipt, even when that merge returns a typed failure.
     pub(super) fn receipt_delivered(&mut self) {
         self.proof_data_take_completed_work();
@@ -820,16 +820,16 @@ impl<'a, 'w, A, O> LookupObserverOwned<'a, 'w, A, O> {
 
 }
 
-impl<'a, A, O> Deref for LookupObserverOwned<'a, '_, A, O> {
-    type Target = crate::facade::CheckoutObserver<'a, A, O>;
+impl<A, O> Deref for LookupObserverOwned<'_, A, O> {
+    type Target = crate::Checkout<A, O>;
     fn deref(&self) -> &Self::Target { self.value.as_ref().expect("measured observer is live") }
 }
 
-impl<A, O> DerefMut for LookupObserverOwned<'_, '_, A, O> {
+impl<A, O> DerefMut for LookupObserverOwned<'_, A, O> {
     fn deref_mut(&mut self) -> &mut Self::Target { self.value.as_mut().expect("measured observer is live") }
 }
 
-impl<A, O> Drop for LookupObserverOwned<'_, '_, A, O> {
+impl<A, O> Drop for LookupObserverOwned<'_, A, O> {
     fn drop(&mut self) {
         let _ = self.finish();
         drop(self.value.take());
@@ -2170,7 +2170,7 @@ pub(super) struct SharedCheckoutObservation<'a, A, O> {
 
 /// The same pinned observer and view admission, without a checkout-state lock.
 pub(super) struct SharedCheckoutOwnedObservation<A: 'static, O: 'static> {
-    pub(super) observer: crate::facade::CheckoutObserver<'static, A, O>,
+    pub(super) observer: crate::Checkout<A, O>,
     pub(super) _view: ViewReadLease,
 }
 
@@ -3643,7 +3643,6 @@ impl<A, O> SharedCheckout<A, O> {
             let receipt = observation.observer(budget, cancellation);
             carrier.with_work(|work| mount_accept(work, receipt, mount_engine_error))?
         };
-        let observer = observer.into_owned();
         let SharedCheckoutObservation { _view, state } = observation;
         drop(state);
         Ok(SharedCheckoutOwnedObservation { observer, _view })
@@ -3996,7 +3995,7 @@ impl<A, O> SharedCheckout<A, O> {
             Ok(())
         } else {
             let adopted = carrier.with_work(|work|
-                work.record_adoption(result_bytes).map_err(mount_demand_error));
+                work.record_adoption(result_bytes, &None).map_err(mount_demand_error));
             *bytes = bytes.checked_add(result_bytes)
                 .expect("grouped outcome slots have exact custody");
             adopted
@@ -4583,7 +4582,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
         let read = carrier.with_work(|work| mount_accept(work, result, mount_engine_error))?;
         let logical_owned_bytes = read.logical_owned_bytes();
         let admitted = carrier.with_work(|work| {
-            work.record_adoption(logical_owned_bytes).and_then(|()| work.check())
+            work.record_adoption(logical_owned_bytes, &None).and_then(|()| work.check())
         });
         if let Err(error) = admitted {
             drop(read);
@@ -5329,7 +5328,7 @@ where
 {
     async fn observer(
         &self, work: &super::NativeMountMeterWork,
-    ) -> Result<(ViewReadLease, crate::facade::CheckoutObserver<'static, A, O>), MountSourceError> {
+    ) -> Result<(ViewReadLease, crate::Checkout<A, O>), MountSourceError> {
         let mut carrier = NativeDemandCarrier::Native(work);
         let cancellation = carrier.with_work(|work| {
             work.check().map_err(super::lazy::mount_demand_error)?;
@@ -5843,7 +5842,7 @@ fn native_attribute_page_with_carrier(
         })
     })?;
     let mut listing = NativeCarrierOwned { value: Some(page), carrier, bytes };
-    listing.carrier.with_work(|work| work.record_adoption(bytes).map_err(mount_demand_error))?;
+    listing.carrier.with_work(|work| work.record_adoption(bytes, &None).map_err(mount_demand_error))?;
     let input = listing.value.take().expect("attribute listing is live");
     let remaining_source_bytes = &mut listing.bytes;
     let (page, bytes) = listing.carrier.with_work(|work| {
@@ -6188,7 +6187,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             observer.receipt_delivered();
             let output = accepted?;
             let bytes = output.logical_owned_bytes;
-            if let Err(error) = work.record_adoption(bytes) {
+            if let Err(error) = work.record_adoption(bytes, &None) {
                 drop(output);
                 work.release(bytes).map_err(mount_demand_error)?;
                 return Err(mount_demand_error(error));
@@ -6453,7 +6452,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                         value: Some(value), carrier: &mut *authored.carrier, bytes,
                     };
                     result.carrier.with_work(|work| {
-                        work.record_adoption(bytes).map_err(mount_demand_error)
+                        work.record_adoption(bytes, &None).map_err(mount_demand_error)
                     })?;
                     let value = &result.value;
                     result.carrier.with_work(|work| {
@@ -6543,10 +6542,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 ))
             })?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-            let receipt = candidate.checkout.hard_link(
-                source.value.take().expect("native link source is live"),
-                consumed.value.take().expect("native link destination is live"), budget, &cancellation,
-            ).await;
+            let receipt = candidate.checkout.mutate(vec![crate::kernel::Mutation::Link { source: source.value.take().expect("native link source is live"), destination: consumed.value.take().expect("native link destination is live") }], budget, &cancellation).await;
             consumed.carrier.accept_with_prior_live(receipt, prior_live, mount_engine_error)
         };
         let installed = {
@@ -6636,7 +6632,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 ))
             })?;
             let path = consumed.value.take().expect("native remove input is live");
-            let receipt = candidate.checkout.remove(path, expected, budget, &cancellation).await;
+            let receipt = candidate.checkout.mutate(vec![crate::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(crate::kernel::MetadataField::Unavailable, crate::kernel::MetadataField::Value) }], budget, &cancellation).await;
             consumed.carrier.accept_with_prior_live(receipt, prior_live, mount_engine_error)
         };
         let installed = self.checkout.finish_native_phase_with_carrier(
@@ -6799,9 +6795,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             let source_path = consumed_source.value.take().expect("native rename source is live");
             let destination_path = consumed_destination.value.take().expect("native rename destination is live");
             let carrier = &mut *consumed_destination.carrier;
-            let receipt = candidate.checkout.rename(
-                source_path, destination_path, replace, budget, &cancellation,
-            ).await;
+            let receipt = candidate.checkout.mutate(vec![crate::kernel::Mutation::Rename { source: source_path, destination: destination_path, replace: replace }], budget, &cancellation).await;
             carrier.accept_with_prior_live(receipt, prior_live, mount_engine_error)
         };
         let installed = self.checkout.finish_native_phase_with_carrier(
@@ -7135,7 +7129,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         };
         let retained = &mut file.bytes;
         let adopted = file.carrier.with_work(|work| {
-            let result = work.record_adoption(file_bytes).map_err(mount_demand_error);
+            let result = work.record_adoption(file_bytes, &None).map_err(mount_demand_error);
             *retained = file_bytes;
             result
         });
@@ -7252,7 +7246,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         &self,
         namespace: &NamespacePath,
         cancellation: &CancellationToken,
-        observer: &mut LookupObserverOwned<'_, '_, A, O>,
+        observer: &mut LookupObserverOwned<'_, A, O>,
     ) -> Result<Option<MountLookup>, MountSourceError>
     {
         use super::lazy::{mount_accept, mount_demand_error, mount_engine_error};
@@ -9024,7 +9018,7 @@ where
                         value: Some(value), carrier: &mut *authored.carrier, bytes,
                     };
                     result.carrier.with_work(|work| {
-                        work.record_adoption(bytes).map_err(mount_demand_error)
+                        work.record_adoption(bytes, &None).map_err(mount_demand_error)
                     })
                 })
         };
@@ -10156,7 +10150,7 @@ where
                     let bytes = value.as_ref().map_or(0, |chunk| chunk.logical_owned_bytes);
                     let mut output_carrier = NativeDemandCarrier::Shared(meter);
                     let mut output = NativeCarrierOwned { value: Some(value), carrier: &mut output_carrier, bytes };
-                    output.carrier.with_work(|work| work.record_adoption(bytes).map_err(mount_demand_error))?;
+                    output.carrier.with_work(|work| work.record_adoption(bytes, &None).map_err(mount_demand_error))?;
                     observer.finish()?;
                     output.carrier.with_work(|work| {
                         work.check().map_err(mount_demand_error)?;
@@ -13616,12 +13610,7 @@ mod tests {
         source.runtime.block_on(|| async {
             let mut checkout = source.checkout.lock().await;
             checkout
-                .create_file(
-                    namespace,
-                    Bytes::new(),
-                    boundary_budget(),
-                    &source.cancellation,
-                )
+                .create(crate::AuthoredMutation::CreateFile { path: namespace, bytes: (Bytes::new()).into(), metadata: crate::kernel::FileMetadata::default() }, boundary_budget(), &source.cancellation)
                 .await
                 .map(|_| ())
         })?;

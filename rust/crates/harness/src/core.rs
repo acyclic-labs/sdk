@@ -1780,7 +1780,7 @@ impl SchemaRegistry {
         let value = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
-                decoded = io.decode_preparation::<Value>(bytes)?;
+                decoded = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
                 &decoded.value
             }
             _ => {

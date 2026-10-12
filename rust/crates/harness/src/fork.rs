@@ -343,7 +343,7 @@ async fn read_fork_manifest(verifier: &dyn ForkSeedVerifier, seed: &ForkSeed,
 
 /// Exhaustive provider dispatcher.
 pub struct CompositeForkVerifier {
-    providers: BTreeMap<String, std::sync::Arc<dyn ForkSeedVerifier>>,
+    providers: BTreeMap<ProviderRef, std::sync::Arc<dyn ForkSeedVerifier>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
@@ -365,46 +365,35 @@ fn admit_native_verifier_share(
 }
 
 impl CompositeForkVerifier {
-    /// Rejects duplicate registrations for one exact provider contract.
-    pub fn new(verifiers: Vec<std::sync::Arc<dyn ForkSeedVerifier>>) -> Result<Self> {
-        Self::new_with_work(verifiers.into_iter(), &mut None)
-    }
-
-    fn new_with_work(
-        verifiers: impl Iterator<Item = std::sync::Arc<dyn ForkSeedVerifier>>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    /// Registers exact provider contracts using the caller's optional ledger.
+    pub fn new(
+        verifiers: &[std::sync::Arc<dyn ForkSeedVerifier>],
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
         let mut owned = CodecQuota::observed(work)?;
         let mut providers = BTreeMap::new();
         for verifier in verifiers {
             owned.checkpoint()?;
             verifier.provider().validate_with_work(owned.work())?;
-            let key = provider_key(verifier.provider(), &mut owned)?;
-            if providers.contains_key(&key) {
+            if providers.contains_key(verifier.provider()) {
                 return Err(owned.invalid("fork provider verifier is registered twice"));
             }
-            owned.slots::<(String, std::sync::Arc<dyn ForkSeedVerifier>)>(1)?;
-            providers.insert(key, verifier);
+            owned.slots::<(ProviderRef, std::sync::Arc<dyn ForkSeedVerifier>)>(1)?;
+            let provider = crate::core::copy_provider(verifier.provider(), &mut owned)?;
+            providers.insert(provider, std::sync::Arc::clone(verifier));
         }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let _native_metadata = {
+            let bytes = owned.retained();
+            owned.work().as_deref_mut().filter(|io| io.original_native_work().is_some())
+                .map(|io| io.take_native_custody(bytes)).transpose()?
+        };
         owned.transfer();
         Ok(Self {
             providers,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            _native_metadata: None,
+            _native_metadata,
         })
-    }
-
-    /// Registers the same original provider handles on the caller's native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn new_with_native_work(
-        verifiers: &[std::sync::Arc<dyn ForkSeedVerifier>],
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut verifier = Self::new_with_work(verifiers.iter().cloned(), &mut Some(&mut io))?;
-        verifier._native_metadata = Some(io.into_custody());
-        Ok(verifier)
     }
 
     /// Shares original provider registrations, not their authority or private backing.
@@ -463,11 +452,6 @@ impl CompositeForkVerifier {
     ) -> Result<()> {
         seed.validate(work)?;
         let mut owned = CodecQuota::observed(work)?;
-        // Logical registered identity entries, not allocator-node estimates.
-        owned.slots::<(String, std::sync::Arc<dyn ForkSeedVerifier>)>(self.providers.len())?;
-        for key in self.providers.keys() {
-            owned.retain(key.capacity() as u64)?;
-        }
         let mut required = BTreeSet::new();
         let providers = std::iter::once(seed.child_private_volume.provider())
             .chain(seed.inherited_context.iter().map(|file| file.volume().provider()))
@@ -478,20 +462,14 @@ impl CompositeForkVerifier {
             ]))
             .chain(seed.boundary.iter().map(|boundary| &boundary.provider));
         for provider in providers {
-            let key = provider_key(provider, &mut owned)?;
-            if required.contains(&key) {
-                let capacity = key.capacity() as u64;
-                drop(key);
-                owned.release(capacity)?;
-            } else {
-                owned.slots::<String>(1)?;
-                required.insert(key);
+            owned.checkpoint()?;
+            if !required.contains(provider) {
+                owned.slots::<&ProviderRef>(1)?;
+                required.insert(provider);
             }
         }
-        for key in &required {
-            let verifier = self.providers.get(key).ok_or_else(|| {
-                Error::Unsupported("fork resource has no exact provider verifier".into())
-            })?;
+        for provider in required {
+            let verifier = self.provider(provider, &mut owned)?;
             verify_fork_provider_with_work(verifier.as_ref(), seed, owned.work()).await?;
             if let Some(boundary) = &seed.boundary
                 && &boundary.provider == verifier.provider()
@@ -507,13 +485,9 @@ impl CompositeForkVerifier {
         provider: &ProviderRef,
         owned: &mut CodecQuota<'_, '_>,
     ) -> Result<&'a std::sync::Arc<dyn ForkSeedVerifier>> {
-        let key = provider_key(provider, owned)?;
-        let verifier = self.providers.get(&key)
-            .ok_or_else(|| Error::Unsupported("fork resource has no exact provider verifier".into()));
-        let capacity = key.capacity() as u64;
-        drop(key);
-        owned.release(capacity)?;
-        verifier
+        owned.checkpoint()?;
+        self.providers.get(provider).ok_or_else(|| boundary_error(owned.work(),
+            crate::wire::ErrorCode::Unsupported, "fork resource has no exact provider verifier"))
     }
 
     /// Verifies direct references and complete attachment manifests after provider-wide resource capture has been attested.
@@ -822,29 +796,6 @@ fn reserve_reference_bytes<'a>(
     Ok(())
 }
 
-fn provider_key(
-    provider: &ProviderRef,
-    owned: &mut CodecQuota<'_, '_>,
-) -> Result<String> {
-    let length = provider.namespace().len().checked_add(provider.family().len())
-        .and_then(|length| length.checked_add(provider.version().len()))
-        .and_then(|length| length.checked_add(2))
-        .ok_or_else(|| owned.invalid("fork provider identity length overflows"))?;
-    let mut key = String::new();
-    if let Some(observer) = owned.work().as_deref_mut() {
-        observer.reserve_text(&mut key, length)?;
-    } else {
-        key.reserve_exact(length);
-    }
-    owned.adopt(key.capacity() as u64)?;
-    for part in [provider.namespace(), "\0", provider.family(), "\0", provider.version()] {
-        if let Some(observer) = owned.work().as_deref_mut() { observer.admit_copy(part.len() as u64)?; }
-        key.push_str(part);
-        if let Some(observer) = owned.work().as_deref_mut() { observer.copy_bytes(part.len() as u64)?; }
-    }
-    Ok(key)
-}
-
 fn decode_fork_manifest(
     reference: &FileRef,
     bytes: &[u8],
@@ -1057,39 +1008,25 @@ pub struct StreamHistoryForkVerifier {
 }
 
 impl StreamHistoryForkVerifier {
-    /// Registers the exact Stream provider used for parent history refs.
-    pub fn new(provider: ProviderRef) -> Result<Self> {
-        provider.validate()?;
+    /// Registers the exact Stream provider using the caller's optional ledger.
+    pub fn new(provider: &ProviderRef, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+        let mut owned = CodecQuota::observed(work)?;
+        provider.validate_with_work(owned.work())?;
         if provider.family() != "stream" {
-            return Err(Error::Invalid(
-                "history verifier requires a Stream provider".into(),
-            ));
-        }
-        Ok(Self {
-            provider,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            _native_metadata: None,
-        })
-    }
-
-    /// Copies only this original provider identity under the native caller's work.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn new_with_native_work(
-        provider: &ProviderRef, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut observed = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
-        let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
-        provider.validate_with_work(quota.work())?;
-        if provider.family() != "stream" {
-            return Err(boundary_error(quota.work(), crate::wire::ErrorCode::Invalid,
+            return Err(boundary_error(owned.work(), crate::wire::ErrorCode::Invalid,
                 "history verifier requires a Stream provider"));
         }
-        let provider = crate::core::copy_provider(provider, &mut quota)?;
-        quota.transfer();
-        drop(quota);
-        Ok(Self { provider, _native_metadata: Some(io.into_custody()) })
+        let provider = crate::core::copy_provider(provider, &mut owned)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let _native_metadata = {
+            let bytes = owned.retained();
+            owned.work().as_deref_mut().filter(|io| io.original_native_work().is_some())
+                .map(|io| io.take_native_custody(bytes)).transpose()?
+        };
+        owned.transfer();
+        Ok(Self { provider,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            _native_metadata })
     }
 
     /// Shares the same funded provider identity; Arc's private backing is opaque.
@@ -3165,17 +3102,17 @@ mod tests {
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let filesystem = seed.child_private_volume.provider().clone();
         seed.validate(&mut None)?;
-        let filesystem_only = CompositeForkVerifier::new(vec![std::sync::Arc::new(
+        let filesystem_only = CompositeForkVerifier::new(&[std::sync::Arc::new(
             AcceptingVerifier(filesystem.clone()),
-        )])?;
+        )], &mut None)?;
         assert!(matches!(
             futures::executor::block_on(filesystem_only.verify(&seed, &mut None)),
             Err(Error::Unsupported(_))
         ));
-        let complete = CompositeForkVerifier::new(vec![
+        let complete = CompositeForkVerifier::new(&[
             std::sync::Arc::new(AcceptingVerifier(filesystem.clone())),
             std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
-        ])?;
+        ], &mut None)?;
         futures::executor::block_on(complete.verify(&seed, &mut None))?;
         let project_resource = seed
             .resources
@@ -3198,10 +3135,10 @@ mod tests {
             attachment_manifest: None,
         });
         missing_seed.validate(&mut None)?;
-        let missing = CompositeForkVerifier::new(vec![
+        let missing = CompositeForkVerifier::new(&[
             std::sync::Arc::new(MissingFileVerifier(filesystem.clone())),
             std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
-        ])?;
+        ], &mut None)?;
         assert!(matches!(
             futures::executor::block_on(missing.verify(&missing_seed, &mut None)),
             Err(Error::NotFound(_))
@@ -3278,7 +3215,7 @@ mod tests {
         let cached_manifest: acyclic_stream::OwnedBytes = bytes.into();
         let cached_pointer = cached_manifest.as_ptr();
         let manifest_reads = std::sync::Arc::new(AtomicUsize::new(0));
-        let verifier = CompositeForkVerifier::new(vec![
+        let verifier = CompositeForkVerifier::new(&[
             std::sync::Arc::new(CountingFileVerifier {
                 provider: filesystem.clone(),
                 count: verified_members.clone(),
@@ -3289,15 +3226,15 @@ mod tests {
                 bytes: cached_manifest.clone(),
                 reads: manifest_reads.clone(),
             }),
-        ])?;
+        ], &mut None)?;
         futures::executor::block_on(verifier.verify(&attached_manifest_only, &mut None))?;
         assert_eq!(manifest_reads.load(Ordering::Relaxed), 1);
         assert_eq!(cached_manifest.as_ptr(), cached_pointer);
-        let missing_manifest = CompositeForkVerifier::new(vec![
+        let missing_manifest = CompositeForkVerifier::new(&[
             std::sync::Arc::new(AcceptingVerifier(filesystem.clone())),
             std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
             std::sync::Arc::new(MissingFileVerifier(manifest.volume().provider().clone())),
-        ])?;
+        ], &mut None)?;
         assert!(matches!(
             futures::executor::block_on(missing_manifest.verify(&manifest_seed, &mut None)),
             Err(Error::NotFound(_))

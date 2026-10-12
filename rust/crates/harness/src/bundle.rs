@@ -904,10 +904,7 @@ mod tests {
             }))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: crate::model::ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+        fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             async {
                 Err(Error::Unsupported(
@@ -1076,12 +1073,7 @@ mod tests {
             {
                 Box::pin(futures::stream::empty())
             }
-            fn reconcile<'a>(
-                &'a self,
-                _: crate::model::ModelAttempt,
-            ) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
-                async { Ok(None) }.boxed()
-            }
+
         }
         let bundle = HarnessBuilder::new()
             .name("test")

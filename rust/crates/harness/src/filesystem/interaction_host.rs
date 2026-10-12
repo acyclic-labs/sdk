@@ -556,7 +556,7 @@ where
                 let bytes_hold;
                 let bytes = self.host.read_pinned_io(&ticket.request, self.maximum_bytes, Some(io)).await?;
                 bytes_hold = io.guard_bytes(&bytes)?;
-                let request = io.decode_preparation::<Interaction>(&bytes)?;
+                let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
                 let mut borrowed = io.history_io();
                 ticket.validate_decoded_request_with_work(&request, &mut Some(&mut borrowed))?;
                 let request = request.into_retained();
@@ -649,7 +649,7 @@ where
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let request = match io {
             Some(io) => {
-                let request = io.decode_preparation::<Interaction>(&bytes)?;
+                let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
                 ticket.validate_decoded_request_with_work(&request, &mut work)?;
                 request.into_retained()
             }
@@ -673,7 +673,7 @@ where
                     "approval decision bytes custody underflows"))?)).transpose()?;
             match io {
                 Some(io) => {
-                    let response = io.decode_preparation::<InteractionResponse>(&bytes)?;
+                    let response = io.decode_preparation::<InteractionResponse>(&bytes, crate::wire::ErrorCode::Storage)?;
                     ticket.validate_decoded_decision_with_work(
                         &request, &resolution.outcome, detail, &response, &mut work)?;
                 }

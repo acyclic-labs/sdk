@@ -85,13 +85,7 @@ impl acyclic_harness::model::ModelProvider for CapturingModel {
         )]))
     }
 
-    fn reconcile<'a>(
-        &'a self,
-        _: acyclic_harness::model::ModelAttempt,
-    ) -> futures::future::BoxFuture<'a, Result<Option<Vec<acyclic_harness::model::ModelEvent>>>>
-    {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 struct Fixture {
