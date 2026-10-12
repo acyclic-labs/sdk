@@ -43,7 +43,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             .map_err(fs_error)?;
         let notification = self
             .ledger
-            .prepare_everything_notification(work.native_read_meter())?;
+            .prepare_everything_notification(work)?;
         let operation = state.retained_operation_id();
         let projected = SharedCheckoutState {
             recorded_view: projection.root().file_table,

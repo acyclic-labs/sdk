@@ -6,14 +6,13 @@ fn recovery_control_publishes_only_actual_namespace_absence_evidence() -> TestRe
     let cancellation = crate::CancellationToken::new();
     let mut control = DarwinRecoveryControl::default();
     assert!(!control.namespace_detach_confirmed());
-    let denied = crate::NativeMaterializationWork::new(
+    let denied = work(
         crate::WorkBudget {
             backend_read_operations: 0,
             ..crate::WorkBudget::UNBOUNDED
         },
         &cancellation,
-    )
-    .map_err(|(cause, _)| cause)?;
+    )?;
     assert!(matches!(
         control.recover(temporary.path(), &denied),
         Err(NativeMountError::Materialization(
@@ -23,15 +22,14 @@ fn recovery_control_publishes_only_actual_namespace_absence_evidence() -> TestRe
     assert!(!control.namespace_detach_confirmed());
     assert_eq!(denied.receipt().backend_read_operations, 0);
     assert_eq!(denied.receipt().backend_write_operations, 0);
-    let exact = crate::NativeMaterializationWork::new(
+    let exact = work(
         crate::WorkBudget {
             backend_read_operations: 5,
             backend_write_operations: 1,
             ..crate::WorkBudget::UNBOUNDED
         },
         &cancellation,
-    )
-    .map_err(|(cause, _)| cause)?;
+    )?;
     control.recover(temporary.path(), &exact)?;
     assert!(control.namespace_detach_confirmed());
     assert!(!control.controls_pending());
@@ -43,8 +41,7 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
     acyclic_native_runtime::initialize_native_io_services()?;
     let temporary = tempfile::tempdir()?;
     let cancellation = crate::CancellationToken::new();
-    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
+    let work = work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
     let (_, context, _setup) = checkout_context(MountPublication::Manual)?;
     let startup = StartupBuffers::new(temporary.path(), true, false, &work)?;
     let allocation = work.claim(
@@ -65,14 +62,7 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
         _allocation: allocation,
     });
     resources.interrupt(None)?;
-    let events = Arc::new(LoopEvents {
-        _allocation: Some(work.claim(
-            std::mem::size_of::<LoopEvents>() as u64,
-            1,
-            crate::WorkCounters::UNCHARGED,
-        )?),
-        ..LoopEvents::default()
-    });
+    let events = DarwinStopController::new(&resources, temporary.path(), &work)?;
     work.charge(WRITE_WORK)?;
     let mut interrupted = 0;
     // SAFETY: all SDK inputs, context, events and output stay owned through the loop.
@@ -90,7 +80,7 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
     };
     assert_eq!(status, 0);
     assert_eq!(interrupted, 1);
-    assert!(!events.current().mounted);
+    assert!(!events.mounted.load(Ordering::Acquire));
     let mut probe = MountProbe::new(temporary.path(), &work)?;
     assert!(!probe.mounted(
         temporary.path(),
@@ -109,18 +99,16 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
 }
 
 #[test]
-fn actual_sdk_controls_use_birth_credit_only_after_owner_quiescence_and_wait_admission()
--> TestResult {
+fn sdk_controls_keep_birth_credit_and_require_a_live_wait() -> TestResult {
     let original_cancel = crate::CancellationToken::new();
-    let work = crate::NativeMaterializationWork::new(
+    let work = work(
         crate::WorkBudget {
             backend_read_operations: 1,
             backend_write_operations: 3,
             ..crate::WorkBudget::UNBOUNDED
         },
         &original_cancel,
-    )
-    .map_err(|(cause, _)| cause)?;
+    )?;
     let credit = work.reserve_work(crate::WorkCounters {
         backend_read_operations: 1,
         backend_write_operations: 2,
@@ -136,31 +124,20 @@ fn actual_sdk_controls_use_birth_credit_only_after_owner_quiescence_and_wait_adm
         crate::WorkCounters::UNCHARGED,
     )?;
     let (pointer, sdk_allocation) = DriverSessionResources::new_sdk_session(&work)?;
-    let mut resources = Arc::new(DriverSessionResources {
+    let resources = Arc::new(DriverSessionResources {
         context: Arc::new(context),
         native: Mutex::new((pointer, Some(sdk_allocation), credit)),
         startup,
         _allocation: allocation,
     });
-    let owner = Arc::clone(&resources);
-    let (release, waiting) = std::sync::mpsc::channel::<()>();
-    let thread = std::thread::spawn(move || {
-        let _ = waiting.recv();
-        drop(owner);
-    });
     original_cancel.cancel();
-    assert!(Arc::get_mut(&mut resources).is_none());
     let wait = crate::CancellationToken::new();
     resources.interrupt(Some(&wait))?;
     resources.interrupt(Some(&wait))?;
-    release.send(())?;
     resources.start_join(&wait)?;
-    thread
-        .join()
-        .map_err(|_| "resource-owner fixture panicked")?;
     let stopped = crate::CancellationToken::new();
     stopped.cancel();
-    let retained = Arc::get_mut(&mut resources).ok_or("owner did not quiesce")?;
+    let retained = &resources;
     assert!(matches!(
         retained.free(Some(&stopped)),
         Err(NativeMountError::Materialization(

@@ -177,12 +177,12 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
         self.verifier.verify_audience(
             self.verifier.audience(),
             &mut Some(
-                &mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?),
+                &mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?,
             ),
         )?;
         self.verifier.verify(
             &self.scope,
-            &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
+            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
         )?;
         let io = PreparationIo::from_native_work(work)?;
         let prefix = match operation {

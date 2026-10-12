@@ -11,8 +11,8 @@ use acyclic_harness::{
     conversation::{ConversationMessage, VolumeRef},
     filesystem::{
         ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
-        ConfiguredRecursiveMerge, ConfiguredRecursiveSourceCheckpoint,
-        ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig, ForkPreparationLimits,
+        ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig,
+        ForkPreparationLimits,
     },
     runtime::TaskAdmissionRecord,
     store::HistoryReadLimits,
@@ -154,22 +154,6 @@ pub fn source(
         inherited_references: 64,
         content_budget: config.tools.content_budget,
         project_policy_graph_root: None,
-        original_sources: config
-            .fork_sources
-            .iter()
-            .filter(|source| {
-                config
-                    .tools
-                    .callers
-                    .iter()
-                    .any(|caller| caller.task == source.caller)
-            })
-            .map(|source| ConfiguredRecursiveSourceCheckpoint {
-                caller: source.caller,
-                request: source.request.clone(),
-                snapshot: source.snapshot.clone(),
-            })
-            .collect(),
     };
     Source::new(
         configured,

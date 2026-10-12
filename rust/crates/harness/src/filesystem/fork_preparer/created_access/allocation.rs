@@ -35,7 +35,7 @@ async fn birth<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let result = match io.original_native_work() {
         Some(work) => host
             .filesystem
-            .workspace_for_creation_operation_with_native_work(
+            .workspace_for_creation_operation(
                 &name,
                 config,
                 operation,
@@ -43,7 +43,7 @@ async fn birth<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 io.cancellation(),
             )
             .await
-            .map_err(|(source, custody)| Error::NativeWorkspace { source, custody }),
+            .map_err(Error::from),
         None => io.receive(
             host.filesystem
                 .workspace_for_creation_operation(
@@ -124,16 +124,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let name_hold;
             let name = bounded_io::volume_storage_name(volume, Some(&io))?;
             name_hold = io.guard_owned(name.capacity() as u64)?;
-            let birth = self.host.filesystem.workspace_for_creation_operation_with_native_work(
+            let birth = self.host.filesystem.workspace_for_creation_operation(
                 &name, config, operation, work, io.cancellation(),
-            ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
+            ).await.map_err(Error::from)?
                 .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "Root bootstrap has no original protected Filesystem birth" })?;
             if birth.id() != initial_generation {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "Root bootstrap initial generation differs from its actual birth" });
             }
-            let selected = birth.workspace().generation(
-                selected_generation, work, io.cancellation(),
-            ).await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
+            let selected = io.sdk(birth.workspace().generation(
+                selected_generation, &io, io.cancellation(),
+            ).await)?;
             let native_snapshot = if let Some((lazy, frozen)) = native_import {
                 if lazy.backing.workspace_id() != birth.workspace_id() {
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "Root bootstrap import names another original workspace" });
@@ -164,14 +164,41 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let create = IdempotencyKey::new(bounded_io::join_text("root-bootstrap-journal:", suffix, &io)?)?;
             let lifecycle = if self.host.filesystem.capabilities().durable {
                 acyclic_fs::Lifecycle::Durable
-            } else { acyclic_fs::Lifecycle::Ephemeral };
-            let creation = acyclic_fs::OperationId::from_bytes(bounded_io::operation_key(&create, Some(&io))?.into_bytes());
-            self.host.filesystem.create_workspace_with_operation_with_native_work(
-                name, acyclic_fs::VolumeConfig::portable(lifecycle), creation, work, work.cancellation(),
-            ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
-            match bounded_io::read(&self.host, &journal, "/claim.json", MAX_REQUEST_BYTES, Some(&io)).await {
-                Ok(_) => return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "child allocation cannot be claimed as original Root bootstrap" }),
-                Err(error) if journal_absent(&error) => {},
+            } else {
+                acyclic_fs::Lifecycle::Ephemeral
+            };
+            let creation = acyclic_fs::OperationId::from_bytes(
+                bounded_io::operation_key(&create, Some(&io))?.into_bytes(),
+            );
+            self.host
+                .filesystem
+                .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+                    name,
+                    acyclic_fs::VolumeConfig::portable(lifecycle),
+                    creation,
+                    work,
+                    work.cancellation(),
+                    None,
+                )
+                .await
+                .map_err(Error::from)?;
+            match bounded_io::read(
+                &self.host,
+                &journal,
+                "/claim.json",
+                MAX_REQUEST_BYTES,
+                Some(&io),
+            )
+            .await
+            {
+                Ok(_) => {
+                    return Err(bounded_io::failure(
+                        Some(&io),
+                        crate::wire::ErrorCode::Unauthorized,
+                        "child allocation cannot be claimed as original Root bootstrap",
+                    ));
+                }
+                Err(error) if journal_absent(&error) => {}
                 Err(error) => return Err(error),
             }
             let retained = match bounded_io::read(&self.host, &journal, "/root-bootstrap.json",

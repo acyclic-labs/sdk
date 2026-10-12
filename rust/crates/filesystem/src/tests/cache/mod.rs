@@ -97,17 +97,8 @@ impl AsyncObjectStore for CountingStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = self.inner.put(object_id, bytes, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+        self.inner.put(object_id, bytes, context).await
     }
 
     async fn read(
@@ -116,37 +107,9 @@ impl AsyncObjectStore for CountingStore {
         maximum_bytes: u64,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = context.original {
-            let cancellation = context.cancellation;
-            return async {
-                self.scalar_reads.fetch_add(1, Ordering::AcqRel);
-                {
-                    let mut __object_work = crate::AuthorityWork::native(work, cancellation);
-                    let __object_result = self
-                        .inner
-                        .read(object_id, maximum_bytes, &mut __object_work)
-                        .await;
-                    __object_result
-                }
-            }
-            .await;
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            self.scalar_reads.fetch_add(1, Ordering::AcqRel);
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = self
-                    .inner
-                    .read(object_id, maximum_bytes, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+        self.scalar_reads.fetch_add(1, Ordering::AcqRel);
+        self.inner.read(object_id, maximum_bytes, context).await
     }
 
     async fn read_many(
@@ -154,42 +117,14 @@ impl AsyncObjectStore for CountingStore {
         requests: &[ObjectReadRequest],
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        context.work.remaining(context.budget)?;
+        self.batch_reads.fetch_add(1, Ordering::AcqRel);
+        let result = self.inner.read_many(requests, context).await?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = context.original {
-            let cancellation = context.cancellation;
-            return async {
-                self.batch_reads.fetch_add(1, Ordering::AcqRel);
-                {
-                    let mut __object_work = crate::AuthorityWork::native(work, cancellation);
-                    let __object_result = self
-                        .inner
-                        .read_many(requests, &mut __object_work)
-                        .await
-                        .map(|(values, allocation)| {
-                            (values, allocation.expect("native batch allocation"))
-                        });
-                    __object_result
-                }
-            }
-            .await
-            .map(|(values, allocation)| (values, Some(allocation)));
+        if context.original.is_some() {
+            assert!(result.1.is_some(), "native batch allocation");
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            self.batch_reads.fetch_add(1, Ordering::AcqRel);
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = self
-                    .inner
-                    .read_many(requests, &mut __object_work)
-                    .await
-                    .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result).map(|values| (values, None))
+        Ok(result)
     }
 
     async fn contains(
@@ -201,17 +136,8 @@ impl AsyncObjectStore for CountingStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = self.inner.contains(object_id, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+        self.inner.contains(object_id, context).await
     }
 }
 
@@ -226,17 +152,9 @@ impl AsyncObjectStore for ShortBatchStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = self.inner.put(object_id, bytes, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+
+        self.inner.put(object_id, bytes, context).await
     }
 
     async fn read(
@@ -249,20 +167,9 @@ impl AsyncObjectStore for ShortBatchStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = self
-                    .inner
-                    .read(object_id, maximum_bytes, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+
+        self.inner.read(object_id, maximum_bytes, context).await
     }
 
     async fn read_many(
@@ -274,23 +181,9 @@ impl AsyncObjectStore for ShortBatchStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let authority_input_0 = &requests[..1];
+        context.work.remaining(context.budget)?;
 
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = self
-                    .inner
-                    .read_many(authority_input_0, &mut __object_work)
-                    .await
-                    .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result).map(|values| (values, None))
+        self.inner.read_many(requests, context).await
     }
 
     async fn contains(
@@ -302,17 +195,9 @@ impl AsyncObjectStore for ShortBatchStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = self.inner.contains(object_id, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+
+        self.inner.contains(object_id, context).await
     }
 }
 
@@ -341,17 +226,9 @@ impl AsyncObjectStore for GatedStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = self.inner.put(object_id, bytes, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+
+        self.inner.put(object_id, bytes, context).await
     }
 
     async fn read(
@@ -364,22 +241,11 @@ impl AsyncObjectStore for GatedStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            self.reads.fetch_add(1, Ordering::AcqRel);
-            self.gate.wait().await;
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = self
-                    .inner
-                    .read(object_id, maximum_bytes, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+
+        self.reads.fetch_add(1, Ordering::AcqRel);
+        self.gate.wait().await;
+        self.inner.read(object_id, maximum_bytes, context).await
     }
 
     async fn read_many(
@@ -403,17 +269,9 @@ impl AsyncObjectStore for GatedStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = self.inner.contains(object_id, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+
+        self.inner.contains(object_id, context).await
     }
 }
 

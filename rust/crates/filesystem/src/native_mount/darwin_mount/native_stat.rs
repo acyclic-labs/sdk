@@ -13,7 +13,6 @@ impl DarwinMountContext {
         self.attributes_from_lookup(path, lookup, stamp, work)
     }
 
-    /// Native attributes of `lookup`, observed at `path` after `stamp`.
     pub(super) fn attributes_from_lookup(
         &self,
         path: &MountPath,

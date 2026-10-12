@@ -677,7 +677,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             &mut work,
         )?;
         let mut records =
-            match operations::read_records(&self.stream, &location.0, 0, 2, &mut work).await? {
+            match operations::read_records(&self.stream, location.0.path(), 0, 2, &mut work).await? {
                 Ok(records) => records,
                 Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(false),
                 Err(error) => return Err(sdk_error(error, &work)),
@@ -728,7 +728,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         )?;
         let mut originals = match operations::read_records(
             &self.stream,
-            &mailbox.0,
+            mailbox.0.path(),
             retained.sequence,
             1,
             &mut work,

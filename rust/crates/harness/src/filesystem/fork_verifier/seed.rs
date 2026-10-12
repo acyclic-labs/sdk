@@ -91,7 +91,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             reason: "Filesystem verifier has no native authority",
         })?;
         binding.require_seed(seed, work)?;
-        file.validate(&mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)))?;
+        file.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
         if file.volume().provider() != &self.host.provider {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,

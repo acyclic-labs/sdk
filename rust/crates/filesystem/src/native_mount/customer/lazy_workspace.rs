@@ -24,44 +24,29 @@ where
                 "native working-set root must be absolute",
             ));
         }
-        let mut frame_custody = None;
-        let (mut future, _) = crate::heap_future::in_heap_admitted(
-            (work, &mut frame_custody),
-            |(work, custody), bytes| {
-                **custody = Some(work.claim(
-                    bytes,
-                    u64::from(bytes != 0),
-                    crate::WorkCounters::default(),
-                )?);
-                Ok::<(), crate::NativeTreeMaterializationError>(())
-            },
-            |(work, _)| async move {
-                let exact = self
-                    .exactify(
-                        subdirectory,
-                        permit,
-                        &mut KernelAccounting::native(work, work.cancellation()),
-                    )
-                    .await?;
-                let mut mount = (
-                    MountOptions::read_write().publication(MountPublication::Manual),
-                    work.claim(0, 0, crate::WorkCounters::default())?,
-                );
-                if subdirectory != "/" {
-                    let (text, mut custody) = work.display(&subdirectory)?;
-                    mount.0 = mount.0.subdirectory(text);
-                    mount.1.absorb(&mut custody)?;
-                }
-                mount.0 = mount.0.native_context(work, None, None);
-                exact
-                    .prepare_native_working_set(&mount.0, options, capture_budget, cancellation)
-                    .await
-            },
-        )?;
-        let result = future.as_mut().await;
-        drop(future);
-        drop(frame_custody);
-        result
+        options::in_native_heap(work, || async move {
+            let exact = self
+                .exactify(
+                    subdirectory,
+                    permit,
+                    &mut KernelAccounting::native(work, work.cancellation()),
+                )
+                .await?;
+            let mut mount = (
+                MountOptions::read_write().publication(MountPublication::Manual),
+                work.claim(0, 0, crate::WorkCounters::default())?,
+            );
+            if subdirectory != "/" {
+                let (text, mut custody) = work.display(&subdirectory)?;
+                mount.0 = mount.0.subdirectory(text);
+                mount.1.absorb(&mut custody)?;
+            }
+            mount.0 = mount.0.native_context(work, None, None);
+            exact
+                .prepare_native_working_set(&mount.0, options, capture_budget, cancellation)
+                .await
+        })
+        .await
     }
 
     pub(super) async fn prepare_authored_mount_source(
@@ -76,10 +61,15 @@ where
         ),
         MountLifecycleError,
     > {
-        if options.native_original.as_ref().is_some_and(|binding| !work.shares_allocation_context(binding)) {
+        if options
+            .native_original
+            .as_ref()
+            .is_some_and(|binding| !work.shares_allocation_context(binding))
+        {
             return Err(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
-            ).into());
+            )
+            .into());
         }
         let cancellation = work.cancellation();
         let config = self.workspace().volume_config();
@@ -98,28 +88,7 @@ where
         let selected = self.lookup(&root_text.0, &mut accounting).await?;
         let selected_custody = selected.1;
         let selected = selected.0;
-        if !matches!(
-            &selected,
-            LazyLookup::Authored {
-                stat: crate::WorkspaceStat {
-                    kind: FileKind::Directory,
-                    ..
-                },
-                ..
-            } | LazyLookup::Source {
-                node: SourceNode {
-                    kind: SourceNodeKind::Directory,
-                    ..
-                },
-                ..
-            } | LazyLookup::Shadow {
-                record: crate::kernel::FileRecord {
-                    kind: FileKind::Directory,
-                    ..
-                },
-                ..
-            }
-        ) {
+        if selected.stat().kind != SourceNodeKind::Directory {
             return Err(WorkspaceError::NotDirectory.into());
         }
         if let LazyLookup::Source { node, .. } = &selected {
@@ -173,11 +142,6 @@ where
             &crate::CancellationToken::new(),
         )?;
         let work = &work;
-        if options.native_original.as_ref().is_some_and(|binding| !work.shares_allocation_context(binding)) {
-            return Err(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            ).into());
-        }
         let destination = work.path(destination.as_ref(), None)?;
         let destination_custody = destination.1;
         let destination = destination.0;

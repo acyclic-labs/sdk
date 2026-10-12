@@ -341,9 +341,9 @@ where
         }
         self.verifier.verify(
             &self.scope,
-            &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)),
+            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
         )?;
-        volume.validate(&mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)))?;
+        volume.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
         if volume.provider() != &self.host.provider {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -380,7 +380,7 @@ where
             context
                 .verify_original_execution_owner_with_native_work(work)?
                 .await?;
-            let mut observer = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
+            let mut observer = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
             let grant = ContentGrant::verify_directory_read(
                 &self.verifier,
                 &self.scope,
@@ -388,7 +388,7 @@ where
                 granted_prefix,
                 &mut Some(&mut observer),
             )?;
-            let grant_custody = observer.into_custody();
+            let grant_custody = observer.into_custody()?;
             grant.require_directory_path(
                 volume,
                 path,

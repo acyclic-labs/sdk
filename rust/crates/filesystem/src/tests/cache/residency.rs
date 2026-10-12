@@ -8,12 +8,13 @@ async fn cache_is_bounded_lru_authenticated_and_physically_observable()
     let (first_id, first_bytes) = object(b"first");
     let (second_id, second_bytes) = object(b"second");
     for (object_id, bytes) in [(first_id, first_bytes), (second_id, second_bytes)] {
-        (async {
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = inner.put(object_id, bytes, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        })
-        .await?;
+        (inner
+            .put(
+                object_id,
+                bytes,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            )
+            .await)?;
     }
     let cached = CachedObjectStore::new(inner, options(1, 8))?;
     let first = (async {
@@ -28,21 +29,23 @@ async fn cache_is_bounded_lru_authenticated_and_physically_observable()
         __object_work.receipt(__object_result)
     })
     .await?;
-    let second = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = cached.read(second_id, 6, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
-    let reloaded = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = cached.read(first_id, 5, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    let second = (cached
+        .read(
+            second_id,
+            6,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
+    let reloaded = (cached
+        .read(
+            first_id,
+            5,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
     assert_eq!(first.value.bytes, warm.value.bytes);
-    assert_eq!(second.value.bytes.as_ref(), b"second");
-    assert_eq!(reloaded.value.bytes.as_ref(), b"first");
+    assert_eq!(second.bytes.as_ref(), b"second");
+    assert_eq!(reloaded.bytes.as_ref(), b"first");
     assert_eq!(first.work.backend_read_operations, 1);
     assert_eq!(warm.work.backend_read_operations, 0);
     assert_eq!(warm.value.retention, ObjectReadRetention::Shared);
@@ -76,12 +79,13 @@ async fn cache_bounds_cancellation_and_clear_fail_before_hidden_backend_work()
     let inner = MemoryObjectStore::default();
     let (object_id, bytes) = object(b"bounded");
     let active = CancellationToken::new();
-    (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &active);
-        let __object_result = inner.put(object_id, bytes, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    (inner
+        .put(
+            object_id,
+            bytes,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &active),
+        )
+        .await)?;
     let cached = CachedObjectStore::new(inner, options(1, 16))?;
     let cancelled = CancellationToken::new();
     cancelled.cancel();
@@ -96,12 +100,13 @@ async fn cache_bounds_cancellation_and_clear_fail_before_hidden_backend_work()
     assert!(matches!(failure.error, ObjectStoreError::Cancelled));
     assert_eq!(*failure.work, WorkCounters::default());
     assert_eq!(cached.stats()?, ObjectCacheStats::default());
-    (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &active);
-        let __object_result = cached.read(object_id, 7, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    (cached
+        .read(
+            object_id,
+            7,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &active),
+        )
+        .await)?;
     cached.clear()?;
     assert_eq!(cached.stats()?.resident_entries, 0);
     assert_eq!(cached.stats()?.resident_bytes, 0);
@@ -115,37 +120,38 @@ async fn put_contains_and_decoded_pages_share_one_deterministic_lru()
     let cached = CachedObjectStore::new(inner, options(2, 64))?;
     let cancellation = CancellationToken::new();
     let (canonical_id, canonical_bytes) = object(b"canonical");
-    (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = cached
-            .put(canonical_id, canonical_bytes, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    (cached
+        .put(
+            canonical_id,
+            canonical_bytes,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
     assert!(
-        (cached.inner(canonical_id, WorkBudget::UNBOUNDED, &cancellation,))
+        cached
+            .inner()
+            .contains(
+                canonical_id,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            )
             .await?
-            .value
     );
     assert!(
-        (async {
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = cached.contains(canonical_id, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        })
-        .await?
-        .value
+        (cached
+            .contains(
+                canonical_id,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            )
+            .await)?
     );
     let (missing_id, _) = object(b"missing");
     assert!(
-        !(async {
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = cached.contains(missing_id, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        })
-        .await?
-        .value
+        !(cached
+            .contains(
+                missing_id,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            )
+            .await)?
     );
 
     let first_key = DecodedCacheKey::new::<u64>(canonical_id, DecodeLimits::default());
@@ -219,22 +225,24 @@ async fn oversized_objects_bypass_residency_while_clones_share_warm_entries()
     let (small_id, small_bytes) = object(b"small");
     let (large_id, large_bytes) = object(b"larger-than-cache");
     for (object_id, bytes) in [(small_id, small_bytes), (large_id, large_bytes)] {
-        (async {
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = inner.put(object_id, bytes, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        })
-        .await?;
+        (inner
+            .put(
+                object_id,
+                bytes,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            )
+            .await)?;
     }
     let (counting, scalar_reads, _) = counting_store(inner);
     let cached = CachedObjectStore::new(counting, options(4, 8))?;
     let clone = cached.clone();
-    (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = cached.read(small_id, 5, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    (cached
+        .read(
+            small_id,
+            5,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
     let warm = (async {
         let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __object_result = clone.read(small_id, 5, &mut __object_work).await;
@@ -242,18 +250,20 @@ async fn oversized_objects_bypass_residency_while_clones_share_warm_entries()
     })
     .await?;
     assert_eq!(warm.work.backend_read_operations, 0);
-    (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = cached.read(large_id, 17, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
-    (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = clone.read(large_id, 17, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    (cached
+        .read(
+            large_id,
+            17,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
+    (clone
+        .read(
+            large_id,
+            17,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
     assert_eq!(scalar_reads.load(Ordering::Acquire), 3);
     assert_eq!(cached.stats()?.resident_entries, 1);
     assert_eq!(cached.stats()?.resident_bytes, 5);

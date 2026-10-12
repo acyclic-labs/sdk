@@ -5,6 +5,7 @@ use crate::{
     resources::ProviderRef,
 };
 mod lifecycle;
+mod model_ordering;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 mod orchestration;
@@ -159,4 +160,30 @@ fn child(operation: u8, parent: u8, slot: &str) -> Result<OperationSpec> {
 }
 fn cpu(amount: u64) -> ResourceRequest {
     ResourceRequest(BTreeMap::from([("cpu".into(), amount)]))
+}
+
+fn claim(op: u8, lease: u8, attempt: u8, step: u8, digest: u8) -> SchedulerEvent {
+    SchedulerEvent::ModelDispatchClaimed {
+        operation_id: id(op),
+        attempt_id: id(attempt),
+        step: u32::from(step),
+        request_digest: [digest; 32],
+        fence: fence(lease),
+        ceiling: 2,
+    }
+}
+
+fn claims_preserved(before: &Scheduler, after: &Scheduler) -> bool {
+    before.model_claims.iter().all(|(op, prior)| {
+        after.model_claims.get(op).is_some_and(|current| {
+            current.ceiling == prior.ceiling
+                && prior.attempts.iter().all(|(attempt, steps)| {
+                    current.attempts.get(attempt).is_some_and(|retained| {
+                        steps
+                            .iter()
+                            .all(|(step, digest)| retained.get(step) == Some(digest))
+                    })
+                })
+        })
+    })
 }
