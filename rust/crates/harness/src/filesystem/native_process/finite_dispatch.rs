@@ -41,24 +41,9 @@ pub(super) fn dispatch_payload(
     Ok((dispatch, custody))
 }
 
-pub(super) fn into_observed_effect(
-    observed: NativeObservation, mut custody: NativeAllocation,
-) -> Result<(EffectObservation, NativeAllocation)> {
-    let NativeObservation {
-        effect, diagnostic, publication_failure, invocation_failure, published, work: _,
-    } = observed;
-    drop(diagnostic);
-    drop(publication_failure);
-    drop(invocation_failure);
-    drop(published);
-    custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
-    Ok((effect, custody))
-}
 
 fn check(work: &NativeMaterializationWork) -> Result<()> {
-    {
- work.remaining()?;
-}
+    work.remaining()?;
     Ok(())
 }
 
@@ -74,11 +59,7 @@ pub(super) fn require_finite(work: &NativeMaterializationWork) -> Result<()> {
 }
 
 fn examine(work: &NativeMaterializationWork, compare: impl FnOnce() -> bool) -> Result<bool> {
-    {
-
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-
-}
+    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
     Ok(compare())
 }
 
@@ -133,7 +114,7 @@ fn require_same_launch(
 }
 
 impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
-    pub(super) async fn require_dispatch_original(
+    pub(super) async fn validate_dispatch(
         &self, dispatch: &EffectDispatch, work: &NativeMaterializationWork,
     ) -> Result<()> {
         check(work)?;
@@ -188,12 +169,12 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         check(work)
     }
 
-    pub(super) async fn launch_original(
+    pub(super) async fn launch(
         &self, payload: (EffectDispatch, NativeAllocation), work: &NativeMaterializationWork,
     ) -> Result<(EffectObservation, NativeAllocation)> {
         let dispatch = &payload.0;
-        self.require_dispatch_original(dispatch, work).await?;
-        if let Some(receipt) = self.receipt_original(dispatch.attempt_id, work, None).await? {
+        self.validate_dispatch(dispatch, work).await?;
+        if let Some(receipt) = self.receipt(dispatch.attempt_id, work, None).await? {
             return receipt.into_effect();
         }
         let (task, fence) = self.owner.task_binding();
@@ -205,9 +186,9 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             command: self.command, fence: Cow::Borrowed(fence), approval: self.approval,
             approval_digest: self.executable_admission()?.2,
         };
-        if !append_receipt_original(&self.owner, &path, 0,
+        if !append_receipt(&self.owner, &path, 0,
             &ReceiptWrite::Launch(&launch), JournalWrite::Fresh, work).await? {
-            let receipt = self.receipt_original(dispatch.attempt_id, work, None).await?
+            let receipt = self.receipt(dispatch.attempt_id, work, None).await?
                 .ok_or(receipt_error("native launch receipt changed"))?;
             return receipt.into_effect();
         }
@@ -240,11 +221,11 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 effect: EffectWrite { provider: &dispatch.provider, effect_id: dispatch.effect_id,
                     attempt_id: dispatch.attempt_id, request_digest: dispatch.request_digest,
                     guarantee: dispatch.guarantee, status: &execution.status },
-                diagnostic: &execution.diagnostic, publication_failure: &execution.publication_failure,
-                invocation_failure: &execution.invocation_failure, work: &execution.work,
+                diagnostic: &execution.diagnostic, publication_failure: &None,
+                invocation_failure: &None, work: &execution.work,
                 published: &execution.published,
             };
-            if !append_receipt_original(&owner, &path, 1,
+            if !append_receipt(&owner, &path, 1,
                 &ReceiptWrite::Observed(&observed), JournalWrite::Settlement, work).await? {
                 let retained = receipt_observation::read(&owner, &path, work).await?
                     .ok_or(receipt_error("native observed receipt is missing"))?;
@@ -271,16 +252,13 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 effect_kind, request } = dispatch;
             drop(effect_kind);
             drop(request);
-            let result = into_observed_effect(NativeObservation {
-                    effect: EffectObservation { provider, effect_id, attempt_id, request_digest,
-                        guarantee, status: execution.status },
-                    diagnostic: execution.diagnostic,
-                    publication_failure: execution.publication_failure,
-                    invocation_failure: execution.invocation_failure, work: execution.work,
-                    published: execution.published,
-                }, custody);
+            let effect = EffectObservation { provider, effect_id, attempt_id, request_digest,
+                guarantee, status: execution.status };
+            drop((execution.diagnostic, execution.published));
+            custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
+
             drop(execution_custody);
-            result
+            Ok((effect, custody))
         })?;
         self.supervisor.begin(attempt)?;
         tokio::spawn(future).await

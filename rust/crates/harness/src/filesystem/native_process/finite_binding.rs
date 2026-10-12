@@ -87,9 +87,9 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
     use crate::filesystem::native_contract::validation_error;
     require_view_family(view.as_ref(), work)?;
     owner.verify_with_native_work(false, work).await?;
-    owner.require_effect_grants_with_native_work(&plan.provider, false, work)?;
-    owner.validate_input_file_with_native_work(&plan.request, work)?;
-    owner.validate_input_file_with_native_work(&plan.result_schema, work)?;
+    owner.require_effect_grants(&plan.provider, false, &mut Some(&mut io.history_io()))?;
+    owner.validate_input_file_with_io(&plan.request, &io)?;
+    owner.validate_input_file_with_io(&plan.result_schema, &io)?;
     if authority.history_limits.maximum_events == 0 || authority.history_limits.maximum_bytes == 0 {
         return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid,
             "native effect history allowances must be finite and positive"));
@@ -112,7 +112,7 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
             owner.require_volume_grant_with_native_work(&mapping.volume, crate::conversation::VolumeOperation::Write, work)?;
         }
     }
-    request.validate_native_paths(view.manifest(), io)?;
+    request.validate_native_paths(view.manifest(), &io)?;
     if request.view.volumes.iter().any(|mapping| &mapping.volume == authority.results.volume()) {
         return Err(validation_error(Some(&io), crate::wire::ErrorCode::Unsupported,
             "native result storage must be separate from materialized volumes"));
@@ -154,9 +154,8 @@ pub(super) fn assemble<P: StreamProvider + 'static>(
     authority: NativeProcessAuthority, work: &NativeMaterializationWork,
 ) -> Result<NativeProcessProvider<P>> {
     let effect_id = crate::effect_host::task_effect_id_with_native_work(owner.task_binding().0, command, work)?;
-    let (history, history_custody) = HistoryReader::new_with_native_work(
-        &owner.stream(), authority.verifier.audience(), &authority.verifier, work)?;
-    io.absorb_native_custody(history_custody)?;
+    let history = HistoryReader::new_with_work(
+        &owner.stream(), authority.verifier.audience(), &authority.verifier, Some(&mut io.history_io()))?;
     let plan = arc(plan, &io)?;
     let authority = arc(authority, &io)?;
     let history = arc(history, &io)?;

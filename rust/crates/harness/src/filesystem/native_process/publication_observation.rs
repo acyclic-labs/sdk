@@ -83,8 +83,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         if before.as_ref().is_some_and(|outcome| !matches!(outcome, crate::Outcome::Succeeded(_))) {
             return Err(Error::Indeterminate(self.command));
         }
-        let request = self.original_request_with_native_work(work).await?;
-        let receipt = self.approved_original_receipt_with_native_work(
+        let request = self.request(work).await?;
+        let receipt = self.approved_receipt(
             attempt, request.request(), work,
         ).await?;
         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(Error::from)?;

@@ -133,7 +133,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let custody = work.retain_owned(std::mem::size_of::<NativeProcessDrainProof>() as u64).map_err(Error::from)?;
             cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(Error::from)?;
             self.authenticate_cleanup_owner(work).await?;
-            let request = self.original_request_with_native_work(work).await?;
+            let request = self.request(work).await?;
             if !same_manifest(&request.request().view,
                 NativeProcessView::<P>::manifest(view.as_ref()), work)?
             {
@@ -147,7 +147,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 }
                 None => None,
             };
-            let receipt = self.approved_original_receipt_with_native_work(
+            let receipt = self.approved_receipt(
                 attempt, request.request(), work,
             ).await?;
             if (receipt.task, &receipt.original_fence) != self.owner.task_binding()

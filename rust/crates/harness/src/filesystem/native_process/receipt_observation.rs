@@ -46,16 +46,12 @@ pub(super) struct ReadReceipt {
 }
 
 fn check(work: &NativeMaterializationWork) -> std::result::Result<(), Error> {
-    {
- work.remaining()?;
-}
+    work.remaining()?;
     Ok(())
 }
 
 fn examine(work: &NativeMaterializationWork, operation: impl FnOnce() -> bool) -> std::result::Result<bool, Error> {
-    {
- work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-}
+    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
     Ok(operation())
 }
 
@@ -228,12 +224,8 @@ pub(super) async fn read<P: StreamProvider>(
 }
 
 fn receive(record: &acyclic_stream::Record, work: &NativeMaterializationWork) -> std::result::Result<(), Error> {
-    {
-
-        work.spent(WorkCounters { authority_records_read: 1, authority_bytes_read: record.value.len() as u64,
-            ..WorkCounters::default() })?;
-
-}
+    work.spent(WorkCounters { authority_records_read: 1, authority_bytes_read: record.value.len() as u64,
+        ..WorkCounters::default() })?;
     if record.value.len() > acyclic_stream::MAX_RECORD_BYTES { return Err(receipt_error("native receipt exceeds Stream limit")); }
     check(work)
 }
@@ -286,7 +278,7 @@ impl OriginalNativeRequest {
 }
 
 impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
-    pub(super) async fn original_request_with_native_work(
+    pub(super) async fn request(
         &self, work: &NativeMaterializationWork,
     ) -> Result<OriginalNativeRequest> {
         match &self.admission {
@@ -305,7 +297,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         }
     }
 
-    pub(super) async fn approved_original_receipt_with_native_work(
+    pub(super) async fn approved_receipt(
         &self, attempt: crate::EffectAttemptId, request: &NativeProcessRequest,
         work: &NativeMaterializationWork,
     ) -> Result<NativeProcessReceipt> {
@@ -313,7 +305,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             self.owner.task_binding().0, self.command, work,
         )?;
         self.authority.approvals.verify_with_native_work(self.approval, self.command, digest, work)?.await?;
-        self.receipt_original(attempt, work, Some(digest)).await?
+        self.receipt(attempt, work, Some(digest)).await?
             .ok_or(Error::Indeterminate(self.command))
     }
 
@@ -345,96 +337,83 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             Ok(provider)
         })?.await
     }
-    /// Observe the original attempt on the caller's original native work ledger.
+    /// Observes the protected attempt, optionally checking its approved request digest.
     pub async fn receipt(
-        &self, attempt: crate::EffectAttemptId, work: &NativeMaterializationWork,
-    ) -> std::result::Result<Option<NativeProcessReceipt>, Error> {
-        crate::NativeFutureBundle::new(work, || self.receipt_original(attempt, work, None))?.await
-    }
-
-    pub(super) async fn receipt_original(
         &self, attempt: crate::EffectAttemptId, work: &NativeMaterializationWork,
         expected_approval_digest: Option<[u8; 32]>,
     ) -> std::result::Result<Option<NativeProcessReceipt>, Error> {
-        let outcome_custody = {
-
-            let (outcome, custody) = self.owner.outcome_with_native_work(work).await?;
-            if outcome.is_none() { self.owner.verify_with_native_work(true, work).await?; }
-            Some((outcome, custody))
-
-};
-        {
-
+        crate::NativeFutureBundle::new(work, || async move {
+            let outcome_custody = self.owner.outcome_with_native_work(work).await?;
+            if outcome_custody.0.is_none() { self.owner.verify_with_native_work(true, work).await?; }
             self.owner.require_volume_grant_with_native_work(self.plan.request.volume(), crate::conversation::VolumeOperation::Read, work)?;
-
-}
-        let path = receipt_path(attempt, work)?;
-        let Some(ReadReceipt { launch, observed, mut custody }) = read(&self.owner, &path, work).await? else { return Ok(None); };
-        if !examine(work, || launch.task == self.owner.task_binding().0)?
-            || !examine(work, || launch.command == self.command)?
-            || !examine(work, || launch.plan.as_ref() == self.plan.as_ref())?
-            || !examine(work, || launch.conversation.as_ref() == self.authority.verifier.audience())?
-            || !examine(work, || launch.dispatch.effect_id == self.effect_id)?
-            || !examine(work, || launch.dispatch.attempt_id == attempt)?
-            || !examine(work, || launch.dispatch.provider == self.plan.provider)?
-            || !examine(work, || launch.dispatch.request == self.plan.request)?
-            || !examine(work, || launch.dispatch.effect_kind == self.plan.effect_kind)?
-            || !examine(work, || launch.dispatch.guarantee == self.plan.guarantee)?
-            || !examine(work, || launch.approval == self.approval)?
-            || !examine(work, || match &self.admission {
-                NativeAdmission::Executable { approval_digest, .. } => launch.approval_digest == *approval_digest,
-                NativeAdmission::ReceiptOnly => true,
-            })? {
-            return Err(receipt_error("native receipt belongs to a different admission"));
-        }
-        if let Some(expected) = expected_approval_digest
-            && !examine(work, || launch.approval_digest == expected)?
-        {
-            return Err(receipt_error("native receipt differs from its original approved request digest"));
-        }
-        authenticate_core_launch(&self.history, &launch, &self.authority, work).await?;
-        {
-
-            let (after, after_custody) = self.owner.outcome_with_native_work(work).await?;
-            if after.is_none() { self.owner.verify_with_native_work(true, work).await?; }
-            drop(after); drop(after_custody);
-
-}
-        check(work)?;
-        let LaunchReceipt { dispatch, plan, conversation, task, command, fence,
-            approval: _, approval_digest: _ } = launch;
-        drop(plan);
-        drop(conversation);
-        let original_fence = fence.into_owned();
-        let was_observed = observed.is_some();
-        let (effect, diagnostic, publication_failure, invocation_failure, published, completed_work) = match observed {
-            Some(observed) => {
-                drop(dispatch);
-                (observed.effect, observed.diagnostic, observed.publication_failure,
-                    observed.invocation_failure, observed.published, observed.work)
+            let path = receipt_path(attempt, work)?;
+            let Some(ReadReceipt { launch, observed, mut custody }) = read(&self.owner, &path, work).await? else { return Ok(None); };
+            if !examine(work, || launch.task == self.owner.task_binding().0)?
+                || !examine(work, || launch.command == self.command)?
+                || !examine(work, || launch.plan.as_ref() == self.plan.as_ref())?
+                || !examine(work, || launch.conversation.as_ref() == self.authority.verifier.audience())?
+                || !examine(work, || launch.dispatch.effect_id == self.effect_id)?
+                || !examine(work, || launch.dispatch.attempt_id == attempt)?
+                || !examine(work, || launch.dispatch.provider == self.plan.provider)?
+                || !examine(work, || launch.dispatch.request == self.plan.request)?
+                || !examine(work, || launch.dispatch.effect_kind == self.plan.effect_kind)?
+                || !examine(work, || launch.dispatch.guarantee == self.plan.guarantee)?
+                || !examine(work, || launch.approval == self.approval)?
+                || !examine(work, || match &self.admission {
+                    NativeAdmission::Executable { approval_digest, .. } => launch.approval_digest == *approval_digest,
+                    NativeAdmission::ReceiptOnly => true,
+                })? {
+                return Err(receipt_error("native receipt belongs to a different admission"));
             }
-            None => {
-                let EffectDispatch { provider, effect_id, attempt_id, effect_kind, request,
-                    guarantee, request_digest } = dispatch.into_owned();
-                drop(effect_kind);
-                drop(request);
-                (EffectObservation { provider, effect_id, attempt_id, request_digest, guarantee,
-                    status: EffectStatus::Indeterminate }, None, None, None, Vec::new(), WorkCounters::default())
+            if let Some(expected) = expected_approval_digest
+                && !examine(work, || launch.approval_digest == expected)?
+            {
+                return Err(receipt_error("native receipt differs from its original approved request digest"));
             }
-        };
-        let mut result = NativeProcessReceipt {
-            task, command, original_fence, effect, observed: was_observed,
-            diagnostic, publication_failure, invocation_failure, published, work: completed_work, _custody: None,
-        };
-        let retained = add(
-            add(result.original_fence.reservation_id.capacity() as u64,
-                result.original_fence.placement.capacity() as u64)?,
-            observation_parts_bytes(&result.effect, result.diagnostic.as_ref(),
-                result.publication_failure.as_ref(), result.invocation_failure.as_ref(), &result.published)?,
-        )?;
-        custody.resize_retained(retained)?;
-        result._custody = Some(custody);
-        drop(path); drop(outcome_custody);
-        Ok(Some(result))
+            authenticate_core_launch(&self.history, &launch, &self.authority, work).await?;
+            {
+
+                let (after, after_custody) = self.owner.outcome_with_native_work(work).await?;
+                if after.is_none() { self.owner.verify_with_native_work(true, work).await?; }
+                drop(after); drop(after_custody);
+
+    }
+            check(work)?;
+            let LaunchReceipt { dispatch, plan, conversation, task, command, fence,
+                approval: _, approval_digest: _ } = launch;
+            drop(plan);
+            drop(conversation);
+            let original_fence = fence.into_owned();
+            let was_observed = observed.is_some();
+            let (effect, diagnostic, publication_failure, invocation_failure, published, completed_work) = match observed {
+                Some(observed) => {
+                    drop(dispatch);
+                    (observed.effect, observed.diagnostic, observed.publication_failure,
+                        observed.invocation_failure, observed.published, observed.work)
+                }
+                None => {
+                    let EffectDispatch { provider, effect_id, attempt_id, effect_kind, request,
+                        guarantee, request_digest } = dispatch.into_owned();
+                    drop(effect_kind);
+                    drop(request);
+                    (EffectObservation { provider, effect_id, attempt_id, request_digest, guarantee,
+                        status: EffectStatus::Indeterminate }, None, None, None, Vec::new(), WorkCounters::default())
+                }
+            };
+            let mut result = NativeProcessReceipt {
+                task, command, original_fence, effect, observed: was_observed,
+                diagnostic, publication_failure, invocation_failure, published, work: completed_work, _custody: None,
+            };
+            let retained = add(
+                add(result.original_fence.reservation_id.capacity() as u64,
+                    result.original_fence.placement.capacity() as u64)?,
+                observation_parts_bytes(&result.effect, result.diagnostic.as_ref(),
+                    result.publication_failure.as_ref(), result.invocation_failure.as_ref(), &result.published)?,
+            )?;
+            custody.resize_retained(retained)?;
+            result._custody = Some(custody);
+            drop(path); drop(outcome_custody);
+            Ok(Some(result))
+        })?.await
     }
 }

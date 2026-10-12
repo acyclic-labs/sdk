@@ -186,7 +186,7 @@ impl NativeSupervisorControl {
             process: Mutex::new(None) }
     }
 
-    fn settle_process_with_native_work(
+    fn settle_process(
         &self, work: &acyclic_fs::NativeMaterializationWork,
         cleanup: Option<&NativeCleanupControl<'_>>,
     ) -> Result<()> {
@@ -305,8 +305,6 @@ struct NativeObservation {
 struct NativeExecution {
     status: EffectStatus,
     diagnostic: Option<crate::conversation::FileRef>,
-    publication_failure: Option<NativePublicationFailure>,
-    invocation_failure: Option<String>,
     published: Vec<NativeProcessPublishedVolume>,
     work: acyclic_fs::WorkCounters,
 }
@@ -421,7 +419,7 @@ where
         self.authenticate_cleanup_owner(work).await?;
         cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         if completed {
-            self.supervisor.settle_process_with_native_work(work, cleanup)?;
+            self.supervisor.settle_process(work, cleanup)?;
             return Ok(());
         }
         work.charge(acyclic_fs::WorkCounters {
@@ -449,7 +447,7 @@ where
         }
         crate::NativeFutureBundle::new(work, || async {
             let phase = self.wait_for_original_collection(attempt, work, cleanup_cancellation, None).await?;
-            let receipt = self.receipt(attempt, work).await?
+            let receipt = self.receipt(attempt, work, None).await?
                 .ok_or(receipt_error("original supervisor completed without a retained launch receipt"))?;
             if !receipt.observed {
                 return Err(receipt_error("original supervisor completion has no durable observed receipt"));
@@ -487,7 +485,7 @@ where
             if completed {
                 if !matches!(phase, NativeCapturePhase::Pending | NativeCapturePhase::Drained | NativeCapturePhase::Recorded) {
                     self.authenticate_cleanup_owner(work).await?;
-                    self.supervisor.settle_process_with_native_work(work, cleanup)?;
+                    self.supervisor.settle_process(work, cleanup)?;
                 }
                 return Ok(self.supervisor.snapshot(attempt)?.1);
             }
@@ -504,7 +502,7 @@ where
         attempt: crate::EffectAttemptId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<crate::conversation::FileRef>> {
         let (request, result_schema, _) = self.executable_admission()?;
-        let Some(receipt) = self.receipt(attempt, work).await? else { return Ok(None); };
+        let Some(receipt) = self.receipt(attempt, work, None).await? else { return Ok(None); };
         if !receipt.observed { return Ok(None); }
         let reference = match receipt.effect.status {
             EffectStatus::Succeeded { result } => Some(result),
@@ -613,7 +611,7 @@ where
         view.operation_cancellation().check()
             .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         let payload = finite_dispatch::dispatch_payload(request, work)?;
-        crate::NativeFutureBundle::new(work, || self.launch_original(payload, work))
+        crate::NativeFutureBundle::new(work, || self.launch(payload, work))
     }
 
     fn reconcile_with_native_work<'a>(
@@ -623,7 +621,7 @@ where
         finite_dispatch::require_finite(work)?;
         self.require_work_family(work)?;
         crate::NativeFutureBundle::new(work, || async move {
-            self.receipt_original(attempt, work, None).await?
+            self.receipt(attempt, work, None).await?
                 .map(NativeProcessReceipt::into_effect)
                 .transpose()
         })
