@@ -568,8 +568,10 @@ impl PiForkCoordinator {
 
     pub(crate) async fn read_original_input(&self, reference: &FileRef) -> Result<acyclic_stream::OwnedBytes> { let work = &self.work;
             self.runtime.verify_owner_with_native_work(&self.owner, work)?;
-            let actual = self.runtime.runtime.readonly_task_context_with_native_work(self.owner.policy().root_task, work).await?;
-            return actual.1.context().read_file_with_native_work(reference, work).await; }
+            let task = self.owner.policy().root_task;
+            let actual = self.runtime.runtime.harness().durable_context_with_native_work(
+                task, OperationId::from_bytes(task.into_bytes()), work).await?;
+            return actual.0.read_file_with_native_work(reference, work).await; }
 
     fn require_input_read(&self, context: &acyclic_harness::runtime::TaskContext) -> Result<()> {
         let native = {

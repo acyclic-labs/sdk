@@ -305,9 +305,12 @@ where
                 || launch.payload.descriptor().byte_length() > super::MAXIMUM_ADAPTER_STATE_BYTES {
                 return Err(invalid("Pi original native intent exceeds its retained input boundary"));
             }
-            let bytes = runtime.task_host().read_recipient_file_with_native_work(task, &launch.payload, work).await?;
+            let context = runtime.harness().durable_context_with_native_work(
+                task, OperationId::from_bytes(task.into_bytes()), work).await?;
+            let bytes = context.0.read_file_with_native_work(&launch.payload, work).await?;
+            drop(context);
             let intent = super::pi_root_provider::guarded_pi_decode::<super::pi_native::PiNativeLaunchIntent>(
-                &bytes.0, super::MAXIMUM_ADAPTER_STATE_BYTES,
+                &bytes, super::MAXIMUM_ADAPTER_STATE_BYTES,
                 std::mem::size_of::<super::pi_native::PiNativeLaunchIntent>() as u64,
                 acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
                 super::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)?;

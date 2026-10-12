@@ -174,9 +174,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
             reason: "Pi mailbox payload exceeds bounded decode" });
     }
-    let bytes = runtime.task_host()
-        .read_recipient_file_with_native_work(caller.task_id, &item.payload, work).await?;
-    let mut payload = decode::<PiMailPayload>(&bytes.0, work)?;
+    let context = runtime.harness().durable_context_with_native_work(
+        caller.task_id, acyclic_harness::OperationId::from_bytes(caller.task_id.into_bytes()), work).await?;
+    let bytes = context.0.read_file_with_native_work(&item.payload, work).await?;
+    drop(context);
+    let mut payload = decode::<PiMailPayload>(&bytes, work)?;
     drop(bytes);
     if let Err(cause) = items.1.absorb(&mut payload.1) {
         drop(payload);
