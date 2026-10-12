@@ -4390,7 +4390,7 @@ where
             if work.observation == MountPublicationObservation::Qualified {
                 let original = work.meter.original_native_work().ok_or(MountSourceError::Indeterminate)?;
                 let context = crate::lazy_workspace::NativeSnapshotContext::Lazy(
-                    self.lazy.current_publication_cut_with_native_work(&original, cancellation)
+                    self.lazy.publication_cut(None, &original, cancellation)
                         .await.map_err(native_lazy_error)?,
                 );
                 work.sync_authored_context_guarded(
@@ -4532,7 +4532,7 @@ where
         if work.observation == MountPublicationObservation::Qualified {
             let original = work.meter.original_native_work().ok_or(MountSourceError::Indeterminate)?;
             let context = crate::lazy_workspace::NativeSnapshotContext::Lazy(
-                self.lazy.mount_publication_cut_with_native_work(operation_id, &original, cancellation)
+                self.lazy.publication_cut(Some(operation_id), &original, cancellation)
                     .await.map_err(native_lazy_error)?,
             );
             work.sync_authored_context_guarded(
