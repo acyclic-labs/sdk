@@ -1648,7 +1648,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "bootstrap creator requires an original root admission" });
         }
         verifier.verify_audience(&self.host.owner, &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
-        verifier.verify_with_native_work(&self.host.owner_scope, work)?;
+        verifier.verify(&self.host.owner_scope, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await
     }
 
@@ -3885,17 +3885,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         use crate::store::history::HistoryIo as _;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let owner = io.history_io().clone_authority(owner)?;
-        let scope_copy = owner_scope.clone_with_native_work(work)?;
-        io.absorb_native_custody(scope_copy.1)?;
-        let verifier_copy = verifier.clone_with_native_work(work)?;
-        io.absorb_native_custody(verifier_copy.1)?;
+        let scope_copy = owner_scope.copy(&mut Some(&mut io.history_io()))?;
+        let verifier_copy = verifier.copy(&mut Some(&mut io.history_io()))?;
         let root_copy = root_scope.clone_with_native_work(work)?;
         io.absorb_native_custody(root_copy.1)?;
         let tasks = tasks.clone_with_native_work(work)?;
         let machines = machines.copy(work)?;
         io.absorb_native_custody(machines.1)?;
         let mut host = Self::new_observed(
-            coordinator, stream, payloads, reader, owner, scope_copy.0, verifier_copy.0,
+            coordinator, stream, payloads, reader, owner, scope_copy, verifier_copy,
             root_copy.0, tasks, machines.0, clock, Some(&mut io.history_io()),
         )?;
         let retained = io.owned_bytes()?;
@@ -4227,10 +4225,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     "staged task admission changed before publication"));
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let owner_scope = if let Some(native) = native.as_ref() {
-                let (scope, custody) = self.owner_scope.clone_with_native_work(native)?;
-                work.as_deref_mut().expect("native scope observer").absorb_native_custody(custody)?;
-                scope
+            let owner_scope = if native.is_some() {
+                self.owner_scope.copy(work)?
             } else { self.owner_scope.clone() };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             let owner_scope = self.owner_scope.clone();
