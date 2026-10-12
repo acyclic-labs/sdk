@@ -276,8 +276,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         &storage.stream,
         storage.conversation.clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(storage.content_verifier.clone());
     let conversation = aggregate
@@ -628,8 +627,7 @@ async fn assert_summary_child_import(
         &storage.stream,
         seed.child.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     let parent_history = parent.history_reader()?;
     let child_history = child.history_reader()?;
@@ -711,8 +709,7 @@ async fn assert_summary_child_import(
         &other_stream,
         seed.child.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     unrelated
         .execute(Command {
@@ -897,8 +894,7 @@ async fn append_later_summary_parent_messages(
         &storage.stream,
         storage.conversation.clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(storage.content_verifier.clone());
     for index in 0..count {

@@ -377,8 +377,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         cancellation: &CancellationToken,
     ) -> Result<StreamAggregate<P>> {
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        let aggregate = StreamAggregate::open_with_read_limits(&self.stream, binding.authority().clone(),
-            verifier(binding)?, SchemaRegistry::default(), self.config.history_limits).await?;
+        let aggregate = StreamAggregate::open(&self.stream, binding.authority().clone(),
+            verifier(binding)?, SchemaRegistry::default(), None, self.config.history_limits, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         self.bind_aggregate(binding, scope, aggregate, content)
     }
@@ -800,16 +800,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let verifier = binding.issuer().verifier(&mut observer)?;
             verifier.verify_scope_for_with_work(binding.authority(), &binding.scope, &mut observer)?;
             let authority = observer.as_deref_mut().expect("native aggregate observer").clone_authority(binding.authority())?;
-            match cut {
-                Some(revision) => StreamAggregate::open_at_revision_with_work(
-                    &self.stream, authority, verifier, SchemaRegistry::new(), revision,
-                    self.config.history_limits, &mut observer,
-                ).await?,
-                None => StreamAggregate::open_with_read_limits_with_work(
-                    &self.stream, authority, verifier, SchemaRegistry::new(),
-                    self.config.history_limits, &mut observer,
-                ).await?,
-            }
+            StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new(), None,
+                self.config.history_limits, crate::store::DEFAULT_TERMINAL_EFFECTS, cut, &mut observer).await?
         };
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let retained = io.owned_bytes()?;

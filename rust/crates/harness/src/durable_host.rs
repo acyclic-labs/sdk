@@ -7209,8 +7209,7 @@ pub(crate) mod tests {
             &stream,
             conversation,
             conversation_issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-        )
+            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?;
         assert_eq!(aggregate.reducer().revision(), 3);
         assert_eq!(receipt.calls.load(Ordering::SeqCst), 1);
@@ -8080,8 +8079,7 @@ pub(crate) mod tests {
                 &stream,
                 conversation.clone(),
                 conversation_issuer.verifier(&mut None).expect("verifier copy"),
-                crate::core::SchemaRegistry::new(),
-            )
+                crate::core::SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?;
             aggregate
                 .execute(crate::core::Command {

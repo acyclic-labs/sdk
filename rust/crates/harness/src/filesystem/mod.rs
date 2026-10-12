@@ -5094,7 +5094,7 @@ mod tests {
         let verifier = Arc::new(FilesystemContentVerifier::new(Arc::new(host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4_096, None)?);
         let stream = Arc::new(MemoryStream::default());
         let mut aggregate =
-            StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new())
+            StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await?
                 .with_content_verifier(verifier);
         aggregate
