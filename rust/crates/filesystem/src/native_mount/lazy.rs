@@ -6056,7 +6056,7 @@ where
         if self.unstaged.checked_at(self.expected_source, revision) {
             return Ok(None);
         }
-        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work)), work.native_read_meter().as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
+        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| async { self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work)).await }, work.native_read_meter().as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
         if let Some(file) = file {
             *promoted = Some(Arc::clone(&file));
             return Ok(Some(file));
@@ -7213,7 +7213,7 @@ where
             }
             let removed_open = if self.has_open_source_handle(authored.node.file_id)? {
                 let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(authored.node.file_id, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
-                let file = self.native_call(|work| self.wait(|| self.authored.detached_file_from_record(record, authored.metadata, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work))))?;
+                let file = self.native_call(|work| self.wait(|| async { self.authored.detached_file_from_record(record, authored.metadata, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work)).await }))?;
                 Some((record, authored.metadata, file))
             } else {
                 None
@@ -7248,7 +7248,7 @@ where
                     .lookup(path)?
                     .ok_or(MountSourceError::Stale)?
                     .metadata;
-                let file = self.native_call(|work| self.wait(|| self.authored.detached_file_from_record(record, metadata, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work))))?;
+                let file = self.native_call(|work| self.wait(|| async { self.authored.detached_file_from_record(record, metadata, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work)).await }))?;
                 self.authored.remove(path, Some(file_id))?;
                 self.record_removed_identity(record, metadata, file)?;
             }
@@ -7328,7 +7328,7 @@ where
                 let destination_id = destination_lookup.node.file_id;
                 if destination_id != source_id && self.has_open_source_handle(destination_id)? {
                     let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(destination_id, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
-                    let file = self.native_call(|work| self.wait(|| self.authored.detached_file_from_record(record, destination_lookup.metadata, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work))))?;
+                    let file = self.native_call(|work| self.wait(|| async { self.authored.detached_file_from_record(record, destination_lookup.metadata, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work)).await }))?;
                     Some((record, destination_lookup.metadata, file))
                 } else {
                     None
