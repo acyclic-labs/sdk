@@ -601,38 +601,17 @@ impl NativeFile {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         validate_prepared_read_range(offset, length)?;
-        let allocation = ReadAllocation::new(
-            &meter, arc_allocation_bytes::<Mutex<CompletionState<(B, usize)>>>(),
-        )?;
-        let state = Arc::new(Mutex::new(CompletionState { task_pending: true, _allocation: Some(allocation), ..CompletionState::default() }));
-        let output = Arc::clone(&state);
+        let file = Arc::clone(&self.file);
+        let observer = Arc::clone(&meter);
         #[cfg(windows)]
         let overlapped = self.overlapped;
-        let operation = move |file: Arc<NativeFilePayload>, meter: Arc<dyn NativeReadMeter>| {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let destination = storage.as_mut().get_mut(..length)
-                    .ok_or(io::ErrorKind::InvalidInput)?;
-                read_prepared_in_place(
-                    &file, offset, destination, require_full, meter.as_ref(),
-                    #[cfg(windows)]
-                    overlapped,
-                ).map(|filled| (storage, filled))
-            }));
-            // Retire invocation and handle aliases before exposing a terminal
-            // result. Only caller-owned allocation custody travels with `B`.
-            drop(file);
-            drop(meter);
-            match result {
-                Ok(result) => output.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result = Some(result),
-                Err(payload) => output.stage_panic(payload),
-            }
-        };
-        let allocation = ReadAllocation::new(&meter, std::mem::size_of_val(&operation))?;
-        Ok(NativeCompletion::pending(NativeJob::PreparedRead {
-                file: Arc::clone(&self.file), operation: Box::new(operation),
-                meter, completion: None, terminal: state.clone(), _allocation: allocation,
-                health: Some(Arc::clone(&self.health)),
-            }, state, &NATIVE_WORKERS))
+        task_completion(move || {
+            let destination = storage.as_mut().get_mut(..length).ok_or(io::ErrorKind::InvalidInput)?;
+            read_prepared_in_place(&file, offset, destination, require_full, observer.as_ref(),
+                #[cfg(windows)]
+                overlapped,
+            ).map(|filled| (storage, filled))
+        }, Some(meter), None, Some(Arc::clone(&self.health)), &NATIVE_WORKERS)
     }
 
     fn read_bounded_async_inner(
@@ -652,22 +631,14 @@ impl NativeFile {
         if length > u32::MAX as usize || offset == u64::MAX {
             return Err(io::Error::from(io::ErrorKind::InvalidInput));
         }
-        let allocation = ReadAllocation::new(
-            &meter, arc_allocation_bytes::<Mutex<CompletionState<NativeReadResult>>>(),
-        )?;
-        let state = Arc::new(Mutex::new(CompletionState { _allocation: Some(allocation), ..CompletionState::default() }));
-        Ok(NativeCompletion::pending(NativeJob::BoundedRead {
-                file: Arc::clone(&self.file),
-                #[cfg(windows)]
-                overlapped: self.overlapped,
-                offset,
-                length,
-                require_full,
-                meter,
-                state: Arc::clone(&state),
-                completion: None,
-                health: Some(Arc::clone(&self.health)),
-            }, state, &NATIVE_WORKERS))
+        let file = Arc::clone(&self.file);
+        let observer = Arc::clone(&meter);
+        #[cfg(windows)]
+        let overlapped = self.overlapped;
+        task_completion(move || read_bounded_in_place(&file, offset, length, require_full, &observer,
+            #[cfg(windows)]
+            overlapped,
+        ), Some(meter), None, Some(Arc::clone(&self.health)), &NATIVE_WORKERS)
     }
 
     /// Submits owned positional reads while retaining this handle.
@@ -1860,7 +1831,7 @@ fn inline_blocking_allowed() -> bool {
 pub fn run_blocking_io<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
 ) -> NativeCompletion<T> {
-    blocking_io_task(operation, None, None).expect("unmetered task construction cannot fail")
+    task_completion(move || Ok(operation()), None, None, None, &BLOCKING_WORKERS).expect("unmetered task construction cannot fail")
 }
 
 /// Uses the same host-operation queue with admission for the actual owned completion state, closure, and any capacity-waiter node.
@@ -1868,7 +1839,7 @@ pub fn run_blocking_io_measured<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
     meter: Arc<dyn NativeReadMeter>,
 ) -> io::Result<NativeCompletion<T>> {
-    blocking_io_task(operation, Some(meter), None)
+    task_completion(move || Ok(operation()), Some(meter), None, None, &BLOCKING_WORKERS)
 }
 
 /// Prepares one operation on the existing host-operation engine without submitting or invoking it.
@@ -1878,18 +1849,20 @@ pub fn prepare_blocking_io_measured<T: Send + 'static>(
 ) -> io::Result<NativeCompletion<T>> {
     workers(&BLOCKING_WORKERS, true)?;
     let allocation_meter = meter.allocation_owner().unwrap_or_else(|| Arc::clone(&meter));
-    let mut task = blocking_io_task(
-        operation, Some(meter), Some(&allocation_meter),
+    let mut task = task_completion(
+        move || Ok(operation()), Some(meter), Some(&allocation_meter), None, &BLOCKING_WORKERS,
     )?;
     task.waiter = Some(allocate_capacity_waiter(Some(&allocation_meter))?);
     task.prepared_wake = Some(allocate_blocking_wait_wake(&allocation_meter)?);
     Ok(task)
 }
 
-fn blocking_io_task<T: Send + 'static>(
-    operation: impl FnOnce() -> T + Send + 'static,
+fn task_completion<T: Send + 'static>(
+    operation: impl FnOnce() -> io::Result<T> + Send + 'static,
     meter: Option<Arc<dyn NativeReadMeter>>,
     allocation_meter: Option<&Arc<dyn NativeReadMeter>>,
+    health: Option<Arc<FileHealth>>,
+    pool: &'static LazyLock<io::Result<NativeWorkers>>,
 ) -> io::Result<NativeCompletion<T>> {
     let allocation_meter = allocation_meter.or(meter.as_ref());
     if let Some(meter) = &meter { meter.check()?; }
@@ -1901,15 +1874,14 @@ fn blocking_io_task<T: Send + 'static>(
         result: None, panic: None, waker: None, _allocation: allocation,
     }));
     let completion = Arc::clone(&state);
-    let span = obs::span!(
-        DEBUG, "acyclic.runtime.blocking_io",
-        outcome = obs::Empty, error.kind = obs::Empty,
-    );
+    let span = if std::ptr::eq(pool, &BLOCKING_WORKERS) {
+        obs::span!(DEBUG, "acyclic.runtime.blocking_io", outcome = obs::Empty, error.kind = obs::Empty)
+    } else { obs::OperationSpan::new(tracing::Span::none()) };
     let observer = meter.clone();
     let operation = move || span.scope(|| {
         let admission = observer.as_ref().map_or(Ok(()), |meter| meter.check());
         let result = match admission {
-            Ok(()) => Ok(operation()),
+            Ok(()) => operation(),
             Err(error) => Err(error),
         };
         span.record_result(&result);
@@ -1921,9 +1893,9 @@ fn blocking_io_task<T: Send + 'static>(
         meter, std::mem::size_of_val(&operation),
     )).transpose()?;
     Ok(NativeCompletion::pending(NativeJob::Task {
-            operation: Box::new(operation), meter, completion: Arc::clone(&state) as Arc<dyn TaskTerminal>,
-            _allocation: allocation,
-        }, state, &BLOCKING_WORKERS))
+            operation: Box::new(operation), meter, terminal: Arc::clone(&state) as Arc<dyn TaskTerminal>,
+            _allocation: allocation, health, completion: None,
+        }, state, pool))
 }
 
 #[derive(Default)]
@@ -2085,21 +2057,17 @@ impl<T> FileCompletion<T> {
         state: Arc<Mutex<CompletionState<T>>>,
         fence: Option<Arc<OperationFence>>,
         health: Option<Arc<FileHealth>>,
+        file: Option<Arc<NativeFilePayload>>,
         span: obs::OperationSpan,
     ) -> Self {
         Self {
             state,
             fence,
             health,
-            file: None,
+            file,
             span,
             finished: false,
         }
-    }
-
-    fn for_file(mut self, file: Arc<NativeFilePayload>) -> Self {
-        self.file = Some(file);
-        self
     }
 
     fn finish(mut self, result: io::Result<T>) -> Option<Waker> {
@@ -2175,29 +2143,6 @@ enum NativeJob {
         completion: Option<Arc<OperationFence>>,
         health: Option<Arc<FileHealth>>,
     },
-    BoundedRead {
-        file: Arc<NativeFilePayload>,
-        #[cfg(windows)]
-        overlapped: bool,
-        offset: u64,
-        length: usize,
-        require_full: bool,
-        meter: Arc<dyn NativeReadMeter>,
-        state: Arc<Mutex<CompletionState<NativeReadResult>>>,
-        completion: Option<Arc<OperationFence>>,
-        health: Option<Arc<FileHealth>>,
-    },
-    PreparedRead {
-        file: Arc<NativeFilePayload>,
-        operation: Box<dyn FnOnce(
-            Arc<NativeFilePayload>, Arc<dyn NativeReadMeter>,
-        ) + Send>,
-        meter: Arc<dyn NativeReadMeter>,
-        completion: Option<Arc<OperationFence>>,
-        terminal: Arc<dyn TaskTerminal>,
-        _allocation: ReadAllocation,
-        health: Option<Arc<FileHealth>>,
-    },
     Unit {
         file: Arc<NativeFilePayload>,
         operation: NativeUnitOperation,
@@ -2212,8 +2157,10 @@ enum NativeJob {
     Task {
         operation: Box<dyn FnOnce() + Send>,
         meter: Option<Arc<dyn NativeReadMeter>>,
-        completion: Arc<dyn TaskTerminal>,
+        terminal: Arc<dyn TaskTerminal>,
         _allocation: Option<ReadAllocation>,
+        health: Option<Arc<FileHealth>>,
+        completion: Option<Arc<OperationFence>>,
     },
 }
 
@@ -2239,23 +2186,15 @@ struct NativeOwnedWrite<B, C> {
 
 impl NativeJob {
     fn set_completion(&mut self, fence: Arc<OperationFence>) {
-        match self {
-            Self::Read { completion, .. } | Self::BoundedRead { completion, .. }
-            | Self::PreparedRead { completion, .. }
-            | Self::Unit { completion, .. } => {
-                *completion = Some(fence);
-            }
-            Self::Task { .. } => unreachable!("blocking tasks are not file-sequenced"),
-        }
+        let (Self::Read { completion, .. } | Self::Unit { completion, .. }
+            | Self::Task { completion, .. }) = self;
+        *completion = Some(fence);
     }
 
     fn meter(&self) -> Option<&Arc<dyn NativeReadMeter>> {
         match self {
-            Self::BoundedRead { meter, .. } | Self::PreparedRead { meter, .. }
-            => Some(meter),
-            Self::Unit { meter, .. } => meter.as_ref(),
-            Self::Task { meter, .. } => meter.as_ref(),
-            _ => None,
+            Self::Unit { meter, .. } | Self::Task { meter, .. } => meter.as_ref(),
+            Self::Read { .. } => None,
         }
     }
 
@@ -2267,7 +2206,7 @@ impl NativeJob {
             Self::Read {
                 overlapped: true,
                 ..
-            } | Self::BoundedRead { .. } | Self::PreparedRead { .. } | Self::Unit { meter: Some(_), .. } | Self::Unit {
+            } | Self::Task { health: Some(_), .. } | Self::Unit { meter: Some(_), .. } | Self::Unit {
                 overlapped: true,
                 operation: NativeUnitOperation::Write(_),
                 ..
@@ -2288,8 +2227,7 @@ impl NativeJob {
                 completion,
                 health,
             } => span.scope(|| {
-                FileCompletion::new(state, completion, health.clone(), span.clone())
-                    .for_file(Arc::clone(&file))
+                FileCompletion::new(state, completion, health.clone(), Some(Arc::clone(&file)), span.clone())
                     .finish(windows::read_batch_in_place(&file, &reads))
             }),
             Self::Unit {
@@ -2302,8 +2240,7 @@ impl NativeJob {
                 completion,
                 health,
             } => span.scope(|| {
-                let finish = FileCompletion::new(state, completion, health.clone(), span.clone())
-                    .for_file(Arc::clone(&file));
+                let finish = FileCompletion::new(state, completion, health.clone(), Some(Arc::clone(&file)), span.clone());
                 let result = validate_write_batch(&writes)
                     .and_then(|()| windows::write_batch_in_place(&file, &writes));
                 finish.finish(result)
@@ -2314,29 +2251,6 @@ impl NativeJob {
 
     fn run(self) -> Option<Waker> {
         match self {
-            Self::PreparedRead { file, operation, meter, completion, terminal, _allocation,
-                health,
-            } => {
-                operation(file, meter);
-                drop(_allocation);
-                drop(health);
-                if let Some(completion) = completion { completion.complete(); }
-                terminal.publish()
-            }
-            Self::BoundedRead { file, offset, length, require_full, meter, state, completion,
-                #[cfg(windows)]
-                overlapped,
-                health,
-            } => {
-                let _held_health = health;
-                let result = read_bounded_in_place(
-                    &file, offset, length, require_full, &meter,
-                    #[cfg(windows)]
-                    overlapped,
-                );
-                drop(file);
-                finish_job(&state, result, completion)
-            }
             Self::Read {
                 file,
                 reads,
@@ -2347,8 +2261,7 @@ impl NativeJob {
                 completion,
                 health,
             } => span.scope(|| {
-                let finish = FileCompletion::new(state, completion, health.clone(), span.clone())
-                    .for_file(Arc::clone(&file));
+                let finish = FileCompletion::new(state, completion, health.clone(), Some(Arc::clone(&file)), span.clone());
                 #[cfg(target_os = "linux")]
                 return submit_file_io(finish, |callback| {
                     linux::submit_read(file, reads, callback)
@@ -2378,8 +2291,7 @@ impl NativeJob {
                 health,
             } => span.scope(|| {
                 let finish =
-                    FileCompletion::new(state, completion, health.clone(), span.clone())
-                        .for_file(Arc::clone(&file));
+                    FileCompletion::new(state, completion, health.clone(), Some(Arc::clone(&file)), span.clone());
                 #[cfg(any(windows, target_os = "linux"))]
                 let operation = match operation {
                     NativeUnitOperation::Write(writes) => {
@@ -2427,12 +2339,14 @@ impl NativeJob {
                     finish.finish(result)
                 })
             }),
-            Self::Task { operation, meter, completion, _allocation } => {
+            Self::Task { operation, meter, terminal, _allocation, health, completion } => {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
                 drop(_allocation);
                 drop(meter);
-                if let Err(panic) = result { completion.stage_panic(panic); }
-                completion.publish()
+                drop(health);
+                if let Err(panic) = result { terminal.stage_panic(panic); }
+                if let Some(completion) = completion { completion.complete(); }
+                terminal.publish()
             }
         }
     }
@@ -2598,11 +2512,9 @@ impl<T> NativeCompletion<T> {
         job: NativeJob, state: Arc<Mutex<CompletionState<T>>>,
         pool: &'static LazyLock<io::Result<NativeWorkers>>,
     ) -> Self {
-        let health = match &job {
-            NativeJob::Read { health, .. } | NativeJob::BoundedRead { health, .. }
-            | NativeJob::PreparedRead { health, .. } | NativeJob::Unit { health, .. } => health.as_ref(),
-            NativeJob::Task { .. } => None,
-        };
+        let (NativeJob::Read { health, .. } | NativeJob::Unit { health, .. }
+            | NativeJob::Task { health, .. }) = &job;
+        let health = health.as_ref();
         let sequencer = health.map(|health| Arc::clone(&health.tail));
         let uncertain = health.map(|health| Arc::clone(&health.uncertain));
         Self {
@@ -2679,7 +2591,7 @@ fn reserve_if_needed(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     *predecessor = tail.clone();
     let allocation = match pending.as_ref() {
-        Some(NativeJob::BoundedRead { meter, .. } | NativeJob::PreparedRead { meter, .. }
+        Some(NativeJob::Task { meter: Some(meter), .. }
             | NativeJob::Unit { meter: Some(meter), .. }) => Some(ReadAllocation::new(
             meter, arc_allocation_bytes::<OperationFence>(),
         )?),
@@ -3752,6 +3664,7 @@ mod tests {
             let _ = submit_file_io(
                 FileCompletion::new(
                     state,
+                    None,
                     None,
                     None,
                     obs::OperationSpan::new(tracing::Span::none()),
@@ -4841,9 +4754,9 @@ mod tests {
             Arc::new(Mutex::new(CompletionState::<()>::default())),
             None,
             Some(Arc::clone(&native.health)),
+            Some(Arc::clone(&native.file)),
             obs::OperationSpan::new(tracing::Span::none()),
-        )
-        .for_file(Arc::clone(&native.file));
+        );
         completion.finish(Err(linux::uncertain_completion(
             io::ErrorKind::TimedOut.into(),
         )));
@@ -5521,8 +5434,8 @@ mod tests {
         let workers = NativeWorkers { sender, admission: Arc::new(Mutex::new(AdmissionState::new())) };
         workers.sender.try_send(NativeJob::Task {
             operation: Box::new(|| ()), meter: None,
-            completion: Arc::new(Mutex::new(CompletionState::<()> { task_pending: true, ..CompletionState::default() })),
-            _allocation: None,
+            terminal: Arc::new(Mutex::new(CompletionState::<()> { task_pending: true, ..CompletionState::default() })),
+            _allocation: None, health: None, completion: None,
         }).map_err(|_| io::Error::other("failed to saturate canonical test queue"))?;
         workers.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued_jobs = 1;
         let context = Context::from_waker(Waker::noop());
@@ -5633,8 +5546,8 @@ mod tests {
         };
         let job = || NativeJob::Task {
             operation: Box::new(|| ()), meter: None,
-            completion: Arc::new(Mutex::new(CompletionState::<()> { task_pending: true, ..CompletionState::default() })),
-            _allocation: None,
+            terminal: Arc::new(Mutex::new(CompletionState::<()> { task_pending: true, ..CompletionState::default() })),
+            _allocation: None, health: None, completion: None,
         };
         workers
             .sender
