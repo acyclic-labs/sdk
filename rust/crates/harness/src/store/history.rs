@@ -21,7 +21,7 @@ pub use native::{NativeHistoryIo, native_work_io};
 /// The native branch owns its original pre-funded frame outside the boxed future.
 pub(crate) enum HistoryContentFuture<'a, T> {
     Ordinary {
-        future: crate::conversation::ContentFuture<'a, Result<T>>,
+        future: acyclic_stream::BoxProviderFuture<'a, Result<T>>,
         frame_bytes: u64,
     },
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

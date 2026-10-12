@@ -3,7 +3,6 @@
 use super::*;
 use crate::{
     Capabilities, TaskId,
-    conversation::ContentFuture,
     conversation::{Attachment, ContentPublisher, FileRef, Limits, PrivateDirectoryPage, VolumeClass, VolumeOwner},
     core::AuthorityIssuer,
     resource_preparation::{CreatedContentBinding, CreatedReferenceBinding, CreatedResourceOperation,
@@ -698,7 +697,7 @@ macro_rules! created_reads {
     }
     fn read_measured<'a>(&'a $this, $file: &'a FileRef, $maximum_bytes: u64,
         $budget: WorkBudget, $cancellation: &'a CancellationToken)
-        -> ContentFuture<'a, MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
+        -> BoxFuture<'a, MeasuredResult<OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
         Box::pin(async move {
             let $io = $budget_io.map_err(OperationFailure::before_work)?;
             let result = async {
@@ -711,7 +710,7 @@ macro_rules! created_reads {
     }
     fn verify_measured<'a>(&'a $this, $file: &'a FileRef, $maximum_bytes: u64,
         $budget: WorkBudget, $cancellation: &'a CancellationToken)
-        -> ContentFuture<'a, MeasuredResult<OperationReceipt<()>, Error>> {
+        -> BoxFuture<'a, MeasuredResult<OperationReceipt<()>, Error>> {
         Box::pin(async move {
             $this.read_measured($file, $maximum_bytes, $budget, $cancellation).await
                 .map(|receipt| OperationReceipt { value: (), work: receipt.work })
@@ -826,7 +825,7 @@ macro_rules! created_publisher {
         }
         fn stage_once_measured<'a>(&'a $this, operation: OperationId, path: &'a str, bytes: &'a [u8],
             media_type: &'a str, display_name: &'a str, $budget: WorkBudget, $cancellation: &'a CancellationToken)
-            -> ContentFuture<'a, MeasuredResult<OperationReceipt<FileRef>, Error>> {
+            -> BoxFuture<'a, MeasuredResult<OperationReceipt<FileRef>, Error>> {
             Box::pin(async move {
                 let io = $io.map_err(OperationFailure::before_work)?;
                 let result = $this.publish(operation, path, bytes, media_type, display_name, None, Some(&io)).await;
@@ -849,7 +848,7 @@ macro_rules! created_publisher {
         }
         fn observe_staged_once_measured<'a>(&'a $this, operation: OperationId, maximum_bytes: u64,
             $budget: WorkBudget, $cancellation: &'a CancellationToken)
-            -> ContentFuture<'a, MeasuredResult<OperationReceipt<Option<FileRef>>, Error>> {
+            -> BoxFuture<'a, MeasuredResult<OperationReceipt<Option<FileRef>>, Error>> {
             Box::pin(async move {
                 let io = $io.map_err(OperationFailure::before_work)?;
                 let result = $this.observe(operation, maximum_bytes, Some(&io)).await;
