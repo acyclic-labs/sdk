@@ -451,14 +451,14 @@ impl ProcessTree {
         #[cfg(windows)]
         {
             let child = self.child.as_mut().ok_or(io::ErrorKind::NotFound)?;
-            process_control_attempt(meter, false, || child.try_wait())
+            process_control_attempt(meter, crate::NativeOperationKind::Read, || child.try_wait())
         }
     }
 
     fn capture_close_stdin(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
         self.select_control_meter(meter);
         if self.child.as_ref().is_some_and(|child| child.stdin.is_some()) {
-            process_control_attempt(meter, true, || { self.close_stdin(); Ok(()) })?;
+            process_control_attempt(meter, crate::NativeOperationKind::Write, || { self.close_stdin(); Ok(()) })?;
         }
         Ok(())
     }
@@ -648,22 +648,22 @@ impl ProcessTree {
                 let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
                 while self.capture_try_wait(meter)?.is_none() {
                     if Instant::now() >= deadline { return Err(io::ErrorKind::TimedOut.into()); }
-                    process_control_attempt(meter, false, || {
+                    process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                         std::thread::sleep(Self::TERMINATION_POLL_INTERVAL);
                         Ok(())
                     })?;
                 }
                 if let Some(child) = self.child.as_mut() {
                     if child.stdout.is_some() {
-                        process_control_attempt(meter, true, || { drop(child.stdout.take()); Ok(()) })?;
+                        process_control_attempt(meter, crate::NativeOperationKind::Write, || { drop(child.stdout.take()); Ok(()) })?;
                     }
                     if child.stderr.is_some() {
-                        process_control_attempt(meter, true, || { drop(child.stderr.take()); Ok(()) })?;
+                        process_control_attempt(meter, crate::NativeOperationKind::Write, || { drop(child.stderr.take()); Ok(()) })?;
                     }
                 }
                 // Child's private Win32 handle release is one opaque std SDK
                 // boundary, not an estimate of hidden handle/kernel internals.
-                process_control_attempt(meter, true, || { drop(self.child.take()); Ok(()) })?;
+                process_control_attempt(meter, crate::NativeOperationKind::Write, || { drop(self.child.take()); Ok(()) })?;
             }
             self.guard.close(meter)
         }
@@ -680,7 +680,7 @@ impl ProcessTree {
                 if Instant::now() >= deadline {
                     return Err(io::ErrorKind::TimedOut.into());
                 }
-                process_control_attempt(meter, false, || {
+                process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                     std::thread::sleep(Self::TERMINATION_POLL_INTERVAL);
                     Ok(())
                 })?;
@@ -691,10 +691,10 @@ impl ProcessTree {
             // in the final Child release.
             if let Some(child) = self.child.as_mut() {
                 if child.stdout.is_some() {
-                    process_control_attempt(meter, true, || { drop(child.stdout.take()); Ok(()) })?;
+                    process_control_attempt(meter, crate::NativeOperationKind::Write, || { drop(child.stdout.take()); Ok(()) })?;
                 }
                 if child.stderr.is_some() {
-                    process_control_attempt(meter, true, || { drop(child.stderr.take()); Ok(()) })?;
+                    process_control_attempt(meter, crate::NativeOperationKind::Write, || { drop(child.stderr.take()); Ok(()) })?;
                 }
             }
             let (reaped, recorded) = platform::reap_exit_id(self.owned_child_id()? as libc::pid_t, meter)?;
@@ -768,7 +768,7 @@ impl ProcessTree {
         {
             let direct = if !self.guard.assigned && !self.guard.direct_termination_sent {
                 if let Some(child) = self.child.as_mut() {
-                    process_control_attempt(meter, true, || {
+                    process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                         child.kill()?;
                         self.guard.direct_termination_sent = true;
                         Ok(())
@@ -875,9 +875,8 @@ impl Drop for ProcessTree {
 
 /// One actual SDK/kernel attempt, not a prediction of its hidden internals.
 fn process_control_attempt<T>(
-    meter: Option<&dyn crate::NativeReadMeter>, write: bool, call: impl FnOnce() -> io::Result<T>,
+    meter: Option<&dyn crate::NativeReadMeter>, kind: crate::NativeOperationKind, call: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
-    let kind = if write { crate::NativeOperationKind::Write } else { crate::NativeOperationKind::Read };
     let (result, recorded) = pipe_operation_attempt(meter, kind, call)?;
     match result {
         Err(error) => Err(error),
@@ -1051,7 +1050,7 @@ mod platform {
 
         pub(super) fn cleanup(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
             if self.actions.is_some() {
-                super::process_control_attempt(meter, true, || {
+                super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                     let actions = self.actions.as_mut().ok_or(io::ErrorKind::NotFound)?;
                     let status = unsafe { libc::posix_spawn_file_actions_destroy(actions) };
                     if status != 0 { return Err(io::Error::from_raw_os_error(status)); }
@@ -1060,7 +1059,7 @@ mod platform {
                 })?;
             }
             if self.attributes.is_some() {
-                super::process_control_attempt(meter, true, || {
+                super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                     let attributes = self.attributes.as_mut().ok_or(io::ErrorKind::NotFound)?;
                     let status = unsafe { libc::posix_spawnattr_destroy(attributes) };
                     if status != 0 { return Err(io::Error::from_raw_os_error(status)); }
@@ -1077,7 +1076,7 @@ mod platform {
         custody: &mut Option<super::ProcessTree>,
     ) -> io::Result<()> {
         command.process_group(0);
-        super::process_control_attempt(meter, true, || {
+        super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
             let child = command.spawn()?;
             // A Unix Child ID originated as pid_t at this same SDK boundary.
             let process_group = child.id() as libc::pid_t;
@@ -1155,7 +1154,7 @@ mod platform {
             let mut actions_initialized = false;
             let spawned = (|| {
                 let native = |call: &mut dyn FnMut() -> libc::c_int| {
-                    super::process_control_attempt(Some(meter), true, || {
+                    super::process_control_attempt(Some(meter), crate::NativeOperationKind::Write, || {
                         let status = call();
                         if status == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(status)) }
                     })
@@ -1252,7 +1251,7 @@ mod platform {
             if !self.active {
                 return Ok(());
             }
-            let signal = super::process_control_attempt(meter, true, || {
+            let signal = super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                 // SAFETY: the unreaped owned leader reserves this process group.
                 if unsafe { libc::kill(-self.process_group, libc::SIGTERM) } == 0 { Ok(()) }
                 else { Err(io::Error::last_os_error()) }
@@ -1274,7 +1273,7 @@ mod platform {
             }
             // SAFETY: a negative, nonzero pid addresses exactly this owned
             // process group; SIGKILL requires no shared memory or signal data.
-            let signal = super::process_control_attempt(meter, true, || {
+            let signal = super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                 if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 {
                     self.active = false;
                     Ok(())
@@ -1303,7 +1302,7 @@ mod platform {
             if std::time::Instant::now() >= deadline {
                 return Ok(false);
             }
-            super::process_control_attempt(meter, false, || {
+            super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                 std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
                 Ok(())
             })?;
@@ -1317,7 +1316,7 @@ mod platform {
         let id = u32::try_from(group).map_err(io::Error::other)?;
         // SAFETY: thread-local errno and a writable, correctly sized PID array.
         // libproc returns zero both for an empty list and for an errno failure.
-        let read = super::process_control_attempt(meter, false, || {
+        let read = super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
             Ok(unsafe {
                 *libc::__error() = 0;
                 libc::proc_listpids(2, id, members.as_mut_ptr().cast(), bytes)
@@ -2184,12 +2183,12 @@ mod platform {
         initialized?;
         let tree = custody.as_mut().ok_or(io::ErrorKind::NotFound)?;
         command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
-        super::process_control_attempt(meter, true, || {
+        super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
             tree.child = Some(command.spawn()?);
             Ok(())
         })?;
         let child = tree.child.as_ref().ok_or(io::ErrorKind::NotFound)?;
-        super::process_control_attempt(meter, true, || {
+        super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
             // SAFETY: both handles are owned and the child is still suspended.
             if unsafe { AssignProcessToJobObject(tree.guard.job, child.as_raw_handle().cast()) } == 0 {
                 Err(io::Error::last_os_error())
@@ -2249,7 +2248,7 @@ mod platform {
         }
 
         fn initialize(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
-            super::process_control_attempt(meter, true, || {
+            super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                 // SAFETY: unnamed Job with default security, owned on success.
                 let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
                 if job.is_null() { return Err(io::Error::last_os_error()); }
@@ -2259,7 +2258,7 @@ mod platform {
             })?;
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
             if meter.is_none() { limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; }
-            super::process_control_attempt(meter, true, || {
+            super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                 // SAFETY: initialized fixed ABI structure and owned Job.
                 if unsafe { SetInformationJobObject(
                     self.job, JobObjectExtendedLimitInformation, (&raw const limits).cast(),
@@ -2275,7 +2274,7 @@ mod platform {
         pub(super) fn release_setup(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
             for handle in [&mut self.thread, &mut self.snapshot] {
                 if !handle.is_null() {
-                    super::process_control_attempt(meter, true, || {
+                    super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                         // SAFETY: this exclusively owned handle is no longer borrowed.
                         if unsafe { CloseHandle(*handle) } == 0 { return Err(io::Error::last_os_error()); }
                         *handle = std::ptr::null_mut();
@@ -2289,7 +2288,7 @@ mod platform {
         pub(super) fn close(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
             self.release_setup(meter)?;
             if !self.job.is_null() {
-                super::process_control_attempt(meter, true, || {
+                super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                     // SAFETY: cleanup observed an empty Job; this is its owned handle.
                     if unsafe { CloseHandle(self.job) } == 0 { return Err(io::Error::last_os_error()); }
                     self.job = std::ptr::null_mut();
@@ -2309,7 +2308,7 @@ mod platform {
         ) -> io::Result<()> {
             if !self.active { return Ok(()); }
             if !self.termination_sent {
-                super::process_control_attempt(meter, true, || {
+                super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                     // SAFETY: the exclusively owned live Job contains this tree.
                     if unsafe { TerminateJobObject(self.job, 1) } == 0 { return Err(io::Error::last_os_error()); }
                     self.termination_sent = true;
@@ -2319,7 +2318,7 @@ mod platform {
             let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
             loop {
                 let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
-                super::process_control_attempt(meter, false, || {
+                super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                     // SAFETY: writable fixed ABI structure and owned live Job.
                     if unsafe { QueryInformationJobObject(
                         self.job, JobObjectBasicAccountingInformation, (&raw mut accounting).cast(),
@@ -2330,7 +2329,7 @@ mod platform {
                 })?;
                 if !self.active { return Ok(()); }
                 if std::time::Instant::now() >= deadline { return Err(io::ErrorKind::TimedOut.into()); }
-                super::process_control_attempt(meter, false, || {
+                super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                     std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
                     Ok(())
                 })?;
@@ -2451,7 +2450,7 @@ mod platform {
         fn resume_process(
             &mut self, process_id: u32, meter: Option<&dyn crate::NativeReadMeter>,
         ) -> io::Result<()> {
-            super::process_control_attempt(meter, false, || {
+            super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                 // SAFETY: SDK returns a newly owned system-thread snapshot.
                 let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
                 if snapshot == INVALID_HANDLE_VALUE { return Err(io::Error::last_os_error()); }
@@ -2460,7 +2459,7 @@ mod platform {
             })?;
             let mut entry: THREADENTRY32 = unsafe { zeroed() };
             entry.dwSize = size_of::<THREADENTRY32>() as u32;
-            let mut found = super::process_control_attempt(meter, false, || {
+            let mut found = super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                 // SAFETY: owned live snapshot and initialized writable ABI record.
                 if unsafe { Thread32First(self.snapshot, &raw mut entry) } != 0 { return Ok(true); }
                 let error = io::Error::last_os_error();
@@ -2469,14 +2468,14 @@ mod platform {
             while found {
                 if let Some(meter) = meter { meter.examine(1, 0)?; }
                 if entry.th32OwnerProcessID == process_id {
-                    super::process_control_attempt(meter, false, || {
+                    super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                         // SAFETY: ID belongs to the just-observed snapshot entry.
                         let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
                         if thread.is_null() { return Err(io::Error::last_os_error()); }
                         self.thread = thread;
                         Ok(())
                     })?;
-                    super::process_control_attempt(meter, true, || {
+                    super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                         // SAFETY: owned live handle with resume access.
                         if unsafe { ResumeThread(self.thread) } == u32::MAX {
                             Err(io::Error::last_os_error())
@@ -2484,7 +2483,7 @@ mod platform {
                     })?;
                     return self.release_setup(meter);
                 }
-                found = super::process_control_attempt(meter, false, || {
+                found = super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
                     // SAFETY: owned snapshot and writable record remain valid.
                     if unsafe { Thread32Next(self.snapshot, &raw mut entry) } != 0 { return Ok(true); }
                     let error = io::Error::last_os_error();
