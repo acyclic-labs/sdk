@@ -60,11 +60,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let mut budget = SourceBudget { work: maximum_work, bytes: maximum_bytes };
         budget.charge(1, snapshot_bytes, &mut None)?;
-        let caller = self.host.source_admission(self.task_id, &mut budget).await?;
+        let caller = self.host.source_admission(self.task_id, &mut budget, &mut None).await?.0;
         if crate::contract::canonical_json_digest(&caller)? != self.original_admission_digest {
             return Err(Error::Unauthorized("original project source caller admission changed".into()));
         }
-        let source = self.host.source_admission(source_task, &mut budget).await?;
+        let source = self.host.source_admission(source_task, &mut budget, &mut None).await?.0;
         let graph_root = self.host.source_graph_root(self.task_id, &mut budget, &mut None).await?;
         if self.host.source_graph_root(source_task, &mut budget, &mut None).await? != graph_root {
             return Err(Error::Unauthorized("project source belongs to another actual session graph".into()));
@@ -392,16 +392,25 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
-    async fn source_admission(&self, task: TaskId, budget: &mut SourceBudget) -> Result<TaskAdmissionRecord> {
-        budget.charge(1, 0, &mut None)?;
+    async fn source_admission(
+        &self, task: TaskId, budget: &mut SourceBudget,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(TaskAdmissionRecord, u64)> {
+        budget.charge(1, 0, work)?;
         let operation = OperationId::from_bytes(task.into_bytes());
-        let spec = self.retained_declaration_with_work(operation, &mut None).await?
-            .ok_or_else(|| Error::NotFound("project source admission".into()))?;
-        budget.charge(0, spec.state.descriptor().byte_length(), &mut None)?;
-        let admission = self.read_retained_admission_counted(operation, &mut None).await.map(|(record, _)| record)?;
-        Ok(admission)
+        let spec = self.retained_declaration_with_work(operation, work).await?
+            .ok_or_else(|| admission_boundary(work, crate::wire::ErrorCode::NotFound,
+                "project source admission is missing"))?;
+        let held = if work.is_some() { spec.logical_owned_bytes()? } else { 0 };
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, held);
+        budget.charge(0, spec.state.descriptor().byte_length(), quota.work())?;
+        let admitted = self.read_declared_admission_counted(&spec, quota.work()).await;
+        drop(spec);
+        let released = quota.relinquish(held);
+        let record = admitted?;
+        released?;
+        Ok(record)
     }
-
 
     async fn source_graph_root(
         &self, task: TaskId, budget: &mut SourceBudget,
@@ -449,10 +458,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 return Err(Error::Unauthorized("project creator proof is cyclic".into()));
             }
             let parent = admission.parent.ok_or_else(|| Error::Unauthorized("project creator has no parent".into()))?;
-            self.source_admission(parent, budget).await?;
+            self.source_admission(parent, budget, &mut None).await?.0;
             for proof in &admission.resource_proofs {
                 budget.charge(1, 0, &mut None)?;
-                let preparation = self.source_admission(proof.preparation, budget).await?;
+                let preparation = self.source_admission(proof.preparation, budget, &mut None).await?.0;
                 let request: crate::resource_preparation::ResourcePreparationRequest =
                     serde_json::from_value(preparation.input.clone()).map_err(|error| Error::Invalid(error.to_string()))?;
                 request.validate()?;
@@ -461,9 +470,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 }
                 budget.charge(request.maximum_work, request.maximum_bytes, &mut None)?;
                 let original_parent = preparation.parent.ok_or_else(|| Error::Unauthorized("project preparation has no parent".into()))?;
-                self.source_admission(original_parent, budget).await?;
+                self.source_admission(original_parent, budget, &mut None).await?.0;
                 if request.child != admission {
-                    self.source_admission(TaskId::from_bytes(request.child.operation_id.into_bytes()), budget).await?;
+                    self.source_admission(TaskId::from_bytes(request.child.operation_id.into_bytes()), budget, &mut None).await?.0;
                     self.source_graph_root(parent, budget, &mut None).await?;
                 }
                 pending.push((preparation, path.clone()));
@@ -478,24 +487,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, task: TaskId, budget: &mut SourceBudget,
         original: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
-        budget.charge(1, 0, &mut Some(&mut crate::store::history::native_work_io(original)?))?;
-        let io = crate::filesystem::PreparationIo::from_native_work(original)?;
-        let mut history = io.history_io();
-        let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        let operation = OperationId::from_bytes(task.into_bytes());
-        let spec = self.retained_declaration_with_work(operation, &mut observer).await?
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound,
-                reason: "project source admission is missing" })?;
-        budget.charge(0, spec.state.descriptor().byte_length(), &mut Some(&mut crate::store::history::native_work_io(original)?))?;
-        let spec_bytes = spec.logical_owned_bytes()?;
-        let admitted = self.read_declared_admission_counted(&spec, &mut observer).await;
-        drop(spec);
-        let released = observer.as_deref_mut().expect("original source observer").release_owned(spec_bytes);
-        let (record, retained) = admitted?;
-        released?;
-        drop(observer);
-        drop(history);
-        Ok((record, io.into_native_custody(retained)?))
+        let mut io = crate::store::history::native_work_io(original)?;
+        let (record, retained) = self.source_admission(task, budget, &mut Some(&mut io)).await?;
+        let custody = io.take_native_custody(retained)?;
+        Ok((record, custody))
     }
 
 
@@ -678,7 +673,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(Error::Unauthorized("project source differs from original caller or owning coordinator".into()));
         }
         let mut budget = SourceBudget { work: record.maximum_work, bytes: record.maximum_bytes };
-        let caller = self.source_admission(parent, &mut budget).await?;
+        let caller = self.source_admission(parent, &mut budget, &mut None).await?.0;
         if crate::contract::canonical_json_digest(&caller)? != record.caller_admission_digest {
             return Err(Error::Unauthorized("project source original caller admission changed".into()));
         }
@@ -690,7 +685,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         {
             return Err(Error::Unauthorized("project source retained graph changed".into()));
         }
-        let source = self.source_admission(record.source_task, &mut budget).await?;
+        let source = self.source_admission(record.source_task, &mut budget, &mut None).await?.0;
         let created = self.source_created_project(&source, &record.project, &mut budget).await?;
         if !created && record.source_task != record.graph_root {
             return Err(Error::Unauthorized("project source retained creator evidence changed".into()));

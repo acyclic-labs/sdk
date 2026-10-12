@@ -146,7 +146,7 @@ pub struct FilesystemRootBootstrapAllocation<A, O> {
     pub(crate) writable: bool,
     record_digest: [u8; 32],
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) witness: crate::durable_host::RootBootstrapBindingWitness,
+    pub(crate) witness: Arc<crate::durable_host::RootBootstrapBindingWitness>,
     #[cfg(not(target_arch = "wasm32"))]
     _custody: acyclic_fs::NativeAllocation,
 }
@@ -1231,7 +1231,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             &crate::durable_host::RootBootstrapBindingWitness)>
         {
             slot.get().filter(|allocation| allocation.request.root_operation == operation)
-                .map(|allocation| (&allocation.request, &allocation.witness))
+                .map(|allocation| (&allocation.request, allocation.witness.as_ref()))
         }
         [selected(&self.root_project, operation), selected(&self.root_scratch, operation)]
     }

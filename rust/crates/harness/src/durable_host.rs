@@ -170,7 +170,7 @@ fn host_fence_with_work(
 }
 
 fn admission_boundary(
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
     code: crate::wire::ErrorCode, reason: &'static str,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -340,9 +340,9 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
     }
 }
 
+/// Original root binding cache, shared by its issued read witnesses.
 #[cfg(feature = "filesystem")]
-#[derive(Default)]
-struct TaskRootBinding {
+pub struct RootBootstrapBindingWitness {
     proof: std::sync::OnceLock<RetainedRootBinding>,
     gate: tokio::sync::Mutex<()>,
     pending: std::sync::OnceLock<(OperationId,[u8;32],[u8;32])>,
@@ -355,17 +355,10 @@ struct RetainedRootBinding {
     _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
-/// Retains the original SDK-verified root binding, not a lease or volume grant.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[derive(Clone)]
-pub struct RootBootstrapBindingWitness {
-    state: Arc<TaskRootBinding>,
-}
-
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl RootBootstrapBindingWitness {
     pub(crate) fn binding(&self) -> &crate::store::VerifiedRootBinding {
-        &self.state.proof.get().expect("issued canonical root binding").proof
+        &self.proof.get().expect("issued canonical root binding").proof
     }
 }
 
@@ -528,7 +521,7 @@ pub struct TaskJournalOwner<P> {
     input_grants: crate::Capabilities,
     input_created: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
     input_agent: Option<crate::AgentId>,
-    root_binding: Option<Arc<TaskRootBinding>>,
+    root_binding: Option<Arc<RootBootstrapBindingWitness>>,
     deadline_epoch_ms: Option<u64>,
     input_limits: crate::conversation::Limits,
     extensions: Option<crate::core::ExtensionAdmission>,
@@ -675,7 +668,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         add(crate::core::value_owned_bytes(&self.output_schema)?)?;
         add(self.input_grants.logical_owned_bytes()?)?;
         if let Some(extensions) = &self.extensions { add(extensions.logical_owned_bytes()?)?; }
-        if self.root_binding.is_some() { add(std::mem::size_of::<TaskRootBinding>() as u64)?; }
+        if self.root_binding.is_some() { add(std::mem::size_of::<RootBootstrapBindingWitness>() as u64)?; }
         if let Some(original) = &self.readonly_original {
             add(original.0.logical_owned_bytes()?)?;
             add(original.1.reservation_id.capacity() as u64)?;
@@ -816,7 +809,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         #[cfg(not(target_arch = "wasm32"))]
         if self.readonly_original.is_some() && operation == crate::conversation::VolumeOperation::Write {
-            return Err(Self::grant_denied(work, "historical READ owner cannot authorize namespace WRITE"));
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "historical READ owner cannot authorize namespace WRITE"));
         }
         volume.validate_with_work(work)?;
         let observed = work.is_some();
@@ -847,7 +840,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .expect("volume grant is ASCII");
         if !self.input_grants.contains(grant)
             && !(observed && self.input_created.as_ref().is_some_and(|access| access.grants.contains(grant))) {
-            return Err(Self::grant_denied(quota.work(), "task scope lacks required volume grant"));
+            return Err(admission_boundary(quota.work(), crate::wire::ErrorCode::Unauthorized, "task scope lacks required volume grant"));
         }
         Ok(())
     }
@@ -866,15 +859,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     )> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         let access = self.input_created.as_ref()
-            .ok_or_else(|| Self::grant_denied(work, "task has no created scratch allocation"))?;
+            .ok_or_else(|| admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "task has no created scratch allocation"))?;
         let binding = access.current_content(work)?
-            .ok_or_else(|| Self::grant_denied(work, "task has no current scratch allocation"))?;
+            .ok_or_else(|| admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "task has no current scratch allocation"))?;
         let proof = binding.scratch_creation.as_ref()
-            .ok_or_else(|| Self::grant_denied(work, "current scratch is not a verified filesystem allocation"))?;
+            .ok_or_else(|| admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "current scratch is not a verified filesystem allocation"))?;
         if proof.original_task() != self.task_id || Some(proof.agent()) != self.input_agent
             || proof.volume() != &binding.volume
         {
-            return Err(Self::grant_denied(work, "scratch allocation belongs to another original task"));
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "scratch allocation belongs to another original task"));
         }
         Ok((proof, binding))
     }
@@ -898,14 +891,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<()> {
         work.check_cancellation()?;
         if self.verify_original_read_witness()? {
-            return Err(Self::grant_denied(&Some(&mut *work), "READ-only task owner cannot settle scratch namespace writes"));
+            return Err(admission_boundary(&Some(&mut *work), crate::wire::ErrorCode::Unauthorized, "READ-only task owner cannot settle scratch namespace writes"));
         }
         let (original, binding) = self.child_scratch_binding_with_work(&mut Some(&mut *work))?;
         if !original.same_identity(proof) {
-            return Err(Self::grant_denied(&Some(&mut *work), "scratch settlement substituted allocation evidence"));
+            return Err(admission_boundary(&Some(&mut *work), crate::wire::ErrorCode::Unauthorized, "scratch settlement substituted allocation evidence"));
         }
         if binding.binding.writer.is_none() {
-            return Err(Self::grant_denied(&Some(&mut *work), "scratch settlement lacks original WRITE custody"));
+            return Err(admission_boundary(&Some(&mut *work), crate::wire::ErrorCode::Unauthorized, "scratch settlement lacks original WRITE custody"));
         }
         self.require_volume_grant(
             proof.volume(), crate::conversation::VolumeOperation::Write, &mut Some(&mut *work),
@@ -929,7 +922,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if !self.input_grants.contains(capability::INTERACTION_ROUTE) {
-            return Err(Self::grant_denied(work, "task scope lacks interaction:route"));
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "task scope lacks interaction:route"));
         }
         Ok(())
     }
@@ -1144,7 +1137,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<acyclic_stream::CommitCondition> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if self.verify_original_read_witness()? {
-            return Err(Self::grant_denied(work, "historical READ custody cannot prepare a journal write"));
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "historical READ custody cannot prepare a journal write"));
         }
         if !matches!(write, crate::distributed::JournalWrite::Settlement)
             && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline)
@@ -1197,7 +1190,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if !allow_settlement && let Some(access) = self.input_created.as_ref() {
             if let Some(binding) = access.current_content(&mut Some(&mut io))? {
                 if binding.binding.writer.is_none() {
-                    return Err(Self::grant_denied(&Some(&mut io), "current created scratch has no WRITE custody"));
+                    return Err(admission_boundary(&Some(&mut io), crate::wire::ErrorCode::Unauthorized, "current created scratch has no WRITE custody"));
                 }
                 self.require_volume_grant(&binding.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
             }
@@ -1444,14 +1437,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             if quota.work().is_some() {
                 let extent = (std::mem::size_of::<crate::runtime::TaskAdmissionRecord>() as u64)
                     .checked_add(admission.logical_owned_bytes()?)
-                    .ok_or_else(|| Self::grant_denied(quota.work(), "preparation admission ownership overflows"))?;
+                    .ok_or_else(|| admission_boundary(quota.work(), crate::wire::ErrorCode::Unauthorized, "preparation admission ownership overflows"))?;
                 quota.adopt(extent)?;
             }
             let retained = crate::store::history::canonical_bytes_with_work(
                 &admission.input, self.input_limits.file_bytes, quota.work())?;
             quota.adopt(retained.capacity() as u64)?;
-            let parent = admission.parent.ok_or_else(|| Self::grant_denied(
-                quota.work(), "resource preparation requires an admitted parent"))?;
+            let parent = admission.parent.ok_or_else(|| admission_boundary(
+                quota.work(), crate::wire::ErrorCode::Unauthorized, "resource preparation requires an admitted parent"))?;
             if let Some(observer) = quota.work().as_deref_mut() {
                 let comparisons = (request.resources.len() as u64)
                     .checked_mul(request.child.resource_proofs.len() as u64)
@@ -1469,7 +1462,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     request.resources.contains(&proof.resource) && proof.preparation != self.task_id)
                 || !self.input_grants.contains(&request.creation_grant)
             {
-                return Err(Self::grant_denied(quota.work(),
+                return Err(admission_boundary(quota.work(), crate::wire::ErrorCode::Unauthorized,
                     "resource request differs from its admitted input, parent or creation authority"));
             }
             let source_bound = crate::store::history::canonical_bytes_with_work(
@@ -1576,7 +1569,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if !self.input_grants.contains(capability::EFFECT_RUN) {
-            return Err(Self::grant_denied(work, "task scope lacks effect:run"));
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "task scope lacks effect:run"));
         }
         let mut permitted = false;
         for grant in self.input_grants.iter() {
@@ -1589,23 +1582,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             }
         }
         if !permitted {
-            return Err(Self::grant_denied(work, "task scope lacks the effect provider grant"));
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "task scope lacks the effect provider grant"));
         }
         if planning && !self.input_grants.contains(capability::EFFECT_PLAN) {
-            return Err(Self::grant_denied(work, "task scope lacks effect:plan"));
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "task scope lacks effect:plan"));
         }
         Ok(())
     }
 
-    fn grant_denied(
-        work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str,
-    ) -> Error {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.as_ref().is_some_and(|io| io.original_native_work().is_some()) {
-            return Error::NativeBoundary {code:crate::wire::ErrorCode::Unauthorized,reason};
-        }
-        Error::Unauthorized(reason.into())
-    }
+
 
     pub(crate) fn validate_input_file(
         &self, file: &FileRef, io: Option<&crate::filesystem::PreparationIo>,
@@ -1641,7 +1626,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<Option<crate::AgentId>> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if !self.input_grants.contains(capability::CONVERSATION_BIND) {
-            return Err(Self::grant_denied(work, "task scope lacks conversation:bind"));
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "task scope lacks conversation:bind"));
         }
         Ok(self.input_agent)
     }
@@ -1654,9 +1639,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
         if !self.input_grants.contains(capability::FORK_PUBLISH) {
-            return Err(Self::grant_denied(work, "task scope lacks fork:publish"));
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "task scope lacks fork:publish"));
         }
-        self.input_agent.ok_or_else(|| Self::grant_denied(work, "task has no authenticated current agent"))
+        self.input_agent.ok_or_else(|| admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "task has no authenticated current agent"))
     }
 
     pub(crate) fn binding_origin(&self) -> (TaskId, [u8;32], &crate::scheduler::LeaseFence) {
@@ -1702,22 +1687,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    pub(crate) fn retain_root_binding(&self, proof: crate::store::VerifiedRootBinding) -> Result<()> {
-        self.retain_root_binding_owned(RetainedRootBinding {
-            proof,
-            #[cfg(not(target_arch = "wasm32"))]
-            _custody: None,
-        }).map(|_| ())
-    }
 
-    /// Stores immutable canonical proof and its original ledger custody together.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn retain_root_binding_with_native_custody(
-        &self, proof: crate::store::VerifiedRootBinding,
-        custody: acyclic_fs::NativeAllocation,
-    ) -> Result<bool> {
-        self.retain_root_binding_owned(RetainedRootBinding {proof,_custody:Some(custody)})
-    }
+
+
 
     /// Borrows the canonical root-bind proof without exposing a scope or minting volume permission.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1770,11 +1742,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn root_bootstrap_binding_witness_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<RootBootstrapBindingWitness> {
+    ) -> Result<Arc<RootBootstrapBindingWitness>> {
         self.authenticated_root_binding_with_native_work(work).await?;
-        Ok(RootBootstrapBindingWitness {
-            state: Arc::clone(self.root_binding.as_ref().expect("verified root cache")),
-        })
+        Ok(Arc::clone(self.root_binding.as_ref().expect("verified root cache")))
     }
 
     /// Uses only the original committed binding and original READ witness; expired historical custody never becomes a fresh creator or writer.
@@ -1853,7 +1823,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await
     }
 
-    fn retain_root_binding_owned(&self, retained: RetainedRootBinding) -> Result<bool> {
+    pub(crate) fn retain_root_binding(
+        &self, proof: crate::store::VerifiedRootBinding,
+        #[cfg(not(target_arch = "wasm32"))] custody: Option<acyclic_fs::NativeAllocation>,
+    ) -> Result<bool> {
+        let retained = RetainedRootBinding {
+            proof,
+            #[cfg(not(target_arch = "wasm32"))]
+            _custody: custody,
+        };
         let proof = &retained.proof;
         #[cfg(not(target_arch = "wasm32"))]
         let native_work = retained._custody.as_ref().map(|custody| custody.work());
@@ -1912,10 +1890,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             Some(access) => access.current_content(work)?.and_then(|binding| binding.authority.as_ref()),
             None if self.root_binding.is_some() => self.root_binding.as_ref().and_then(|state| state.proof.get()).map(|retained| retained.proof.audience()),
             None => None,
-        }.ok_or_else(|| Self::grant_denied(work, "current caller has no authenticated publication audience"))?;
+        }.ok_or_else(|| admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "current caller has no authenticated publication audience"))?;
         crate::core::source_metadata_inspection_with_work(&(audience, parent), work)?;
         if audience != parent {
-            return Err(Self::grant_denied(work, "fork parent differs from the current caller audience"));
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "fork parent differs from the current caller audience"));
         }
         Ok(())
     }
@@ -2099,30 +2077,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         };
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         let mut hash = blake3::Hasher::new();
-        let mut hash_part = |bytes: &[u8]| -> Result<()> {
-            if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
-            hash.update(bytes);
-            Ok(())
-        };
-        hash_part(b"harness/v2/owned-journal\0")?;
-        hash_part(key.as_bytes())?;
-        hash_part(&self.task_id.into_bytes())?;
-        drop(hash_part);
-        let encoded_fence = if let Some(io) = work.as_deref_mut() {
-            io.admit_encoding(1)?;
-            let bounds = crate::contract::JsonBounds {
+        for part in [b"harness/v2/owned-journal\0".as_slice(), key.as_bytes(), &self.task_id.into_bytes()] {
+            if let Some(io) = work.as_deref_mut() { io.hashed_bytes(part.len() as u64)?; }
+            hash.update(part);
+        }
+        if let Some(io) = work.as_deref_mut() { io.admit_encoding(1)?; }
+        let encoded_fence = crate::store::history::canonical_bytes_for_bounds_with_work(
+            &self.fence, crate::contract::JsonBounds {
                 maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
-                maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64,
-                maximum_depth: 256,
-            };
-            let encoded = crate::contract::canonical_json_bytes_bounded(
-                &self.fence, bounds, None, &mut |charge| io.codec_charge(charge),
-            )?;
-            io.retain_owned((encoded.capacity() - encoded.len()) as u64)?;
-            encoded
-        } else {
-            crate::contract::canonical_json_bytes(&self.fence)?
-        };
+                maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64, maximum_depth: 256,
+            }, work,
+        )?;
         let hash_admission = match work.as_deref_mut() {
             Some(io) => io.hashed_bytes(encoded_fence.len() as u64),
             None => Ok(()),
@@ -2139,16 +2104,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let CommitCondition::Tail { expected, .. } = &owner else {
             return Err(Error::Invalid("coordinator tail condition required".into()));
         };
-        let mut hash_part = |bytes: &[u8]| -> Result<()> {
-            if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
-            hash.update(bytes);
-            Ok(())
-        };
-        hash_part(&expected.to_le_bytes())?;
-        hash_part(path.as_str().as_bytes())?;
-        hash_part(&expected_tail.to_le_bytes())?;
-        hash_part(&[u8::from(matches!(target, CommitCondition::Absent { .. }))])?;
-        drop(hash_part);
+        for part in [expected.to_le_bytes().as_slice(), path.as_str().as_bytes(),
+            &expected_tail.to_le_bytes(), &[u8::from(matches!(target, CommitCondition::Absent { .. }))]] {
+            if let Some(io) = work.as_deref_mut() { io.hashed_bytes(part.len() as u64)?; }
+            hash.update(part);
+        }
         if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
         let payload_digest = blake3::hash(bytes);
         if let Some(io) = work.as_deref_mut() { io.hashed_bytes(32)?; }
@@ -3916,10 +3876,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let root_binding = if input_is_root {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(native) = &native {
-                let slot = native.claim(std::mem::size_of::<TaskRootBinding>() as u64)?;
+                let slot = native.claim(std::mem::size_of::<RootBootstrapBindingWitness>() as u64)?;
                 work.as_deref_mut().expect("original native observer").absorb_native_custody(slot)?;
             }
-            Some(Arc::new(TaskRootBinding::default()))
+            Some(Arc::new(RootBootstrapBindingWitness {
+                proof: std::sync::OnceLock::new(), gate: tokio::sync::Mutex::new(()),
+                pending: std::sync::OnceLock::new(),
+            }))
         } else { None };
         let mut owner = TaskJournalOwner {
             host: Arc::clone(self), stream: self.coordinator.lock().await.journal_client(),
@@ -4122,7 +4085,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
         let mut io = crate::store::history::native_work_io(work)?;
-        crate::store::history::HistoryIo::retain_owned(&mut io, std::mem::size_of::<bool>() as u64)?;
         self.cancellation_requested_with_work(task, &mut Some(&mut io)).await
     }
 
@@ -6401,6 +6363,21 @@ pub(crate) mod tests {
     };
     use acyclic_stream::{MemoryStream, SystemUnixMillisClock};
 
+    #[cfg(feature = "filesystem")]
+    fn test_budget(units: u64, bytes: u64) -> acyclic_fs::WorkBudget {
+        acyclic_fs::WorkBudget {
+            authority_records_read: units, authority_records_appended: units,
+            authority_bytes_read: bytes, authority_bytes_written: bytes,
+            object_probes: units, backend_read_operations: units, backend_write_operations: units,
+            durability_operations: units, page_reads: units, page_writes: units,
+            object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
+            bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
+            source_path_components: units, source_entries_visited: units, output_bytes: bytes,
+            items_examined: units, items_returned: units, allocation_operations: units,
+            peak_allocation_bytes: bytes, materializations: units,
+        }
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn test_work(
         budget: acyclic_fs::WorkBudget, cancellation: &acyclic_fs::CancellationToken,
@@ -6414,21 +6391,7 @@ pub(crate) mod tests {
     #[cfg(feature = "filesystem")]
     pub(crate) mod created_resource_access;
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn native_lifecycle_budget() -> acyclic_fs::WorkBudget {
-        const LIMIT: u64 = 64 * 1024 * 1024;
-        acyclic_fs::WorkBudget {
-            authority_records_read: LIMIT, authority_records_appended: LIMIT,
-            authority_bytes_read: LIMIT, authority_bytes_written: LIMIT,
-            object_probes: LIMIT, backend_read_operations: LIMIT, backend_write_operations: LIMIT,
-            durability_operations: LIMIT, page_reads: LIMIT, page_writes: LIMIT,
-            object_bytes_read: LIMIT, object_bytes_written: LIMIT,
-            bytes_hashed: LIMIT, bytes_copied: LIMIT, bytes_encoded: LIMIT,
-            source_bytes_read: LIMIT, source_path_components: LIMIT, source_entries_visited: LIMIT,
-            output_bytes: LIMIT, items_examined: LIMIT, items_returned: LIMIT,
-            allocation_operations: LIMIT, peak_allocation_bytes: LIMIT, materializations: LIMIT,
-        }
-    }
+
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[tokio::test]
@@ -6436,7 +6399,7 @@ pub(crate) mod tests {
         use crate::distributed::WorkPull;
         let fixture = created_resource_access::CreationFixture::new().await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(native_lifecycle_budget(), &cancellation)
+        let work = acyclic_fs::NativeMaterializationWork::new(test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)
             .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
         let (admission, admission_guard) = fixture.host
             .observe_admission_with_native_work(fixture.root, &work).await?;
@@ -6508,7 +6471,7 @@ pub(crate) mod tests {
         use crate::store::history::HistoryIo as _;
         let fixture = created_resource_access::CreationFixture::new().await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(native_lifecycle_budget(), &cancellation)
+        let work = acyclic_fs::NativeMaterializationWork::new(test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)
             .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
         fixture.host.suspend_workflow(fixture.root, &crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation), 1, None, None, None, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
         let operation = OperationId::from_bytes(fixture.root.into_bytes());
@@ -6566,7 +6529,7 @@ pub(crate) mod tests {
             fixture.host.tasks.clone(), fixture.host.machines.clone(), fixture.host.clock.clone(),
         )?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(native_lifecycle_budget(), &cancellation)
+        let work = acyclic_fs::NativeMaterializationWork::new(test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)
             .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
         let (pending, pending_guard) = fixture.host.outcome_with_native_work(fixture.root, &work).await?;
         assert!(pending.is_none());
@@ -7583,17 +7546,7 @@ pub(crate) mod tests {
         )?;
         let units = 100_000;
         let bytes = 100_000_000;
-        let budget = acyclic_fs::WorkBudget {
-            authority_records_read: units, authority_records_appended: units,
-            authority_bytes_read: bytes, authority_bytes_written: bytes,
-            object_probes: units, backend_read_operations: units, backend_write_operations: units,
-            durability_operations: units, page_reads: units, page_writes: units,
-            object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
-            bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
-            source_path_components: units, source_entries_visited: units, output_bytes: bytes,
-            items_examined: units, items_returned: units, allocation_operations: units,
-            peak_allocation_bytes: bytes, materializations: units,
-        };
+        let budget = test_budget(units, bytes);
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = test_work(budget, &cancellation)?;
         assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
