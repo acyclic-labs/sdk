@@ -664,29 +664,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(())
     }
 
-    /// Opens from an authenticated checkpoint and bounded suffix.
-    #[cfg(feature = "filesystem")]
-    pub async fn open_measured(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Self>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            let aggregate = Self::open(
-                client,
-                authority,
-                authority_verifier,
-                schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut Some(&mut work)).await?;
-            Ok(aggregate)
-        }.await;
-        work.finish(result)
-    }
-
     /// Restores the same authenticated checkpoint and suffix on the original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn open_with_native_work(
@@ -711,15 +688,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.reducer
     }
 
-    /// Restores the same exact historical cut with one cumulative finite SDK-boundary receipt.
+    /// Restores a bounded committed cut with a finite work receipt.
     #[cfg(feature = "filesystem")]
     #[allow(clippy::too_many_arguments, reason = "original exact-cut open arguments plus the cumulative work receipt")]
-    pub async fn open_at_revision_measured(
+    pub async fn open_measured(
         client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
-        original_revision: u64,
+        original_revision: Option<u64>,
         limits: HistoryReadLimits,
         budget: acyclic_fs::WorkBudget,
         cancellation: &acyclic_fs::CancellationToken,
@@ -727,12 +704,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut work = history::HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            let aggregate = Self::open(
+            Self::open(
                 client,
                 authority,
                 authority_verifier,
-                schemas, None, limits, DEFAULT_TERMINAL_EFFECTS, Some(original_revision), &mut Some(&mut work)).await?;
-            Ok(aggregate)
+                schemas, None, limits, DEFAULT_TERMINAL_EFFECTS, original_revision, &mut Some(&mut work)).await
         }.await;
         work.finish(result)
     }
@@ -766,11 +742,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "projection read bounds must be positive".into(),
             ));
         }
-        let reader = match work.as_deref_mut() {
-            Some(work) => HistoryReader::new_with_work(
-                client, &authority, &authority_verifier, Some(work))?,
-            None => HistoryReader::new(client, &authority, authority_verifier.clone())?,
-        };
+        let reader = HistoryReader::new(client, &authority, &authority_verifier, work)?;
         let reader_bytes = if work.is_some() { reader.logical_owned_bytes()? } else { 0 };
         let loaded = match snapshot {
             Some(snapshot) => checkpoints::supplied(client, &authority, snapshot, limits, original_revision, work).await?,
@@ -890,7 +862,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .await?;
         let cursor_bytes = cursor.authority.id.capacity() as u64;
         drop(cursor);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(cursor_bytes)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(cursor_bytes)?; }
         if page.cursor.after_revision != through {
             return Err(Error::Invalid(
                 "projection suffix exceeds byte allowance".into(),
@@ -900,7 +872,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let record_capacity = (records.capacity() * std::mem::size_of::<operations::ObservedRecord>()) as u64;
         let page_cursor_bytes = page.cursor.authority.id.capacity() as u64;
         drop(page.cursor);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(page_cursor_bytes)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(page_cursor_bytes)?; }
         for (event, record) in page.events.into_iter().zip(records) {
             let (indexed, bytes) = effects::retirement_proof_with_work(
                 client,
@@ -929,8 +901,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         if let Some(work) = work.as_deref_mut() {
             work.release_owned(events_retained_bytes)?;
-            work.release_bytes(event_bytes)?;
-            work.release_bytes(record_capacity)?;
+            work.release_owned(event_bytes)?;
+            work.release_owned(record_capacity)?;
             work.check_cancellation()?;
         }
         Ok(())
@@ -974,10 +946,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             crate::contract::validate_trusted_json_byte_bound(state, limits.maximum_bytes, work)?;
             return crate::core::native_effect_clone_with_custody(state, work).map(Some);
         }
-        let reader = if work.is_some() {
-            let verifier = self.reducer.event_verifier(work)?;
-            HistoryReader::new_owned(&self.client, self.reducer.authority(), verifier, work)?
-        } else { self.history_reader()? };
+        let reader = HistoryReader::new(&self.client, self.reducer.authority(), self.reducer.event_verifier(), work)?;
         let reader_bytes = if work.is_some() { reader.logical_owned_bytes()? } else { 0 };
         let authority = match work.as_deref_mut() {
             Some(observer) => observer.clone_authority(self.reducer.authority()),
@@ -1091,7 +1060,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         operations::find_operation_bounded_with_work(
             &self.client,
             self.reducer.authority(),
-            &self.reducer.event_verifier(&mut None)?,
+            self.reducer.event_verifier(),
             operation, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut None,
         ).await.map(|(event, _)| event)
     }
@@ -1124,24 +1093,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ) -> Result<Option<(ApplyResult, u64)>> {
         let mut owned = crate::wire_codec::CodecQuota::from_retained(work, 0);
         self.reducer.verify_command_scope_with_work(command, owned.work())?;
-        let verifier = self.reducer.event_verifier(owned.work())?;
-        let verifier_bytes = if owned.work().is_some() { verifier.logical_owned_bytes()? } else { 0 };
-        let read = operations::bounded_operation_with_retained_quota(
-            &self.client, self.reducer.authority(), &verifier,
+        let (event, _) = operations::bounded_operation_with_retained_quota(
+            &self.client, self.reducer.authority(), self.reducer.event_verifier(),
             command.operation_id, maximum_bytes, return_event, owned.work(),
-        ).await;
-        drop(verifier);
-        let released_verifier = match owned.work().as_deref_mut() {
-            Some(work) => work.release_owned(verifier_bytes),
-            None => Ok(()),
-        };
-        let (event, _) = match read {
-            Ok(read) => { released_verifier?; read },
-            Err(error) => {
-                let _ = released_verifier;
-                return Err(error);
-            },
-        };
+        ).await?;
         let Some((event, original_owned)) = event else {
             if self.reducer.operation_revision(command.operation_id).is_some() {
                 return Err(guarded_boundary(owned.work(), crate::wire::ErrorCode::Storage,
@@ -1175,11 +1130,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     /// Opens an archival reader without replaying or cloning the resident event history.
     pub fn history_reader(&self) -> Result<HistoryReader<P>> {
-        HistoryReader::new(
-            &self.client,
-            self.reducer.authority(),
-            self.reducer.event_verifier(&mut None)?,
-        )
+        HistoryReader::new(&self.client, self.reducer.authority(), self.reducer.event_verifier(), &mut None)
     }
 
     /// Resolves one attested event within this projection's committed boundary.
@@ -1199,14 +1150,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         };
         let cursor_bytes = if owned.work().is_some() { cursor.authority.id.capacity() as u64 } else { 0 };
         owned.adopt(cursor_bytes)?;
-        let verifier = self.reducer.event_verifier(owned.work())?;
-        let verifier_bytes = if owned.work().is_some() { verifier.logical_owned_bytes()? } else { 0 };
-        owned.adopt(verifier_bytes)?;
-        let reader = HistoryReader::new_owned(&self.client, self.reducer.authority(), verifier, owned.work())?;
-        if owned.work().is_some() {
-            owned.adopt(reader.logical_owned_bytes()?.checked_sub(verifier_bytes)
-                .ok_or_else(|| Error::Invalid("history reader ownership underflows".into()))?)?;
-        }
+        let reader = HistoryReader::new(&self.client, self.reducer.authority(), self.reducer.event_verifier(), owned.work())?;
+        if owned.work().is_some() { owned.adopt(reader.logical_owned_bytes()?)?; }
         let (page, _, _, retained) = reader.read_page_with_work(&cursor,
             HistoryReadLimits { maximum_events: 1, maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64 },
             false, owned.work().as_mut().map(|work| &mut **work as &mut dyn history::HistoryIo)).await?;
@@ -1561,7 +1506,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let (bytes, claim) = Self::read_admission_content_with_work(
                 verifier.as_ref(), reference, scratch.work()).await?;
             scratch.adopt(claim)?;
-            let validated = ticket.validate_request_bytes_with_work(&bytes, scratch.work());
+            let validated = ticket.validate_request_bytes(&bytes, scratch.work()).and_then(|request| {
+                let measured = request.1;
+                drop(request);
+                scratch.work().as_deref_mut().map_or(Ok(()), |io| io.release_owned(measured))
+            });
             drop(bytes);
             let released = scratch.relinquish(claim);
             return match validated {
@@ -1596,16 +1545,16 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let (request_bytes, request_claim) = Self::read_admission_content_with_work(
             verifier.as_ref(), &ticket.request, scratch.work()).await?;
         scratch.adopt(request_claim)?;
-        let request = ticket.validate_request_bytes_owned_with_work(&request_bytes, scratch.work())?;
-        scratch.adopt(request.measured_owned_bytes())?;
+        let request = ticket.validate_request_bytes(&request_bytes, scratch.work())?;
+        scratch.adopt(request.1)?;
         let (bytes, claim) = Self::read_admission_content_with_work(
             verifier.as_ref(), reference, scratch.work()).await?;
         scratch.adopt(claim)?;
         match detail_outcome {
             Some(outcome) => ticket.validate_decision_bytes(
-                request.request(), outcome, reference, &bytes, scratch.work()),
+                &request.0, outcome, reference, &bytes, scratch.work()),
             None => ticket.validate_answer_bytes(
-                request.request(), reference, &bytes, scratch.work()),
+                &request.0, reference, &bytes, scratch.work()),
         }
     }
 
@@ -1635,7 +1584,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 Error::Unsupported("interaction content verifier is not bound".into())
             })?;
             let bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            ticket.validate_request_bytes(&bytes)?;
+            ticket.validate_request_bytes(&bytes, &mut None)?;
         }
         if let crate::core::Action::ResolveInteraction { resolution } = action
             && let InteractionOutcome::Answered { answer } = &resolution.outcome
@@ -1648,7 +1597,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
             let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?.0;
             let answer_bytes = verifier.read(answer, answer.descriptor().byte_length(), None)?.await?;
             ticket.validate_answer_bytes(&request, answer, &answer_bytes, &mut None)?;
         }
@@ -1663,7 +1612,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
             let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?.0;
             let detail_bytes = verifier.read(detail, detail.descriptor().byte_length(), None)?.await?;
             ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes, &mut None)?;
         }
@@ -1877,7 +1826,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if reference.authority == *self.reducer.authority() { return Ok(()); }
         let path = reference.authority.stream_path(work)?;
         let path_bytes = if work.is_some() { path.capacity() as u64 } else { 0 };
-        let read = match operations::stream_text_with_work(&self.client, &path, work) {
+        let read = match operations::stream(&self.client, &path, work) {
             Ok(stream) => operations::one_record(&self.client, stream.stream.path(),
                 reference.revision.saturating_sub(1), work).await,
             Err(error) => Err(error),
@@ -2029,7 +1978,7 @@ mod tests {
     fn content() -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "extension",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
@@ -2169,7 +2118,7 @@ mod tests {
                     1,
                     json!({"type": "object"}),
                     [9; 32],
-                    crate::core::ExtensionForkPolicy::Inherit
+                    crate::core::ExtensionForkPolicy::Inherit, [], None
                 )
                 .is_ok()
         );
@@ -2182,7 +2131,7 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = provider.clone();
         provider.forbid_writes.store(true, Ordering::SeqCst);
-        let reader = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let reader = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         let cursor = reader.pin(0, None).await?;
         let limits = HistoryReadLimits {
             maximum_events: 1,
@@ -2408,7 +2357,7 @@ mod tests {
         acyclic_stream::Stream::new(std::sync::Arc::clone(&incomplete), authority().stream_path(&mut None)?)?
             .append(encode_event(&authority(), &event, &mut None)?)
             .await?;
-        let incomplete_reader = HistoryReader::new(&incomplete, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let incomplete_reader = HistoryReader::new(&incomplete, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         assert!(matches!(
             incomplete_reader.latest_conversation_message(65_536).await,
             Err(Error::Storage(_))
@@ -2477,7 +2426,7 @@ mod tests {
             }
             writer.execute(next, #[cfg(feature = "filesystem")] None, &mut None).await?;
             if matches!(sequence, 1 | 1_000 | 10_000) {
-                let cold = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+                let cold = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
                 provider.forbid_writes.store(true, Ordering::SeqCst);
                 provider.observation_reads.store(0, Ordering::SeqCst);
                 assert_eq!(
@@ -2816,7 +2765,7 @@ mod tests {
         {
             use crate::executor::ExecutionJournal as _;
             let filesystem_provider =
-                crate::resources::ProviderRef::new("cold-selected-context", "filesystem", "2")?;
+                crate::resources::ProviderRef::new("cold-selected-context".into(), "filesystem".into(), "2".into(), &mut None)?;
             let host = Arc::new(crate::filesystem::FilesystemHost::new(
                 acyclic_fs::Fs::memory(),
                 filesystem_provider.clone(),
@@ -2980,7 +2929,7 @@ mod tests {
         let mut later = command(2)?;
         later.expected_revision = writer.reducer().revision();
         provider.forbid_writes.store(true, Ordering::SeqCst);
-        let reader = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let reader = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         let cursor = reader.pin(9_997, None).await?;
         assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
         provider.forbid_writes.store(false, Ordering::SeqCst);
@@ -3221,7 +3170,7 @@ mod tests {
                 None,
             )
             .await?;
-        let reader = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let reader = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         assert!(matches!(reader.operation_event(event.operation_id, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event),
             Err(Error::Storage(message)) if message.contains("atomic canonical event")));
         Ok(())
@@ -3248,7 +3197,7 @@ mod tests {
                     None,
                 )
                 .await?;
-            let reader = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+            let reader = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
             let cursor = reader.pin(0, None).await?;
             assert!(
                 reader
@@ -3324,7 +3273,7 @@ mod tests {
                 "required": ["text"]
             }),
             [9; 32],
-            crate::core::ExtensionForkPolicy::Inherit,
+            crate::core::ExtensionForkPolicy::Inherit, [], None,
         )?;
         let mut invalid = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), wrong_schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
@@ -3365,7 +3314,7 @@ mod tests {
             2,
             json!({"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}),
             [10; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let mut migrations = NativeExtensionMigrations::default();
         migrations.register(
@@ -3422,7 +3371,7 @@ mod tests {
             2,
             json!({"type":"object","required":["text"],"properties":{"text":{"type":"integer"}}}),
             [10; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let mut invalid = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), invalid_schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
@@ -3504,7 +3453,7 @@ mod tests {
             2,
             json!({"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}),
             [10; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let mut migrations = NativeExtensionMigrations::default();
         migrations.register(
@@ -3534,7 +3483,7 @@ mod tests {
         };
         let publisher = TestPublisher {
             volume: VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "extension-child",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])),
@@ -3629,7 +3578,7 @@ mod tests {
             version: 1,
         };
         let mut schemas = SchemaRegistry::new();
-        schemas.register_configured(
+        schemas.register(
             extension.name.clone(),
             extension.version,
             json!({"type":"object"}),
@@ -3692,7 +3641,7 @@ mod tests {
         use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost};
 
         let agent = crate::AgentId::from_bytes([94; 16]);
-        let provider = ProviderRef::new("admission-bytes", "filesystem", "2")?;
+        let provider = ProviderRef::new("admission-bytes".into(), "filesystem".into(), "2".into(), &mut None)?;
         let volume = VolumeRef::new(provider.clone(), "admission-bytes",
             VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider)?);
@@ -3733,7 +3682,7 @@ mod tests {
         assert_eq!(claim, 0, "native carrier owns its claim, not the observer");
         let alias = bytes.clone();
         let empty_alias = alias.slice(0..0);
-        ticket.validate_request_bytes_with_work(&alias, &mut Some(&mut io))?;
+        ticket.validate_request_bytes(&alias, &mut Some(&mut io))?;
         drop(bytes);
         drop(alias);
         assert!(empty_alias.is_empty());
@@ -4098,7 +4047,7 @@ mod tests {
         let defaults = default_projection_read_limits();
         let loaded =
             checkpoints::load_with_work(&client, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), defaults, None, &mut None).await?;
-        let suffix = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?
+        let suffix = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?
             .read_page(
                 &HistoryCursor {
                     authority: authority(),

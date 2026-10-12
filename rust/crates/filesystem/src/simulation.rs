@@ -9,8 +9,7 @@ use crate::performance::{WorkBudget, WorkCounters};
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 use crate::storage::{
     AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStoreError, CreateAuthorityOutcome,
-    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt,
-    ObjectResult, ObjectStoreError, PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
+    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
 };
 use acyclic_stream::{OwnedBytes, ProviderTask};
 use std::collections::BTreeMap;
@@ -379,7 +378,7 @@ impl<A, O: AsyncObjectStore> Simulation<A, O> {
         cancellation: &CancellationToken,
     ) -> ObjectResult<u64> {
         self.flush_object_visibility_engine(SimulationWriteWork::Ordinary(&budget), cancellation).await
-            .map(|(value, work)| ObjectReceipt { value, work })
+            .map(|(value, work)| crate::OperationReceipt { value, work })
             .map_err(|(error, work)| ObjectFailure::new(error, work))
     }
 
@@ -962,7 +961,7 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
             };
             work.verify(budget)
                 .map_err(|error| AuthorityFailure::before_work(error.into()))?;
-            return Ok(crate::AuthorityReceipt { value: head, work });
+            return Ok(crate::OperationReceipt { value: head, work });
         }
         self.inner.head(authority_id, budget, cancellation).await
     }
@@ -1009,7 +1008,7 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
             })?;
             let work = fenced.work.checked_add(appended.work)
                 .map_err(|error| AuthorityFailure::new(error.into(), fenced.work))?;
-            return Ok(crate::AuthorityReceipt { value: appended.value, work });
+            return Ok(crate::OperationReceipt { value: appended.value, work });
         }
         let receipt = self.inner.compare_and_append_guarded(request, budget, cancellation).await?;
         if matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend))
@@ -1377,7 +1376,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
     ) -> ObjectResult<()> {
         self.put_engine(SimulationWrite::Plain(object_id, bytes),
             SimulationWriteWork::Ordinary(&budget), cancellation).await
-            .map(|work| ObjectReceipt { value: (), work })
+            .map(|work| crate::OperationReceipt { value: (), work })
             .map_err(|(error, work)| ObjectFailure::new(error, work))
     }
 
@@ -1399,7 +1398,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
     ) -> ObjectResult<()> {
         self.put_engine(SimulationWrite::Hashed(object),
             SimulationWriteWork::Ordinary(&budget), cancellation).await
-            .map(|work| ObjectReceipt { value: (), work })
+            .map(|work| crate::OperationReceipt { value: (), work })
             .map_err(|(error, work)| ObjectFailure::new(error, work))
     }
 
@@ -1492,7 +1491,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         ).await;
         let work = accounting.spent();
         match result {
-            Ok(value) => Ok(ObjectReceipt { value, work }),
+            Ok(value) => Ok(crate::OperationReceipt { value, work }),
             Err(error) => Err(ObjectFailure::new(crate::async_storage::object_error(error), work)),
         }
     }
@@ -1524,7 +1523,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         let result = self.read_many_engine(requests, &mut accounting, cancellation).await;
         let work = accounting.spent();
         match result {
-            Ok((value, _)) => Ok(ObjectReceipt { value, work }),
+            Ok((value, _)) => Ok(crate::OperationReceipt { value, work }),
             Err(error) => Err(ObjectFailure::new(crate::async_storage::object_error(error), work)),
         }
     }

@@ -1,11 +1,11 @@
 import type {
   CommitResult, FileExtentPlan, LiveMutationResult, LiveTransactionResult, RebaseResult,
   TransactionConflict, TransactionRebaseResult, TransactionResult, WorkCounters, WorkspaceDirectoryPage,
-  WorkspaceExtentPlan, WorkspaceName, WorkspaceStat,
+  WorkspaceExtentPlan, WorkspaceStat,
 } from "./contracts.js";
 import type { BrowserWorkCounters } from "../generated/wasm/acyclic_fs_wasm.js";
 import { WORK_COUNTER_KEYS } from "../generated/hosted-contract.js";
-import { copyOptionalBytes } from "./binding-values.js";
+import { copyFixedBytes, copyName, copyOptionalBytes } from "./binding-values.js";
 import { commitStatuses } from "./workspace-results.js";
 
 export const workCounterKeys: Exclude<keyof WorkCounters, typeof WORK_COUNTER_KEYS[number]> extends never
@@ -19,10 +19,6 @@ export function copyWork(value: BrowserWorkCounters): WorkCounters {
 
 export function bigintRecord(value: object): Readonly<Record<string, bigint>> {
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, BigInt(item as string | number | bigint)]));
-}
-
-function copyName(value: WorkspaceName): WorkspaceName {
-  return { encoding: value.encoding, bytes: Uint8Array.from(value.bytes) };
 }
 
 export function copyWorkspaceStat(value: WorkspaceStat): WorkspaceStat {
@@ -125,16 +121,6 @@ interface RawCommitFields {
 const liveStatuses: ReadonlySet<LiveMutationResult["status"]> = new Set([
   "committed", "already-committed", "conflicted", "retry-limit", "fenced", "idempotency-conflict",
 ]);
-
-function copyFixedBytes(value: unknown, length: number, label: string): Uint8Array | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (value instanceof Uint8Array && value.byteLength === length) return Uint8Array.from(value);
-  if (Array.isArray(value) && value.length === length
-    && value.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
-    return Uint8Array.from(value);
-  }
-  throw new TypeError(`${label} must be ${length} bytes`);
-}
 
 export function copyRebaseResult(value: {
   readonly status: string;

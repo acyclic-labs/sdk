@@ -26,11 +26,6 @@ struct VolumeCallback<P: StreamProvider> {
     custody: NativeAllocation,
 }
 
-pub(crate) struct NativeVolumeCallbackPorts {
-    pub(crate) sdk: Arc<dyn NativeMountCallbackGuard>,
-    pub(crate) publication: Arc<dyn NativeVolumePublicationGuard>,
-}
-
 pub(crate) trait NativeVolumePublicationGuard: Send + Sync {
     fn check<'a>(
         &'a self, work: &'a NativeMaterializationWork,
@@ -75,7 +70,7 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
     pub(crate) fn for_volume(
         &self, owner: &TaskJournalOwner<P>, volume: &VolumeRef, writable: bool,
         work: &NativeMaterializationWork,
-    ) -> Result<NativeVolumeCallbackPorts> {
+    ) -> Result<(Arc<dyn NativeMountCallbackGuard>, Arc<dyn NativeVolumePublicationGuard>)> {
         self.require_volume_with_native_work(owner, volume, writable, work)?;
         let mut custody = work.retain_owned(std::mem::size_of::<VolumeCallback<P>>() as u64)
             .map_err(native_error)?;
@@ -89,7 +84,7 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
         let callback = Arc::new(VolumeCallback {
             original: Arc::clone(&self.original), volume, writable, custody,
         });
-        Ok(NativeVolumeCallbackPorts { sdk: callback.clone(), publication: callback })
+        Ok((callback.clone(), callback))
     }
 
     /// Borrows the same declaration checks without allocating a callback that preparation would immediately discard.

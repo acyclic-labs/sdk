@@ -5,8 +5,7 @@ use crate::cancellation::CancellationToken;
 use crate::memory::MemoryObjectStore;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
-    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt,
-    ObjectResult, ObjectStore, ObjectStoreError,
+    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStore, ObjectStoreError,
 };
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +22,7 @@ pub(crate) struct OwnedReadObjectStore {
 
 impl OwnedReadObjectStore {
     fn own_read(
-        receipt: &ObjectReceipt<ObjectRead>,
+        receipt: &crate::OperationReceipt<ObjectRead>,
         budget: WorkBudget,
     ) -> ObjectResult<ObjectRead> {
         let logical_bytes = u64::try_from(receipt.value.bytes.len()).map_err(|_| {
@@ -51,7 +50,7 @@ impl OwnedReadObjectStore {
             })?;
         work.verify(budget)
             .map_err(|error| ObjectFailure::new(error.into(), receipt.work))?;
-        Ok(ObjectReceipt {
+        Ok(crate::OperationReceipt {
             value: ObjectRead {
                 bytes: OwnedBytes::copy_from_slice(&receipt.value.bytes),
                 retention: ObjectReadRetention::Owned { logical_bytes },

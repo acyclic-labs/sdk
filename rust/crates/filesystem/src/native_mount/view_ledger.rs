@@ -1101,15 +1101,15 @@ impl ViewLedger {
         let mut terminal = key_of(&());
         // One read of bindings covers every prefix, as in the ordinary query.
         let bindings = self.bindings.0.read().unwrap_or_else(PoisonError::into_inner);
-        if !bindings.unchanged_key(terminal, stamp, work)? { return Ok(false); }
+        if !unchanged_key(&bindings, terminal, stamp, work)? { return Ok(false); }
         for name in path.components() {
             terminal = child_key(terminal, name, &mut ViewRecordWork::Ordinary(work))?;
-            if !bindings.unchanged_key(terminal, stamp, work)? { return Ok(false); }
+            if !unchanged_key(&bindings, terminal, stamp, work)? { return Ok(false); }
         }
         drop(bindings);
-        if !self.directories.unchanged_key(terminal, stamp, work)? { return Ok(false); }
+        if !unchanged_key(&self.directories.0.read().unwrap_or_else(PoisonError::into_inner), terminal, stamp, work)? { return Ok(false); }
         if let Some(file_id) = file_id {
-            if !self.nodes.unchanged_key(key_of(&file_id), stamp, work)? { return Ok(false); }
+            if !unchanged_key(&self.nodes.0.read().unwrap_or_else(PoisonError::into_inner), key_of(&file_id), stamp, work)? { return Ok(false); }
         }
         Ok(true)
     }
@@ -1125,10 +1125,10 @@ impl ViewLedger {
             || !stamp.precedes_none_of(&self.everything) { return Ok(false); }
         let mut key = key_of(&());
         let bindings = self.bindings.0.read().unwrap_or_else(PoisonError::into_inner);
-        if !bindings.unchanged_key(key, stamp, work)? { return Ok(false); }
+        if !unchanged_key(&bindings, key, stamp, work)? { return Ok(false); }
         for name in path.components() {
             key = child_key(key, name, &mut ViewRecordWork::Ordinary(work))?;
-            if !bindings.unchanged_key(key, stamp, work)? { return Ok(false); }
+            if !unchanged_key(&bindings, key, stamp, work)? { return Ok(false); }
         }
         Ok(true)
     }
@@ -1146,7 +1146,7 @@ impl ViewLedger {
         mount_items(work, 1)?;
         if !stamp.precedes_none_of(&self.everything) { return Ok(false); }
         mount_items(work, 1)?;
-        self.nodes.unchanged_key(key_of(&file_id), stamp, work)
+        unchanged_key(&self.nodes.0.read().unwrap_or_else(PoisonError::into_inner), key_of(&file_id), stamp, work)
     }
 
     pub(super) fn listing_unchanged_since(
@@ -1163,7 +1163,7 @@ impl ViewLedger {
         if !stamp.precedes_none_of(&self.unconfirmed) { return Ok(false); }
         mount_items(work, 1)?;
         if !stamp.precedes_none_of(&self.everything) { return Ok(false); }
-        self.directories.unchanged_key(directory, stamp, work)
+        unchanged_key(&self.directories.0.read().unwrap_or_else(PoisonError::into_inner), directory, stamp, work)
     }
 
     fn rebound(
@@ -1478,14 +1478,14 @@ impl ChangeMap {
         }
     }
 
-    fn unchanged_key(
-        &self, key: u64, stamp: ViewStamp, work: &mut crate::demand::DemandWork,
-    ) -> Result<bool, super::MountSourceError> {
-        let positions = self.0.read().unwrap_or_else(PoisonError::into_inner);
-        if !positions.slots.is_empty() { super::lazy::mount_items(work, 1)?; }
-        let at = positions.slots.get(&key).copied().unwrap_or(0);
-        Ok(at.max(positions.floor) <= stamp.0)
-    }
+}
+
+fn unchanged_key(
+    positions: &ChangePositions, key: u64, stamp: ViewStamp, work: &mut crate::demand::DemandWork,
+) -> Result<bool, super::MountSourceError> {
+    if !positions.slots.is_empty() { super::lazy::mount_items(work, 1)?; }
+    let at = positions.slots.get(&key).copied().unwrap_or(0);
+    Ok(at.max(positions.floor) <= stamp.0)
 }
 
 fn path_key(
@@ -1648,7 +1648,7 @@ mod tests {
     use crate::FileId;
     use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
     use crate::model::VolumeLimits;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, atomic::Ordering};
 
     #[derive(Default)]
     struct Counted(std::sync::atomic::AtomicU64);
@@ -2050,7 +2050,7 @@ mod tests {
         for byte in 2..=8 {
             ledger.record(&ViewChange::Node(FileId::from_bytes([byte; 16])), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()), &mut ViewLedgerAdmission::default()).expect("unbounded view recording");
         }
-        assert!(ledger.nodes.1.load(Ordering::Acquire) > generation);
+        assert!(ledger.nodes.1.load(std::sync::atomic::Ordering::Acquire) > generation);
         work.record(crate::WorkCounters::UNCHARGED)?;
         assert_eq!(work.live_allocation_bytes(), live - bytes);
         assert!(proof.lock().expect("same loaned proof")[super::AdmittedMap::Nodes as usize].is_none());

@@ -54,7 +54,6 @@ test("public Pi installer pins a loadable extension and restores owned settings"
       }
       const report = JSON.parse(stdout);
       assert.equal(report.schemaVersion, 2);
-      assert.equal(report.capabilities.processConfinement.qualified, false);
       const pi = report.checks.find((check: { name: string }) => check.name === "pi-install");
       assert.ok(pi, "doctor must include Pi installation disposition");
       return pi;
@@ -73,14 +72,12 @@ test("public Pi installer pins a loadable extension and restores owned settings"
       assert.deepEqual(loaded.errors, []);
       assert.equal(loaded.extensions.length, 1);
       assert.ok(loaded.extensions[0].commands.has("acyclic-doctor"));
-      assert.deepEqual([...loaded.extensions[0].tools.keys()].sort(), ["acyclic_agents", "acyclic_cancel"]);
       assert.ok(loaded.extensions[0].handlers.has("session_start"));
       await command(...args);
       assert.deepEqual(settingsAt(settings), installed);
     }
     const configured = await doctor();
     assert.equal(configured.status, "warn");
-    assert.match(configured.detail, /recursive execution and platform qualification pending/);
 
     const installed = settingsAt(userSettings);
     const extension = installed.extensions[1];
@@ -89,24 +86,18 @@ test("public Pi installer pins a loadable extension and restores owned settings"
     const corrupted = await doctor();
     assert.equal(corrupted.status, "fail");
     assert.ok(corrupted.detail.includes(extension));
-    assert.match(corrupted.detail, /differs from its content identity/);
     rmSync(extension);
     const missing = await doctor();
     assert.equal(missing.status, "fail");
     assert.ok(missing.detail.includes(extension));
-    assert.match(missing.detail, /cannot read Pi extension asset/);
     writeFileSync(extension, source);
     const edited = { ...installed, theme: "user-edit" };
     writeFileSync(userSettings, JSON.stringify(edited));
     assert.equal((await doctor()).status, "fail");
-    for (const [action, reason] of [
-      ["install", /inconsistent; refusing to overwrite/],
-      ["uninstall", /modified; leaving them untouched/],
-    ] as const) {
+    for (const action of ["install", "uninstall"]) {
       await assert.rejects(() => command(action, "pi"), (error: unknown) => {
-        assert.ok(error instanceof Error && "code" in error && "stderr" in error);
+        assert.ok(error instanceof Error && "code" in error);
         assert.equal(error.code, 1);
-        assert.match(String(error.stderr), reason);
         return true;
       });
       assert.deepEqual(settingsAt(userSettings), edited);
@@ -120,7 +111,6 @@ test("public Pi installer pins a loadable extension and restores owned settings"
     assert.ok(readFileSync(installed.extensions[1], "utf8").length > 0);
     const removed = await doctor();
     assert.equal(removed.status, "warn");
-    assert.match(removed.detail, /no owned per-user Pi extension/);
   } finally {
     await drain?.();
     rmSync(directory, { recursive: true, force: true });

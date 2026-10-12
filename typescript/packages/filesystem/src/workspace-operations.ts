@@ -3,6 +3,7 @@ import type {
   NativeRawJoinPlan, ResolvableFsJoinPlan, WasmRawJoinPlan,
 } from "./contracts.js";
 import { parseJoinResult } from "./workspace-results.js";
+import { copyName } from "./binding-values.js";
 
 export function adaptJoinPlan(
   raw: WasmRawJoinPlan & Partial<Pick<NativeRawJoinPlan, "applySides">>,
@@ -26,7 +27,7 @@ export function adaptJoinPlan(
             : {
                 kind: "binding",
                 directoryId: Uint8Array.from(selection.directoryId),
-                name: { encoding: selection.name.encoding, bytes: Uint8Array.from(selection.name.bytes) },
+                name: copyName(selection.name),
                 side: selection.side,
               }
         )));

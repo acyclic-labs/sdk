@@ -1,4 +1,4 @@
-import { WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
+import { WasmReducer, type ProtocolIdentity } from "../generated/wasm/acyclic_harness_wasm.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
   ApplyResponseSchema,
@@ -73,12 +73,6 @@ export interface IdentityKindMap {
 }
 export type IdentityKind = keyof IdentityKindMap;
 
-/** Parses and canonicalizes a branded identity through the Rust contract. */
-export async function parseIdentity<Kind extends IdentityKind>(
-  kind: Kind, value: string,
-): Promise<IdentityKindMap[Kind]> {
-  return (await NativeContracts.create()).validateIdentity(kind, value);
-}
 export interface Authority<Kind extends AggregateKind = AggregateKind> {
   readonly kind: Kind;
   readonly id: string;
@@ -162,11 +156,6 @@ export interface HarnessOptions {
   readonly schemas?: readonly ExtensionSchema[];
 }
 
-export interface ProtocolIdentityValue {
-  readonly version: string;
-  readonly descriptor_digest: string;
-}
-
 export interface ExtensionSchema {
   readonly name: string;
   readonly version: number;
@@ -179,14 +168,12 @@ export interface ExtensionSchema {
 export class Harness {
   readonly #core: WasmReducer;
   readonly #contracts: NativeContracts;
-  readonly #protocol: ProtocolIdentityValue;
 
   get contracts(): NativeContracts { return this.#contracts; }
 
   private constructor(core: WasmReducer, contracts: NativeContracts) {
     this.#core = core;
     this.#contracts = contracts;
-    this.#protocol = core.protocolIdentity() as ProtocolIdentityValue;
   }
 
   /** Starts a typed runtime with already initialized Rust contract admission. */
@@ -228,10 +215,8 @@ export class Harness {
 
   /** Returns the exact wire protocol identity compiled into the native/WASM reducer. */
   protocolIdentity(): { readonly version: string; readonly descriptorDigest: string } {
-    return {
-      version: this.#protocol.version,
-      descriptorDigest: this.#protocol.descriptor_digest,
-    };
+    const protocol = this.#core.protocolIdentity() as ProtocolIdentity;
+    return { version: protocol.version, descriptorDigest: protocol.descriptor_digest };
   }
 
   /** Issues an explicit root grant from this host. */
@@ -311,14 +296,11 @@ export class Harness {
     return this.#core.volumeStorageName(volume);
   }
 
-  /** Selects the exact logical parent boundary before any fork preparation.
-   * The default inherits logical history; fresh history is explicitly selected.
-   * Providers, child volumes, grants and finite bounds remain caller supplied. */
+  /** Selects a logical parent boundary and explicit fork history policy. */
   prepareForkRequest(request: ForkRequest, policy: ForkHistoryPolicy | null = null): ForkRequest {
     const prepared = this.#core.prepareForkRequest(request, policy);
     const summary = prepared.preparation.summary;
-    // Rust validates every limit within JavaScript's exact integer range. The
-    // native wire retains bigint; the public Limits boundary uses numbers.
+    // Public Limits use exact Numbers; native counters retain BigInt.
     const numericLimit = (value: bigint): number => {
       if (typeof value !== "bigint" || value <= 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
         throw new RangeError("native Summary limit is not an exact positive integer");

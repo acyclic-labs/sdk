@@ -56,7 +56,7 @@ pub struct ContextSummary {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct CompactionRetention {
     /// Roles retained in full. Defaults to instructions (`System`).
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelRole[]"))]
+    #[cfg_attr(feature = "wasm", tsify(type = "ModelRole[]"))]
     pub roles: Vec<ModelRole>,
     /// Retains messages containing native media references in full.
     pub native_media: bool,
@@ -755,7 +755,7 @@ fn clone_summary_native(
         Some(summary) => {
             let mut io = crate::store::history::native_work_io(work)?;
             let output = summary.output.copy(&mut Some(&mut io))?;
-            let custody = io.take_native_custody(output.logical_owned_bytes()?)?;
+            let custody = crate::store::history::HistoryIo::take_native_custody(&mut io, output.logical_owned_bytes()?)?;
             Ok((Some(ContextSummary { operation_id: summary.operation_id, step: summary.step,
                 source_messages: summary.source_messages, source_digest: summary.source_digest,
                 output }), custody))
@@ -896,7 +896,7 @@ fn context_stream_error(source: StreamError, io: Option<&crate::executor::Prepar
     crate::Error::Storage(source.to_string())
 }
 
-fn decode_context_json<T: crate::executor::PreparationRecord>(
+fn decode_context_json<T: crate::executor::PreparationRecord + serde::Serialize>(
     bytes: &[u8], maximum: u64, io: Option<&crate::executor::PreparationIo>,
     reason: &'static str,
 ) -> Result<T> {
@@ -1350,7 +1350,7 @@ impl ContextStage for CompactionStage {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Context {
     /// Ordered model-visible messages.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelMessageWire[]"))]
+    #[cfg_attr(feature = "wasm", tsify(type = "ModelMessage[]"))]
     pub messages: Vec<ModelMessage>,
     /// Stage-owned, namespaced version-pinned metadata files.
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, WasmFileRefWire>"))]
@@ -1461,7 +1461,7 @@ impl ContextInput {
         let input = crate::executor::with_history_io(io, |work| crate::model::clone_content(&turn.input, work).map(|(copy, _)| copy))?;
         let selected_context = turn.selected_context.as_ref().map(|selected| {
             crate::executor::with_history_io(io, |work| {
-                if work.is_none() { return Ok(selected.clone()); }
+                if work.is_none() { return Ok::<_, crate::Error>(selected.clone()); }
                 let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let mut message_ids = Vec::new();
                 let copied = (selected.selection.message_ids.len() * std::mem::size_of::<uuid::Uuid>()) as u64;
@@ -2640,7 +2640,7 @@ mod tests {
         fn new() -> Result<Self> {
             Ok(Self {
                 volume: VolumeRef::new(
-                    ProviderRef::new("test", "filesystem", "2")?,
+                    ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                     "context".into(),
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
@@ -3321,7 +3321,7 @@ mod tests {
 
     fn message(role: ModelRole, text: &str) -> Result<ModelMessage> {
         let volume = VolumeRef::new(
-            ProviderRef::new("test", "filesystem", "2")?,
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
             "context".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([1; 16])),

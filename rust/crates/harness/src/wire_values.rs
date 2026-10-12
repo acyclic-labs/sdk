@@ -19,7 +19,7 @@ fn required<T>(value: Option<T>, name: &str) -> Result<T> {
 impl TryFrom<wire::ProviderRef> for ProviderRef {
     type Error = Error;
     fn try_from(value: wire::ProviderRef) -> Result<Self> {
-        Self::new(value.namespace, value.family, value.version)
+        Self::new(value.namespace, value.family, value.version, &mut None)
     }
 }
 

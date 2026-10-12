@@ -1,7 +1,7 @@
 use super::*;
 
 fn binding(session: &str, identity: u8) -> PiTaskBinding {
-    let provider = ProviderRef::new("acyclic", "filesystem", "1").unwrap();
+    let provider = ProviderRef::new("acyclic".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent_id = AgentId::from_bytes([identity; 16]);
     PiTaskBinding {
         native_session_id: session.to_owned(),
@@ -55,7 +55,7 @@ fn roles_providers_and_original_creation_are_checked() {
         panic!("fixture must have a created scratch volume");
     };
     creation.generation = GenerationRef::new(
-        ProviderRef::new("other", "filesystem", "1").unwrap(),
+        ProviderRef::new("other".into(), "filesystem".into(), "1".into(), &mut None).unwrap(),
         [3; 32],
         None,
     )

@@ -6,11 +6,11 @@
 )]
 
 use super::{
-    ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, DriverStartFailure,
+    ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE,
     MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES, MountAttributeWriteMode, MountDirectoryEntry,
     MountFilesystem, MountLookup, MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation,
     MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver,
-    ViewOrigin, ViewStamp, create_metadata, metadata_or, source_error, system_time_ns,
+    ViewOrigin, ViewStamp, create_metadata, metadata_or, system_time_ns,
 };
 use crate::FileId;
 use crate::demand::{NativeDemandReadMeter, native_demand_error};
@@ -479,7 +479,7 @@ impl FlushLedger {
             return Ok(());
         }
         let covered = self.latest();
-        source.flush_with_meter(work.native).map_err(|error| work.native_error(error.into()))?;
+        source.flush(work.native).map_err(|error| work.native_error(error.into()))?;
         self.flushed.fetch_max(covered, Ordering::AcqRel);
         Ok(())
     }
@@ -1082,7 +1082,7 @@ impl DarwinMountContext {
         mutate(&mut metadata)?;
         // Metadata of any node kind: only a handle names a regular file.
         if handle == 0 {
-            self.mutate(|| self.source.set_attributes_with_meter(path, metadata, None, work.native), work)
+            self.mutate(|| self.source.set_attributes(path, metadata, None, work.native), work)
         } else {
             self.mutate_file(path, handle, |file| file.set_attributes_with_meter(metadata, None, work.native), work)
         }
@@ -1509,7 +1509,7 @@ impl DarwinMountSession {
         request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
         source_work: &crate::NativeMaterializationWork, out: &mut Option<Self>,
         retirement: &mut Option<super::NativeMountRetirement>, prepare: F,
-    ) -> Result<(), DriverStartFailure>
+    ) -> Result<(), NativeMountError>
     where F: FnOnce(&mut super::NativeMountRetirement) -> Result<(), NativeMountError> {
             if out.is_some() { return Err(NativeMountError::ControlPending.into()); }
             let meter = source_work.native_read_meter();
@@ -1519,7 +1519,7 @@ impl DarwinMountSession {
             static STARTUP: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
             let _startup = STARTUP.lock().map_err(|_| NativeMountError::Lifecycle("Darwin mount startup lock is poisoned"))?;
             let root = source.lookup_with_meter(&MountPath::root(), source_work)
-                .map_err(source_error)?
+                .map_err(NativeMountError::from)?
                 .ok_or(NativeMountError::Lifecycle("volume root is absent"))?;
             if root.node.kind != MountNodeKind::Directory {
                 return Err(NativeMountError::Lifecycle("volume root is not a directory").into());
@@ -1566,7 +1566,7 @@ impl DarwinMountSession {
             };
             let _startup_meter = DarwinStartupMeterScope::new(Arc::clone(&context), source_work)?;
             let observer: Weak<DarwinMountContext> = Arc::downgrade(&context);
-            context.source.observe_view_with_meter(observer, source_work).map_err(source_error)?;
+            context.source.observe_view_with_meter(observer, source_work).map_err(NativeMountError::from)?;
             let supports_named_attributes = context.source.supports_posix_named_attributes();
             let buffers = DarwinStartupBuffers::new(
                 &request.destination, request.writable, supports_named_attributes, source_work,
@@ -1641,7 +1641,7 @@ impl DarwinMountSession {
             started.resources.as_ref().expect("new resources retained").driver_session.store(native, Ordering::Release);
             started.unmount.state.lock().unwrap_or_else(PoisonError::into_inner).start_ready = true;
             started.unmount.changed.notify_all();
-            started.await_mount(source_work).map_err(DriverStartFailure::from)
+            started.await_mount(source_work)
     }
 
     fn abort_prepared_start(&self) {
@@ -1775,7 +1775,7 @@ impl DarwinMountSession {
         native.admit(crate::WorkCounters::UNCHARGED)?;
         let _active = self.begin_original_work(native)?;
         let context = &_active.context;
-        context.source.fence_changes_with_meter(native).map_err(source_error)?;
+        context.source.fence_changes_with_meter(native).map_err(NativeMountError::from)?;
         context.revalidate(native).map(|_| ())
     }
 
@@ -3318,7 +3318,7 @@ fn darwin_source_errno(error: &MountSourceError) -> i32 {
         MountSourceError::WorkspacePrefixFailure { source, .. } => super::native_workspace_errno(source),
         MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
         MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_errno(&error.source),
-        MountSourceError::NativeText { kind, .. } | MountSourceError::NativeStaticText { kind, .. } =>
+        MountSourceError::NativeText { kind, .. } =>
             super::native_source_text_errno(*kind),
         _ => libc::EIO,
     }
@@ -3980,7 +3980,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
     ffi(address, &_span, true, |context, work| {
         let path = mount_path(path, work)?;
         context.mutate(|| {
-            context.source.create_directory_with_meter(&path, create_metadata(mode, IFDIR, uid, gid), work.native)
+            context.source.create_directory(&path, create_metadata(mode, IFDIR, uid, gid), work.native)
         }, work)?;
         context.namespace_changed();
         Ok(0)
@@ -4005,7 +4005,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
             });
         }
         context.unlink(&path, lookup, || {
-            context.source.remove_with_meter(&path, Some(lookup.node.file_id), work.native)
+            context.source.remove(&path, Some(lookup.node.file_id), work.native)
         }, work)?;
         context.namespace_changed();
         Ok(0)
@@ -4026,7 +4026,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
         }
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
         let replace = flags & RENAME_NOREPLACE == 0;
-        let rename = || context.source.rename_with_meter(&source, &destination, replace, work.native);
+        let rename = || context.source.rename(&source, &destination, replace, work.native);
         // Replacing the destination unlinks it.
         match replace.then(|| context.lookup(&destination, work)) {
             Some(Ok(replaced)) => context.unlink(&destination, replaced, rename, work)?,
@@ -4048,7 +4048,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_link(
     let _span = callback_span!(TRACE, link);
     ffi(address, &_span, true, |context, work| {
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
-        context.mutate(|| context.source.hard_link_with_meter(&source, &destination, work.native), work)?;
+        context.mutate(|| context.source.hard_link(&source, &destination, work.native), work)?;
         context.namespace_changed();
         Ok(0)
     })
@@ -4070,7 +4070,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
         let target = work.copy_bytes(target)?;
         let destination = mount_path(destination, work)?;
         context.mutate(|| {
-            context.source.create_symbolic_link_with_meter(
+            context.source.create_symbolic_link(
                 &destination,
                 target,
                 create_metadata(0o777, IFLNK, uid, gid), work.native)
@@ -4134,7 +4134,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
         .then(|| super::device::split_device(device));
         let path = mount_path(path, work)?;
         context.mutate(|| {
-            context.source.create_special_with_meter(
+            context.source.create_special(
                 &path,
                 kind,
                 device,
@@ -4439,7 +4439,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_copy_file_range(
                         .logical_bytes
                         .saturating_sub(source_offset),
                 );
-                context.source.clone_range_by_id_with_meter(
+                context.source.clone_range_by_id(
                     source_lookup.node.file_id,
                     source_offset,
                     destination_lookup.node.file_id,
@@ -5301,7 +5301,7 @@ mod tests {
             "a content write keeps the listing"
         );
 
-        source.remove(&second, None)?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&second, None, work))?;
         assert!(
             label(&root)? > root_label,
             "a namespace change relabels its directory"
@@ -5594,7 +5594,7 @@ mod tests {
         assert!(bound(read)?, "the first read binds the source file");
 
         let stale = context.run_request(false, |work| context.open(&path, 0, work)).map_err(os)?;
-        source.remove(&path, Some(created.node.file_id))?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&path, Some(created.node.file_id), work))?;
         source.create_file(&path, FileMetadata::default())?;
         assert_eq!(context.run_request(false, |work| context.file_target(&path, stale, work).map(|target| target.0)).err(), Some(libc::ESTALE));
         Ok(())
@@ -6006,7 +6006,7 @@ mod tests {
     fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let nested = MountPath::root().child(b"nested".to_vec());
-        source.create_directory(&nested, FileMetadata::default())?;
+        super::adapter::boundary(source.cancellation(), |work| source.create_directory(&nested, FileMetadata::default(), work))?;
         let epochs = context.run_request(false, |work| context.cache_epochs(work)).map_err(os)?.ok_or("checkout has no view stamp")?;
         let root = DirectoryHandle::new(DarwinOwned::empty(MountPath::root()), Some(epochs.binding), Some(epochs));
         let directory = DirectoryHandle::new(DarwinOwned::empty(nested.clone()), Some(epochs.binding), Some(epochs));

@@ -1,6 +1,7 @@
 //! Service recovery over original task admissions and retained reservations.
 
 use super::pi_root::PiRootIntent;
+use acyclic_harness::runtime::TaskStateProvider;
 use super::pi_task::{PiTaskExecution, PiTaskInput, PiTaskMachine};
 use super::{AdapterState, PiTaskBinding, PluginTaskBinding};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};

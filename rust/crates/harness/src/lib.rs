@@ -83,6 +83,13 @@ pub type NativeWork<'a> = Option<&'a acyclic_fs::NativeMaterializationWork>;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 pub type NativeWork<'a> = Option<&'a ()>;
 
+/// Optional custody retained for an original native allocation.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub type NativeCustody = Option<acyclic_fs::NativeAllocation>;
+/// Optional custody retained for an original native allocation.
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+pub type NativeCustody = Option<()>;
+
 /// Generated Protobuf packages, nested as their package names are, so the harness messages resolve the shared protocol handshake they import.
 #[allow(
     missing_docs,

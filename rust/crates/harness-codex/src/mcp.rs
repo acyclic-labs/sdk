@@ -57,8 +57,7 @@ struct Shared {
 /// A running MCP endpoint for one turn. Dropping it stops the server.
 pub struct McpEndpoint {
     url: String,
-    token: String,
-    names: BTreeMap<String, String>,
+    shared: Arc<Shared>,
     task: JoinHandle<()>,
 }
 
@@ -83,8 +82,7 @@ impl McpEndpoint {
         policy: Option<Arc<dyn ToolPolicy>>,
     ) -> Result<Self> {
         let mut granted = BTreeMap::new();
-        let mut names = BTreeMap::new();
-        for definition in tools.definitions()? {
+        for definition in tools.definitions(None)? {
             if !scope
                 .grants()
                 .contains(&format!("tool:call:{}", definition.name))
@@ -95,27 +93,27 @@ impl McpEndpoint {
                 Error::Invalid(format!("tool {} is not registered", definition.name))
             })?;
             let name = mcp_name(&definition.name);
-            if let Some(clash) = names.insert(name.clone(), definition.name.clone()) {
+            if let Some(clash) = granted.insert(name.clone(), tool.clone()) {
                 return Err(Error::Invalid(format!(
                     "tools {clash} and {} both map to MCP name {name}",
-                    definition.name
+                    definition.name,
+                    clash = clash.definition.name,
                 )));
             }
-            granted.insert(name, tool.clone());
         }
         let token = uuid::Uuid::new_v4().simple().to_string();
         let shared = Arc::new(Shared {
             tools: granted,
             scope,
             policy,
-            token: token.clone(),
+            token,
             parent: OperationId::new(),
             calls: AtomicU64::new(0),
         });
         let app = Router::new()
             .route("/mcp", post(rpc).get(not_streaming).delete(not_streaming))
             .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
-            .with_state(shared);
+            .with_state(shared.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(|error| Error::Unsupported(format!("codex MCP bind: {error}")))?;
@@ -127,8 +125,7 @@ impl McpEndpoint {
         });
         Ok(Self {
             url: format!("http://{address}/mcp"),
-            token,
-            names,
+            shared,
             task,
         })
     }
@@ -142,19 +139,13 @@ impl McpEndpoint {
     /// The bearer token Codex must present.
     #[must_use]
     pub fn token(&self) -> &str {
-        &self.token
-    }
-
-    /// The registry name behind an MCP tool name, for traces.
-    #[must_use]
-    pub fn registry_name(&self, mcp_name: &str) -> Option<&str> {
-        self.names.get(mcp_name).map(String::as_str)
+        &self.shared.token
     }
 
     /// Whether no tool is offered at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.names.is_empty()
+        self.shared.tools.is_empty()
     }
 }
 
