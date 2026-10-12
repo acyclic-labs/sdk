@@ -2,7 +2,7 @@
 use super::super::response;
 use super::*;
 use crate::LocalObjectsLimits;
-use crate::body::{BodyParts, LocalBodyLocation};
+use crate::body::{LocalBodyLocation};
 use crate::physical::native_durability;
 use fs2::FileExt;
 use std::collections::BTreeSet;
@@ -162,7 +162,7 @@ fn composite_publication(parts: Vec<StoredBody>, length: usize, publication: &mu
             let allocation = publication.retained.as_mut().ok_or(Error::from(Unavailable))?.split(capacity)?;
             StoredBody::composite_measured(parts, length, meter, allocation)
         }
-        None => Ok(StoredBody::Composite { parts: Arc::new(BodyParts { values: parts, _allocation: None }), length }),
+        None => Ok(StoredBody::Composite { parts: Arc::new(crate::v1::Guarded { value: parts, _allocation: None }), length }),
     }
 }
 
@@ -179,7 +179,7 @@ fn relocated_publication(body: &StoredBody, moves: &crate::body::LocalBodyReloca
 fn unpersisted(body: &StoredBody) -> bool {
     match body {
         StoredBody::Memory(_) => true,
-        StoredBody::Composite { parts, .. } => parts.values.iter().any(unpersisted),
+        StoredBody::Composite { parts, .. } => parts.value.iter().any(unpersisted),
         StoredBody::Local { .. } => false,
     }
 }
@@ -800,8 +800,8 @@ impl Journal {
             }
             StoredBody::Composite { parts, length } => {
                 let mut output = Vec::new();
-                publication.reserve(&mut output, parts.values.len())?;
-                for part in parts.values.iter() {
+                publication.reserve(&mut output, parts.value.len())?;
+                for part in parts.value.iter() {
                     output.push(self.external(part, publication)?);
                 }
                 composite_publication(output, *length, publication)
@@ -856,7 +856,7 @@ fn bodies(body: &StoredBody, publication: &mut Publication) -> Result<Vec<BodyRe
                 Ok(())
             }
             StoredBody::Composite { parts, .. } => {
-                for part in parts.values.iter() { ordered(part, out, publication)?; }
+                for part in parts.value.iter() { ordered(part, out, publication)?; }
                 Ok(())
             }
             _ => Err(Error::from(Unavailable).into()),
@@ -1030,7 +1030,7 @@ fn restore_body(
         return Err(LocalOpenError::Corrupt);
     }
     Ok(StoredBody::Composite {
-        parts: Arc::new(BodyParts { values: leaves, _allocation: None }),
+        parts: Arc::new(crate::v1::Guarded { value: leaves, _allocation: None }),
         length,
     })
 }
