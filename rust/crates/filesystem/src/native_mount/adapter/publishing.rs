@@ -52,6 +52,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         let notification = self
             .ledger
             .prepare_everything_notification(work).map_err(early)?;
+        let force = state.has_retained_operation();
         let operation = state.retained_operation_id();
         let evidence = context.map(|context| {
             crate::lazy_workspace::native_publication_evidence(
@@ -99,7 +100,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             &mut original.checkout,
             operation,
             permit,
-            false,
+            force,
             work,
             cancellation,
             &mut guarded,
