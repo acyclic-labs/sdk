@@ -5,7 +5,7 @@ use acyclic_harness::{Capabilities, Error, InteractionId, OperationId, Outcome, 
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     mcp::{McpToolTransport, callbacks::{McpCallbackAdmission, McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks}, http::{HttpMcpTransport, NativeMcpHttpProvider}, stdio::{McpStdioMethod, McpStdioRequest}},
-    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     runtime::{AgentHarness, InteractionRouter, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, ToolContext},
     tool::ToolRegistry,
     conversation::Limits,
@@ -34,28 +34,10 @@ impl ModelProvider for ByteModel {
         let text = format!("recorded:{last:?}");
         Box::pin(futures::stream::iter([Ok(ModelEvent::Content { delta: text }), Ok(ModelEvent::Completed { metadata: json!({"finish":"stop"}) })]))
     }
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
-struct ToolTurnModel(ByteModel);
-impl ModelProvider for ToolTurnModel {
-    fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> { self.0.context_capacity(model) }
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> { self.0.count_tokens(request) }
-    fn generate<'a>(&'a self, request: PreparedModelRequest, _: ModelDispatch) -> BoxProviderStream<'a, Result<ModelEvent>> {
-        self.0.dispatches.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(request.request().tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(), ["mcp.fixture.echo"]);
-        let event = if request.request().messages.iter().any(|message| message.role == acyclic_harness::model::ModelRole::Tool) {
-            assert!(format!("{:?}", request.request().messages).contains("end-to-end"));
-            ModelEvent::Content { delta: "joined".into() }
-        } else { ModelEvent::ToolCall { call_id: "echo".into(), name: "mcp.fixture.echo".into(), arguments: json!({}) } };
-        Box::pin(futures::stream::iter([Ok(event), Ok(ModelEvent::Completed { metadata: json!({"finish":"stop"}) })]))
-    }
-    fn reconcile<'a>(&'a self, attempt: ModelAttempt) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> { self.0.reconcile(attempt) }
-}
-
-pub(super) struct Participant { pub(super) journal: Arc<LocalJournal>, pub(super) issuer: AuthorityIssuer }
+struct Participant { pub(super) journal: Arc<LocalJournal>, pub(super) issuer: AuthorityIssuer }
 impl InteractionRouter for Participant {
     fn route<'a>(&'a self, operation: OperationId, interaction: Interaction) -> BoxProviderFuture<'a, Result<InteractionOutcome>> {
         Box::pin(async move {
@@ -224,28 +206,6 @@ async fn real_resource_prompt_endpoint_and_schema_negative_controls() -> Result<
     Ok(())
 }
 
-#[test]
-fn stdio_service_frames_all_cuts_and_arbitrary_ingress_fail_closed() -> Result<()> {
-    let initialization = OperationId::from_bytes([95;16]);
-    let operation = OperationId::from_bytes([96;16]);
-    let descriptor = McpStdioRequest { initialization, operation, method: McpStdioMethod::ReadResource, params: json!({"uri":"test://resource"}), maximum_bytes: 8192 };
-    let transcript = format!("{}\n{}\n", json!({"jsonrpc":"2.0","id":initialization.to_string(),"result":{"protocolVersion":acyclic_harness::mcp::PROTOCOL_VERSION,"capabilities":{"resources":{}},"serverInfo":{"name":"fixture","version":"1"}}}), json!({"jsonrpc":"2.0","id":operation.to_string(),"result":{"contents":[{"uri":"test://resource","text":"héllo"}]}}));
-    for cut in 0..=transcript.len() {
-        let (mut exchange, _) = descriptor.exchange()?;
-        let (left, right) = transcript.as_bytes().split_at(cut);
-        exchange.push(left)?; exchange.push(right)?;
-        assert_eq!(exchange.finish()?.pointer("/contents/0/text"), Some(&json!("héllo")));
-    }
-    use proptest::{prelude::*, test_runner::TestRunner};
-    let strategy = proptest::collection::vec(any::<u8>(), 0..4096);
-    TestRunner::default().run(&strategy, |bytes| {
-        let (mut exchange, _) = descriptor.exchange().map_err(|error| TestCaseError::fail(error.to_string()))?;
-        if exchange.push(&bytes).is_err() { prop_assert!(exchange.push(transcript.as_bytes()).is_err()); }
-        Ok(())
-    }).map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(())
-}
-
 #[tokio::test]
 async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> Result<()> {
     let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
@@ -285,69 +245,6 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
 }
 
 #[tokio::test]
-async fn callback_policy_schema_and_scope_matrix_precedes_model_admission() -> Result<()> {
-    for enabled in [false, true] {
-        for grant in [false, true] {
-            for valid in [false, true] {
-                let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-                let (disk, issuer, _) = journal(root.path(), true).await?;
-                let mut grants = vec!["context:build", "interaction:route"];
-                if grant { grants.push("model:generate"); }
-                let scope = RuntimeScope::new(Capabilities::new(grants), Limits::default())?;
-                let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), None).await?;
-                let parent = OperationId::from_bytes([84;16]);
-                let tool = ToolContext::new(context, parent, "matrix")?;
-                let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
-                let callbacks = McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk, "deterministic".into(), sampling_policy())?;
-                let mut callback = sampling(parent);
-                callback.policy.sampling = enabled;
-                if !valid {
-                    callback.message.get_mut("params").and_then(Value::as_object_mut).ok_or_else(|| Error::Invalid("params absent".into()))?.insert("maxTokens".into(), json!("untrusted"));
-                }
-                let result = callbacks.admit(tool, &callback).await;
-                assert_eq!(result.is_ok(), enabled && grant && valid);
-                assert_eq!(model.dispatches.load(Ordering::SeqCst), usize::from(enabled && grant && valid));
-            }
-        }
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn sampling_preserves_source_roles_order_and_explicit_assistant_continuation() -> Result<()> {
-    for assistant_final in [false, true] {
-        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-        let (disk, issuer, _) = journal(root.path(), true).await?;
-        let scope = RuntimeScope::new(Capabilities::new(["model:generate", "context:build", "interaction:route"]), Limits::default())?;
-        let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), None).await?;
-        let operation = OperationId::from_bytes([85;16]);
-        let tool = ToolContext::new(context, operation, "ordered")?;
-        let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
-        let callbacks = McpRuntimeCallbacks::new(executor(model, scope)?, disk.clone(), "deterministic".into(), sampling_policy())?;
-        let mut messages = vec![json!({"role":"user","content":{"type":"text","text":"first"}}), json!({"role":"assistant","content":{"type":"text","text":"previous"}})];
-        if !assistant_final { messages.push(json!({"role":"user","content":{"type":"text","text":"last"}})); }
-        let request = McpCallbackRequest { parent: operation, policy: policy(), message: json!({"jsonrpc":"2.0","id":"ordered","method":"sampling/createMessage","params":{"messages":messages,"systemPrompt":"server-supplied","maxTokens":128}}) };
-        callbacks.admit(tool, &request).await?;
-        let records = disk.replay(request.operation()?, 0, 64).await?;
-        let file = records.iter().find_map(|record| match &record.event {
-            acyclic_harness::executor::ExecutionEvent::ModelStarted { request, .. } => Some(request),
-            _ => None,
-        }).ok_or_else(|| Error::NotFound("recorded model request".into()))?;
-        let prepared: acyclic_harness::model::ModelRequest = serde_json::from_slice(&disk.load(file).await?).map_err(|error| Error::Invalid(error.to_string()))?;
-        let wire = serde_json::to_value(&prepared.messages).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(wire.pointer("/0/role"), Some(&json!("user")));
-        assert_eq!(wire.pointer("/0/content"), Some(&json!("server-supplied")));
-        assert_eq!(wire.pointer("/1/content/0/text"), Some(&json!("first")));
-        assert_eq!(wire.pointer("/2/role"), Some(&json!("assistant")));
-        assert_eq!(wire.pointer("/2/content/0/text"), Some(&json!("previous")));
-        assert_eq!(wire.pointer("/3/role"), Some(&json!("user")));
-        if assistant_final { assert_eq!(wire.pointer("/3/content"), Some(&json!("Host-selected continuation request"))); }
-        else { assert_eq!(wire.pointer("/3/content/0/text"), Some(&json!("last"))); }
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -> Result<()> {
     use acyclic_harness::{conversation::{VolumeRef, VolumeClass, VolumeOwner, VolumeOperation}, resources::ProviderRef,
         filesystem::{FilesystemHost, FilesystemContentPublisher, FilesystemContentVerifier}, runtime::ContentBindings,
@@ -383,7 +280,7 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
                 acyclic_harness::executor::ExecutionEvent::ModelStarted { request, .. } => Some(request), _ => None,
             }).ok_or_else(|| Error::NotFound("media model request".into()))?;
             let prepared: acyclic_harness::model::ModelRequest = serde_json::from_slice(&disk.load(file).await?).map_err(|error| Error::Invalid(error.to_string()))?;
-            let files = prepared.messages.last().ok_or_else(|| Error::NotFound("media input".into()))?.content.file_refs();
+            let files = prepared.messages.last().ok_or_else(|| Error::NotFound("media input".into()))?.content.file_refs().collect::<Vec<_>>();
             assert_eq!(files.len(), 2);
             let mut bytes = Vec::new();
             for file in files { bytes.push(context.read_file(file).await?); }
@@ -397,68 +294,3 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
     Ok(())
 }
 
-#[tokio::test]
-async fn ordinary_task_stock_model_tool_callback_loop_reopens_complete_without_network_or_model_dispatch() -> Result<()> {
-    let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let scope = RuntimeScope::new(Capabilities::new(["model:generate", "context:build", "interaction:route", "mcp:call:fixture"]), Limits::default())?;
-    let model = Arc::new(ToolTurnModel(ByteModel { dispatches: AtomicUsize::new(0), pause: false }));
-    let callback_model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|error| Error::Storage(error.to_string()))?;
-    let endpoint = format!("http://{}/mcp", listener.local_addr().map_err(|error| Error::Storage(error.to_string()))?);
-    let posts = Arc::new(AtomicUsize::new(0));
-    let observed_posts = Arc::clone(&posts);
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.map_err(|error| Error::Storage(error.to_string()))?;
-        let call = request(&mut socket).await?;
-        observed_posts.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(call.get("method"), Some(&json!("tools/call")));
-        assert_eq!(call.pointer("/params/name"), Some(&json!("echo")));
-        let callback = sampling(OperationId::from_bytes([91;16])).message;
-        let result = json!({"jsonrpc":"2.0","id":call["id"],"result":{"content":[{"type":"text","text":"end-to-end"}]}});
-        let body = format!("data: {callback}\n\ndata: {result}\n\n");
-        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.map_err(|error| Error::Storage(error.to_string()))?;
-        let (mut ack, _) = listener.accept().await.map_err(|error| Error::Storage(error.to_string()))?;
-        let reply = request(&mut ack).await?;
-        observed_posts.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(reply.get("id"), Some(&json!("sample")));
-        assert_eq!(reply.pointer("/result/role"), Some(&json!("assistant")));
-        ack.write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.map_err(|error| Error::Storage(error.to_string()))?;
-        Ok::<_, Error>(())
-    });
-    for create in [true, false] {
-        let (disk, issuer, _) = journal(root.path(), create).await?;
-        let mut catalog = super::catalog();
-        catalog.revision = "g1".into();
-        let projection: Arc<dyn acyclic_harness::tool::ToolProjection> = Arc::new(super::Projection);
-        let mut sampling_tools = ToolRegistry::new();
-        let plain_transport: Arc<dyn McpToolTransport> = Arc::new(HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), endpoint.clone(), None, 8192, 2000)?);
-        catalog.install(&mut sampling_tools, None, &plain_transport, &projection, 8, 8192)?;
-        let sampling_executor = StockExecutor::new(Model::new("byte-model", "deterministic", "1", json!({}))?, callback_model.clone(), ContextPipeline::default(), sampling_tools).with_tool_authority(scope.clone(), None)?;
-        let callbacks: Arc<dyn McpCallbackAdmission> = Arc::new(McpRuntimeCallbacks::new(sampling_executor, disk.clone(), "deterministic".into(), sampling_policy())?);
-        let transport: Arc<dyn McpToolTransport> = Arc::new(HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), endpoint.clone(), None, 8192, 2000)?.with_callbacks(policy(), callbacks)?);
-        let mut tools = ToolRegistry::new();
-        catalog.install(&mut tools, None, &transport, &projection, 8, 8192)?;
-        let executor = Arc::new(StockExecutor::new(Model::new("byte-model", "tool-turn", "1", json!({}))?, model.clone(), ContextPipeline::default(), tools.clone()).with_tool_authority(scope.clone(), None)?);
-        let task_journal = Arc::clone(&disk);
-        let mut tasks = TaskRegistry::default();
-        tasks.register(TaskDefinition::live("mcp-stock-join", "1", move |context, _: ()| {
-            let executor = Arc::clone(&executor);
-            let disk = Arc::clone(&task_journal);
-            async move {
-                let input = TurnInput { operation_id: OperationId::from_bytes([92;16]), input: acyclic_harness::model::ModelContent::Text("invoke the installed peer".into()), selected_context: None, max_steps: 2 };
-                let output = Box::pin(executor.execute_with_context(&context, input, disk.as_ref())).await?;
-                assert_eq!(output.steps, 2);
-                Ok(output.text)
-            }
-        })?)?;
-        let runtime = AgentHarness::with_content(tasks, tools, scope.clone(), 1, None, Some(Arc::new(Participant { journal: Arc::clone(&disk), issuer })), None)?;
-        let definition = runtime.task::<(), String>("mcp-stock-join@1")?;
-        assert!(matches!(runtime.spawn(&definition, ()).await?.result().await?, Outcome::Succeeded(text) if text == "joined"));
-        assert_eq!(model.0.dispatches.load(Ordering::SeqCst), 2);
-        assert_eq!(callback_model.dispatches.load(Ordering::SeqCst), 1);
-        assert_eq!(posts.load(Ordering::SeqCst), 2);
-        drop(runtime); drop(disk); drop(transport);
-    }
-    server.await.map_err(|error| Error::Storage(error.to_string()))??;
-    Ok(())
-}

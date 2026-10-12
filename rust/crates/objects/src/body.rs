@@ -483,8 +483,7 @@ pub(crate) enum LocalBodyLocation {
     Journal { offset: u64 },
 }
 
-/// Physical moves of local bodies, keyed by current location and digest: an empty body
-/// shares its journal offset with the inline body that follows it.
+/// Physical moves of local bodies, keyed by current location and digest: an empty body shares its journal offset with the inline body that follows it.
 #[cfg(feature = "local")]
 pub(crate) type LocalBodyRelocations = BTreeMap<(LocalBodyLocation, [u8; 32]), LocalBodyLocation>;
 
@@ -581,20 +580,7 @@ pub(crate) mod tests {
         }
     }
     impl Capture {
-        /// Includes live parents retained by worker-owned child spans.
-        #[cfg(feature = "local")]
-        pub(crate) fn recorded_spans(&self, name: &str) -> Vec<CapturedSpan> {
-            let mut spans = self.spans(name);
-            spans.extend(
-                self.1
-                    .lock()
-                    .unwrap_or_else(|_| unreachable!())
-                    .values()
-                    .filter(|span| span.name == name)
-                    .cloned(),
-            );
-            spans
-        }
+
         pub(crate) fn spans(&self, name: &str) -> Vec<CapturedSpan> {
             self.0
                 .lock()

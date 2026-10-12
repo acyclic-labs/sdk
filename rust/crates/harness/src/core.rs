@@ -31,6 +31,8 @@ pub(crate) use snapshot::{
     resource_creation_proof_clone_with_custody,
     resource_preparation_owned_bytes,
 };
+#[cfg(feature = "filesystem")]
+pub(crate) use snapshot::resource_creation_clone_reservation;
 pub(crate) use native_custody::{
     copy_iter, copy_copy_vector, reserve_copy_vector, copy_text, copy_authority, copy_provider,
     copy_file, copy_vector, copy_boxed, copy_configuration, copy_value, copy_capabilities,
@@ -903,11 +905,7 @@ impl AuthorityVerifier {
         self.verify_audience(authority)
     }
 
-    fn verify_effect(&self, observation: &EffectAttestation) -> Result<()> {
-        self.verify_effect_with_work(observation, &mut None)
-    }
-
-    fn verify_effect_with_work(
+    fn verify_effect(
         &self, observation: &EffectAttestation,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -1864,9 +1862,9 @@ impl SchemaRegistry {
                 "extension binding needs a namespaced name, positive version, and implementation digest".into(),
             ));
         }
-        crate::contract::compile_json_schema(&schema, "extension")?;
+        crate::contract::compile_json_schema(&schema, "extension", None)?;
         if let Some(configuration_schema) = &configuration_schema {
-            crate::contract::compile_json_schema(configuration_schema, "configuration")?;
+            crate::contract::compile_json_schema(configuration_schema, "configuration", None)?;
         }
         let mut required = BTreeSet::new();
         for dependency in dependencies {
@@ -2197,7 +2195,7 @@ impl SchemaRegistry {
         let value: Value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("extension content is not JSON: {error}")))?;
         let binding = self.pinned_binding(name, version, None)?;
-        crate::contract::validate_json_schema_value(&binding.schema, &value, "extension payload")?;
+        crate::contract::validate_json_schema_value(&binding.schema, &value, "extension payload", None)?;
         Ok(())
     }
 
@@ -2259,7 +2257,7 @@ impl SchemaRegistry {
         io: &'a crate::filesystem::PreparationIo,
     ) -> Result<crate::filesystem::ReservedDecoded<'a, ExtensionConfiguration>> {
         let _metadata;
-        let metadata = io.encode_json(&(extension, content), io.remaining()?.bytes_encoded, false)?;
+        let metadata = io.encode(&(extension, content), io.remaining()?.bytes_encoded, false)?;
         _metadata = io.guard_owned(metadata.len() as u64)?;
         extension.validate()?;
         let binding = self.pinned_binding_with_io(&extension.name, extension.version, None, Some(io))?;
@@ -2272,9 +2270,9 @@ impl SchemaRegistry {
             content: &'a FileRef,
         }
         let _bytes;
-        let bytes = io.encode_json(&Record { extension, schema_digest, content }, io.remaining()?.bytes_encoded, false)?;
+        let bytes = io.encode(&Record { extension, schema_digest, content }, io.remaining()?.bytes_encoded, false)?;
         _bytes = io.guard_owned(bytes.len() as u64)?;
-        let record = io.decode_preparation::<ExtensionConfiguration>(&bytes)?;
+        let record = io.decode_preparation::<ExtensionConfiguration>(&bytes, crate::wire::ErrorCode::Storage)?;
         record.validate()?;
         Ok(record)
     }
@@ -2310,7 +2308,7 @@ impl SchemaRegistry {
         let _metadata;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
-            _metadata = io.encode_json(record, io.remaining()?.bytes_encoded, false)?;
+            _metadata = io.encode(record, io.remaining()?.bytes_encoded, false)?;
             _metadata_hold = io.guard_owned(_metadata.len() as u64)?;
         }
         limits.validate_file(&record.content)?;
@@ -2391,7 +2389,7 @@ impl SchemaRegistry {
         let value = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
-                decoded = io.decode_preparation::<Value>(bytes)?;
+                decoded = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
                 &decoded.value
             }
             _ => {
@@ -2406,7 +2404,7 @@ impl SchemaRegistry {
             .configuration_schema
             .as_ref()
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
-        crate::contract::validate_json_schema_value_with_io(schema, value, "configuration", io)
+        crate::contract::validate_json_schema_value(schema, value, "configuration", io)
     }
 }
 
@@ -2526,7 +2524,7 @@ impl Reducer {
             return native_custody::clone_reducer(self, work);
         }
         let native_custody = NativeComponentCustody::default();
-        let conversation = self.conversation.clone_with_work(work)?;
+        let conversation = self.conversation.copy(work, None)?.0;
         Ok(Self {
             authority: self.authority.clone(),
             authority_verifier: self.authority_verifier.clone(),
@@ -4277,7 +4275,7 @@ impl Reducer {
                     ));
                 }
                 let effect = self.transition_effect(&observation.effect_id, archived_effect)?;
-                self.authority_verifier.verify_effect_with_work(observation, quota.work())?;
+                self.authority_verifier.verify_effect(observation, quota.work())?;
                 validate_effect_observation(effect, observation)?;
                 if effect.attempts.last() != Some(&observation.attempt_id) {
                     return Err(Error::Conflict(
@@ -4636,7 +4634,7 @@ impl Reducer {
                     .effects
                     .get_mut(&observation.effect_id)
                     .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
-                self.authority_verifier.verify_effect_with_work(observation, work)?;
+                self.authority_verifier.verify_effect(observation, work)?;
                 validate_effect_observation(effect, observation)?;
                 if !observation.status.is_terminal()
                     || effect.attempts.last() != Some(&observation.attempt_id)
@@ -5635,7 +5633,7 @@ mod tests {
             let observed = issuer.attest_effect_with_work(
                 effect_id, effect, attempt_id, status, &mut Some(&mut io))?;
             assert_eq!(observed, expected);
-            issuer.verifier().verify_effect(&observed)?;
+            issuer.verifier().verify_effect(&observed, &mut None)?;
             assert_eq!(ledger.receipt().bytes_hashed, expected_bytes.len() as u64);
             assert!(ledger.receipt().bytes_copied >= effect.provider.len() as u64);
             for denied in ["bytes_copied", "bytes_hashed", "peak_allocation_bytes", "cancelled"] {
@@ -7402,7 +7400,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             assert!(reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work)).is_err());
 
             let prefix = InheritedConversationPrefix::select(parent.clone(), 1, 0, &[], &reducer.conversation)?;
-            let prefix_bytes = prefix.canonical_bytes()?;
+            let prefix_bytes = prefix.canonical_bytes(None)?;
             let mut materialized = seed.clone();
             materialized.inherited_context.push(FileRef::new(
                 seed.child_private_volume.clone(), ".system/inherited-conversation/prefix.json", "generation-1",

@@ -720,7 +720,7 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
     };
     // The tuple's field order frees every physical name before retiring custody.
     let mut owned = if let Some(original) = &original {
-        let (components, allocation) = original.with_owned_allocations(reserve)?;
+        let (components, allocation) = original.allocations(reserve)?;
         (components, Some(allocation))
     } else {
         (work.with_original_leaf(|actual| {
@@ -1276,7 +1276,7 @@ impl NativeWatch {
     ) -> Result<(PathBuf, Option<crate::NativeAllocation>), NativeWatchError> {
         work.check().map_err(demand_watch_error)?;
         if let Some(original) = original {
-            let (path, allocation) = original.copy_path(path)?;
+            let (path, allocation) = original.path(path, None)?;
             Ok((path, Some(allocation)))
         } else {
             let (path, _) = crate::native_host::clone_path_with_work(path, work)
@@ -1341,7 +1341,7 @@ impl NativeWatch {
             return Err(NativeWatchError::RootChanged);
         }
         #[cfg(windows)]
-        let complete = crate::native_host::reports_every_change_with_work(
+        let complete = crate::native_host::reports_every_change(
             &held_root.directory_handle(), work,
         ).map_err(demand_watch_error)?;
         #[cfg(not(windows))]
@@ -2069,14 +2069,6 @@ impl NativeWatch {
         self.begin_rescan_with_work(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation))
     }
 
-    /// Starts the original scan without deriving a second work budget.
-    pub fn begin_rescan_with_native_work(
-        &mut self, work: &crate::NativeMaterializationWork,
-    ) -> Result<WatchEpoch, NativeWatchError> {
-        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
-        self.begin_rescan_with_work(&mut source)
-    }
-
     fn begin_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self, work: &mut W,
     ) -> Result<WatchEpoch, NativeWatchError> {
@@ -2187,14 +2179,6 @@ impl NativeWatch {
         self.finish_rescan_with_work(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation))
     }
 
-    /// Completes the same original scan on the caller's native work.
-    pub fn finish_rescan_with_native_work(
-        &mut self, work: &crate::NativeMaterializationWork,
-    ) -> Result<WatchBatch, NativeWatchError> {
-        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
-        self.finish_rescan_with_work(&mut source)
-    }
-
     fn finish_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self, work: &mut W,
     ) -> Result<WatchBatch, NativeWatchError> {
@@ -2292,7 +2276,7 @@ impl NativeWatch {
             }
             let relative = convert(subtree, work)?;
             let mut host = if let Some(original) = original {
-                original.join_path(&self.root, &relative.0)
+                original.path(&self.root, Some(&relative.0))
                     .map(|(path, allocation)| (path, Some(allocation)))?
             } else {
                 let copied = self.root.as_os_str().len().checked_add(relative.0.as_os_str().len())
@@ -2318,7 +2302,7 @@ impl NativeWatch {
                 allocation.resize_retained(host.0.capacity() as u64)?;
             }
             let mut shared = if let Some(original) = original {
-                original.copy_path(&host.0)
+                original.path(&host.0, None)
                     .map(|(path, allocation)| (path, Some(allocation)))?
             } else {
                 crate::native_host::clone_path_with_work(&host.0, work)
@@ -2377,7 +2361,7 @@ impl NativeWatch {
                 .map_err(crate::demand::DemandError::from).map_err(demand_watch_error)
         };
         if let Some(original) = original {
-            original.with_owned_allocations(copy)
+            original.allocations(copy)
                 .map(|(path, allocation)| (path, Some(allocation)))
         } else {
             work.with_original_leaf(|actual| {
@@ -2642,13 +2626,6 @@ impl NativeWatch {
             Ok((value, _)) => Ok(OperationReceipt { value, work: work.work }),
             Err(error) => Err(OperationFailure::new(error, work.work)),
         }
-    }
-
-    /// Polls on the caller's original ledger, retaining the actual output buffer.
-    pub fn poll_with_native_work(
-        &mut self, maximum_changes: u32, original: &crate::NativeMaterializationWork,
-    ) -> Result<(WatchBatch, crate::NativeAllocation), NativeWatchError> {
-        self.poll_with_native_work_guarded(maximum_changes, original, |_| Ok(()))
     }
 
     /// Runs the consumer's guarded publication before committing watch progress.

@@ -36,11 +36,7 @@ pub struct ResourceCreationProofRef {
 
 impl ResourceCreationProofRef {
     /// Validates reference structure without authenticating provider evidence.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub(crate) fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -229,7 +225,7 @@ impl ResourcePreparationRequest {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
             let io = crate::filesystem::PreparationIo::from_native_work(original)?;
-            let decoded = io.decode_preparation_with_code::<Self>(bytes, crate::wire::ErrorCode::Invalid)?;
+            let decoded = io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Invalid)?;
             let (request, custody) = decoded.into_native_parts()?;
             let extent = custody.bytes();
             if let Some(observer) = work.as_deref_mut() {
@@ -535,7 +531,7 @@ impl<P: acyclic_stream::StreamProvider> ResourcePreparationLease
     }
 
     fn verify_lease(&self, settlement: bool) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
-        Box::pin(async move { self.verify(settlement).await })
+        Box::pin(async move { self.verify(settlement, &mut None).await })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -632,23 +628,7 @@ impl ChildScratchCreationProof {
             && self.initial_generation() == other.initial_generation() && self.origin() == other.origin()
     }
 
-    /// Authenticates original allocation custody and current-fenced WRITE through the same task owner's settlement path.
-    pub async fn authorize_settlement_measured<P: acyclic_stream::StreamProvider + 'static>(
-        &self, owner: &crate::durable_host::TaskJournalOwner<P>,
-        budget: acyclic_fs::WorkBudget, cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        owner.authorize_created_scratch_settlement_measured(self,budget,cancellation).await
-    }
 
-    /// Authorizes only cleanup of this original allocation under its authentic current owner, original WRITE custody and the caller's existing ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn authorize_settlement_with_native_work<P: acyclic_stream::StreamProvider + 'static>(
-        &self,
-        owner: &crate::durable_host::TaskJournalOwner<P>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        owner.authorize_created_scratch_settlement_with_native_work(self, work).await
-    }
 }
 
 /// One immutable inherited file and its authenticated exact-file reader.
@@ -767,15 +747,6 @@ impl CreatedResourceAccess {
     }
 
     pub(crate) fn consume(
-        admission: &TaskAdmissionRecord,
-        mut receipts: Vec<CreatedResourceReceipt>,
-        current_default_origin: Option<OperationId>,
-    ) -> Result<Self> {
-        Self::consume_with_work(admission, &mut receipts, current_default_origin, &mut None)
-            .map(|(access, _)| access)
-    }
-
-    pub(crate) fn consume_with_work(
         admission: &TaskAdmissionRecord,
         receipts: &mut Vec<CreatedResourceReceipt>,
         current_default_origin: Option<OperationId>,

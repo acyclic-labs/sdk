@@ -5,7 +5,8 @@ use crate::{Error, Result, core::{Authority, Event}};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, NativeWorkReservation, WorkCounters};
 use std::mem::size_of;
 
-pub(crate) struct NativeHistoryIo<'a> {
+/// Observes aggregate work on the supplied native ledger.
+pub struct NativeHistoryIo<'a> {
     work: &'a NativeMaterializationWork,
     custody: NativeAllocation,
     staged_bytes: u64,
@@ -19,7 +20,8 @@ fn error(cause: std::collections::TryReserveError) -> Error {
     }
 }
 
-pub(crate) fn native_work_io(
+/// Starts an observer on the supplied native ledger.
+pub fn native_work_io(
     work: &NativeMaterializationWork,
 ) -> std::result::Result<NativeHistoryIo<'_>, NativeTreeMaterializationError> {
     Ok(NativeHistoryIo {
@@ -93,10 +95,11 @@ pub(crate) fn native_sdk_result<T>(
 
 impl NativeHistoryIo<'_> {
     /// Transfers the same ledger's retained source payloads to their last user.
-    pub(crate) fn into_custody(self) -> NativeAllocation {
+    pub fn into_custody(self) -> NativeAllocation {
         self.custody
     }
-    pub(crate) fn return_staged_output(&mut self) -> Result<()> {
+    /// Returns the staged output under its original allowance.
+    pub fn return_staged_output(&mut self) -> Result<()> {
         self.return_output(self.staged_bytes, self.staged_items)?;
         self.staged_bytes = 0;
         self.staged_items = 0;
@@ -268,7 +271,7 @@ impl HistoryIo for NativeHistoryIo<'_> {
     }
     fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
         let io = crate::filesystem::PreparationIo::from_native_work(self.work)?;
-        let decoded = io.decode_preparation::<serde_json::Value>(bytes)?;
+        let decoded = io.decode_preparation::<serde_json::Value>(bytes, crate::wire::ErrorCode::Storage)?;
         let retained = io.owned_bytes()?;
         let value = decoded.into_retained();
         let incoming = io.into_native_custody(retained)?;
@@ -845,7 +848,7 @@ mod tests {
             crate::contract::JsonBounds {
                 maximum_bytes: 128, maximum_items: 8, maximum_depth: 4,
             },
-            &mut |charge| io.codec_charge(charge),
+            None, &mut |charge| io.codec_charge(charge),
         );
         assert!(matches!(encoded, Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
@@ -875,7 +878,7 @@ mod tests {
             crate::contract::JsonBounds {
                 maximum_bytes: 128, maximum_items: 8, maximum_depth: 4,
             },
-            &mut |charge| io.codec_charge(charge),
+            None, &mut |charge| io.codec_charge(charge),
         );
         assert!(matches!(encoded, Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {

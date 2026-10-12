@@ -5,37 +5,6 @@ construction. Supply finite concurrency, total unsettled requests, bytes and
 demand bounds. There is no built-in retry or prefetch policy. Share one scheduler
 when reads and transport sends must compete for the same resource budget.
 
-Admission occurs before provider code. Both queued and running requests reserve
-bytes. Cancelling a queued request removes it; cancelling running work rejects
-the caller and asks the provider to abort, but the capacity remains charged until
-the provider settles. A provider that ignores cancellation can exhaust capacity,
-but cannot make it grow. An operation cancelled after send starts can have an
-indeterminate result; recover using the original operation ID and authority.
-`ScheduledTransport` forwards delivery iteration directly and never deduplicates
-writes, buffers history or substitutes admission errors. Its underlying transport
-owns inbound-frame and established-connection budgets, as it did before wrapping.
-Connection ownership remains with the wrapper until handoff completes; abandoned
-late connections are closed. If their cleanup fails after the cancelled caller
-has already returned, `onCleanupError` reports it to the host (the default raises
-an asynchronous error). A delivered connection returns its close failure directly,
-including on repeated close calls.
-
-`DemandLoader` deduplicates equal immutable keys and uses the existing
-`HydrationCache` for byte/entry-bounded retention. Keys must include exact pinned
-authority/provider/generation/content identity, including the security namespace.
-Object keys use identity: reuse normalized immutable references rather than
-constructing a fresh object on each read. One source serves a loader, so unrelated
-providers cannot share a key accidentally. A caller can cancel its own interest;
-the last caller cancels shared work. Invalidating a key cancels current interest
-and fences late completion. Errors and absence are not cached. `peek` performs no
-IO. Each shared request owns one completion callback and a removable set of active
-readers: joining/cancelling a slow request cannot accumulate stale callbacks.
-Invalidation/disposal settle owned readers directly, including when the provider
-has completed but its reader completion callback is still queued.
-`peek` returns the same retained value/receipt on warm reads. No cache-miss status
-confers authority: keep not-loaded/absent/stale/available and prediction provenance
-in existing `ClientViews` and the domain adapter.
-
 The host is trusted to enforce the reserved bound **before** reading/allocating,
 authenticate correspondence, return transitively immutable values and account
 deep/backing storage in its byte receipt. A post-load receipt check rejects an
@@ -44,15 +13,6 @@ cache retention are separate budgets; account both, plus caller-held results,
 keys, reference-window metadata and established connections. Temporary native or
 JS decoder storage belongs in the source's reservation. Cancellation is advisory
 for physical IO and does not reverse effects.
-
-The [reference-first conversation example](../examples/client-demand.ts) composes
-the existing `PageWindow` with selective text hydration. Page providers enforce
-their existing page count and deep-byte bounds; bodies are read only when a
-consumer calls `bodies.read(message.content)`. Existing verified FileRef readers
-such as `ObjectContentStore.read` retain scope/digest correspondence. No complete
-conversation/history hydration or full-state serialization is needed. Dispose
-body demand when its owner ends, and dispose the shared scheduler only after all
-its owners have ended. Window eviction does not undo an operation or a hypothesis.
 
 ## Durable composition
 
@@ -63,66 +23,3 @@ for content. The decoder validates the data against the exact authority,
 generation and revision. Use the same `IndexedDbClientStore` for outbox and
 cursors; custom stores must implement its atomic `commit` and `loadRecovery`
 contracts and enforce bounds before allocating provider results.
-
-For each contiguous event, the client prepares the reduced state, commits its
-checkpoint and cursor with the original operation acknowledgement in one existing
-outbox/cursors transaction, then publishes. Capacity, storage and compare-and-swap
-failures preserve the previous published cut and retry identity. The expected
-cursor and globally allocated checkpoint version fence stale tabs, including
-same-cursor replacements and delete/recreate. Cursor-only writes cannot advance
-an existing checkpoint. Custom atomic stores return the allocated version from
-`commit` and expose it in `loadRecovery`.
-Reopening validates all saved cuts before publishing state or connecting.
-Every persisted authority requires both a checkpoint and its registered recovery
-projection: cursor-only durable data cannot reconnect an empty UI. An unregistered
-durable delivery cannot notify listeners, advance a cursor or acknowledge retries.
-Explicit authoritative `rebase` can replace an incompatible cut, still comparing
-the stored cursor/version and fencing the old connection; it requires a registered
-projection and an authoritative checkpoint, not a cursor-only reset callback.
-Memory-only cursor stores retain their live reset contract. Durable replay errors
-require authoritative recovery, with old durable data preserved on rejection.
-
-Client mutations use the existing finite scheduler instead of a promise tail:
-defaults are 128 unsettled mutations, 16 MiB retained input and 1 MiB per command
-or delivery. Inputs are bounded, then synchronously copied only after the existing
-scheduler reserves capacity, before queued work can start. Rejected work makes no
-input copy; capture failure/cancellation releases its reservation. Built-in outboxes
-default to 1024 commands and 16 MiB; IndexedDB separately accounts encoded and
-resident bytes, 64 cursors and 256 KiB per checkpoint. The sequence index supplies
-pages of at most 64 records over one fixed enqueue cut. Admission visits bounded
-records without retaining the full outbox; duplicate IDs keep their enqueue order.
-One bounded metadata record in the existing cursors store holds the monotonic
-outbox sequence and checkpoint-version allocator. It survives acknowledgements
-and cursor deletion; malformed or exhausted counters fail closed. It is disjoint
-from authority keys and excluded from their capacity count, while its data and
-read work remain bounded. Neither paging cuts nor version fences recycle IDs.
-`load()` remains a bounded compatibility collector. Configure application limits
-and enforce provider/decoder bounds before transport or IndexedDB allocations;
-post-allocation validation cannot undo those allocations.
-
-Database construction starts no IO. The existing version 3 and legacy rejection
-policy are unchanged; newly created outboxes include the sequence index.
-Existing databases lacking that index fail closed and close the rejected handle
-before network resume. There is no implicit migration, scan fallback, synthesized
-checkpoint or deletion. They require an explicit application-owned migration or
-authoritative recovery policy.
-
-`ClientViews.checkpoint(branch)` exports one selected hypothesis and `sequence()`
-exports its allocation watermark. Construct the new kernel with that watermark,
-restore verified canonical facts and logical time, then import parents before
-descendants with `restore`. The trusted domain's optional `restore` validator
-authenticates pins, adapter, dependencies and prediction/operation outcomes;
-omission is `Unsupported`. The kernel preserves original branch and operation
-IDs, recomputes byte/work admission and installs each hypothesis atomically.
-Checkpoint data grants no authority, admits no command and executes no effect.
-Fresh trusted domain evidence must establish completion and external outcomes.
-
-Legacy event listeners retain at-least-once delivery before acknowledgement;
-failure keeps the prepared projection unpublished and the event retryable.
-Callbacks must remain idempotent. Disposal during a started commit allows that
-commit to settle but stops the batch before preparing another event.
-
-`client.failure` exposes failures even during retry. Stop replay before detaching
-its durable projection. Client disposal ends owned interest; started storage/send
-work retains its reservation until settlement and may have an indeterminate
-authoritative outcome. Recover through the original operation ID.

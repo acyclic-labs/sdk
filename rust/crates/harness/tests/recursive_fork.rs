@@ -204,7 +204,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             0,
             &grant_scope,
             Action::BindConversation { agent: root_agent },
-        )?)
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let root_write = ContentGrant::verify(
         &issuer.verifier(),
@@ -274,7 +274,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     extensions: BTreeMap::new(),
                 }),
             },
-        )?)
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let project_write = ContentGrant::verify(
         &issuer.verifier(),
@@ -338,7 +338,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     extensions: BTreeMap::new(),
                 }),
             },
-        )?)
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let mut previous_project_reference = Some(project_reference);
     let mut previous_shared_reference = Some(shared_reference);
@@ -811,7 +811,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                         seed.parent_revision,
                         &grant_scope,
                         missing_member,
-                    )?)
+                    )?, #[cfg(feature = "filesystem")] None, &mut None)
                     .await
                     .is_err()
             );
@@ -837,7 +837,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                         seed.parent_revision,
                         &grant_scope,
                         seed.clone(),
-                    )?)
+                    )?, #[cfg(feature = "filesystem")] None, &mut None)
                     .await
                     .is_err()
             );
@@ -859,7 +859,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                         seed.parent_revision,
                         &grant_scope,
                         seed.clone(),
-                    )?)
+                    )?, #[cfg(feature = "filesystem")] None, &mut None)
                     .await
                     .is_err()
             );
@@ -881,7 +881,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                         seed.parent_revision,
                         &grant_scope,
                         foreign_history,
-                    )?)
+                    )?, #[cfg(feature = "filesystem")] None, &mut None)
                     .await
                     .is_err()
             );
@@ -906,7 +906,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                         aggregate.reducer().revision(),
                         &grant_scope,
                         missing,
-                    )?)
+                    )?, #[cfg(feature = "filesystem")] None, &mut None)
                     .await
                     .is_err()
             );
@@ -972,7 +972,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                         aggregate.reducer().revision(),
                         &grant_scope,
                         rogue_seed,
-                    )?)
+                    )?, #[cfg(feature = "filesystem")] None, &mut None)
                     .await
                     .is_err()
             );
@@ -1081,7 +1081,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     0,
                     &child_scope,
                     Action::BindConversation { agent: child_agent },
-                )?)
+                )?, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
             assert!(matches!(
                 prebound_child
@@ -1195,7 +1195,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                             extensions: BTreeMap::new(),
                         }),
                     },
-                )?)
+                )?, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
             assert_eq!(
                 reader
@@ -1264,7 +1264,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 step: 0,
                 prior_messages: Vec::new(),
             };
-            let assembled = pipeline.run_bounded(&input, Limits::default()).await?;
+            let assembled = pipeline.run(&input, Limits::default(), None).await?;
             assert_eq!(&assembled.messages[..2], projected.messages.as_slice());
             assert_eq!(assembled.current_input_index, Some(2));
             assert_eq!(assembled.messages[2].content, input.input);
@@ -1434,7 +1434,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                         extensions: BTreeMap::new(),
                     }),
                 },
-            )?)
+            )?, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let updated = host
             .apply(
@@ -1513,7 +1513,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     extensions: BTreeMap::new(),
                 }),
             },
-        )?)
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let state = aggregate
         .reducer()

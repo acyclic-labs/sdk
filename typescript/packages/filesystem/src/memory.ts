@@ -20,8 +20,6 @@ async function bindings(): Promise<WasmBindings> {
   return bindingsPromise;
 }
 
-export function openMemoryFs(): Promise<FsVolumeEngine>;
-export function openMemoryFs(options: MemoryFsOptions): Promise<FsVolumeEngine>;
 export function openMemoryFs(options?: MemoryFsOptions): Promise<FsVolumeEngine> {
   return openMemoryFsWith(options, async (resolved) => (await bindings()).openMemoryFs(resolved));
 }

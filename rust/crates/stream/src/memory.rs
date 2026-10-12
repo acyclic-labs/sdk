@@ -1,16 +1,4 @@
 //! Single-lock deterministic reference state machine; no durability or availability claim.
-//!
-//! Native calls observe this SDK boundary, not allocator/RSS or opaque transport
-//! internals. New Vec capacities, boxed cursors/futures and history Arc payloads
-//! retain original-meter custody; immutable OwnedBytes aliases neither allocate nor
-//! copy a body. Opaque std tree/hash nodes and Tokio watch internals have no
-//! invented physical allocation count; tree entries use declared logical quota.
-//! Reads return their completed ordered prefix before a late original error.
-//! Accepted commits/appends carry late causes to Local's canonical durability drain.
-//! Deadline-bound new facts check the trusted provider clock at publication;
-//! previously retained idempotent outcomes are replayed before deadline checks.
-//! Provider failures created here have static causes; their public native error
-//! carrier retains an empty original-meter guard rather than fabricating payload.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
@@ -19,10 +7,8 @@ use std::{
 };
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use crate::OwnedBytes;
 use futures::{StreamExt as _, stream};
-use prost::Message;
 use sha2::{Digest, Sha256};
 use tokio::sync::{RwLock, watch};
 
@@ -33,7 +19,7 @@ use acyclic_native_runtime::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
-    NativeObservedRecord, NativeProviderFuture, NativeRecordStream, NativeStreamOutput,
+    NativeProviderFuture, NativeRecordStream, NativeStreamOutput,
     NativeStreamFailure, NativeStreamResult,
 };
 
@@ -53,27 +39,10 @@ impl From<std::io::Error> for MemoryFailure {
 
 pub(crate) type MemoryResult<T> = Result<T, MemoryFailure>;
 
-enum GuardedCommitFailure<E> {
-    Memory(MemoryFailure),
-    Guard(E),
-}
-
-impl<E> From<MemoryFailure> for GuardedCommitFailure<E> {
-    fn from(error: MemoryFailure) -> Self { Self::Memory(error) }
-}
-
-impl<E> From<StreamError> for GuardedCommitFailure<E> {
-    fn from(error: StreamError) -> Self { Self::Memory(error.into()) }
-}
-
-impl<E> From<std::io::Error> for GuardedCommitFailure<E> {
-    fn from(error: std::io::Error) -> Self { Self::Memory(error.into()) }
-}
-
 #[derive(Default)]
 pub(crate) struct MemoryObserver {
     #[cfg(not(target_arch = "wasm32"))]
-    meter: Option<Arc<dyn NativeReadMeter>>,
+    pub(crate) meter: Option<Arc<dyn NativeReadMeter>>,
 }
 
 #[derive(Default)]
@@ -107,6 +76,7 @@ impl MemoryObserver {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct MemoryOutput<T> {
     pub(crate) value: T,
     pub(crate) allocation: MemoryAllocation,
@@ -178,12 +148,12 @@ impl MemoryObserver {
         Ok(())
     }
 
-    fn read_bytes(&self, bytes: usize) -> std::io::Result<MemoryByteReservation<'_>> {
+    fn bytes(&self, write: bool, bytes: usize) -> std::io::Result<MemoryByteReservation<'_>> {
         #[cfg(not(target_arch = "wasm32"))]
         let reservation = self.meter.as_ref().map(|meter| {
-            NativeByteReservation::new(meter.as_ref(), NativeOperationKind::Read, bytes)
+            NativeByteReservation::new(meter.as_ref(), if write { NativeOperationKind::Write } else { NativeOperationKind::Read }, bytes)
         }).transpose()?;
-        let _ = bytes;
+        let _ = (write, bytes);
         Ok(MemoryByteReservation {
             #[cfg(not(target_arch = "wasm32"))]
             reservation,
@@ -192,13 +162,13 @@ impl MemoryObserver {
         })
     }
 
-
-    fn boundary(&self) -> std::io::Result<()> {
+    fn boundary(&self, write: bool) -> std::io::Result<()> {
         self.check()?;
+        let _ = write;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(meter) = &self.meter {
             // The boundary is this SDK call, not an opaque transport/syscall.
-            let mut operation = NativeOperationReservation::new(meter.as_ref(), NativeOperationKind::Read, 1)?;
+            let mut operation = NativeOperationReservation::new(meter.as_ref(), if write { NativeOperationKind::Write } else { NativeOperationKind::Read }, 1)?;
             let ((), recorded) = operation.attempt(|| ());
             recorded?;
         }
@@ -212,33 +182,6 @@ impl MemoryObserver {
         }
         let _ = bytes;
         Ok(MemoryAllocation::default())
-    }
-
-    fn write_boundary(&self) -> std::io::Result<()> {
-        self.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = &self.meter {
-            let mut operation = NativeOperationReservation::new(meter.as_ref(), NativeOperationKind::Write, 1)?;
-            // Entry into this SDK call is the observable operation, not a
-            // claim that an opaque native transport/syscall was performed.
-            let ((), recorded) = operation.attempt(|| ());
-            recorded?;
-        }
-        Ok(())
-    }
-
-    fn write_bytes(&self, bytes: usize) -> std::io::Result<MemoryByteReservation<'_>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let reservation = self.meter.as_ref().map(|meter| {
-            NativeByteReservation::new(meter.as_ref(), NativeOperationKind::Write, bytes)
-        }).transpose()?;
-        let _ = bytes;
-        Ok(MemoryByteReservation {
-            #[cfg(not(target_arch = "wasm32"))]
-            reservation,
-            #[cfg(target_arch = "wasm32")]
-            _observer: self,
-        })
     }
 
     pub(crate) fn retain_path(&self, path: &StreamPath) -> std::io::Result<StreamPath> {
@@ -270,7 +213,7 @@ fn ordinary<T>(result: MemoryResult<MemoryOutput<T>>) -> Result<T, StreamError> 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native<T>(
+pub(crate) fn native<T>(
     result: MemoryResult<MemoryOutput<T>>,
     meter: &Arc<dyn NativeReadMeter>,
 ) -> NativeStreamResult<T> {
@@ -312,8 +255,7 @@ pub struct MemoryLimits {
     pub payload_bytes: usize,
     /// Maximum immutable commit envelopes.
     pub commits: usize,
-    /// Maximum indefinitely retained replay identities. New identities fail
-    /// closed at capacity; an admitted identity is never forgotten or reused.
+    /// Maximum indefinitely retained replay identities.
     pub idempotency_results: usize,
 }
 
@@ -330,9 +272,7 @@ impl Default for MemoryLimits {
     }
 }
 
-/// Deterministic process-local provider. It retains each idempotency result and committed
-/// envelope indefinitely within explicit capacity limits. It deliberately claims
-/// no crash recovery; `LocalStream` supplies persistence when enabled.
+/// Deterministic process-local provider.
 #[derive(Clone)]
 pub struct MemoryStream {
     state: Arc<RwLock<State>>,
@@ -386,12 +326,12 @@ impl MemoryStream {
         }
     }
 
-    async fn inspect_inner(
+    pub(crate) async fn inspect_inner(
         &self,
         idempotency_key: IdempotencyKey,
         observer: &MemoryObserver,
     ) -> MemoryResult<MemoryOutput<Option<IdempotencyObservation>>> {
-        observer.boundary()?;
+        observer.boundary(false)?;
         let state = self.state.read().await;
         observer.admit_item()?;
         let replay = state.replays.get(idempotency_key.as_bytes());
@@ -410,12 +350,12 @@ impl MemoryStream {
         })
     }
 
-    async fn bounds_inner(
+    pub(crate) async fn bounds_inner(
         &self,
         path: StreamPath,
         observer: &MemoryObserver,
     ) -> MemoryResult<MemoryOutput<StreamBounds>> {
-        observer.boundary()?;
+        observer.boundary(false)?;
         let state = self.state.read().await;
         observer.admit_item()?;
         let stream = state.paths.get(&path);
@@ -432,7 +372,7 @@ impl MemoryStream {
         request: ReadRequest,
         observer: &MemoryObserver,
     ) -> MemoryResult<ReadHistoryOutput> {
-        observer.boundary()?;
+        observer.boundary(false)?;
         let state = self.state.read().await;
         observer.admit_item()?;
         let path = state.paths.get(&request.path);
@@ -453,123 +393,53 @@ impl MemoryStream {
         commit_id: CommitId,
         observer: &MemoryObserver,
     ) -> MemoryResult<MemoryOutput<CommittedEnvelope>> {
-        observer.boundary()?;
+        observer.boundary(false)?;
         let state = self.state.read().await;
         observer.admit_item()?;
         let envelope = state.commits.get(&commit_id);
         observer.record_item()?;
-        clone_envelope(envelope.ok_or(StreamError::NotFound)?, observer, true)
+        clone_envelope(envelope.and_then(|cached| cached.envelope()).ok_or(StreamError::NotFound)?, observer, true)
     }
 
-    async fn commit_inner(
-        &self,
-        mut request: CommitRequest,
-        deadline_unix_millis: Option<u64>,
+    async fn commit_value(
+        &self, mut request: CommitRequest, deadline: Option<u64>,
     ) -> Result<CommitOutcome, StreamError> {
-        let completion = self.commit_observed(&mut request, deadline_unix_millis, &MemoryObserver::default()).await;
-        ordinary(completion.map(|completion| {
-            assert!(completion.error.is_none(), "ordinary commits have no fallible observer");
-            completion.outcome
-        }))
+        let result = provider_result(self.apply_commit(
+            &mut request, deadline, &MemoryObserver::default(),
+            None::<&mut fn() -> std::future::Ready<Result<(), std::convert::Infallible>>>,
+        ).await)?;
+        let (outcome, error, _) = result.unwrap_or_else(|never| match never {});
+        assert!(error.is_none(), "ordinary commits have no fallible observer");
+        Ok(outcome.value)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn native_commit_completion_inner(
-        &self,
-        mut request: CommitRequest,
-        deadline_unix_millis: Option<u64>,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> std::io::Result<Result<NativeMemoryCommitCompletion, StreamError>> {
-        self.native_commit_completion_borrowed_inner(&mut request, deadline_unix_millis, meter).await
-    }
-
-    /// Keeps caller-owned input vectors intact through the canonical decision so
-    /// a detached Local owner can retain their physical custody until its drain.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn native_commit_completion_borrowed_inner(
-        &self,
-        request: &mut CommitRequest,
-        deadline_unix_millis: Option<u64>,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> std::io::Result<Result<NativeMemoryCommitCompletion, StreamError>> {
-        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
-        match self.commit_observed(request, deadline_unix_millis, &observer).await {
-            Ok(completion) => Ok(Ok(NativeMemoryCommitCompletion {
-                outcome: native(Ok(completion.outcome), &meter)?
-                    .expect("a completed memory outcome is already a provider success"),
-                error: completion.error,
-            })),
-            Err(MemoryFailure::Provider(error)) => Ok(Err(error)),
-            Err(MemoryFailure::Observer(error)) => Err(error),
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn native_commit_completion_guarded_borrowed_inner<E, F, Fut, C>(
-        &self,
-        request: &mut CommitRequest,
-        deadline_unix_millis: Option<u64>,
-        meter: Arc<dyn NativeReadMeter>,
-        before: Option<&mut F>,
-    ) -> std::io::Result<Result<(NativeMemoryCommitCompletion, Option<C>), E>>
-    where
-        E: From<NativeStreamFailure> + Send,
-        F: FnMut() -> Fut + Send,
-        Fut: std::future::Future<Output = Result<C, E>> + Send,
-        C: Send,
-    {
-        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
-        match self.commit_observed_guarded(request, deadline_unix_millis, &observer, before).await {
-            Ok((completion, continuation)) => Ok(Ok((NativeMemoryCommitCompletion {
-                outcome: native(Ok(completion.outcome), &meter)?
-                    .expect("a completed memory outcome is already a provider success"),
-                error: completion.error,
-            }, continuation))),
-            Err(GuardedCommitFailure::Guard(error)) => Ok(Err(error)),
-            Err(GuardedCommitFailure::Memory(MemoryFailure::Provider(error))) => {
-                Ok(Err(E::from(NativeStreamFailure::new(error, ReadAllocation::empty(&meter)))))
+    fn commit_future(
+        &self, mut request: CommitRequest, deadline: Option<u64>, meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, CommitOutcome> {
+        let original = Arc::clone(&meter);
+        NativeProviderFuture::new(&original, async move {
+            let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
+            match self.apply_commit(&mut request, deadline, &observer,
+                None::<&mut fn() -> std::future::Ready<Result<(), NativeStreamFailure>>>,
+            ).await {
+                Ok(Ok((outcome, error, _))) => match error {
+                    Some(error) => Err(error),
+                    None => native(Ok(outcome), &meter),
+                },
+                Ok(Err(error)) => Ok(Err(error)),
+                Err(error) => native(Err(error), &meter),
             }
-            Err(GuardedCommitFailure::Memory(MemoryFailure::Observer(error))) => Err(error),
-        }
+        })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn native_commit_inner(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: Option<u64>,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> NativeStreamResult<CommitOutcome> {
-        match self.native_commit_completion_inner(request, deadline_unix_millis, Arc::clone(&meter)).await? {
-            Ok(completion) => match completion.error {
-                Some(error) => Err(error),
-                None => Ok(Ok(completion.outcome)),
-            },
-            Err(error) => Ok(Err(NativeStreamFailure::new(error, ReadAllocation::empty(&meter)))),
-        }
-    }
-
-    async fn commit_observed(
-        &self,
-        request: &mut CommitRequest,
-        deadline_unix_millis: Option<u64>,
-        observer: &MemoryObserver,
-    ) -> MemoryResult<MemoryCommitCompletion> {
-        let before: Option<&mut fn() -> std::future::Ready<Result<(), std::convert::Infallible>>> = None;
-        match self.commit_observed_guarded(request, deadline_unix_millis, observer, before).await {
-            Ok((completion, _)) => Ok(completion),
-            Err(GuardedCommitFailure::Memory(error)) => Err(error),
-            Err(GuardedCommitFailure::Guard(error)) => match error {},
-        }
-    }
-
-    async fn commit_observed_guarded<E, F, Fut, C>(
+    pub(crate) async fn apply_commit<E, F, Fut, C>(
         &self,
         request: &mut CommitRequest,
         deadline_unix_millis: Option<u64>,
         observer: &MemoryObserver,
         mut before: Option<&mut F>,
-    ) -> Result<(MemoryCommitCompletion, Option<C>), GuardedCommitFailure<E>>
+    ) -> MemoryResult<Result<(MemoryOutput<CommitOutcome>, Option<std::io::Error>, Option<C>), E>>
     where
         E: Send,
         F: FnMut() -> Fut + Send,
@@ -577,19 +447,16 @@ impl MemoryStream {
         C: Send,
     {
         observer.check()?;
-        normalize_commit_with_observer(request, observer)?;
-        validate_commit_shape_with_observer(request, observer)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let digest = commit_digest_observed(request, observer.meter.as_ref())?;
-        #[cfg(target_arch = "wasm32")]
-        let digest = commit_digest_with_observer(request, observer)?;
+        normalize_commit(request, observer)?;
+        validate_commit_shape(request, observer)?;
+        let digest = commit_digest(request, &mut DigestWork::Live(observer))?;
         let bytes = request.mutations.iter().map(|mutation| match mutation {
             CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
                 records.iter().map(OwnedBytes::len).sum::<usize>()
             }
         }).sum();
-        observer.write_boundary()?;
-        let mut write = observer.write_bytes(bytes)?;
+        observer.boundary(true)?;
+        let mut write = observer.bytes(true, bytes)?;
         loop {
             let mut state = self.state.write().await;
             if before.is_some() { state.prepared_capacity.current_revision()?; }
@@ -616,12 +483,11 @@ impl MemoryStream {
             let continuation = if let Some(before) = before.as_deref_mut() {
                 let version = CommitStateVersion::capture(&state)?;
                 drop(state);
-                let continuation = before().await.map_err(GuardedCommitFailure::Guard)?;
+                let continuation = match before().await { Ok(value) => value, Err(error) => return Ok(Err(error)) };
                 state = match self.state.try_write() {
                     Ok(state) => state,
                     Err(_) => {
-                        // Never wait while treating the just-completed guard
-                        // as current. Release Local's continuation first.
+                        // Release the continuation before waiting on contention.
                         drop(continuation);
                         drop(attempt);
                         drop(self.state.write().await);
@@ -649,8 +515,7 @@ impl MemoryStream {
                 if deadline_unix_millis.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
                     return Err(StreamError::DeadlineElapsed.into());
                 }
-                // The callback has completed and the exact state was revalidated.
-                // No await splits this real canonical publication.
+                // Publish without awaiting after the guard and state recheck.
                 publish(&mut state, prepared, digest);
                 if let Some(decision) = decision { state.decision = decision; }
                 state.last_committed_at_micros = committed_at_micros;
@@ -658,7 +523,7 @@ impl MemoryStream {
             } else {
                 None
             };
-            return Ok((MemoryCommitCompletion { outcome, error }, continuation));
+            return Ok(Ok((outcome, error, continuation)));
         }
     }
 
@@ -688,101 +553,69 @@ impl MemoryStream {
             return Err(StreamError::DeadlineElapsed.into());
         }
         admit_replay(state, Some(&request.idempotency_key), self.limits)?;
-        let conflicts = commit_conflicts(state, &request.conditions, observer)?;
-        let entry = std::mem::size_of::<(OwnedBytes, Replay)>();
+        let conflicts = crate::preparation::conditions(&request.conditions, |path| {
+            state.paths.get(path).map(|stream| stream.tail)
+        }, observer)?;
+        let entry = std::mem::size_of::<(OwnedBytes, Arc<Replay>)>();
         let mut resident = observer.adopt(entry)?;
-        let (outcome, envelope, paths, mutations, decision, committed_at_micros) = if conflicts.value.is_empty() {
+        let (outcome, paths, mutations, decision, committed_at_micros) = if conflicts.value.is_empty() {
             drop(conflicts);
-            validate_commit_authority(state, request, observer)?;
-            let missing = missing_commit_paths(state, request, observer)?;
+            crate::preparation::authority(request, |path| {
+                state.paths.get(path).map(|stream| stream.tail)
+            }, observer)?;
+            let missing = missing_observed_paths(state, request.mutations.iter().map(mutation_path), observer)?;
             if reserve_coordinated(state, request, &missing.value, self.limits).is_err() {
-                recount_observed(state, observer)?;
+                recount(state, observer)?;
                 reserve_coordinated(state, request, &missing.value, self.limits)?;
             }
             let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
             let commit_id = planned_commit_id(decision, digest, observer)?;
             let committed_at_micros = state.last_committed_at_micros
                 .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
-            let envelope = prepare_envelope(state, request, commit_id, committed_at_micros, observer)?;
+            let facts = crate::preparation::mutations(&request.mutations, |path| {
+                state.paths.get(path).map(|stream| stream.tail)
+            }, commit_id, committed_at_micros, observer)?;
+            let envelope = MemoryOutput {
+                value: CommittedEnvelope { commit_id, mutations: facts.value }, allocation: facts.allocation,
+            };
             let mutations = prepare_mutations(state, &envelope.value, observer)?;
             let paths = prepare_paths(&missing.value, &envelope.value, observer)?;
-            let retained = clone_envelope(&envelope.value, observer, false)?;
-            resident.absorb(retained.allocation)?;
-            resident.absorb(observer.adopt(std::mem::size_of::<(CommitId, CommittedEnvelope)>())?)?;
+            resident.absorb(observer.adopt(std::mem::size_of::<(CommitId, Arc<Replay>)>())?)?;
             let outcome = MemoryOutput {
                 value: CommitOutcome::Committed(envelope.value),
                 allocation: envelope.allocation,
             };
-            (outcome, Some(retained.value), paths, mutations, Some(decision), committed_at_micros)
+            (outcome, paths, mutations, Some(decision), committed_at_micros)
         } else {
             let outcome = MemoryOutput { value: CommitOutcome::Conflict(conflicts.value), allocation: conflicts.allocation };
-            (outcome, None, observer.vec(0)?, observer.vec(0)?, None, state.last_committed_at_micros)
+            (outcome, observer.vec(0)?, observer.vec(0)?, None, state.last_committed_at_micros)
         };
         let replay = clone_commit_outcome(&outcome.value, observer, false)?;
-        resident.absorb(replay.allocation)?;
+        let cached = observer.cached(None, IdempotencyOutcome::Commit(replay.value), replay.allocation)?;
         let key = request.idempotency_key.0.clone();
         prepare_retained_capacity(state, observer)?;
         let publication = PreparedPublication {
-            envelope, replay: IdempotencyOutcome::Commit(replay.value), key: Some(key),
+            cached, key: Some(key),
             paths, mutations, resident,
         };
         Ok(MemoryCommitAttempt { outcome, publication: Some(publication), decision, committed_at_micros })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn native_append_completion_borrowed_inner(
-        &self,
-        request: &mut AppendRequest,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> std::io::Result<Result<NativeMemoryAppendCompletion, StreamError>> {
-        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
-        match self.append_observed(request, &observer).await {
-            Ok(completion) => Ok(Ok(NativeMemoryAppendCompletion {
-                outcome: native(Ok(completion.outcome), &meter)?
-                    .expect("a completed memory outcome is already a provider success"),
-                error: completion.error,
-            })),
-            Err(MemoryFailure::Provider(error)) => Ok(Err(error)),
-            Err(MemoryFailure::Observer(error)) => Err(error),
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn native_append_inner(
-        &self,
-        mut request: AppendRequest,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> NativeStreamResult<AppendOutcome> {
-        match self.native_append_completion_borrowed_inner(&mut request, Arc::clone(&meter)).await? {
-            Ok(completion) => match completion.error {
-                Some(error) => Err(error),
-                None => Ok(Ok(completion.outcome)),
-            },
-            Err(error) => Ok(Err(NativeStreamFailure::new(error, ReadAllocation::empty(&meter)))),
-        }
-    }
-
-    async fn append_observed(
+    pub(crate) async fn apply_append(
         &self,
         request: &mut AppendRequest,
         observer: &MemoryObserver,
-    ) -> MemoryResult<MemoryAppendCompletion> {
+    ) -> MemoryResult<(MemoryOutput<AppendOutcome>, Option<std::io::Error>)> {
         observer.check()?;
-        validate_records_with_observer(&request.records, observer)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let encoded_len = append_encoded_len_observed(request, observer.meter.as_ref())?;
-        #[cfg(target_arch = "wasm32")]
-        let encoded_len = append_encoded_len_with_observer(request, observer)?;
+        validate_records(&request.records, observer)?;
+        let encoded_len = crate::wire_codec::CanonicalWire::Append(request).encoded_len(None, Some(observer))?;
         if encoded_len > MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded.into());
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let digest = append_digest_observed(request, observer.meter.as_ref())?;
-        #[cfg(target_arch = "wasm32")]
-        let digest = append_digest_with_observer(request, observer)?;
-        observer.write_boundary()?;
+        let digest = append_digest(request, observer)?;
+        observer.boundary(true)?;
         let bytes = request.records.iter().map(OwnedBytes::len).sum();
-        let mut write = observer.write_bytes(bytes)?;
+        let mut write = observer.bytes(true, bytes)?;
         let mut state = self.state.write().await;
         observer.admit_item()?;
         let replay = request.idempotency_key.as_ref()
@@ -793,10 +626,7 @@ impl MemoryStream {
             let IdempotencyOutcome::Append(outcome) = &replay.result else {
                 return Err(StreamError::IdempotencyMismatch.into());
             };
-            return Ok(MemoryAppendCompletion {
-                outcome: MemoryOutput { value: outcome.clone(), allocation: observer.allocate(0)? },
-                error: None,
-            });
+            return Ok((MemoryOutput { value: outcome.clone(), allocation: observer.allocate(0)? }, None));
         }
         admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
         observer.admit_item()?;
@@ -804,16 +634,16 @@ impl MemoryStream {
         observer.record_item()?;
         let mut resident = observer.allocate(0)?;
         if request.idempotency_key.is_some() {
-            resident.absorb(observer.adopt(std::mem::size_of::<(OwnedBytes, Replay)>())?)?;
+            resident.absorb(observer.adopt(std::mem::size_of::<(OwnedBytes, Arc<Replay>)>())?)?;
         }
-        let (outcome, envelope, paths, mutations, decision, committed_at) =
+        let (outcome, envelope, cached_allocation, paths, mutations, decision, committed_at) =
             if request.if_tail.is_some_and(|expected| expected != actual_tail) {
-                (AppendOutcome::TailConflict { actual_tail }, None, observer.vec(0)?,
+                (AppendOutcome::TailConflict { actual_tail }, None, MemoryAllocation::default(), observer.vec(0)?,
                     observer.vec(0)?, None, state.last_committed_at_micros)
             } else {
                 let missing = missing_observed_paths(&state, std::iter::once(&request.path), observer)?;
                 if reserve_append(&state, &missing.value, &request.records, self.limits).is_err() {
-                    recount_observed(&mut state, observer)?;
+                    recount(&mut state, observer)?;
                     reserve_append(&state, &missing.value, &request.records, self.limits)?;
                 }
                 let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
@@ -822,16 +652,14 @@ impl MemoryStream {
                     .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
                 let mut facts = observer.vec(1)?;
                 let fact = if observer.is_native() {
-                    // Native borrowed inputs remain physically owned by Local's
-                    // request holder until its mandatory durability drain.
-                    crate::preparation::append_fact_with_observer(
+                    // Keep native request vectors intact through durability.
+                    crate::preparation::append_fact(
                         &request.path, actual_tail, request.records.iter().cloned(),
                         commit_id, committed_at, observer,
                     )?
                 } else {
-                    // Ordinary owned inputs can transfer immutable bodies;
-                    // avoid an unnecessary alias clone for every record.
-                    crate::preparation::append_fact_with_observer(
+
+                    crate::preparation::append_fact(
                         &request.path, actual_tail, std::mem::take(&mut request.records),
                         commit_id, committed_at, observer,
                     )?
@@ -844,22 +672,22 @@ impl MemoryStream {
                 let envelope = CommittedEnvelope { commit_id, mutations: facts.value };
                 let mutations = prepare_mutations(&state, &envelope, observer)?;
                 let paths = prepare_paths(&missing.value, &envelope, observer)?;
-                resident.absorb(facts.allocation)?;
-                resident.absorb(observer.adopt(std::mem::size_of::<(CommitId, CommittedEnvelope)>())?)?;
-                (outcome, Some(envelope), paths, mutations, Some(decision), committed_at)
+                resident.absorb(observer.adopt(std::mem::size_of::<(CommitId, Arc<Replay>)>())?)?;
+                (outcome, Some(envelope), facts.allocation, paths, mutations, Some(decision), committed_at)
             };
         let key = request.idempotency_key.as_ref().map(|key| key.0.clone());
         if envelope.is_some() || key.is_some() { prepare_retained_capacity(&mut state, observer)?; }
         let output = MemoryOutput { value: outcome.clone(), allocation: observer.allocate(0)? };
         let prepared = PreparedPublication {
-            envelope, replay: IdempotencyOutcome::Append(outcome), key, paths, mutations, resident,
+            cached: observer.cached(envelope, IdempotencyOutcome::Append(outcome), cached_allocation)?,
+            key, paths, mutations, resident,
         };
         observer.check()?;
         publish(&mut state, prepared, digest);
         if let Some(decision) = decision { state.decision = decision; }
         state.last_committed_at_micros = committed_at;
         let error = if decision.is_some() { write.record(bytes).err() } else { None };
-        Ok(MemoryAppendCompletion { outcome: output, error })
+        Ok((output, error))
     }
 }
 
@@ -875,19 +703,10 @@ impl MemoryStream {
         let result: MemoryResult<NativeMemoryPreparedCommit> = async {
             observer.check()?;
             if maximum > MAX_RECORD_BYTES { return Err(StreamError::LimitExceeded.into()); }
-            normalize_commit_with_observer(request, &observer)?;
-            validate_commit_shape_with_observer(request, &observer)?;
-            let (path, start) = crate::preparation::single_append_template(request)?;
-            let mut command_bytes = wire_bytes_len(request.idempotency_key.as_bytes().len());
-            for condition in &request.conditions {
-                let CommitCondition::Tail { path, expected } = condition else { unreachable!() };
-                command_bytes += wire_bytes_len(wire_bytes_len(
-                    wire_bytes_len(path.as_str().len()) + wire_uint_len(*expected),
-                ));
-            }
-            command_bytes += wire_bytes_len(wire_bytes_len(
-                wire_bytes_len(path.as_str().len()) + wire_bytes_len(maximum),
-            ));
+            normalize_commit(request, &observer)?;
+            validate_commit_shape(request, &observer)?;
+            let (_, start) = crate::preparation::single_append_template(request)?;
+            let command_bytes = crate::wire_codec::CanonicalWire::Commit(request).encoded_len(Some(maximum), None)?;
             if command_bytes > MAX_COMMAND_BYTES { return Err(StreamError::LimitExceeded.into()); }
             let mut state = self.state.write().await;
             observer.admit_item()?;
@@ -921,8 +740,7 @@ impl MemoryStream {
                     .and_then(|bytes| bytes.checked_add(maximum))
                     .is_none_or(|bytes| bytes > self.limits.payload_bytes)
                 { return Err(StreamError::Capacity.into()); }
-                // Reserve the actual stock resident slots, not a parallel journal
-                // or an authorization identity. All mutation paths honor them.
+                // Every mutation honors these reservations.
                 prepare_retained_capacity(&mut state, &observer)?;
                 let capacity = Arc::clone(&state.prepared_capacity);
                 capacity.advance_revision();
@@ -933,7 +751,7 @@ impl MemoryStream {
                 capacity.retained.fetch_add(1, Ordering::AcqRel);
                 Some(PreparedCapacityReservation { capacity, bytes: maximum })
             };
-            let facts = crate::preparation::mutations_with_observer(
+            let facts = crate::preparation::mutations(
                 &request.mutations, |_| Some(start), CommitId::default(), 0, &observer,
             )?;
             let output = MemoryOutput {
@@ -941,30 +759,28 @@ impl MemoryStream {
                 allocation: facts.allocation,
             };
             let mutations = prepare_mutations(&state, &output.value, &observer)?;
-            let retained = clone_envelope(&output.value, &observer, false)?;
             let replay = clone_envelope(&output.value, &observer, false)?;
+            let cached = observer.cached(None, IdempotencyOutcome::Commit(CommitOutcome::Committed(replay.value)), replay.allocation)?;
             let conflicts = observer.vec(request.conditions.len())?;
             let replay_conflicts = observer.vec(request.conditions.len())?;
+            let conflict_cache = observer.cached(None, IdempotencyOutcome::Commit(CommitOutcome::Conflict(replay_conflicts.value)), replay_conflicts.allocation)?;
             let paths = observer.vec(0)?;
             let key = request.idempotency_key.0.clone();
-            let replay_entry = observer.adopt(std::mem::size_of::<(OwnedBytes, Replay)>())?;
-            let commit_entry = observer.adopt(std::mem::size_of::<(CommitId, CommittedEnvelope)>())?;
+            let replay_entry = observer.adopt(std::mem::size_of::<(OwnedBytes, Arc<Replay>)>())?;
+            let commit_entry = observer.adopt(std::mem::size_of::<(CommitId, Arc<Replay>)>())?;
             let write_operation = OwnedNativeOperationReservation::new(
                 Arc::clone(&meter), NativeOperationKind::Write, 1,
             )?;
             let write_bytes = OwnedNativeByteReservation::new(
                 Arc::clone(&meter), NativeOperationKind::Write, maximum,
             )?;
-            // Actual visited entries: five immutable inputs, four entries in
-            // the canonical digest loop, one replay, two conditions, two
-            // visibility observations, one history control, three envelope
-            // mutations and four record slots. Aliases copy no owned bytes.
-            meter.admit_examination(5 + 4 + 1 + 2 + 2 + 1 + 3 + 4, 0)?;
+            // Bound request, state, and preallocated output visits.
+            meter.admit_examination(5 + 4 + 1 + 2 + 2 + 1 + 2 + 3, 0)?;
             meter.admit_codec(0, 0, prepared_hash_bytes(request, maximum)
                 + b"acyclic.stream.commit.v1\0".len() as u64 + 8 + 32)?;
             observer.check()?;
             Ok(NativeMemoryPreparedCommit {
-                output, retained, replay, mutations, paths, conflicts, replay_conflicts,
+                output, cached, mutations, paths, conflicts, conflict_cache,
                 observations, key, reservation, write_operation, write_bytes, meter,
                 maximum, replay_entry, commit_entry,
             })
@@ -994,8 +810,7 @@ impl MemoryStream {
         let read_bytes = OwnedNativeByteReservation::new(
             Arc::clone(&meter), NativeOperationKind::Read, prepared.maximum,
         )?;
-        // Committed: lookup and two source/two output entries. Conflict:
-        // lookup, at most two conflicts and two held-condition comparisons each.
+        // Bound lookup, output slots, and comparisons against two held conditions.
         meter.admit_examination(1 + 2 + 2 * 2, 0)?;
         let recovery = NativeMemoryPreparedRecovery {
             output, conflicts, key: IdempotencyKey(prepared.key.clone()),
@@ -1110,7 +925,7 @@ impl MemoryStream {
         &self,
         mut prepared: NativeMemoryPreparedCommit,
         request: &mut CommitRequest,
-    ) -> std::io::Result<Result<NativeMemoryCommitCompletion, StreamError>> {
+    ) -> std::io::Result<Result<(MemoryOutput<CommitOutcome>, Option<std::io::Error>), StreamError>> {
         let mut late = None;
         let meter = Arc::clone(&prepared.meter);
         let [CommitMutation::Append { path, records }] = request.mutations.as_slice() else {
@@ -1135,9 +950,8 @@ impl MemoryStream {
             record_prepared_work(&meter, &mut late, 1, 0);
             if !unchanged { return prepared_failure(late, StreamError::InvalidArgument); }
         }
-        // This is the SAME canonical Commit writer. It records each visited
-        // entry and hashed slice at the actual original callsite, with no admit.
-        let digest = commit_digest_with_work(request, &mut CommitDigestWork::Prepared {
+        // Record prepaid work without fresh admission.
+        let digest = commit_digest(request, &mut DigestWork::Prepared {
             meter: &meter, late: &mut late,
         }).expect("the prepared writer retains late causes instead of abandoning settlement");
         let ((), recorded) = prepared.write_operation.attempt(|| ());
@@ -1182,7 +996,7 @@ impl MemoryStream {
                     }
                 }
             };
-            return Ok(Ok(prepared_completion(outcome, late, &meter)));
+            return Ok(Ok((outcome, late)));
         }
         let Some(reservation) = prepared.reservation.as_ref() else {
             return prepared_failure(late, StreamError::Unavailable);
@@ -1190,24 +1004,26 @@ impl MemoryStream {
         if !Arc::ptr_eq(&reservation.capacity, &state.prepared_capacity) {
             return prepared_failure(late, StreamError::PrefixNotRetained);
         }
+        let IdempotencyOutcome::Commit(CommitOutcome::Conflict(replay_conflicts)) =
+            &mut Arc::get_mut(&mut prepared.conflict_cache)
+                .expect("an unpublished conflict cache has one owner").result
+            else { unreachable!("preparation creates a conflict cache") };
         for observed in &prepared.observations {
             let actual = state.paths.get(&observed.path).map(|stream| stream.tail);
             if actual != Some(observed.expected) {
                 let conflict = CommitConflict::Tail {
                     path: observed.path.clone(), expected: observed.expected, actual,
                 };
-                prepared.replay_conflicts.value.push(conflict.clone());
+                replay_conflicts.push(conflict.clone());
                 prepared.conflicts.value.push(conflict);
             }
             record_prepared_work(&meter, &mut late, 1, 0);
         }
         if !prepared.conflicts.value.is_empty() {
-            prepared.replay_entry.absorb(prepared.replay_conflicts.allocation)?;
             let publication = PreparedPublication {
-                envelope: None,
-                replay: IdempotencyOutcome::Commit(CommitOutcome::Conflict(prepared.replay_conflicts.value)),
+                cached: prepared.conflict_cache,
                 key: Some(prepared.key), paths: prepared.paths,
-                mutations: MemoryOutput { value: Vec::new(), allocation: MemoryAllocation::default() },
+                mutations: MemoryOutput::default(),
                 resident: prepared.replay_entry,
             };
             drop(prepared.reservation.take());
@@ -1216,7 +1032,7 @@ impl MemoryStream {
                 value: CommitOutcome::Conflict(prepared.conflicts.value),
                 allocation: prepared.conflicts.allocation,
             };
-            return Ok(Ok(prepared_completion(outcome, late, &meter)));
+            return Ok(Ok((outcome, late)));
         }
         for observed in &prepared.observations {
             let stream = state.paths.get(&observed.path).expect("the tails were rechecked above");
@@ -1253,18 +1069,17 @@ impl MemoryStream {
         record_prepared_work(&meter, &mut late, 1, 0);
         records.records[0] = record.clone();
         record_prepared_work(&meter, &mut late, 1, 0);
-        for envelope in [&mut prepared.output.value, &mut prepared.retained.value, &mut prepared.replay.value] {
+        let cached = Arc::get_mut(&mut prepared.cached).expect("an unpublished cache has one owner");
+        let envelope = cached.envelope_mut().expect("preparation creates the canonical Commit cache");
+        for envelope in [&mut prepared.output.value, envelope] {
             crate::preparation::fill_single_append(envelope, &record, || {
                 record_prepared_work(&meter, &mut late, 1, 0);
-            }).expect("preparation created all three exact canonical envelope slots");
+            }).expect("preparation created both canonical envelope slots");
         }
         mutation.bytes = body.len();
-        prepared.replay_entry.absorb(prepared.retained.allocation)?;
-        prepared.replay_entry.absorb(prepared.replay.allocation)?;
         prepared.replay_entry.absorb(prepared.commit_entry)?;
         let publication = PreparedPublication {
-            envelope: Some(prepared.retained.value),
-            replay: IdempotencyOutcome::Commit(CommitOutcome::Committed(prepared.replay.value)),
+            cached: prepared.cached,
             key: Some(prepared.key), paths: prepared.paths,
             mutations: prepared.mutations, resident: prepared.replay_entry,
         };
@@ -1277,7 +1092,7 @@ impl MemoryStream {
             value: CommitOutcome::Committed(prepared.output.value),
             allocation: prepared.output.allocation,
         };
-        Ok(Ok(prepared_completion(outcome, late, &meter)))
+        Ok(Ok((outcome, late)))
     }
 }
 
@@ -1299,18 +1114,6 @@ fn prepared_failure<T>(
     late: Option<std::io::Error>, error: StreamError,
 ) -> std::io::Result<Result<T, StreamError>> {
     match late { Some(error) => Err(error), None => Ok(Err(error)) }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn prepared_completion(
-    mut outcome: MemoryOutput<CommitOutcome>, error: Option<std::io::Error>,
-    meter: &Arc<dyn NativeReadMeter>,
-) -> NativeMemoryCommitCompletion {
-    NativeMemoryCommitCompletion {
-        outcome: NativeStreamOutput::new(outcome.value,
-            outcome.allocation.allocation.take().unwrap_or_else(|| ReadAllocation::empty(meter))),
-        error,
-    }
 }
 
 struct MemoryCommitAttempt {
@@ -1342,12 +1145,9 @@ impl MemoryCommitAttempt {
             return Err(StreamError::Unavailable.into());
         };
         let publication = self.publication.as_mut().ok_or(StreamError::Unavailable)?;
-        let retained = publication.envelope.as_mut().ok_or(StreamError::Unavailable)?;
-        let IdempotencyOutcome::Commit(CommitOutcome::Committed(replay)) = &mut publication.replay else {
-            return Err(StreamError::Unavailable.into());
-        };
+        let cached = Arc::get_mut(&mut publication.cached).ok_or(StreamError::Unavailable)?;
+        let replay = cached.envelope_mut().ok_or(StreamError::Unavailable)?;
         envelope(output, committed_at, observer)?;
-        envelope(retained, committed_at, observer)?;
         envelope(replay, committed_at, observer)?;
         for mutation in &mut publication.mutations.value {
             observer.record_item()?;
@@ -1365,38 +1165,15 @@ impl MemoryCommitAttempt {
     }
 }
 
-struct MemoryCommitCompletion {
-    outcome: MemoryOutput<CommitOutcome>,
-    error: Option<std::io::Error>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct NativeMemoryCommitCompletion {
-    pub(crate) outcome: NativeStreamOutput<CommitOutcome>,
-    pub(crate) error: Option<std::io::Error>,
-}
-
-struct MemoryAppendCompletion {
-    outcome: MemoryOutput<AppendOutcome>,
-    error: Option<std::io::Error>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct NativeMemoryAppendCompletion {
-    pub(crate) outcome: NativeStreamOutput<AppendOutcome>,
-    pub(crate) error: Option<std::io::Error>,
-}
-
 #[derive(Default)]
 struct State {
     paths: BTreeMap<StreamPath, PathState>,
-    commits: BTreeMap<CommitId, CommittedEnvelope>,
-    replays: BTreeMap<OwnedBytes, Replay>,
+    commits: BTreeMap<CommitId, Arc<Replay>>,
+    replays: BTreeMap<OwnedBytes, Arc<Replay>>,
     /// Indefinite receipt inventory used by the current snapshot codec.
     retained: VecDeque<Retained>,
     path_bytes: usize,
-    /// Records and payload bytes retained, each counted once however many
-    /// paths share it; an upper bound between [`recount`]s.
+    /// Records and payload bytes retained, each counted once however many paths share it; an upper bound between [`recount`]s.
     record_count: usize,
     payload_bytes: usize,
     decision: u64,
@@ -1404,19 +1181,13 @@ struct State {
     last_committed_at_micros: u64,
     hierarchy_version: CommitId,
     retained_allocation: MemoryAllocation,
-    /// Numeric capacity held by preaccepted completion packets. Every mutation
-    /// checks these same counters; dropping a packet refunds its unused slots.
+    /// Numeric capacity held by preaccepted completion packets.
     prepared_capacity: Arc<PreparedCapacity>,
 }
 
-
-
-
 impl Drop for State {
     fn drop(&mut self) {
-        // Forks and appends form a shared DAG. Dropping a long, uniquely owned
-        // History chain through Arc's default destructor consumes one stack
-        // frame per ancestor, so tear down the graph from its roots iteratively.
+        // Tear down unique history chains iteratively.
         for (_, mut path) in std::mem::take(&mut self.paths) {
             let mut cursor = path.history.take();
             while let Some(node) = cursor {
@@ -1484,7 +1255,34 @@ impl AsRef<[Record]> for MemoryRecords {
 struct Replay {
     digest: [u8; 32],
     result: IdempotencyOutcome,
+    envelope: Option<CommittedEnvelope>,
     _allocation: MemoryAllocation,
+}
+
+impl Replay {
+    fn envelope_mut(&mut self) -> Option<&mut CommittedEnvelope> {
+        match &mut self.result {
+            IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) => Some(envelope),
+            _ => self.envelope.as_mut(),
+        }
+    }
+
+    fn envelope(&self) -> Option<&CommittedEnvelope> {
+        match &self.result {
+            IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) => Some(envelope),
+            _ => self.envelope.as_ref(),
+        }
+    }
+}
+
+impl MemoryObserver {
+    fn cached(
+        &self, envelope: Option<CommittedEnvelope>, result: IdempotencyOutcome,
+        mut allocation: MemoryAllocation,
+    ) -> std::io::Result<Arc<Replay>> {
+        allocation.absorb(self.allocate(std::mem::size_of::<Replay>())?)?;
+        Ok(Arc::new(Replay { digest: [0; 32], result, envelope, _allocation: allocation }))
+    }
 }
 
 #[derive(Default)]
@@ -1498,8 +1296,7 @@ struct PreparedCapacity {
 }
 
 impl PreparedCapacity {
-    /// Exhaustion is sticky: new guarded acceptance fails closed, while actual
-    /// cleanup and already preaccepted completion may still settle their work.
+    /// Fails new guarded acceptance after revision exhaustion.
     fn advance_revision(&self) {
         let _ = self.revision.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
             Some(current.checked_add(1).unwrap_or(u64::MAX))
@@ -1513,7 +1310,6 @@ impl PreparedCapacity {
 }
 
 /// The genuine canonical mutation revision on the existing state lifetime.
-/// It is freshness evidence only, never a work counter or namespace authority.
 struct CommitStateVersion {
     identity: Arc<PreparedCapacity>,
     revision: u64,
@@ -1561,9 +1357,7 @@ impl Drop for PreparedCapacityReservation {
         self.capacity.payload_bytes.fetch_sub(self.bytes, Ordering::AcqRel);
         self.capacity.replays.fetch_sub(1, Ordering::AcqRel);
         self.capacity.retained.fetch_sub(1, Ordering::AcqRel);
-        // Release does not take the namespace lock. Mark both the beginning and
-        // completion of the real refund so a guarded plan cannot reuse a stamp
-        // captured partway through this transition.
+        // Revision changes bracket the lock-free capacity refund.
         self.capacity.advance_revision();
     }
 }
@@ -1576,17 +1370,15 @@ struct PreparedPathObservation {
     changed: Option<watch::Sender<u64>>,
 }
 
-/// Actual canonical controls, created before an external source action. No
-/// provider lock or immutable alias to a mutable completion body escapes here.
+/// Actual canonical controls, created before an external source action.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeMemoryPreparedCommit {
     output: MemoryOutput<CommittedEnvelope>,
-    retained: MemoryOutput<CommittedEnvelope>,
-    replay: MemoryOutput<CommittedEnvelope>,
+    cached: Arc<Replay>,
     mutations: MemoryOutput<Vec<PreparedMutation>>,
     paths: MemoryOutput<Vec<(StreamPath, PathState)>>,
     conflicts: MemoryOutput<Vec<CommitConflict>>,
-    replay_conflicts: MemoryOutput<Vec<CommitConflict>>,
+    conflict_cache: Arc<Replay>,
     observations: [PreparedPathObservation; 2],
     key: OwnedBytes,
     reservation: Option<PreparedCapacityReservation>,
@@ -1640,7 +1432,7 @@ fn clone_records(
     let mut output = observer.vec(records.len())?;
     for record in records {
         observer.admit_item()?;
-        let mut read = if output_read { Some(observer.read_bytes(record.value.len())?) } else { None };
+        let mut read = if output_read { Some(observer.bytes(false, record.value.len())?) } else { None };
         output.value.push(record.clone());
         let examined = observer.record_item();
         let read = read.as_mut().map_or(Ok(()), |read| read.record(record.value.len()));
@@ -1772,7 +1564,7 @@ struct NativeMemoryRecordCursor {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl futures::Stream for NativeMemoryRecordCursor {
-    type Item = std::io::Result<Result<NativeObservedRecord, NativeStreamFailure>>;
+    type Item = std::io::Result<Result<NativeStreamOutput<Record>, NativeStreamFailure>>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -1804,10 +1596,10 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn append(&self, mut request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let completion = self.append_observed(&mut request, &MemoryObserver::default()).await;
-        ordinary(completion.map(|completion| {
-            assert!(completion.error.is_none(), "ordinary appends have no fallible observer");
-            completion.outcome
+        let completion = self.apply_append(&mut request, &MemoryObserver::default()).await;
+        ordinary(completion.map(|(outcome, error)| {
+            assert!(error.is_none(), "ordinary appends have no fallible observer");
+            outcome
         }))
     }
 
@@ -1868,13 +1660,14 @@ impl StreamProvider for MemoryStream {
                 records: Vec::new(),
             })],
         };
-        retain(
-            &mut state,
-            Some(envelope),
-            request.idempotency_key,
-            digest,
-            IdempotencyOutcome::Fork(receipt.clone()),
-        );
+        let observer = MemoryObserver::default();
+        let cached = observer.cached(Some(envelope), IdempotencyOutcome::Fork(receipt.clone()), MemoryAllocation::default())
+            .expect("ordinary retention has no fallible observer");
+        publish(&mut state, PreparedPublication {
+            cached, key: request.idempotency_key.map(|key| key.0),
+            paths: MemoryOutput::default(), mutations: MemoryOutput::default(),
+            resident: MemoryAllocation::default(),
+        }, digest);
         Ok(receipt)
     }
 
@@ -2023,7 +1816,7 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.commit_inner(request, None).await
+        self.commit_value(request, None).await
     }
 
     async fn commit_before(
@@ -2031,7 +1824,7 @@ impl StreamProvider for MemoryStream {
         request: CommitRequest,
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        self.commit_inner(request, Some(deadline_unix_millis)).await
+        self.commit_value(request, Some(deadline_unix_millis)).await
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -2093,8 +1886,7 @@ impl StreamProvider for MemoryStream {
                 return Ok(Err(NativeStreamFailure::new(error, ReadAllocation::empty(&meter))));
             }
             let allocation = observer.allocate(std::mem::size_of::<NativeMemoryRecordCursor>())?;
-            // Allocate the real control box now, not after a denied read or
-            // cancellation. Completion only moves already-owned fields.
+            // Allocate the cursor before the read starts.
             let mut cursor = MemoryOutput {
                 value: Box::pin(NativeMemoryRecordCursor {
                     records: MemoryRecordIterator {
@@ -2124,7 +1916,17 @@ impl StreamProvider for MemoryStream {
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, AppendOutcome> {
         let original = Arc::clone(&meter);
-        NativeProviderFuture::new(&original, self.native_append_inner(request, meter))
+        NativeProviderFuture::new(&original, async move {
+            let mut request = request;
+            let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
+            match self.apply_append(&mut request, &observer).await {
+                Ok((outcome, error)) => match error {
+                    Some(error) => Err(error),
+                    None => native(Ok(outcome), &meter),
+                },
+                Err(error) => native(Err(error), &meter),
+            }
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2133,8 +1935,7 @@ impl StreamProvider for MemoryStream {
         request: CommitRequest,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommitOutcome> {
-        let original = Arc::clone(&meter);
-        NativeProviderFuture::new(&original, self.native_commit_inner(request, None, meter))
+        self.commit_future(request, None, meter)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2153,16 +1954,16 @@ impl StreamProvider for MemoryStream {
     {
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            let mut input = crate::CommitInput::capture(&request, &meter)?;
+            let mut input = crate::capture_commit(&request, &meter)?;
             drop(request);
-            match self.native_commit_completion_guarded_borrowed_inner(
-                &mut input.request, deadline_unix_millis, meter, Some(&mut before),
-            ).await? {
-                Ok((completion, _)) => match completion.error {
+            let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
+            match self.apply_commit(&mut input.value, deadline_unix_millis, &observer, Some(&mut before)).await {
+                Ok(Ok((outcome, error, _))) => match error {
                     Some(error) => Err(error),
-                    None => Ok(Ok(completion.outcome)),
+                    None => native(Ok(outcome), &meter).map(|result| result.map_err(E::from)),
                 },
-                Err(error) => Ok(Err(error)),
+                Ok(Err(error)) => Ok(Err(error)),
+                Err(error) => native(Err(error), &meter).map(|result| result.map_err(E::from)),
             }
         })
     }
@@ -2176,10 +1977,10 @@ impl StreamProvider for MemoryStream {
     ) -> NativeProviderFuture<'_, crate::PreparedNativeCommit> {
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            let mut input = crate::CommitInput::capture(&request, &meter)?;
+            let mut input = crate::capture_commit(&request, &meter)?;
             drop(request);
             let prepared = match self.native_prepare_commit_borrowed_inner(
-                &mut input.request, maximum_record_bytes, Arc::clone(&meter),
+                &mut input.value, maximum_record_bytes, Arc::clone(&meter),
             ).await? {
                 Ok(prepared) => prepared,
                 Err(error) => return Ok(Err(NativeStreamFailure::new(error, ReadAllocation::empty(&meter)))),
@@ -2195,8 +1996,7 @@ impl StreamProvider for MemoryStream {
             let received = Arc::clone(&slot);
             let provider = self.clone();
             let finish_meter = Arc::clone(&meter);
-            // The genuine SDK completion future is boxed and funded NOW.
-            // Supplying the final record only transfers this existing frame.
+            // Fund the completion future before accepting the final record.
             let future = NativeProviderFuture::try_new(&meter, async move {
                 let body = match received.receive().await {
                     Ok(body) => body,
@@ -2204,13 +2004,13 @@ impl StreamProvider for MemoryStream {
                         error, ReadAllocation::empty(&finish_meter),
                     ))),
                 };
-                let [CommitMutation::Append { records, .. }] = input.request.mutations.as_mut_slice()
+                let [CommitMutation::Append { records, .. }] = input.value.mutations.as_mut_slice()
                     else { unreachable!("the private template was validated before issuance") };
                 records[0] = body;
-                match provider.native_finish_prepared_commit_borrowed_inner(prepared, &mut input.request).await? {
-                    Ok(completion) => match completion.error {
+                match provider.native_finish_prepared_commit_borrowed_inner(prepared, &mut input.value).await? {
+                    Ok((outcome, error)) => match error {
                         Some(error) => Err(error),
-                        None => Ok(Ok(completion.outcome)),
+                        None => native(Ok(outcome), &finish_meter),
                     },
                     Err(error) => Ok(Err(NativeStreamFailure::new(error, ReadAllocation::empty(&finish_meter)))),
                 }
@@ -2229,22 +2029,9 @@ impl StreamProvider for MemoryStream {
         deadline_unix_millis: u64,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommitOutcome> {
-        let original = Arc::clone(&meter);
-        NativeProviderFuture::new(&original, self.native_commit_inner(request, Some(deadline_unix_millis), meter))
+        self.commit_future(request, Some(deadline_unix_millis), meter)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_read_commit(
-        &self,
-        commit_id: CommitId,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, CommittedEnvelope> {
-        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
-        let original = Arc::clone(&meter);
-        NativeProviderFuture::new(&original, async move {
-            native(self.read_commit_inner(commit_id, &observer).await, &meter)
-        })
-    }
 }
 
 pub(crate) fn validate_limit(limit: u32) -> Result<(), StreamError> {
@@ -2255,11 +2042,7 @@ pub(crate) fn validate_limit(limit: u32) -> Result<(), StreamError> {
     }
 }
 
-pub(crate) fn validate_records(records: &[OwnedBytes]) -> Result<(), StreamError> {
-    provider_result(validate_records_with_observer(records, &MemoryObserver::default()))
-}
-
-fn validate_records_with_observer(records: &[OwnedBytes], observer: &MemoryObserver) -> MemoryResult<()> {
+pub(crate) fn validate_records(records: &[OwnedBytes], observer: &MemoryObserver) -> MemoryResult<()> {
     if records.is_empty() || records.len() > MAX_ITEMS {
         return Err(StreamError::LimitExceeded.into());
     }
@@ -2273,61 +2056,33 @@ fn validate_records_with_observer(records: &[OwnedBytes], observer: &MemoryObser
 }
 
 pub(crate) fn validate_append_size(request: &AppendRequest) -> Result<(), StreamError> {
-    (append_encoded_len_with_observer(request, &MemoryObserver::default())
+    (crate::wire_codec::CanonicalWire::Append(request).encoded_len(None, None)
         .expect("ordinary sizing has no fallible observer") <= MAX_COMMAND_BYTES)
         .then_some(()).ok_or(StreamError::LimitExceeded)
 }
 
 pub(crate) fn validate_fork_size(request: &ForkRequest) -> Result<(), StreamError> {
-    let wire = crate::wire::ForkRequest {
-        source: request.source.to_string(),
-        destination: request.destination.to_string(),
-        at_tail: request.at_tail,
-        idempotency_key: request
-            .idempotency_key
-            .as_ref()
-            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
-    };
-    (wire.encoded_len() <= MAX_COMMAND_BYTES)
+    (crate::wire_codec::CanonicalWire::Fork(request).encoded_len(None, None)
+        .expect("ordinary sizing has no fallible observer") <= MAX_COMMAND_BYTES)
         .then_some(())
         .ok_or(StreamError::LimitExceeded)
 }
 
-fn missing_paths(state: &State, path: &StreamPath) -> usize {
-    let mut count = 0;
-    let mut current = Some(path.clone());
+fn reserve_paths(state: &State, path: &StreamPath, limits: MemoryLimits) -> Result<(), StreamError> {
+    let (mut count, mut bytes) = (0, 0_usize);
+    let mut current = Some(path.as_str());
     while let Some(path) = current {
-        count += usize::from(!state.paths.contains_key(&path));
-        current = path.parent();
+        if !state.paths.contains_key(path) {
+            count += 1;
+            bytes = bytes.saturating_add(path.len());
+        }
+        current = path.rsplit_once('/').map(|(parent, _)| parent);
     }
-    count
-}
-
-fn reserve_paths(
-    state: &State,
-    path: &StreamPath,
-    limits: MemoryLimits,
-) -> Result<(), StreamError> {
-    let missing_path_bytes = missing_path_bytes(state, path);
-    if state.paths.len().saturating_add(missing_paths(state, path)) > limits.paths
-        || state.path_bytes.saturating_add(missing_path_bytes) > limits.path_bytes
+    if state.paths.len().saturating_add(count) > limits.paths
+        || state.path_bytes.saturating_add(bytes) > limits.path_bytes
     {
         Err(StreamError::Capacity)
-    } else {
-        Ok(())
-    }
-}
-
-fn missing_path_bytes(state: &State, path: &StreamPath) -> usize {
-    let mut bytes = 0_usize;
-    let mut current = Some(path.clone());
-    while let Some(path) = current {
-        if !state.paths.contains_key(&path) {
-            bytes = bytes.saturating_add(path.as_str().len());
-        }
-        current = path.parent();
-    }
-    bytes
+    } else { Ok(()) }
 }
 
 fn reserve_commit(state: &State, limits: MemoryLimits) -> Result<(), StreamError> {
@@ -2393,11 +2148,6 @@ struct HistoryWindow {
 }
 
 /// Incremental cursor over the immutable history graph used by `follow`.
-///
-/// A follow can live for a long time while one-record batches are appended.
-/// Replaying the linked graph from its root for every item makes that workload
-/// quadratic.  The cursor indexes the initial graph once and then only walks
-/// the newly added batch suffix after each publication.
 pub(crate) struct HistoryCursor {
     root: Option<Arc<History>>,
     windows: Vec<HistoryWindow>,
@@ -2440,10 +2190,7 @@ impl HistoryCursor {
             return;
         }
 
-        // Appends form a new Batch chain whose parent is the previous root.
-        // Walk that suffix once, then attach its windows in chronological order.
-        // A Prefix in a changed suffix can alter visibility of old batches, so
-        // use the bounded full rebuild for that uncommon graph transition.
+        // Rebuild only the changed suffix, preserving chronological order.
         let mut cursor = Some(Arc::clone(root));
         let mut suffix = Vec::new();
         let mut reaches_old = false;
@@ -2561,8 +2308,7 @@ fn read_history(
     limit: usize,
     observer: &MemoryObserver,
 ) -> MemoryResult<ReadHistoryOutput> {
-    // A nonempty slice contributes at least one requested record, so the
-    // validated request limit bounds this stack index without a helper Vec.
+    // The request limit bounds this stack index.
     let end = tail.min(from.saturating_add(limit as u64));
     let capacity = usize::try_from(end.saturating_sub(from))
         .map_err(|_| StreamError::LimitExceeded)?;
@@ -2606,7 +2352,7 @@ fn read_history(
                 terminal = Some(error);
                 break;
             }
-            let mut read = match observer.read_bytes(record.value.len()) {
+            let mut read = match observer.bytes(false, record.value.len()) {
                 Ok(read) => read,
                 Err(error) => { terminal = Some(error); break; }
             };
@@ -2628,14 +2374,8 @@ fn is_direct_child(parent: &StreamPath, candidate: &StreamPath) -> bool {
     candidate.parent().as_ref() == Some(parent)
 }
 
-/// Counts exactly the records and payload bytes the live paths retain,
-/// each shared history once.
-fn recount(state: &mut State) {
-    recount_observed(state, &MemoryObserver::default())
-        .expect("ordinary recount has no fallible observer");
-}
-
-fn recount_observed(state: &mut State, observer: &MemoryObserver) -> MemoryResult<()> {
+/// Counts exactly the records and payload bytes the live paths retain, each shared history once.
+fn recount(state: &mut State, observer: &MemoryObserver) -> MemoryResult<()> {
     let mut seen = MemoryOutput {
         value: HashSet::new(),
         allocation: observer.allocate(0)?,
@@ -2713,7 +2453,6 @@ fn replay(
     Ok(Some(replay.result.clone()))
 }
 
-
 fn replay_fork(
     state: &State,
     key: Option<&crate::IdempotencyKey>,
@@ -2725,7 +2464,6 @@ fn replay_fork(
         None => Ok(None),
     }
 }
-
 
 fn admit_replay(
     state: &State,
@@ -2740,79 +2478,19 @@ fn admit_replay(
     }
 }
 
-/// Retains a mutation envelope and its replay result indefinitely.
-fn retain(
-    state: &mut State,
-    envelope: Option<CommittedEnvelope>,
-    key: Option<crate::IdempotencyKey>,
-    digest: [u8; 32],
-    result: IdempotencyOutcome,
-) {
-    state.prepared_capacity.advance_revision();
-    let commit = envelope.map(|envelope| {
-        let commit_id = envelope.commit_id;
-        state.commits.insert(commit_id, envelope);
-        commit_id
-    });
-    let replay = key.map(|key| {
-        let key = key.0;
-        state.replays.insert(key.clone(), Replay {
-            digest, result, _allocation: MemoryAllocation::default(),
-        });
-        key
-    });
-    if commit.is_some() || replay.is_some() {
-        state.retained.push_back(Retained { replay, commit, _allocation: MemoryAllocation::default() });
-    }
-}
 
-pub(crate) fn append_digest(request: &AppendRequest) -> [u8; 32] {
-    append_digest_with_observer(request, &MemoryObserver::default())
-        .expect("ordinary hashing has no fallible observer")
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn append_digest_observed(
-    request: &AppendRequest,
-    meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> std::io::Result<[u8; 32]> {
-    append_digest_with_observer(request, &MemoryObserver { meter: meter.cloned() })
-}
-
-fn append_digest_with_observer(
+pub(crate) fn append_digest(
     request: &AppendRequest,
     observer: &MemoryObserver,
 ) -> std::io::Result<[u8; 32]> {
     let mut hash = Sha256::new();
-    hash_update_observed(&mut hash, b"acyclic.stream.request.v1\0", observer)?;
-    hash_update_observed(&mut hash, b"append", observer)?;
-    hash_path_observed(&mut hash, &request.path, observer)?;
-    hash_update_observed(&mut hash, &request.if_tail.unwrap_or(u64::MAX).to_le_bytes(), observer)?;
-    hash_records_observed(&mut hash, &request.records, observer)?;
+    let mut work = DigestWork::Live(observer);
+    work.update(&mut hash, b"acyclic.stream.request.v1\0")?;
+    work.update(&mut hash, b"append")?;
+    work.path(&mut hash, &request.path)?;
+    work.update(&mut hash, &request.if_tail.unwrap_or(u64::MAX).to_le_bytes())?;
+    work.records(&mut hash, &request.records)?;
     Ok(hash.finalize().into())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn append_encoded_len_observed(
-    request: &AppendRequest,
-    meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> std::io::Result<usize> {
-    append_encoded_len_with_observer(request, &MemoryObserver { meter: meter.cloned() })
-}
-
-fn append_encoded_len_with_observer(
-    request: &AppendRequest,
-    observer: &MemoryObserver,
-) -> std::io::Result<usize> {
-    let mut size = wire_bytes_len(request.path.as_str().len());
-    for record in &request.records {
-        observer.admit_item()?;
-        size += wire_bytes_len(record.len());
-        observer.record_item()?;
-    }
-    if let Some(tail) = request.if_tail { size += 1 + wire_varint_len(tail); }
-    if let Some(key) = &request.idempotency_key { size += wire_bytes_len(key.as_bytes().len()); }
-    Ok(size)
 }
 
 pub(crate) fn fork_digest(request: &ForkRequest) -> [u8; 32] {
@@ -2821,19 +2499,6 @@ pub(crate) fn fork_digest(request: &ForkRequest) -> [u8; 32] {
     hash_path(&mut hash, &request.destination);
     hash.update(request.at_tail.unwrap_or(u64::MAX).to_le_bytes());
     hash.finalize().into()
-}
-
-pub(crate) fn commit_digest(request: &CommitRequest) -> [u8; 32] {
-    commit_digest_with_observer(request, &MemoryObserver::default())
-        .expect("ordinary hashing has no fallible observer")
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn commit_digest_observed(
-    request: &CommitRequest,
-    meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> std::io::Result<[u8; 32]> {
-    commit_digest_with_observer(request, &MemoryObserver { meter: meter.cloned() })
 }
 
 fn hash_update_observed(
@@ -2850,23 +2515,7 @@ fn hash_update_observed(
     Ok(())
 }
 
-fn hash_path_observed(hash: &mut Sha256, path: &StreamPath, observer: &MemoryObserver) -> std::io::Result<()> {
-    hash_update_observed(hash, &(path.as_str().len() as u64).to_le_bytes(), observer)?;
-    hash_update_observed(hash, path.as_str().as_bytes(), observer)
-}
-
-fn hash_records_observed(hash: &mut Sha256, records: &[OwnedBytes], observer: &MemoryObserver) -> std::io::Result<()> {
-    hash_update_observed(hash, &(records.len() as u64).to_le_bytes(), observer)?;
-    for record in records {
-        observer.admit_item()?;
-        hash_update_observed(hash, &(record.len() as u64).to_le_bytes(), observer)?;
-        hash_update_observed(hash, record, observer)?;
-        observer.record_item()?;
-    }
-    Ok(())
-}
-
-enum CommitDigestWork<'a> {
+pub(crate) enum DigestWork<'a> {
     Live(&'a MemoryObserver),
     #[cfg(not(target_arch = "wasm32"))]
     Prepared {
@@ -2875,7 +2524,7 @@ enum CommitDigestWork<'a> {
     },
 }
 
-impl CommitDigestWork<'_> {
+impl DigestWork<'_> {
     fn admit_item(&self) -> std::io::Result<()> {
         match self {
             Self::Live(observer) => observer.admit_item(),
@@ -2924,13 +2573,8 @@ impl CommitDigestWork<'_> {
     }
 }
 
-fn commit_digest_with_observer(request: &CommitRequest, observer: &MemoryObserver) -> std::io::Result<[u8; 32]> {
-    commit_digest_with_work(request, &mut CommitDigestWork::Live(observer))
-}
-
-/// One canonical Commit writer. The private prepared branch can only settle
-/// work admitted by the closed completion packet; it has no admission API.
-fn commit_digest_with_work(request: &CommitRequest, work: &mut CommitDigestWork<'_>) -> std::io::Result<[u8; 32]> {
+/// One canonical Commit writer.
+pub(crate) fn commit_digest(request: &CommitRequest, work: &mut DigestWork<'_>) -> std::io::Result<[u8; 32]> {
     let mut hash = Sha256::new();
     work.update(&mut hash, b"acyclic.stream.request.v1\0")?;
     work.update(&mut hash, b"commit")?;
@@ -2982,7 +2626,6 @@ fn hash_path(hash: &mut Sha256, path: &StreamPath) {
     hash.update(path.as_str().as_bytes());
 }
 
-
 fn condition_path(condition: &CommitCondition) -> &StreamPath {
     match condition {
         CommitCondition::Tail { path, .. } | CommitCondition::Absent { path } => path,
@@ -2996,11 +2639,7 @@ fn mutation_path(mutation: &CommitMutation) -> &StreamPath {
     }
 }
 
-pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
-    provider_result(normalize_commit_with_observer(request, &MemoryObserver::default()))
-}
-
-fn normalize_commit_with_observer(request: &mut CommitRequest, observer: &MemoryObserver) -> MemoryResult<()> {
+pub(crate) fn normalize_commit(request: &mut CommitRequest, observer: &MemoryObserver) -> MemoryResult<()> {
     if request.conditions.is_empty()
         || request.conditions.len() > MAX_ITEMS
         || request.mutations.is_empty()
@@ -3011,15 +2650,17 @@ fn normalize_commit_with_observer(request: &mut CommitRequest, observer: &Memory
     for mutation in &request.mutations {
         observer.admit_item()?;
         match mutation {
-            CommitMutation::Append { records, .. } => validate_records_with_observer(records, observer)?,
+            CommitMutation::Append { records, .. } => validate_records(records, observer)?,
             CommitMutation::Fork { records, .. } if !records.is_empty() => {
-                validate_records_with_observer(records, observer)?;
+                validate_records(records, observer)?;
             }
             CommitMutation::Fork { .. } => {}
         }
         observer.record_item()?;
     }
-    validate_commit_size(request, observer)?;
+    if crate::wire_codec::CanonicalWire::Commit(request).encoded_len(None, Some(observer))? > MAX_COMMAND_BYTES {
+        return Err(StreamError::LimitExceeded.into());
+    }
     request.conditions.sort_unstable_by(|left, right| {
         condition_path(left)
             .cmp(condition_path(right))
@@ -3046,77 +2687,7 @@ fn normalize_commit_with_observer(request: &mut CommitRequest, observer: &Memory
     Ok(())
 }
 
-fn validate_commit_size(request: &CommitRequest, observer: &MemoryObserver) -> MemoryResult<()> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let length = commit_encoded_len_observed(request, observer.meter.as_ref())?;
-    #[cfg(target_arch = "wasm32")]
-    let length = commit_encoded_len_with_observer(request, observer)?;
-    if length > MAX_COMMAND_BYTES {
-        return Err(StreamError::LimitExceeded.into());
-    }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn commit_encoded_len_observed(
-    request: &CommitRequest,
-    meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> std::io::Result<usize> {
-    commit_encoded_len_with_observer(request, &MemoryObserver { meter: meter.cloned() })
-}
-
-fn commit_encoded_len_with_observer(request: &CommitRequest, observer: &MemoryObserver) -> std::io::Result<usize> {
-    // Exact canonical protobuf sizing is metadata inspection, not encoding or
-    // a payload copy. The same allocation-free body serves every caller.
-    let mut length = wire_bytes_len(request.idempotency_key.as_bytes().len());
-    for condition in &request.conditions {
-        observer.admit_item()?;
-        let body = match condition {
-            CommitCondition::Tail { path, expected } => {
-                wire_bytes_len(path.as_str().len()) + wire_uint_len(*expected)
-            }
-            CommitCondition::Absent { path } => wire_bytes_len(path.as_str().len()),
-        };
-        length += wire_bytes_len(wire_bytes_len(body));
-        observer.record_item()?;
-    }
-    for mutation in &request.mutations {
-        observer.admit_item()?;
-        let (mut body, records) = match mutation {
-            CommitMutation::Append { path, records } => (wire_bytes_len(path.as_str().len()), records),
-            CommitMutation::Fork { source, destination, at_tail, records } => (
-                wire_bytes_len(source.as_str().len()) + wire_bytes_len(destination.as_str().len()) + wire_uint_len(*at_tail),
-                records,
-            ),
-        };
-        for record in records {
-            observer.admit_item()?;
-            body += wire_bytes_len(record.len());
-            observer.record_item()?;
-        }
-        length += wire_bytes_len(wire_bytes_len(body));
-        observer.record_item()?;
-    }
-    Ok(length)
-}
-
-fn wire_varint_len(value: u64) -> usize {
-    (64 - value.leading_zeros()).max(1).div_ceil(7) as usize
-}
-
-fn wire_bytes_len(length: usize) -> usize {
-    1 + wire_varint_len(length as u64) + length
-}
-
-fn wire_uint_len(value: u64) -> usize {
-    if value == 0 { 0 } else { 1 + wire_varint_len(value) }
-}
-
-pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
-    provider_result(validate_commit_shape_with_observer(request, &MemoryObserver::default()))
-}
-
-fn validate_commit_shape_with_observer(request: &CommitRequest, observer: &MemoryObserver) -> MemoryResult<()> {
+pub(crate) fn validate_commit_shape(request: &CommitRequest, observer: &MemoryObserver) -> MemoryResult<()> {
     // Every caller normalizes first, so a binary search avoids a temporary tree.
     let condition = |path: &StreamPath| {
         request.conditions
@@ -3143,34 +2714,6 @@ fn validate_commit_shape_with_observer(request: &CommitRequest, observer: &Memor
         observer.record_item()?;
     }
     Ok(())
-}
-
-fn validate_commit_authority(
-    state: &State,
-    request: &CommitRequest,
-    observer: &MemoryObserver,
-) -> MemoryResult<()> {
-    crate::preparation::authority_with_observer(request, |path| {
-        state.paths.get(path).map(|stream| stream.tail)
-    }, observer)
-}
-
-fn commit_conflicts(
-    state: &State,
-    conditions: &[CommitCondition],
-    observer: &MemoryObserver,
-) -> MemoryResult<MemoryOutput<Vec<CommitConflict>>> {
-    crate::preparation::conditions_with_observer(conditions, |path| {
-        state.paths.get(path).map(|stream| stream.tail)
-    }, observer)
-}
-
-fn missing_commit_paths<'a>(
-    state: &State,
-    request: &'a CommitRequest,
-    observer: &MemoryObserver,
-) -> MemoryResult<MemoryOutput<BTreeSet<&'a str>>> {
-    missing_observed_paths(state, request.mutations.iter().map(mutation_path), observer)
 }
 
 fn missing_observed_paths<'a>(
@@ -3232,8 +2775,7 @@ struct PreparedMutation {
 }
 
 struct PreparedPublication {
-    envelope: Option<CommittedEnvelope>,
-    replay: IdempotencyOutcome,
+    cached: Arc<Replay>,
     key: Option<OwnedBytes>,
     paths: MemoryOutput<Vec<(StreamPath, PathState)>>,
     mutations: MemoryOutput<Vec<PreparedMutation>>,
@@ -3266,27 +2808,6 @@ fn prepare_paths(
         observer.record_item()?;
     }
     Ok(output)
-}
-
-
-fn prepare_envelope(
-    state: &State,
-    request: &CommitRequest,
-    commit_id: CommitId,
-    committed_at_micros: u64,
-    observer: &MemoryObserver,
-) -> MemoryResult<MemoryOutput<CommittedEnvelope>> {
-    let output = crate::preparation::mutations_with_observer(
-        &request.mutations,
-        |path| state.paths.get(path).map(|stream| stream.tail),
-        commit_id,
-        committed_at_micros,
-        observer,
-    )?;
-    Ok(MemoryOutput {
-        value: CommittedEnvelope { commit_id, mutations: output.value },
-        allocation: output.allocation,
-    })
 }
 
 fn batch_history(
@@ -3351,8 +2872,7 @@ fn prepare_retained_capacity(state: &mut State, observer: &MemoryObserver) -> Me
         .ok_or(StreamError::Capacity)?)?;
     state.prepared_capacity.advance_revision();
     state.retained.reserve_exact(capacity - state.retained.len());
-    // The old buffer was physically retired by reserve_exact. Transfer the new
-    // capacity before reconciliation, including a late excess/cancellation.
+    // Transfer the new capacity before fallible reconciliation.
     state.retained_allocation = allocation;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(allocation) = state.retained_allocation.allocation.as_mut() {
@@ -3362,9 +2882,7 @@ fn prepare_retained_capacity(state: &mut State, observer: &MemoryObserver) -> Me
     Ok(())
 }
 
-
-
-fn publish(state: &mut State, prepared: PreparedPublication, digest: [u8; 32]) {
+fn publish(state: &mut State, mut prepared: PreparedPublication, digest: [u8; 32]) {
     state.prepared_capacity.advance_revision();
     let creates_paths = !prepared.paths.value.is_empty();
     for (path, stream) in prepared.paths.value {
@@ -3380,19 +2898,17 @@ fn publish(state: &mut State, prepared: PreparedPublication, digest: [u8; 32]) {
         state.record_count += mutation.records;
         state.payload_bytes += mutation.bytes;
     }
-    let commit = prepared.envelope.map(|envelope| {
-        let commit_id = envelope.commit_id;
-        state.commits.insert(commit_id, envelope);
+    Arc::get_mut(&mut prepared.cached).expect("an unpublished cache has one owner").digest = digest;
+    let commit = prepared.cached.envelope().map(|envelope| envelope.commit_id);
+    if let Some(commit_id) = commit {
+        state.commits.insert(commit_id, Arc::clone(&prepared.cached));
         if creates_paths { state.hierarchy_version = commit_id; }
-        commit_id
-    });
-    let mut resident = prepared.resident;
+    }
     let replay = prepared.key.map(|key| {
-        state.replays.insert(key.clone(), Replay {
-            digest, result: prepared.replay, _allocation: std::mem::take(&mut resident),
-        });
+        state.replays.insert(key.clone(), prepared.cached);
         key
     });
+    let resident = prepared.resident;
     if commit.is_some() || replay.is_some() {
         state.retained.push_back(Retained { replay, commit, _allocation: resident });
     }
@@ -3400,6 +2916,8 @@ fn publish(state: &mut State, prepared: PreparedPublication, digest: [u8; 32]) {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+    use prost::Message;
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -3408,8 +2926,7 @@ mod tests {
         use super::*;
         use std::sync::atomic::AtomicBool;
 
-        // Keep the original public error custodian intact even when a control
-        // returns early; never erase it with a boxed/stringified test adapter.
+
         type MemoryResult<T> = Result<T, ControlFailure>;
         enum ControlFailure {
             Provider(StreamError),
@@ -3434,12 +2951,11 @@ mod tests {
         impl From<NativeStreamFailure> for ControlFailure {
             fn from(error: NativeStreamFailure) -> Self { Self::Native(error) }
         }
-        impl From<GuardedCommitFailure<ControlFailure>> for ControlFailure {
-            fn from(error: GuardedCommitFailure<ControlFailure>) -> Self {
+        impl From<MemoryFailure> for ControlFailure {
+            fn from(error: MemoryFailure) -> Self {
                 match error {
-                    GuardedCommitFailure::Guard(error) => error,
-                    GuardedCommitFailure::Memory(MemoryFailure::Provider(error)) => Self::Provider(error),
-                    GuardedCommitFailure::Memory(MemoryFailure::Observer(error)) => Self::Observer(error),
+                    MemoryFailure::Provider(error) => Self::Provider(error),
+                    MemoryFailure::Observer(error) => Self::Observer(error),
                 }
             }
         }
@@ -3447,23 +2963,16 @@ mod tests {
         struct Meter {
             held: AtomicU64,
             allocations: AtomicU64,
-            pending_allocations: parking_lot::Mutex<(u64, u64)>,
-            deny_allocation: u64,
             read: AtomicU64,
             read_limit: u64,
             pending_read: AtomicU64,
             pending_write: AtomicU64,
-            read_operations: AtomicU64,
-            write_operations: AtomicU64,
             pending_read_operations: AtomicU64,
             pending_write_operations: AtomicU64,
             pending_durability: AtomicU64,
             copied: AtomicU64,
-            examined: AtomicU64,
-            hashed: AtomicU64,
             cancel_after_read: u64,
             late_write_error: bool,
-            clock_after_copy: Option<(Arc<TestClock>, u64)>,
             cancelled: AtomicBool,
         }
 
@@ -3471,15 +2980,13 @@ mod tests {
             fn default() -> Self {
                 Self {
                     held: AtomicU64::new(0), allocations: AtomicU64::new(0),
-                    pending_allocations: parking_lot::Mutex::new((0, 0)),
-                    deny_allocation: u64::MAX, read: AtomicU64::new(0), read_limit: u64::MAX,
+                    read: AtomicU64::new(0), read_limit: u64::MAX,
                     pending_read: AtomicU64::new(0), pending_write: AtomicU64::new(0),
-                    read_operations: AtomicU64::new(0), write_operations: AtomicU64::new(0),
+
                     pending_read_operations: AtomicU64::new(0), pending_write_operations: AtomicU64::new(0),
                     pending_durability: AtomicU64::new(0), copied: AtomicU64::new(0),
-                    examined: AtomicU64::new(0), hashed: AtomicU64::new(0),
+
                     cancel_after_read: u64::MAX, late_write_error: false,
-                    clock_after_copy: None,
                     cancelled: AtomicBool::new(false),
                 }
             }
@@ -3519,11 +3026,6 @@ mod tests {
             }
             fn record_reserved_operation(&self, kind: NativeOperationKind) -> std::io::Result<()> {
                 assert!(self.pending_operations(kind).fetch_sub(1, Ordering::SeqCst) >= 1);
-                match kind {
-                    NativeOperationKind::Read => { self.read_operations.fetch_add(1, Ordering::SeqCst); }
-                    NativeOperationKind::Write => { self.write_operations.fetch_add(1, Ordering::SeqCst); }
-                    NativeOperationKind::Durability => {}
-                }
                 Ok(())
             }
             fn admit_write_bytes(&self, _: usize) -> std::io::Result<()> { self.check() }
@@ -3552,45 +3054,13 @@ mod tests {
             }
             fn allocate(&self, bytes: u64) -> std::io::Result<()> {
                 self.check()?;
-                if self.allocations.fetch_add(1, Ordering::SeqCst) + 1 == self.deny_allocation {
-                    return Err(std::io::ErrorKind::OutOfMemory.into());
-                }
-                self.held.fetch_add(bytes, Ordering::SeqCst);
-                Ok(())
-            }
-            fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
-                let mut pending = self.pending_allocations.lock();
-                self.check()?;
-                let operations = pending.0.checked_add(1)
-                    .ok_or(std::io::ErrorKind::OutOfMemory)?;
-                let held_bytes = pending.1.checked_add(bytes)
-                    .ok_or(std::io::ErrorKind::OutOfMemory)?;
-                let next = self.allocations.load(Ordering::SeqCst).checked_add(operations)
-                    .ok_or(std::io::ErrorKind::OutOfMemory)?;
-                self.held.load(Ordering::SeqCst).checked_add(held_bytes)
-                    .ok_or(std::io::ErrorKind::OutOfMemory)?;
-                if next == self.deny_allocation {
-                    return Err(std::io::ErrorKind::OutOfMemory.into());
-                }
-                *pending = (operations, held_bytes);
-                Ok(())
-            }
-            fn cancel_reserved_allocation(&self, bytes: u64) {
-                let mut pending = self.pending_allocations.lock();
-                pending.0 = pending.0.checked_sub(1).expect("refund owns one allocation credit");
-                pending.1 = pending.1.checked_sub(bytes).expect("refund owns its allocation byte credit");
-            }
-            fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> {
-                let mut pending = self.pending_allocations.lock();
-                let operations = pending.0.checked_sub(1)
-                    .ok_or(std::io::ErrorKind::InvalidData)?;
-                let held_bytes = pending.1.checked_sub(bytes)
-                    .ok_or(std::io::ErrorKind::InvalidData)?;
-                *pending = (operations, held_bytes);
                 self.allocations.fetch_add(1, Ordering::SeqCst);
                 self.held.fetch_add(bytes, Ordering::SeqCst);
                 Ok(())
             }
+            fn reserve_allocation(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+            fn cancel_reserved_allocation(&self, _: u64) {}
+            fn record_reserved_allocation(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
             fn allocation_failed(&self, _: std::collections::TryReserveError) -> std::io::Error {
                 std::io::ErrorKind::OutOfMemory.into()
             }
@@ -3605,14 +3075,9 @@ mod tests {
                 (bytes, self.check())
             }
             fn admit_codec(&self, _: u64, _: u64, _: u64) -> std::io::Result<()> { self.check() }
-            fn record_codec(&self, _: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
+            fn record_codec(&self, _: u64, copied: u64, _: u64) -> std::io::Result<()> {
                 self.copied.fetch_add(copied, Ordering::SeqCst);
-                self.hashed.fetch_add(hashed, Ordering::SeqCst);
-                if copied != 0 {
-                    if let Some((clock, now)) = &self.clock_after_copy {
-                        clock.0.store(*now, Ordering::SeqCst);
-                    }
-                }
+
                 Ok(())
             }
             fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
@@ -3620,9 +3085,9 @@ mod tests {
                 self.record_examination(items, copied)
             }
             fn admit_examination(&self, _: u64, _: u64) -> std::io::Result<()> { self.check() }
-            fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
+            fn record_examination(&self, _: u64, copied: u64) -> std::io::Result<()> {
                 self.copied.fetch_add(copied, Ordering::SeqCst);
-                self.examined.fetch_add(items, Ordering::SeqCst);
+
                 Ok(())
             }
             fn release(&self, bytes: u64) {
@@ -3636,12 +3101,12 @@ mod tests {
             }
             fn admit_read(&self, maximum: usize) -> std::io::Result<()> {
                 self.admit_bytes(maximum)?;
-                self.read_operations.fetch_add(1, Ordering::SeqCst);
+
                 Ok(())
             }
             fn admit_operations(&self, _: u64) -> std::io::Result<()> { self.check() }
-            fn record_operations(&self, count: u64) -> std::io::Result<()> {
-                self.read_operations.fetch_add(count, Ordering::SeqCst);
+            fn record_operations(&self, _: u64) -> std::io::Result<()> {
+
                 Ok(())
             }
             fn record_read(&self, bytes: usize) -> std::io::Result<()> {
@@ -3657,8 +3122,8 @@ mod tests {
                 } else { Ok(()) }
             }
             fn admit_write_operations(&self, _: u64) -> std::io::Result<()> { self.check() }
-            fn record_write_operations(&self, count: u64) -> std::io::Result<()> {
-                self.write_operations.fetch_add(count, Ordering::SeqCst);
+            fn record_write_operations(&self, _: u64) -> std::io::Result<()> {
+
                 Ok(())
             }
             fn admit_durability(&self) -> std::io::Result<()> { self.check() }
@@ -3701,87 +3166,6 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn guarded_canonical_cas_rechecks_after_async_same_provider_observation_and_unrelated_commit() -> MemoryResult<()> {
-            let (provider, mut request) = prepared_fixture(MemoryLimits::default()).await?;
-            fill_prepared_fixture(&mut request, b"guarded-namespace");
-            let meter = Arc::new(Meter::default());
-            let observer = MemoryObserver { meter: Some(meter.original()) };
-            let calls = Arc::new(AtomicU64::new(0));
-            let mut before = || {
-                let provider = provider.clone();
-                let meter = Arc::clone(&meter);
-                let calls = Arc::clone(&calls);
-                async move {
-                    let tail = provider.native_tail(path("completion/target")?, meter.original()).await??;
-                    assert_eq!(*tail.value(), 1, "the original callback can read this same provider without deadlock");
-                    if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                        provider.append(AppendRequest {
-                            path: path("guarded/unrelated")?, records: vec![OwnedBytes::from_static(b"other")],
-                            if_tail: Some(0), idempotency_key: Some(key(b"guarded-unrelated")?),
-                        }).await?;
-                    }
-                    Ok::<(), ControlFailure>(())
-                }
-            };
-            let expected = planned_commit_id(4, commit_digest(&request), &MemoryObserver::default())?;
-            let (completion, continuation) = provider.commit_observed_guarded(
-                &mut request, None, &observer, Some(&mut before),
-            ).await?;
-            assert!(continuation.is_some());
-            assert_eq!(calls.load(Ordering::SeqCst), 2);
-            let CommitOutcome::Committed(envelope) = &completion.outcome.value else { panic!("canonical Commit") };
-            assert_eq!(envelope.commit_id, expected);
-            assert_eq!(provider.tail(path("completion/target")?).await?, 2);
-            assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
-            assert_eq!(meter.write_operations.load(Ordering::SeqCst), 1);
-            assert_eq!(meter.read_operations.load(Ordering::SeqCst), 2);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn guarded_canonical_cas_rechecks_conflict_only_replay_and_preserves_typed_refusal() -> MemoryResult<()> {
-            let (provider, mut request) = prepared_fixture(MemoryLimits::default()).await?;
-            fill_prepared_fixture(&mut request, b"must-not-publish");
-            let meter = Arc::new(Meter::default());
-            let observer = MemoryObserver { meter: Some(meter.original()) };
-            let calls = Arc::new(AtomicU64::new(0));
-            let denied_allocations = Arc::new(AtomicU64::new(0));
-            let mut before = || {
-                let provider = provider.clone();
-                let meter = Arc::clone(&meter);
-                let calls = Arc::clone(&calls);
-                let denied_allocations = Arc::clone(&denied_allocations);
-                async move {
-                    if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                        let result = provider.append(AppendRequest {
-                            path: path("completion/target")?, records: vec![OwnedBytes::from_static(b"conflicting")],
-                            if_tail: Some(999), idempotency_key: Some(key(b"guarded-conflict-only")?),
-                        }).await?;
-                        assert!(matches!(result, AppendOutcome::TailConflict { actual_tail: 1 }));
-                        Ok::<(), ControlFailure>(())
-                    } else {
-                        denied_allocations.store(meter.allocations.load(Ordering::SeqCst), Ordering::SeqCst);
-                        meter.cancelled.store(true, Ordering::SeqCst);
-                        Err(ControlFailure::Provider(StreamError::DeadlineElapsed))
-                    }
-                }
-            };
-            let input_pointer = request.mutations.as_ptr();
-            let result = provider.commit_observed_guarded(&mut request, None, &observer, Some(&mut before)).await;
-            assert!(matches!(result,
-                Err(GuardedCommitFailure::Guard(ControlFailure::Provider(StreamError::DeadlineElapsed)))));
-            assert_eq!(calls.load(Ordering::SeqCst), 2);
-            assert_eq!(request.mutations.as_ptr(), input_pointer);
-            assert_eq!(meter.allocations.load(Ordering::SeqCst), denied_allocations.load(Ordering::SeqCst));
-            let state = provider.state.read().await;
-            assert_eq!(state.decision, 2, "conflict-only mutation does not advance canonical commit IDs");
-            assert!(!state.replays.contains_key(request.idempotency_key.as_bytes()));
-            assert_eq!(state.paths.get("completion/target").ok_or(StreamError::NotFound)?.tail, 1);
-            assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
-            Ok(())
-        }
-
-        #[tokio::test]
         async fn guarded_cas_drops_contended_continuation_before_wait_and_rechecks_original_guard() -> MemoryResult<()> {
             let (provider, mut request) = prepared_fixture(MemoryLimits::default()).await?;
             fill_prepared_fixture(&mut request, b"contention-safe");
@@ -3799,48 +3183,15 @@ mod tests {
                         drop(read);
                         None
                     };
-                    Ok::<_, ControlFailure>(held)
+                    Ok::<_, MemoryFailure>(held)
                 }
             };
-            let (completion, continuation) = provider.commit_observed_guarded(
+            let (completion, _, continuation) = provider.apply_commit(
                 &mut request, None, &observer, Some(&mut before),
-            ).await?;
+            ).await??;
             assert_eq!(calls.load(Ordering::SeqCst), 2);
             assert!(matches!(continuation, Some(None)));
-            assert!(matches!(completion.outcome.value, CommitOutcome::Committed(_)));
-            assert_eq!(provider.tail(path("completion/target")?).await?, 2);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn canonical_reservation_lifecycle_rechecks_even_when_all_capacity_counts_return_to_the_same_values() -> MemoryResult<()> {
-            let (provider, mut request) = prepared_fixture(MemoryLimits::default()).await?;
-            let mut other = request.clone();
-            other.idempotency_key = key(b"guarded-reservation-lifecycle")?;
-            fill_prepared_fixture(&mut request, b"stable-target");
-            let meter = Arc::new(Meter::default());
-            let observer = MemoryObserver { meter: Some(meter.original()) };
-            let calls = Arc::new(AtomicU64::new(0));
-            let mut before = || {
-                let provider = provider.clone();
-                let mut other = other.clone();
-                let meter = Arc::clone(&meter);
-                let calls = Arc::clone(&calls);
-                async move {
-                    if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                        let prepared = provider.native_prepare_commit_borrowed_inner(
-                            &mut other, 64, meter.original(),
-                        ).await??;
-                        drop(prepared);
-                    }
-                    Ok::<(), ControlFailure>(())
-                }
-            };
-            let (completion, _) = provider.commit_observed_guarded(
-                &mut request, None, &observer, Some(&mut before),
-            ).await?;
-            assert_eq!(calls.load(Ordering::SeqCst), 2);
-            assert!(matches!(completion.outcome.value, CommitOutcome::Committed(_)));
+            assert!(matches!(completion.value, CommitOutcome::Committed(_)));
             assert_eq!(provider.tail(path("completion/target")?).await?, 2);
             Ok(())
         }
@@ -3922,38 +3273,12 @@ mod tests {
                 std::future::ready(Ok::<(), ControlFailure>(()))
             };
             let allocations = meter.allocations.load(Ordering::SeqCst);
-            let result = provider.commit_observed_guarded(&mut template, None, &observer, Some(&mut before)).await;
+            let result = provider.apply_commit(&mut template, None, &observer, Some(&mut before)).await;
             assert!(matches!(result,
-                Err(GuardedCommitFailure::Memory(MemoryFailure::Provider(StreamError::Capacity)))));
+                Err(MemoryFailure::Provider(StreamError::Capacity))));
             assert_eq!(calls.load(Ordering::SeqCst), 0);
             assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
             assert_eq!(provider.tail(path("completion/target")?).await?, 1);
-            Ok(())
-        }
-
-        #[cfg(feature = "local")]
-        #[tokio::test]
-        async fn guarded_canonical_revision_rechecks_identical_snapshot_replacement() -> MemoryResult<()> {
-            let (provider, mut request) = prepared_fixture(MemoryLimits::default()).await?;
-            fill_prepared_fixture(&mut request, b"recovered-guarded-body");
-            let encoded = provider.encode_state().await;
-            let meter = Arc::new(Meter::default());
-            let observer = MemoryObserver { meter: Some(meter.original()) };
-            let calls = Arc::new(AtomicU64::new(0));
-            let mut before = || {
-                let provider = provider.clone();
-                let encoded = &encoded;
-                let calls = Arc::clone(&calls);
-                async move {
-                    if calls.fetch_add(1, Ordering::SeqCst) == 0 { provider.install_state(encoded).await?; }
-                    Ok::<(), ControlFailure>(())
-                }
-            };
-            let (completion, _) = provider.commit_observed_guarded(
-                &mut request, None, &observer, Some(&mut before),
-            ).await?;
-            assert!(matches!(completion.outcome.value, CommitOutcome::Committed(_)));
-            assert_eq!(calls.load(Ordering::SeqCst), 2);
             Ok(())
         }
 
@@ -3980,7 +3305,7 @@ mod tests {
             }, Arc::clone(&original)).map_err(|failure| match failure.into_error() {
                 crate::PreparedOwnedBytesError::Admission(error) => ControlFailure::Observer(error),
                 crate::PreparedOwnedBytesError::NotFullyInitialized
-                    | crate::PreparedOwnedBytesError::NotUnique => ControlFailure::Provider(StreamError::InvalidArgument),
+                    => ControlFailure::Provider(StreamError::InvalidArgument),
             })?;
             let issued = provider.native_prepare_commit(request, 64, original).await??;
             let (mut issued, packet_guard) = issued.into_parts();
@@ -4015,40 +3340,6 @@ mod tests {
             assert!(meter.held.load(Ordering::SeqCst) > 0);
             drop(last_empty_alias);
             assert!(retired.load(Ordering::SeqCst));
-            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn prebuilt_recovery_reads_actual_publication_after_lost_ack() -> MemoryResult<()> {
-            let (provider, request) = prepared_fixture(MemoryLimits::default()).await?;
-            let meter = Arc::new(Meter { late_write_error: true, ..Meter::default() });
-            let issued = provider.native_prepare_commit(request, 64, meter.original()).await??;
-            let (mut issued, packet_guard) = issued.into_parts();
-            let recovery = issued.take_recovery_future().ok_or(StreamError::Unavailable)?;
-            let allocations = meter.allocations.load(Ordering::SeqCst);
-            meter.cancelled.store(true, Ordering::SeqCst);
-            let acknowledgement = issued.finish(OwnedBytes::from_static(b"whole-settled-prefix")).await;
-            assert!(matches!(acknowledgement, Err(error) if error.kind() == std::io::ErrorKind::Interrupted));
-            let observed = recovery.await??;
-            let observation = observed.value().as_ref().ok_or(StreamError::Unavailable)?;
-            let IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) = &observation.outcome else {
-                panic!("recovery preserves the actual original Commit family")
-            };
-            let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else { panic!("single append") };
-            assert_eq!(append.records[0].value.as_ref(), b"whole-settled-prefix");
-            assert_eq!(append.start, 1);
-            assert_eq!(append.tail, 2);
-            assert_eq!(provider.tail(path("completion/target")?).await?, 2);
-            assert_eq!(observation.request_digest,
-                provider.state.read().await.replays.get(observation.idempotency_key.as_bytes())
-                    .ok_or(StreamError::Unavailable)?.digest);
-            assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
-            assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
-            assert_eq!(meter.pending_read_operations.load(Ordering::SeqCst), 0);
-            drop(observed);
-            drop(packet_guard);
-            drop(provider);
             assert_eq!(meter.held.load(Ordering::SeqCst), 0);
             Ok(())
         }
@@ -4116,36 +3407,9 @@ mod tests {
                 drop(packet_guard);
                 assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
                 assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
-                assert_eq!(*meter.pending_allocations.lock(), (0, 0));
                 drop(provider);
                 assert_eq!(meter.held.load(Ordering::SeqCst), 0);
             }
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn prebuilt_recovery_reports_real_absence_and_refunds_unused_preaccepted_work() -> MemoryResult<()> {
-            let (provider, request) = prepared_fixture(MemoryLimits::default()).await?;
-            let meter = Arc::new(Meter::default());
-            let issued = provider.native_prepare_commit(request, 64, meter.original()).await??;
-            let (mut issued, packet_guard) = issued.into_parts();
-            let recovery = issued.take_recovery_future().ok_or(StreamError::Unavailable)?;
-            let allocations = meter.allocations.load(Ordering::SeqCst);
-            let examinations = meter.examined.load(Ordering::SeqCst);
-            meter.cancelled.store(true, Ordering::SeqCst);
-            let observed = recovery.await??;
-            assert!(observed.value().is_none());
-            assert_eq!(meter.examined.load(Ordering::SeqCst) - examinations, 1);
-            assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
-            assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
-            assert_eq!(meter.pending_read_operations.load(Ordering::SeqCst), 0);
-            drop(observed);
-            drop(issued);
-            drop(packet_guard);
-            assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
-            assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
-            drop(provider);
-            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
             Ok(())
         }
 
@@ -4159,33 +3423,27 @@ mod tests {
             let repeat_prepared = provider.native_prepare_commit_borrowed_inner(&mut repeat, 64, meter.original()).await??;
             let mismatch_prepared = provider.native_prepare_commit_borrowed_inner(&mut mismatch, 64, meter.original()).await??;
             let allocation_count = meter.allocations.load(Ordering::SeqCst);
-            let examinations = meter.examined.load(Ordering::SeqCst);
-            let hashes = meter.hashed.load(Ordering::SeqCst);
             let input_pointer = request.mutations.as_ptr();
             fill_prepared_fixture(&mut request, b"actual-scalars");
             fill_prepared_fixture(&mut repeat, b"actual-scalars");
             fill_prepared_fixture(&mut mismatch, b"different-scalars");
             meter.cancelled.store(true, Ordering::SeqCst);
             let completion = provider.native_finish_prepared_commit_borrowed_inner(prepared, &mut request).await??;
-            assert_eq!(meter.examined.load(Ordering::SeqCst) - examinations, 22);
-            assert_eq!(meter.hashed.load(Ordering::SeqCst) - hashes,
-                prepared_hash_bytes(&request, b"actual-scalars".len())
-                    + b"acyclic.stream.commit.v1\0".len() as u64 + 8 + 32);
-            assert!(matches!(completion.error.as_ref(), Some(error) if error.kind() == std::io::ErrorKind::Interrupted));
-            let CommitOutcome::Committed(envelope) = completion.outcome.value() else { panic!("real canonical publication") };
+            assert!(matches!(completion.1.as_ref(), Some(error) if error.kind() == std::io::ErrorKind::Interrupted));
+            let CommitOutcome::Committed(envelope) = &completion.0.value else { panic!("real canonical publication") };
             let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else { panic!("single append") };
             assert_eq!(append.records[0].value, OwnedBytes::from_static(b"actual-scalars"));
             assert_eq!(append.start, 1);
             assert_eq!(append.end, 2);
             assert_eq!(input_pointer, request.mutations.as_ptr());
             let replay = provider.native_finish_prepared_commit_borrowed_inner(repeat_prepared, &mut repeat).await??;
-            assert_eq!(replay.outcome.value(), completion.outcome.value());
+            assert_eq!(&replay.0.value, &completion.0.value);
             assert!(matches!(provider.native_finish_prepared_commit_borrowed_inner(
                 mismatch_prepared, &mut mismatch,
             ).await?, Err(StreamError::IdempotencyMismatch)));
             assert_eq!(meter.allocations.load(Ordering::SeqCst), allocation_count);
             assert_eq!(provider.state.read().await.replays.get(request.idempotency_key.as_bytes())
-                .ok_or(StreamError::Unavailable)?.digest, commit_digest(&request));
+                .ok_or(StreamError::Unavailable)?.digest, commit_digest(&request, &mut DigestWork::Live(&MemoryObserver::default()))?);
             assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
             assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
             drop(replay);
@@ -4193,41 +3451,6 @@ mod tests {
             assert!(meter.held.load(Ordering::SeqCst) > 0, "published controls still own original custody");
             drop(provider);
             assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn retained_canonical_receipt_remains_replayable_after_path_history_retirement() -> MemoryResult<()> {
-            let (provider, template) = prepared_fixture(MemoryLimits::default()).await?;
-            let mut original = template.clone();
-            fill_prepared_fixture(&mut original, b"retained-completion");
-            let committed = provider.commit(original.clone()).await?;
-            {
-                let mut state = provider.state.write().await;
-                state.paths.remove("completion/owner");
-                state.paths.remove("completion/target");
-            }
-            let meter = Arc::new(Meter::default());
-            let mut repeat = template;
-            let prepared = provider.native_prepare_commit_borrowed_inner(&mut repeat, 64, meter.original()).await??;
-            let recovery = provider.native_prepare_recovery_future(&prepared)
-                .map_err(|failure| match failure {
-                    MemoryFailure::Observer(error) => ControlFailure::Observer(error),
-                    MemoryFailure::Provider(error) => ControlFailure::Provider(error),
-                })?;
-            fill_prepared_fixture(&mut repeat, b"retained-completion");
-            let allocations = meter.allocations.load(Ordering::SeqCst);
-            meter.cancelled.store(true, Ordering::SeqCst);
-            let replay = provider.native_finish_prepared_commit_borrowed_inner(prepared, &mut repeat).await??;
-            assert_eq!(replay.outcome.value(), &committed);
-            let observed = recovery.await??;
-            let observation = observed.value().as_ref().ok_or(StreamError::Unavailable)?;
-            let IdempotencyOutcome::Commit(recovered) = &observation.outcome else { panic!("original Commit family") };
-            assert_eq!(recovered, &committed);
-            assert_eq!(observation.request_digest, commit_digest(&original));
-            assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
-            assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
-            assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
             Ok(())
         }
 
@@ -4245,11 +3468,11 @@ mod tests {
             let allocations = meter.allocations.load(Ordering::SeqCst);
             meter.cancelled.store(true, Ordering::SeqCst);
             let completion = provider.native_finish_prepared_commit_borrowed_inner(prepared, &mut request).await??;
-            let CommitOutcome::Conflict(conflicts) = completion.outcome.value() else { panic!("truthful conflict") };
+            let CommitOutcome::Conflict(conflicts) = &completion.0.value else { panic!("truthful conflict") };
             assert!(matches!(conflicts.as_slice(), [CommitConflict::Tail { expected: 1, actual: Some(2), .. }]));
             assert_eq!(request, input);
             assert_eq!(provider.tail(path("completion/target")?).await?, 1);
-            assert_eq!(provider.commit(request).await?, *completion.outcome.value());
+            assert_eq!(provider.commit(request).await?, completion.0.value);
             assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
             Ok(())
         }
@@ -4304,77 +3527,8 @@ mod tests {
             fill_prepared_fixture(&mut request, b"settled");
             meter.cancelled.store(true, Ordering::SeqCst);
             let completion = provider.native_finish_prepared_commit_borrowed_inner(prepared, &mut request).await??;
-            assert!(matches!(completion.outcome.value(), CommitOutcome::Committed(_)));
+            assert!(matches!(&completion.0.value, CommitOutcome::Committed(_)));
             assert_eq!(provider.state.read().await.commits.len(), 3);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn abandoned_preaccepted_packet_refunds_only_its_unused_capacity_and_work() -> MemoryResult<()> {
-            let limits = MemoryLimits { commits: 3, records: 3, payload_bytes: 72,
-                idempotency_results: 1, ..MemoryLimits::default() };
-            let (provider, mut request) = prepared_fixture(limits).await?;
-            let meter = Arc::new(Meter::default());
-            let prepared = provider.native_prepare_commit_borrowed_inner(&mut request, 64, meter.original()).await??;
-            meter.cancelled.store(true, Ordering::SeqCst);
-            drop(prepared);
-            let state = provider.state.read().await;
-            assert_eq!(state.prepared_capacity.commits.load(Ordering::Acquire), 0);
-            assert_eq!(state.prepared_capacity.records.load(Ordering::Acquire), 0);
-            assert_eq!(state.prepared_capacity.payload_bytes.load(Ordering::Acquire), 0);
-            assert_eq!(state.prepared_capacity.replays.load(Ordering::Acquire), 0);
-            assert_eq!(state.prepared_capacity.retained.load(Ordering::Acquire), 0);
-            drop(state);
-            assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
-            assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
-            provider.append(AppendRequest {
-                path: path("unrelated")?, records: vec![OwnedBytes::from_static(b"other")],
-                if_tail: Some(0), idempotency_key: Some(key(b"unrelated")?),
-            }).await?;
-            drop(provider);
-            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn unrelated_successful_commit_preserves_prepared_history_and_current_commit_identity() -> MemoryResult<()> {
-            let (provider, mut request) = prepared_fixture(MemoryLimits::default()).await?;
-            let meter = Arc::new(Meter::default());
-            let prepared = provider.native_prepare_commit_borrowed_inner(&mut request, 64, meter.original()).await??;
-            provider.append(AppendRequest {
-                path: path("unrelated")?, records: vec![OwnedBytes::from_static(b"other")],
-                if_tail: Some(0), idempotency_key: None,
-            }).await?;
-            fill_prepared_fixture(&mut request, b"completion");
-            let expected = planned_commit_id(4, commit_digest(&request), &MemoryObserver::default())?;
-            meter.cancelled.store(true, Ordering::SeqCst);
-            let completion = provider.native_finish_prepared_commit_borrowed_inner(prepared, &mut request).await??;
-            let CommitOutcome::Committed(envelope) = completion.outcome.value() else { panic!("canonical completion") };
-            assert_eq!(envelope.commit_id, expected);
-            assert_eq!(provider.tail(path("completion/target")?).await?, 2);
-            Ok(())
-        }
-
-        #[cfg(feature = "local")]
-        #[tokio::test]
-        async fn recovered_canonical_commit_replays_while_prepared_old_visibility_is_rejected() -> MemoryResult<()> {
-            let (provider, mut request) = prepared_fixture(MemoryLimits::default()).await?;
-            let meter = Arc::new(Meter::default());
-            let prepared = provider.native_prepare_commit_borrowed_inner(&mut request, 64, meter.original()).await??;
-            let before = provider.encode_state().await;
-            provider.install_state(&before).await?;
-            fill_prepared_fixture(&mut request, b"completion");
-            let allocations = meter.allocations.load(Ordering::SeqCst);
-            meter.cancelled.store(true, Ordering::SeqCst);
-            assert!(matches!(provider.native_finish_prepared_commit_borrowed_inner(
-                prepared, &mut request,
-            ).await?, Err(StreamError::PrefixNotRetained)));
-            assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
-            let outcome = provider.commit(request.clone()).await?;
-            let encoded = provider.encode_state().await;
-            let recovered = MemoryStream::default();
-            recovered.install_state(&encoded).await?;
-            assert_eq!(recovered.commit(request).await?, outcome);
             Ok(())
         }
 
@@ -4382,107 +3536,7 @@ mod tests {
             Ok(ReadRequest { path: path("native/read")?, from: 0, limit: 3 })
         }
 
-        fn commit_request() -> Result<CommitRequest, StreamError> {
-            Ok(CommitRequest {
-                conditions: vec![CommitCondition::Absent { path: path("native/new")? }],
-                mutations: vec![CommitMutation::Append {
-                    path: path("native/new")?, records: vec![OwnedBytes::from_static(b"payload")],
-                }],
-                idempotency_key: key(b"native-commit")?,
-            })
-        }
 
-        #[tokio::test]
-        async fn native_append_preserves_append_identity_conflict_and_cold_retry() -> MemoryResult<()> {
-            let provider = MemoryStream::default();
-            let ordinary_provider = MemoryStream::default();
-            let request = AppendRequest {
-                path: path("native/append")?, records: vec![OwnedBytes::from_static(b"one")],
-                if_tail: Some(0), idempotency_key: Some(key(b"native-append")?),
-            };
-            let meter = Arc::new(Meter::default());
-            let appended = provider.native_append(request.clone(), meter.original()).await??;
-            let ordinary = ordinary_provider.append(request.clone()).await?;
-            assert_eq!(appended.value(), &ordinary);
-            let AppendOutcome::Committed(receipt) = appended.value() else {
-                return Err(StreamError::Unavailable.into());
-            };
-            let envelope = provider.native_read_commit(receipt.commit_id, meter.original()).await??;
-            assert_eq!(envelope.value(), &ordinary_provider.read_commit(receipt.commit_id).await?);
-            let observation = provider.native_inspect_idempotency(key(b"native-append")?, meter.original()).await??;
-            assert_eq!(observation.value().as_ref().map(|fact| &fact.outcome),
-                Some(&IdempotencyOutcome::Append(ordinary)));
-            let replay = provider.native_append(request.clone(), meter.original()).await??;
-            assert_eq!(appended.value(), replay.value());
-            let mut changed = request.clone();
-            changed.records = vec![OwnedBytes::from_static(b"changed")];
-            assert!(matches!(provider.native_append(changed, meter.original()).await?,
-                Err(error) if matches!(error.source(), StreamError::IdempotencyMismatch)));
-            let wrong_kind = CommitRequest {
-                conditions: vec![CommitCondition::Tail { path: request.path.clone(), expected: 1 }],
-                mutations: vec![CommitMutation::Append {
-                    path: request.path.clone(), records: vec![OwnedBytes::from_static(b"wrong")],
-                }],
-                idempotency_key: key(b"native-append")?,
-            };
-            assert!(matches!(provider.native_commit(wrong_kind, meter.original()).await?,
-                Err(error) if matches!(error.source(), StreamError::IdempotencyMismatch)));
-            let mut conflict = request.clone();
-            conflict.if_tail = Some(7);
-            conflict.idempotency_key = Some(key(b"native-append-conflict")?);
-            let rejected = provider.native_append(conflict.clone(), meter.original()).await??;
-            assert_eq!(rejected.value(), &AppendOutcome::TailConflict { actual_tail: 1 });
-            let extra = AppendRequest {
-                if_tail: Some(1), idempotency_key: None, ..request.clone()
-            };
-            drop(provider.native_append(extra, meter.original()).await??);
-            let rejected_replay = provider.native_append(conflict, meter.original()).await??;
-            assert_eq!(rejected.value(), rejected_replay.value());
-            assert_eq!(provider.tail(request.path).await?, 2);
-            assert_eq!(provider.state.read().await.decision, 2);
-            drop((appended, envelope, observation, replay, rejected, rejected_replay));
-            drop(provider);
-            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn native_append_denial_and_late_cause_preserve_actual_publication() -> MemoryResult<()> {
-            let request = AppendRequest {
-                path: path("native/append")?, records: vec![OwnedBytes::from_static(b"one")],
-                if_tail: Some(0), idempotency_key: Some(key(b"native-append")?),
-            };
-            for denied in [1, 2, 3] {
-                let provider = MemoryStream::default();
-                let meter = Arc::new(Meter { deny_allocation: denied, ..Meter::default() });
-                assert!(matches!(provider.native_append(request.clone(), meter.original()).await,
-                    Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory));
-                assert_eq!(provider.state.read().await.decision, 0);
-                assert!(provider.state.read().await.paths.is_empty());
-                assert!(provider.state.read().await.replays.is_empty());
-                assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
-                drop(provider);
-                assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            }
-            let provider = MemoryStream::default();
-            let meter = Arc::new(Meter { late_write_error: true, ..Meter::default() });
-            let mut retained_input = request.clone();
-            let pointer = retained_input.records.as_ptr();
-            let completion = provider.native_append_completion_borrowed_inner(
-                &mut retained_input, meter.original(),
-            ).await??;
-            assert!(matches!(completion.error.as_ref(), Some(error)
-                if error.kind() == std::io::ErrorKind::Interrupted));
-            assert!(matches!(completion.outcome.value(), AppendOutcome::Committed(_)));
-            assert_eq!(pointer, retained_input.records.as_ptr());
-            let replay = provider.append(request).await?;
-            assert_eq!(completion.outcome.value(), &replay);
-            assert_eq!(provider.state.read().await.decision, 1);
-            drop(completion);
-            drop(provider);
-            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            Ok(())
-        }
 
         #[test]
         fn append_size_and_digest_match_canonical_optional_scalar_fields() -> Result<(), StreamError> {
@@ -4498,7 +3552,7 @@ mod tests {
                     if_tail: tail, idempotency_key: request.idempotency_key.as_ref()
                         .map(|key| Bytes::copy_from_slice(key.as_bytes())),
                 };
-                assert_eq!(append_encoded_len_with_observer(&request, &MemoryObserver::default())
+                assert_eq!(crate::wire_codec::CanonicalWire::Append(&request).encoded_len(None, None)
                     .expect("ordinary sizing"), wire.encoded_len());
                 let mut old = request_hasher(b"append");
                 hash_path(&mut old, &request.path);
@@ -4509,22 +3563,7 @@ mod tests {
                     old.update(record);
                 }
                 let expected: [u8; 32] = old.finalize().into();
-                assert_eq!(append_digest(&request), expected);
-            }
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn allocation_denial_precedes_record_alias_clone_and_box() -> MemoryResult<()> {
-            let provider = seeded().await?;
-            for denied in [1, 2, 3] {
-                let meter = Arc::new(Meter { deny_allocation: denied, ..Meter::default() });
-                let result = provider.native_read(read_request()?, meter.original()).await;
-                assert!(matches!(result, Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory));
-                assert_eq!(meter.allocations.load(Ordering::SeqCst), denied);
-                assert_eq!(meter.read.load(Ordering::SeqCst), 0);
-                assert_eq!(meter.copied.load(Ordering::SeqCst), 0);
-                assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+                assert_eq!(append_digest(&request, &MemoryObserver::default()).expect("ordinary hashing"), expected);
             }
             Ok(())
         }
@@ -4550,7 +3589,6 @@ mod tests {
                 } else { std::io::ErrorKind::OutOfMemory }));
                 assert!(output.value_mut().next().await.is_none());
                 assert_eq!(meter.read.load(Ordering::SeqCst), 2);
-                assert_eq!(meter.read_operations.load(Ordering::SeqCst), 1);
                 assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
                 assert_eq!(meter.copied.load(Ordering::SeqCst), 0);
                 assert!(meter.held.load(Ordering::SeqCst) > 0);
@@ -4561,264 +3599,6 @@ mod tests {
             Ok(())
         }
 
-        #[tokio::test]
-        async fn output_drop_retires_real_vec_and_box_capacity_not_borrowed_bytes() -> MemoryResult<()> {
-            let provider = seeded().await?;
-            let meter = Arc::new(Meter::default());
-            let mut output = provider.native_read(read_request()?, meter.original()).await??;
-            let mut aliases = Vec::new();
-            while let Some(record) = output.value_mut().next().await {
-                let record = record??;
-                aliases.push(record.value().value.clone());
-            }
-            assert_eq!(meter.read.load(Ordering::SeqCst), 6);
-            assert_eq!(meter.copied.load(Ordering::SeqCst), 0);
-            assert!(meter.held.load(Ordering::SeqCst) >= (3 * std::mem::size_of::<Record>()) as u64);
-            drop(output);
-            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            assert_eq!(aliases, vec![OwnedBytes::from_static(b"aa"), OwnedBytes::from_static(b"bb"), OwnedBytes::from_static(b"cc")]);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn native_commit_replay_inspection_and_read_commit_share_the_actual_state() -> MemoryResult<()> {
-            let provider = MemoryStream::default();
-            let request = commit_request()?;
-            let meter = Arc::new(Meter::default());
-            let committed = provider.native_commit(request.clone(), meter.original()).await??;
-            let CommitOutcome::Committed(envelope) = committed.value() else {
-                return Err(StreamError::Unavailable.into());
-            };
-            let id = envelope.commit_id;
-            let replay = provider.native_commit(request, meter.original()).await??;
-            assert_eq!(replay.value(), committed.value());
-            let read = provider.native_read_commit(id, meter.original()).await??;
-            assert_eq!(read.value(), envelope);
-            let observation = provider.native_inspect_idempotency(key(b"native-commit")?, meter.original()).await??;
-            assert_eq!(observation.value().as_ref().map(|value| &value.outcome),
-                Some(&IdempotencyOutcome::Commit(committed.value().clone())));
-            let tail = provider.native_tail(path("native/new")?, meter.original()).await??;
-            let bounds = provider.native_bounds(path("native/new")?, meter.original()).await??;
-            assert_eq!(*tail.value(), 1);
-            assert_eq!(bounds.value().tail, 1);
-            assert_eq!(provider.state.read().await.decision, 1);
-            drop((committed, replay, read, observation, tail, bounds));
-            drop(provider);
-            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn resident_record_arc_keeps_its_actual_capacity_until_the_last_alias() -> MemoryResult<()> {
-            let provider = MemoryStream::default();
-            let meter = Arc::new(Meter::default());
-            let committed = provider.native_commit(commit_request()?, meter.original()).await??;
-            let records = {
-                let state = provider.state.read().await;
-                let history = state.paths.get("native/new").and_then(|path| path.history.as_ref())
-                    .ok_or(StreamError::Unavailable)?;
-                let History::Batch { records, .. } = history.as_ref() else {
-                    return Err(StreamError::Unavailable.into());
-                };
-                Arc::clone(records)
-            };
-            let expected = records.records.capacity() * std::mem::size_of::<Record>()
-                + std::mem::size_of::<MemoryRecords>();
-            drop(committed);
-            drop(provider);
-            assert_eq!(meter.held.load(Ordering::SeqCst), expected as u64);
-            assert_eq!(records.first().map(|record| record.value.clone()), Some(OwnedBytes::from_static(b"payload")));
-            drop(records);
-            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn denied_commit_never_publishes_and_late_cause_keeps_accepted_outcome() -> MemoryResult<()> {
-            for denied in [1, 2, 3] {
-                let provider = MemoryStream::default();
-                let meter = Arc::new(Meter { deny_allocation: denied, ..Meter::default() });
-                let result = provider.native_commit(commit_request()?, meter.original()).await;
-                assert!(matches!(result, Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory));
-                assert_eq!(provider.tail(path("native/new")?).await, Err(StreamError::NotFound));
-                assert!(provider.inspect_idempotency(key(b"native-commit")?).await?.is_none());
-                assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-                assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
-            }
-            let provider = MemoryStream::default();
-            let meter = Arc::new(Meter { late_write_error: true, ..Meter::default() });
-            let completion = provider.native_commit_completion_inner(commit_request()?, None, meter.original()).await??;
-            assert!(matches!(completion.error, Some(error) if error.kind() == std::io::ErrorKind::Interrupted));
-            assert!(matches!(completion.outcome.value(), CommitOutcome::Committed(_)));
-            assert_eq!(provider.tail(path("native/new")?).await?, 1);
-            let retained = provider.inspect_idempotency(key(b"native-commit")?).await?
-                .ok_or(StreamError::Unavailable)?;
-            assert_eq!(retained.outcome, IdempotencyOutcome::Commit(completion.outcome.value().clone()));
-            assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
-            drop((completion.outcome, retained));
-            drop(provider);
-            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn borrowed_completion_preserves_actual_input_vectors_until_owner_drop() -> MemoryResult<()> {
-            let provider = MemoryStream::default();
-            let meter = Arc::new(Meter { late_write_error: true, ..Meter::default() });
-            let request = commit_request()?;
-            let conditions = request.conditions.as_ptr() as usize;
-            let mutations = request.mutations.as_ptr() as usize;
-            let bodies = match request.mutations.first().ok_or(StreamError::Unavailable)? {
-                CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => records.as_ptr() as usize,
-            };
-            let mut input_bytes = request.conditions.capacity()
-                .checked_mul(std::mem::size_of::<CommitCondition>()).ok_or(StreamError::Capacity)?;
-            input_bytes = input_bytes.checked_add(request.mutations.capacity()
-                .checked_mul(std::mem::size_of::<CommitMutation>()).ok_or(StreamError::Capacity)?)
-                .ok_or(StreamError::Capacity)?;
-            for mutation in &request.mutations {
-                let records = match mutation {
-                    CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => records,
-                };
-                input_bytes = input_bytes.checked_add(records.capacity()
-                    .checked_mul(std::mem::size_of::<Bytes>()).ok_or(StreamError::Capacity)?)
-                    .ok_or(StreamError::Capacity)?;
-            }
-            // The fixture transfers its already allocated, exactly observable
-            // caller Vecs; the SDK must neither adopt nor consume them again.
-            let observer = MemoryObserver { meter: Some(meter.original()) };
-            let mut input = MemoryOutput { value: request, allocation: observer.adopt(input_bytes)? };
-            assert_eq!(meter.allocations.load(Ordering::SeqCst), 0);
-            let completion = provider.native_commit_completion_borrowed_inner(
-                &mut input.value, None, meter.original(),
-            ).await??;
-            assert!(matches!(completion.error.as_ref(), Some(error)
-                if error.kind() == std::io::ErrorKind::Interrupted));
-            assert!(matches!(completion.outcome.value(), CommitOutcome::Committed(_)));
-            assert_eq!(input.value.conditions.as_ptr() as usize, conditions);
-            assert_eq!(input.value.mutations.as_ptr() as usize, mutations);
-            let retained_bodies = match input.value.mutations.first().ok_or(StreamError::Unavailable)? {
-                CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => records,
-            };
-            assert_eq!(retained_bodies.as_ptr() as usize, bodies);
-            assert_eq!(retained_bodies.len(), 1);
-            assert_eq!(provider.tail(path("native/new")?).await?, 1);
-            drop(completion);
-            let before = meter.held.load(Ordering::SeqCst);
-            drop(input);
-            assert_eq!(before - meter.held.load(Ordering::SeqCst), input_bytes as u64);
-            drop(provider);
-            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn inspection_and_envelope_denial_precede_retained_record_clones() -> MemoryResult<()> {
-            let provider = MemoryStream::default();
-            let committed = provider.commit(commit_request()?).await?;
-            let CommitOutcome::Committed(envelope) = committed else {
-                return Err(StreamError::Unavailable.into());
-            };
-            for inspection in [false, true] {
-                let meter = Arc::new(Meter { deny_allocation: 2, ..Meter::default() });
-                let denied = if inspection {
-                    matches!(provider.native_inspect_idempotency(key(b"native-commit")?, meter.original()).await,
-                        Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory)
-                } else {
-                    matches!(provider.native_read_commit(envelope.commit_id, meter.original()).await,
-                        Err(error) if error.kind() == std::io::ErrorKind::OutOfMemory)
-                };
-                assert!(denied);
-                assert_eq!(meter.allocations.load(Ordering::SeqCst), 2);
-                assert_eq!(meter.read.load(Ordering::SeqCst), 0);
-                assert_eq!(meter.copied.load(Ordering::SeqCst), 0);
-                assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            }
-            assert_eq!(provider.read_commit(envelope.commit_id).await?, envelope);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn native_deadline_checks_actual_publication_and_replay_precedes_clock() -> MemoryResult<()> {
-            let clock = Arc::new(TestClock::default());
-            clock.0.store(100, Ordering::SeqCst);
-            let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
-            let request = commit_request()?;
-            let late = Arc::new(Meter {
-                clock_after_copy: Some((clock.clone(), 101)), ..Meter::default()
-            });
-            assert!(matches!(provider.native_commit_before(request.clone(), 100, late.original()).await?,
-                Err(error) if matches!(error.source(), StreamError::DeadlineElapsed)));
-            assert!(matches!(provider.native_commit_before(request.clone(), 101, late.original()).await?,
-                Err(error) if matches!(error.source(), StreamError::DeadlineElapsed)));
-            {
-                let state = provider.state.read().await;
-                assert_eq!(state.decision, 0);
-                assert!(state.paths.is_empty());
-                assert!(state.commits.is_empty());
-                assert!(state.replays.is_empty());
-            }
-            assert_eq!(late.pending_write.load(Ordering::SeqCst), 0);
-            clock.0.store(100, Ordering::SeqCst);
-            let admitted = Arc::new(Meter::default());
-            let committed = provider.native_commit_before(request.clone(), 101, admitted.original()).await??;
-            assert!(matches!(committed.value(), CommitOutcome::Committed(_)));
-            let mut conflict = request.clone();
-            conflict.idempotency_key = key(b"native-conflict-deadline")?;
-            assert!(matches!(provider.native_commit_before(conflict.clone(), 101, late.original()).await?,
-                Err(error) if matches!(error.source(), StreamError::DeadlineElapsed)));
-            assert!(provider.inspect_idempotency(conflict.idempotency_key).await?.is_none());
-            assert_eq!(provider.state.read().await.decision, 1);
-            clock.0.store(1_000, Ordering::SeqCst);
-            let replay = provider.native_commit_before(request, 101, admitted.original()).await??;
-            assert_eq!(committed.value(), replay.value());
-            drop((committed, replay));
-            drop(provider);
-            assert_eq!(late.held.load(Ordering::SeqCst), 0);
-            assert_eq!(admitted.held.load(Ordering::SeqCst), 0);
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn native_fork_and_append_capture_the_same_precommit_prefix() -> MemoryResult<()> {
-            let provider = MemoryStream::default();
-            provider.append(AppendRequest {
-                path: path("native/source")?, records: vec![OwnedBytes::from_static(b"old")],
-                if_tail: Some(0), idempotency_key: None,
-            }).await?;
-            let request = CommitRequest {
-                conditions: vec![
-                    CommitCondition::Tail { path: path("native/source")?, expected: 1 },
-                    CommitCondition::Absent { path: path("native/fork")? },
-                ],
-                mutations: vec![
-                    CommitMutation::Append { path: path("native/source")?, records: vec![OwnedBytes::from_static(b"new")] },
-                    CommitMutation::Fork {
-                        source: path("native/source")?, destination: path("native/fork")?,
-                        at_tail: 1, records: vec![OwnedBytes::from_static(b"child")],
-                    },
-                ],
-                idempotency_key: key(b"native-fork")?,
-            };
-            let meter = Arc::new(Meter::default());
-            let committed = provider.native_commit(request.clone(), meter.original()).await??;
-            let replay = provider.native_commit(request, meter.original()).await??;
-            assert_eq!(committed.value(), replay.value());
-            assert_eq!(provider.tail(path("native/source")?).await?, 2);
-            let mut output = provider.native_read(ReadRequest {
-                path: path("native/fork")?, from: 0, limit: 3,
-            }, meter.original()).await??;
-            let first = output.value_mut().next().await.ok_or(StreamError::Unavailable)???;
-            let second = output.value_mut().next().await.ok_or(StreamError::Unavailable)???;
-            assert_eq!(first.value().value, OwnedBytes::from_static(b"old"));
-            assert_eq!(second.value().value, OwnedBytes::from_static(b"child"));
-            assert_eq!((first.value().sequence, second.value().sequence), (0, 1));
-            assert!(output.value_mut().next().await.is_none());
-            drop((committed, replay, output, first, second));
-            drop(provider);
-            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-            Ok(())
-        }
     }
 
     #[tokio::test]
@@ -4916,7 +3696,7 @@ mod tests {
                 idempotency_key: key(b"sizing")?,
             };
             assert_eq!(
-                commit_encoded_len_with_observer(&request, &MemoryObserver::default())
+                crate::wire_codec::CanonicalWire::Commit(&request).encoded_len(None, None)
                     .expect("ordinary size inspection has no fallible observer"),
                 crate::wire_codec::commit_to_wire(&request).encoded_len(),
             );
@@ -5193,32 +3973,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    #[ignore = "bounded scaling benchmark; run with --ignored --nocapture"]
-    async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
-        for count in [1_000_u64, 10_000] {
-            let provider = MemoryStream::default();
-            let stream = path("bench/follow")?;
-            for index in 0..count {
-                provider
-                    .append(AppendRequest {
-                        path: stream.clone(),
-                        records: vec![OwnedBytes::from_static(b"x")],
-                        if_tail: Some(index),
-                        idempotency_key: None,
-                    })
-                    .await?;
-            }
-            let started = std::time::Instant::now();
-            let mut follow = provider.follow(stream, 0).await?;
-            for expected in 0..count {
-                let record = follow.next().await.ok_or(StreamError::Unavailable)??;
-                assert_eq!(record.sequence, expected);
-            }
-            eprintln!("follow history={count} read={:?}", started.elapsed());
-        }
-        Ok(())
-    }
 
     #[tokio::test]
     #[allow(
@@ -5362,8 +4116,6 @@ mod tests {
                 u64::try_from(records.len()).map_err(|_| StreamError::LimitExceeded)?,
                 cut
             );
-            // A window across the cut reads the source prefix, then the
-            // destination's own suffix, never the source's later records.
             provider
                 .append(AppendRequest {
                     path: destination.clone(),
@@ -5428,7 +4180,6 @@ mod tests {
         assert!(StreamPath::new("runs/run_42/agents/researcher").is_ok());
     }
 
-    /// Time cannot free a retry identity for reuse, including at u64 exhaustion.
     #[tokio::test]
     async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), StreamError> {
         let clock = Arc::new(TestClock::default());
@@ -5499,8 +4250,6 @@ mod tests {
             ..proptest::prelude::ProptestConfig::with_cases(64)
         })]
 
-        /// Record and child pages concatenate to exactly the full, ordered
-        /// set: no page skips or repeats an entry, whatever its bound.
         #[test]
         fn pages_neither_skip_nor_repeat(
             names in proptest::collection::btree_set("[a-c]{1,2}(/[a-c])?", 1..12),

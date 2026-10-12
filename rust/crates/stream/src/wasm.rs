@@ -54,18 +54,12 @@ fn js_error(error: StreamError) -> JsValue {
 }
 
 /// Return whether a code can be emitted by this WASM adapter.
-///
-/// Keeping this validator beside the Rust error mapping prevents the TypeScript adapter from
-/// maintaining a second, potentially stale list of base Stream error codes.
 #[wasm_bindgen]
 pub fn is_stream_error_code(value: &str) -> bool {
     StreamError::from_code(value).is_some()
 }
 
 /// Project a hosted HTTP error code onto the public Stream error vocabulary.
-///
-/// The hosted API may report either the Rust-owned wire code or a public alias.
-/// Unknown values and a commit-only alias on another route return no value.
 #[wasm_bindgen(js_name = publicHttpErrorCode)]
 pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
     let code = match raw {
@@ -106,11 +100,6 @@ fn check_command_size(input: &[u8]) -> Result<(), JsValue> {
 }
 
 /// Browser ABI over canonical Rust memory or durable providers.
-///
-/// Unary operations use `dispatch(operation, request_bytes)` and return the
-/// corresponding protobuf response bytes. `read` and `children` return arrays
-/// of encoded stream response messages because protobuf streams have no single
-/// finite response envelope.
 #[wasm_bindgen]
 pub struct WasmStream {
     provider: Box<dyn StreamProvider>,
@@ -122,9 +111,6 @@ struct FollowState {
 }
 
 /// One Rust-backed live follow cursor.
-///
-/// `next` releases the state lock before awaiting the stream, so `close` can
-/// always signal a pending call and promptly release its cursor.
 #[wasm_bindgen]
 pub struct WasmFollow {
     state: Rc<FollowState>,
@@ -364,9 +350,6 @@ impl WasmFollow {
 }
 
 /// Validate canonical protobuf bytes for one append request.
-///
-/// The empty string means that the request passed the same domain validators as
-/// the in-memory provider. Otherwise this returns one stable error code.
 #[wasm_bindgen(js_name = validateAppendRequest)]
 pub fn validate_append_request(input: &[u8]) -> String {
     let result = check_command_size(input)
@@ -374,17 +357,13 @@ pub fn validate_append_request(input: &[u8]) -> String {
         .and_then(|_| wire::AppendRequest::decode(input).map_err(|_| StreamError::InvalidArgument))
         .and_then(wire_codec::append_from_wire)
         .and_then(|request| {
-            memory::validate_records(&request.records)?;
+            memory::provider_result(memory::validate_records(&request.records, &memory::MemoryObserver::default()))?;
             memory::validate_append_size(&request)
         });
     result.map_or_else(|error| error_code_str(&error).to_owned(), |_| String::new())
 }
 
-/// Validate one canonical Stream path using the same parser used by every
-/// provider and wire decoder.
-///
-/// The empty string means success; failures use the stable Stream error code
-/// consumed by the TypeScript adapter.
+/// Validate one canonical Stream path using the same parser used by every provider and wire decoder.
 #[wasm_bindgen(js_name = validatePath)]
 pub fn validate_path(path: &str) -> String {
     crate::StreamPath::new(path)
@@ -392,9 +371,6 @@ pub fn validate_path(path: &str) -> String {
 }
 
 /// Validate one JavaScript representation of a canonical Stream sequence.
-///
-/// JavaScript passes the decimal spelling of its `bigint`; Rust owns the
-/// unsigned 64-bit range accepted by every Stream wire field.
 #[wasm_bindgen(js_name = validateSequence)]
 pub fn validate_sequence(value: &str) -> String {
     if value.parse::<u64>().is_ok() {
@@ -405,9 +381,6 @@ pub fn validate_sequence(value: &str) -> String {
 }
 
 /// Normalize and encode canonical protobuf bytes for one commit request.
-///
-/// The returned bytes use the same deterministic ordering as the in-memory
-/// provider. Validation failures are thrown as stable error codes.
 #[wasm_bindgen(js_name = normalizeCommitRequest)]
 pub fn normalize_commit_request(input: &[u8]) -> Result<Vec<u8>, JsValue> {
     normalize_commit_bytes(input).map_err(JsValue::from_str)
@@ -421,19 +394,14 @@ fn normalize_commit_bytes(input: &[u8]) -> Result<Vec<u8>, &'static str> {
     let deadline_unix_millis = request.deadline_unix_millis;
     let mut request =
         wire_codec::commit_from_wire(request).map_err(|error| error_code_str(&error))?;
-    memory::normalize_commit(&mut request).map_err(|error| error_code_str(&error))?;
-    memory::validate_commit_shape(&request).map_err(|error| error_code_str(&error))?;
+    memory::provider_result(memory::normalize_commit(&mut request, &memory::MemoryObserver::default())).map_err(|error| error_code_str(&error))?;
+    memory::provider_result(memory::validate_commit_shape(&request, &memory::MemoryObserver::default())).map_err(|error| error_code_str(&error))?;
     let mut normalized = wire_codec::commit_to_wire(&request);
     normalized.deadline_unix_millis = deadline_unix_millis;
     Ok(normalized.encode_to_vec())
 }
 
 /// Validate one canonical protobuf request at the browser boundary.
-///
-/// `kind` is deliberately a small closed set so callers cannot accidentally
-/// select a different validator after adding a new wire message. The empty
-/// string means success; failures use the same stable codes as the append and
-/// commit entry points.
 #[wasm_bindgen(js_name = validateRequest)]
 pub fn validate_request(kind: &str, input: &[u8]) -> String {
     let result = check_command_size(input)
@@ -479,24 +447,13 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
 }
 
 /// Encode one protobuf request into the hosted Stream HTTP JSON shape.
-///
-/// Protobuf remains the only request contract crossing from TypeScript into
-/// Rust.  Rust owns the conversion of uint64 values and opaque bytes to the
-/// decimal and base64 spellings required by the hosted API, keeping the HTTP
-/// adapter from maintaining a second scalar conversion table.
 #[wasm_bindgen(js_name = encodeHttpRequest)]
 pub fn encode_http_request(route: &str, input: &[u8]) -> Result<String, JsValue> {
     check_command_size(input)?;
     http::encode(route, input).map_err(JsValue::from_str)
 }
 
-/// Validate one hosted HTTP JSON success response using the same path, width,
-/// identity, and tagged-union rules as the canonical Stream domain.
-///
-/// The HTTP adapter keeps its intentionally simple JSON representation (u64
-/// values are decimal strings and opaque bytes are base64). This entry point
-/// validates that representation using the same Rust projection used by
-/// `decodeHttpResponse`, without crossing a second scalar schema boundary.
+/// Validate one hosted HTTP JSON success response using the same path, width, identity, and tagged-union rules as the canonical Stream domain.
 #[wasm_bindgen(js_name = validateHttpResponse)]
 pub fn validate_http_response(route: &str, response_json: &str) -> Result<(), JsValue> {
     let value: Value = serde_json::from_str(response_json)
@@ -504,11 +461,7 @@ pub fn validate_http_response(route: &str, response_json: &str) -> Result<(), Js
     http::validate(route, &value).map_err(JsValue::from_str)
 }
 
-/// Validate and project one hosted HTTP JSON success response into the public
-/// JavaScript shape. Rust owns the scalar widths and tagged response schema:
-/// decimal uint64 strings become `bigint`, base64 bytes become `Uint8Array`,
-/// and token timestamps become `Date` values before the value crosses the
-/// browser boundary.
+/// Validate and project one hosted HTTP JSON success response into the public JavaScript shape.
 #[wasm_bindgen(js_name = decodeHttpResponse, unchecked_return_type = "unknown")]
 pub fn decode_http_response(route: &str, response_json: &str) -> Result<JsValue, JsValue> {
     let value: Value = serde_json::from_str(response_json)
@@ -516,10 +469,7 @@ pub fn decode_http_response(route: &str, response_json: &str) -> Result<JsValue,
     http::decode(route, &value).map_err(JsValue::from_str)
 }
 
-/// Decode one unary memory-provider response from canonical protobuf bytes
-/// into the public JavaScript result shape. Rust owns the response oneofs,
-/// scalar widths, copied byte buffers, and camelCase projection at this
-/// boundary; TypeScript keeps only request adaptation and cursor lifecycle.
+/// Decode one unary memory-provider response from canonical protobuf bytes into the public JavaScript result shape.
 #[wasm_bindgen(js_name = projectMemoryResponse, unchecked_return_type = "unknown")]
 pub fn project_memory_response(operation: &str, input: &[u8]) -> Result<JsValue, JsValue> {
     http::decode_wire_response(operation, input).map_err(JsValue::from_str)
@@ -1164,10 +1114,6 @@ mod tests {
     }
 }
 
-/// Decode one `ReadResponse` frame's fields to its encoded `RecordBatch`.
-///
-/// The shared Rust decoder bounds the declared length before decompressing and
-/// requires the decoded length to match it exactly.
 #[wasm_bindgen(js_name = decodeReadResponse)]
 pub fn decode_read_response(
     codec: i32,

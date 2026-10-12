@@ -1,7 +1,4 @@
 //! Black-box logical Objects conformance for deterministic, disposable test providers.
-//!
-//! The fixture must make its own completed mutations visible before the next read.
-//! Production eventual consistency and live service acceptance require separate checks.
 
 use super::{Error, ObjectsProvider, wire};
 use acyclic_stream::OwnedBytes;
@@ -65,15 +62,6 @@ fn identity(namespace: &str, operation: &str) -> Option<wire::MutationIdentity> 
 }
 
 /// Exercises every public logical Objects operation in a fresh caller-owned namespace.
-///
-/// Includes current-key replacement, exact retry receipts after a later publication,
-/// atomic conditions, selected reads, allocation bounds, query-bound pagination,
-/// multipart completion and abort, and empty-bucket deletion. No public version,
-/// snapshot, fork, or captured-listing semantics are assumed.
-///
-/// # Errors
-/// Returns a typed provider failure or the exact failed invariant. The namespace
-/// must be a valid unused bucket name; failed verification may leave fixture data.
 #[allow(
     clippy::too_many_lines,
     clippy::cognitive_complexity,

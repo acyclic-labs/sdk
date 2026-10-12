@@ -120,7 +120,7 @@ impl Limits {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        work.remaining_budget().map_err(Error::from)?;
+        work.remaining().map_err(Error::from)?;
         if self.invalid_numeric_limits() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -1337,7 +1337,20 @@ impl FileRef {
         }
         let mut observer = io.history_io();
         let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
-        Self::copy_fields_with_work(volume, path, version, descriptor, display_name, &mut work)
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+        let file = Self {
+            volume: volume.clone_in_quota(&mut quota)?,
+            path: clone_owned_file_text(path, &mut quota)?,
+            version: clone_owned_file_text(version, &mut quota)?,
+            descriptor: FileDescriptor {
+                sha256: descriptor.sha256, byte_length: descriptor.byte_length,
+                media_type: clone_owned_file_text(&descriptor.media_type, &mut quota)?,
+            },
+            display_name: clone_owned_file_text(display_name, &mut quota)?,
+        };
+        file.validate_with_work(quota.work())?;
+        quota.transfer();
+        Ok(file)
     }
 
     /// Validates a ref decoded at any external boundary.
@@ -1942,7 +1955,7 @@ impl CompositeContentVerifier {
     #[cfg(feature = "filesystem")]
     fn finite_bound_reader(&self, volume: &VolumeRef, io: &crate::filesystem::PreparationIo) -> Result<&dyn ContentResidencyVerifier> {
         let key_hold;
-        let key = io.encode_json(volume, io.remaining()?.bytes_encoded, false)?;
+        let key = io.encode(volume, io.remaining()?.bytes_encoded, false)?;
         key_hold = io.guard_owned(key.len() as u64)?;
         volume.validate()?;
         let text = std::str::from_utf8(&key).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -2363,7 +2376,7 @@ pub(crate) fn decode_manifest_bounded(
         }
     }
     let mut failure = None;
-    let result = io.decode_preparation_seed_with_code(
+    let result = io.decode_seed(
         ManifestSeed { maximum: maximum_members, io, failure: &mut failure },
         bytes, crate::wire::ErrorCode::Invalid,
     );
@@ -2382,9 +2395,9 @@ pub(crate) fn decode_manifest_bounded(
         .ok_or_else(|| io.invalid("manifest ownership overflow"))?;
     decoded.substitute_owned(actual)?;
     let encoded_hold;
-    let encoded = io.encode_json(&decoded.value, io.remaining()?.bytes_encoded, false)?;
-    encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-    if encoded != bytes {
+    let encoded = io.encode(&decoded.value, io.remaining()?.bytes_encoded, false)?;
+    encoded_hold = io.guard_bytes(&encoded)?;
+    if encoded.as_ref() != bytes {
         return Err(io.invalid("attachment manifest is not canonical or complete"));
     }
     drop(encoded);
@@ -2475,8 +2488,8 @@ async fn load_manifest_for_history(
     let receipt = match result {
         Ok(receipt) => receipt,
         Err(failure) => {
-            observer.receive_work(failure.work)?;
-            return Err(failure.cause);
+            observer.receive_work(*failure.work)?;
+            return Err(failure.error);
         }
     };
     if let Err(error) = observer.receive_work(receipt.work) {
@@ -3477,34 +3490,19 @@ impl ConversationState {
         Ok(())
     }
 
-    pub(crate) fn clone_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        self.clone_with_work_and_custody(work).map(|(state, _)| state)
-    }
-
-    pub(crate) fn clone_with_work_and_custody(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Self, u64)> {
-        self.clone_with_work_engine(work, None)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn clone_with_work_and_message_custody<'work>(
-        &self, work: &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
-        retain: &mut dyn FnMut(u64, u64, &mut Option<&'work mut dyn crate::store::history::HistoryIo>) -> Result<()>,
-    ) -> Result<(Self, u64)> {
-        if !work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "message component custody requires original native work" });
-        }
-        self.clone_with_work_engine(work, Some(retain))
-    }
-
-    fn clone_with_work_engine<'work>(
+    pub(crate) fn copy<'work>(
         &self, work: &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
         mut retain: Option<&mut dyn FnMut(u64, u64, &mut Option<&'work mut dyn crate::store::history::HistoryIo>) -> Result<()>>,
     ) -> Result<(Self, u64)> {
+        if retain.is_some() {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if !work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "message component custody requires original native work" });
+            }
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            return Err(Error::Invalid("message component custody requires original native work".into()));
+        }
         self.require_native_work(work)?;
         let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut state = Self {
@@ -3675,7 +3673,7 @@ impl ConversationState {
             .ok_or_else(|| conversation_boundary(work, "history retirement requires a checkpoint pin"))?;
         let cut = selection.conversation_revision;
         if cut <= self.archived_through() || self.pending_user.is_some() {
-            return self.clone_with_work_engine(work, retain);
+            return self.copy(work, retain);
         }
         crate::projection::validate_model_context_selection_at_revision_with_work(
             self, selection, cut, work)?;
@@ -3708,7 +3706,7 @@ impl ConversationState {
         if !calls.is_empty() {
             drop(calls);
             drop(temporary);
-            return self.clone_with_work_engine(work, retain);
+            return self.copy(work, retain);
         }
         drop(calls);
         drop(temporary);
@@ -3763,7 +3761,7 @@ impl ConversationState {
         if through_sequence == self.messages.len() as u64 { return Ok(self.history_digest); }
         let mut previous = [0; 32];
         for message in self.messages.iter().take(through_sequence as usize) {
-            let encoded = io.encode_json(message, io.remaining()?.bytes_encoded, true)?;
+            let encoded = io.encode(message, io.remaining()?.bytes_encoded, true)?;
             let hash = acyclic_fs::WorkCounters {
                 bytes_hashed: encoded.len() as u64 + b"harness:conversation-prefix:v3\0".len() as u64 + 64,
                 items_examined: 1, ..Default::default()
@@ -4523,7 +4521,7 @@ mod tests {
         let budget = native_conversation_budget();
         let first = NativeMaterializationWork::new(budget, &first_token).expect("snapshot copy ledger");
         let mut io = crate::store::history::native_work_io(&first).expect("snapshot copy observer");
-        let (held, produced) = source.clone_with_work_and_custody(&mut Some(&mut io))?;
+        let (held, produced) = source.copy(&mut Some(&mut io), None)?;
         assert_eq!(held, source);
         assert_eq!(held.native_unclaimed_message_buffer_bytes()?, 0);
         assert_eq!(held.native_unclaimed_cache_bytes()?, 0);
@@ -4734,7 +4732,7 @@ mod tests {
             }
         }
         assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 64);
-        assert!(matches!(state.clone_with_work(&mut None), Err(Error::NativeBoundary { .. })));
+        assert!(matches!(state.copy(&mut None, None).map(|(state, _)| state), Err(Error::NativeBoundary { .. })));
         let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
         assert!(second.admit_retained(available).is_err(), "the live archived checkpoint keeps custody");
         drop(state);
@@ -5175,7 +5173,7 @@ mod tests {
             tool_call_id: None,
             extensions: Default::default(),
         };
-        let before = state.clone_with_work(&mut None)?;
+        let before = state.copy(&mut None, None).map(|(state, _)| state)?;
         assert!(state.append(candidate.clone()).is_err());
         assert_eq!(state, before);
         assert!(state.message(candidate.id).is_none());
@@ -5190,7 +5188,7 @@ mod tests {
         assert_eq!(sparse.page(0, 3, 1)?.len(), 1);
         candidate.id = Uuid::new_v4();
         candidate.sequence = 2;
-        let before = sparse.clone_with_work(&mut None)?;
+        let before = sparse.copy(&mut None, None)?.0;
         assert!(sparse.append(candidate).is_err());
         assert_eq!(sparse, before);
         Ok(())
