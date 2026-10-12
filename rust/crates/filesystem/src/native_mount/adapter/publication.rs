@@ -61,50 +61,24 @@ impl<A, O> SharedCheckoutState<A, O> {
         result
     }
 
-    /// Applies one content change by stable identity and stamps its
-    /// modification and status-change times in the same mutation, as a
-    /// native write, truncation, or allocation does, then publishes it like
-    /// any mutation. Times a profile does not represent stay unavailable.
-    pub(super) async fn change_content_by_id(
+    /// Changes content and timestamps, then records and publishes the mutation.
+    pub(super) async fn change_content<F: crate::facade::ContentFile>(
         &mut self,
-        file_id: FileId,
-        change: ContentChange<FileId>,
+        file: F,
+        change: ContentChange<F>,
         cancellation: &CancellationToken,
     ) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        self.checkout
-            .change_content_by_id(
-                file_id,
-                change,
-                ContentTimes::Stamp(content_change_time()?),
-                boundary_budget(),
-                cancellation,
-            )
-            .await
-            .map_err(engine_error)?;
-        self.publish_after_mutation(ViewChange::Node(file_id), cancellation)
-            .await
-    }
-
-    /// Applies one content change at an exact path with its time stamp as
-    /// one mutation, exactly as [`Self::change_content_by_id`] does.
-    pub(super) async fn change_content(
-        &mut self,
-        path: NamespacePath,
-        change: ContentChange<NamespacePath>,
-        cancellation: &CancellationToken,
-    ) -> Result<(), MountSourceError>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        let node = self.node_at(&path, cancellation).await?;
+        let node = match file.address() {
+            crate::facade::ContentAddress::Path(path) => self.node_at(path, cancellation).await?,
+            crate::facade::ContentAddress::File(file_id) => file_id,
+        };
         self.checkout
             .change_content(
-                path,
+                file,
                 change,
                 ContentTimes::Stamp(content_change_time()?),
                 boundary_budget(),
@@ -245,7 +219,9 @@ impl<A, O> SharedCheckoutState<A, O> {
     {
         Ok(self
             .checkout
-            .inspector()
+            .inspector(boundary_budget(), cancellation)
+            .map_err(facade_error)?
+            .value
             .lookup_no_follow(path, boundary_budget(), cancellation)
             .await
             .map_err(engine_error)?
@@ -255,132 +231,58 @@ impl<A, O> SharedCheckoutState<A, O> {
     }
 
     /// Begins an optimistic transaction on a copy of this candidate.
-    pub(super) fn candidate(&self) -> Result<CheckoutCandidate<A, O>, MountSourceError>
+    pub(super) fn candidate(
+        &self,
+        operation: Option<OperationId>,
+        carrier: &mut NativeDemandCarrier<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<CheckoutCandidate<A, O>, MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        self.ensure_publication_resolved()?;
-        Ok(CheckoutCandidate {
-            base: self.private_candidate(),
-            checkout: self.private_candidate(),
-        })
-    }
-
-    /// Whether a transaction's candidate may still be installed: nothing
-    /// but observations has changed this checkout since the transaction
-    /// began, so installing undoes no other change, publication included.
-    pub(super) fn admits(&self, candidate: &CheckoutCandidate<A, O>) -> bool {
-        self.checkout
-            .admits_candidate(&candidate.base, &candidate.checkout)
-    }
-
-    /// Installs a transaction's candidate with its recorded effect, only
-    /// when [`Self::admits`] it. Returns whether it installed; any other
-    /// change since leaves the checkout untouched for the caller to retry.
-    pub(super) fn install_candidate(
-        &mut self,
-        candidate: CheckoutCandidate<A, O>,
-        installed: &ViewEffect,
-    ) -> bool {
-        if !self
-            .checkout
-            .adopt_candidate(&candidate.base, candidate.checkout)
-        {
-            return false;
+        match operation {
+            Some(operation) if self.publication_operation == Some(operation) => {}
+            Some(_) => return Err(MountSourceError::Stale),
+            None => self.ensure_publication_resolved()?,
         }
-        self.record(&ViewChange::Effect(installed));
-        true
-    }
-
-    /// Applies queued changes as one group, records exactly what each
-    /// successful one changed, publishes once when the policy publishes
-    /// every mutation, and answers every caller.
-    async fn apply_grouped_requests(
-        &mut self,
-        requests: Vec<GroupedRequest>,
-        cancellation: &CancellationToken,
-    ) where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        in_heap(move || async move {
-            if let Err(error) = self.ensure_publication_resolved() {
-                for request in requests {
-                    let _ = request.reply.send(Err(error.clone()));
-                }
-                return;
+        let clone = |carrier: &mut NativeDemandCarrier<'_>| {
+            if let Some(work) = carrier.original_native_work() {
+                return self
+                    .checkout
+                    .private_candidate(&work, cancellation)
+                    .map_err(MountSourceError::Filesystem);
             }
-            let origins = requests
-                .iter()
-                .map(|request| (request.origin, request.recorded))
-                .collect::<Vec<_>>();
-            let (changes, replies): (Vec<_>, Vec<_>) = requests
-                .into_iter()
-                .map(|request| (request.change, request.reply))
-                .unzip();
-            let views = changes
-                .iter()
-                .map(|change| match change {
-                    GroupedChange::CreateFile { path, .. } => GroupedView::Bound(path.clone()),
-                    GroupedChange::Content { file_id, .. } => GroupedView::Node(*file_id),
-                })
-                .collect::<Vec<_>>();
-            let results = match self
-                .checkout
-                .apply_group(changes, boundary_budget(), cancellation)
-                .await
-            {
-                Ok(receipt) => receipt.value,
-                Err(failure) => {
-                    let error = engine_error(failure.error);
-                    for reply in replies {
-                        let _ = reply.send(Err(error.clone()));
-                    }
-                    return;
-                }
-            };
-            let mut changed = false;
-            for ((result, view), (origin, recorded)) in results.iter().zip(&views).zip(origins) {
-                if result.is_ok() {
-                    changed = true;
-                    if recorded {
-                        continue;
-                    }
-                    let _origin = origin.enter();
-                    match view {
-                        GroupedView::Bound(path) => self.record(&ViewChange::Bound(path)),
-                        GroupedView::Node(file_id) => self.record(&ViewChange::Node(*file_id)),
-                    }
-                }
-            }
-            if changed {
-                // Changes recorded when they were requested are recorded too.
-                self.recorded_view = self.checkout.root().file_table;
-            }
-            let published = if changed {
-                self.publish_mutation(cancellation).await
-            } else {
-                Ok(())
-            };
-            for ((result, view), reply) in results.into_iter().zip(views).zip(replies) {
-                let answer = match result {
-                    Ok(outcome) => published.clone().map(|()| outcome),
-                    Err(error) => Err(match view {
-                        GroupedView::Bound(_) => fs_error(error),
-                        GroupedView::Node(_) => engine_error(error),
-                    }),
-                };
-                let _ = reply.send(answer);
-            }
+            let result = carrier.with_work(|work| {
+                Ok::<_, MountSourceError>((
+                    work.live_allocation_bytes(),
+                    self.checkout.private_candidate(
+                        work.remaining().map_err(super::lazy::mount_demand_error)?,
+                        cancellation,
+                    ),
+                ))
+            })?;
+            let checkout = carrier.accept_with_prior_live(result.1, result.0, fs_error)?;
+            carrier
+                .with_work(|work| work.retain_checkout_control(&checkout.private_control_custody()))
+                .map_err(super::lazy::mount_demand_error)?;
+            Ok(checkout)
+        };
+        Ok(CheckoutCandidate {
+            base: clone(carrier)?,
+            checkout: clone(carrier)?,
         })
-        .await;
     }
 
     /// Records one change to the checkout's view. The exclusive guard keeps
     /// every lookup from overlapping the change it records.
     pub(super) fn record(&mut self, change: &ViewChange<'_>) {
-        self.ledger.record(change);
+        record_view_change(
+            &self.ledger,
+            change,
+            &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()),
+        )
+        .expect("external SDK view recording");
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.recorded_view = self.checkout.root().file_table;
     }

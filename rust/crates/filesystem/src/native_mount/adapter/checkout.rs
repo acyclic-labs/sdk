@@ -2,16 +2,10 @@
 pub struct SharedCheckout<A, O> {
     state: tokio::sync::RwLock<SharedCheckoutState<A, O>>,
     revision: Arc<AtomicU64>,
-    ledger: Arc<ViewLedger>,
+    pub(super) ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
-    grouped: StdMutex<GroupedQueue>,
-    /// Creations applied together with their first bytes; see
-    /// [`PendingCreate`].
-    pending: StdMutex<Vec<Arc<PendingCreate>>>,
+    _native_allocation: Option<crate::NativeAllocation>,
 }
-
-/// Most bytes a created file holds before its creation is applied.
-const PENDING_CREATE_BYTES: u64 = 1 << 20;
 
 /// Exclusive access that excludes native callbacks.
 pub struct SharedCheckoutGuard<'a, A, O> {
@@ -65,223 +59,105 @@ impl<A, O> SharedCheckout<A, O> {
             revision,
             ledger,
             view_gate: Arc::new(ViewGate::new()),
-            pending: StdMutex::new(Vec::new()),
-            grouped: StdMutex::new(GroupedQueue::default()),
+            _native_allocation: None,
         }
     }
 
-    /// Applies one change by group commit. Changes queued while the checkout
-    /// is busy are applied together, as one mutation per hold and in queue
-    /// order, by a drain that runs detached from every caller, so no
-    /// caller's deadline can interrupt a group; each caller receives exactly
-    /// its own change's result.
-    ///
-    /// Queued changes are concurrent: none was issued after another's result
-    /// returned, so applying them in queue order is linearizable. A caller
-    /// that stops waiting before its change is claimed abandons it, and an
-    /// abandoned change never applies.
+    pub(crate) fn with_publication_meter(
+        checkout: Checkout<A, O>,
+        publication: MountPublication,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Arc<Self>, MountSourceError> {
+        let mut allocation = work
+            .claim(
+                std::mem::size_of::<Self>() as u64,
+                1,
+                crate::WorkCounters::UNCHARGED,
+            )
+            .map_err(MountSourceError::NativeWork)?;
+        let revision_allocation = work
+            .claim(
+                std::mem::size_of::<AtomicU64>() as u64,
+                1,
+                crate::WorkCounters::UNCHARGED,
+            )
+            .map_err(MountSourceError::NativeWork)?;
+        let revision = Arc::new(AtomicU64::new(1));
+        let ledger = ViewLedger::new_with_native_work(work)?;
+        let view_gate = ViewGate::new_with_native_work(work)?;
+        allocation
+            .absorb(&mut { revision_allocation })
+            .map_err(MountSourceError::NativeWork)?;
+        Ok(Arc::new(Self {
+            state: tokio::sync::RwLock::new(SharedCheckoutState {
+                recorded_view: checkout.root().file_table,
+                checkout,
+                publication_operation: None,
+                publication,
+                revision: Arc::clone(&revision),
+                ledger: Arc::clone(&ledger),
+            }),
+            revision,
+            ledger,
+            view_gate,
+            _native_allocation: Some(allocation),
+        }))
+    }
+
+    /// Applies one atomic SDK group after obtaining the checkout.
     pub(super) async fn apply_grouped(
-        self: &Arc<Self>,
+        &self,
         change: GroupedChange,
         cancellation: &CancellationToken,
     ) -> Result<GroupedOutcome, MountSourceError>
     where
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
     {
-        // A change may depend on a pending creation: apply those first.
-        self.settle_pending().await;
-        let (reply, outcome) = tokio::sync::oneshot::channel();
-        let admission = Arc::new(GroupedAdmission(AtomicU8::new(GROUPED_QUEUED)));
-        let _abandon = AbandonUnlessClaimed(Arc::clone(&admission));
-        let start_drain = {
-            let mut queue = self
-                .grouped
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            queue.requests.push_back(GroupedRequest {
-                change,
-                admission,
-                reply,
-                origin: ViewOrigin::current(),
-                recorded: false,
-            });
-            !std::mem::replace(&mut queue.draining, true)
+        let mut checkout = self.lock().await;
+        checkout.ensure_publication_resolved()?;
+        let effect = match &change {
+            GroupedChange::CreateFile { path, .. } => GroupedView::Bound(path.clone()),
+            GroupedChange::Content { file_id, .. } => GroupedView::Node(*file_id),
         };
-        if start_drain {
-            let checkout = Arc::clone(self);
-            let cancellation = cancellation.clone();
-            // The caller that starts the drain runs it in place, saving a
-            // hand-off to another thread; if the caller stops waiting, the
-            // drain moves to its own task and still runs to completion.
-            RunToCompletion::new(async move { checkout.drain_grouped(&cancellation).await }).await;
+        let outcome = checkout
+            .checkout
+            .apply_group(vec![change], boundary_budget(), cancellation)
+            .await
+            .map_err(facade_error)?
+            .value
+            .into_iter()
+            .next()
+            .ok_or(MountSourceError::Stale)?
+            .map_err(fs_error)?;
+        match effect {
+            GroupedView::Bound(path) => checkout.record(&ViewChange::Bound(&path)),
+            GroupedView::Node(file_id) => checkout.record(&ViewChange::Node(file_id)),
         }
-        outcome.await.map_err(|_| MountSourceError::Stale)?
+        checkout.publish_mutation(cancellation).await?;
+        Ok(outcome)
     }
 
-    /// Applies queued changes, one group per hold of the checkout, until the
-    /// queue is empty. Abandoned changes are discarded unapplied.
-    async fn drain_grouped(&self, cancellation: &CancellationToken)
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        in_heap(move || async move {
-            loop {
-                let mut checkout = self.lock_settled().await;
-                let requests = {
-                    let mut queue = self
-                        .grouped
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let mut claimed = Vec::new();
-                    while claimed.len() < MAXIMUM_GROUPED_CHANGES
-                        && let Some(request) = queue.requests.pop_front()
-                    {
-                        if request.admission.claim() {
-                            claimed.push(request);
-                        }
-                    }
-                    if claimed.is_empty() {
-                        queue.draining = false;
-                        return;
-                    }
-                    claimed
-                };
-                checkout
-                    .apply_grouped_requests(requests, cancellation)
-                    .await;
-            }
-        })
-        .await;
-    }
-
-    /// Serializes external checkout access and excludes native callbacks,
-    /// once every pending creation is applied.
-    pub async fn lock(&self) -> SharedCheckoutGuard<'_, A, O>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        self.settle_pending().await;
-        self.lock_settled().await
-    }
-
-    async fn lock_settled(&self) -> SharedCheckoutGuard<'_, A, O> {
+    /// Serializes checkout access and excludes native callbacks.
+    pub async fn lock(&self) -> SharedCheckoutGuard<'_, A, O> {
         let view = self.view_gate.write().await;
         let state = self.state.write().await;
         SharedCheckoutGuard { _view: view, state }
     }
 
-    /// Records `pending` as created: its name changed now, though its
-    /// creation is applied later (see [`PendingCreate`]).
-    /// Registers a pending creation, atomically with checking that no other
-    /// pending creation holds its path and, given `absent_since`, that
-    /// nothing rebound the path since it was found absent. Answers whether
-    /// it registered.
-    fn hold_pending(&self, pending: Arc<PendingCreate>, absent_since: Option<ViewStamp>) -> bool {
-        let mut held = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-        if held.iter().any(|other| other.path == pending.path)
-            || absent_since.is_some_and(|stamp| !self.binding_unchanged_since(&pending.path, stamp))
-        {
-            return false;
-        }
-        {
-            let _origin = pending.origin.enter();
-            self.ledger.record(&ViewChange::Bound(&pending.path));
-        }
-        self.revision.fetch_add(1, Ordering::AcqRel);
-        held.push(pending);
-        true
-    }
-
-    /// The pending creation of `path`, reported as it stands.
-    fn pending_lookup(&self, path: &NamespacePath) -> Option<MountLookup> {
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .filter(|pending| pending.path == *path)
-            .find_map(|pending| pending.lookup())
-    }
-
-    fn pending_create(&self, file_id: FileId) -> Option<Arc<PendingCreate>> {
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .find(|pending| pending.file_id == file_id)
-            .cloned()
-    }
-
-    /// Applies every pending creation as one group. The exclusive hold is
-    /// taken first, so no reader sees the checkout between the claim and
-    /// the change; each creation keeps its own outcome.
-    async fn settle_pending(&self)
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        if self
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_empty()
-        {
-            return;
-        }
-        let mut checkout = self.lock_settled().await;
-        let pending =
-            std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner));
-        let mut requests = Vec::with_capacity(pending.len());
-        let mut outcomes = Vec::with_capacity(pending.len());
-        for create in pending {
-            if let Some(change) = create.begin_applying() {
-                let (reply, outcome) = tokio::sync::oneshot::channel();
-                requests.push(GroupedRequest {
-                    change,
-                    admission: Arc::new(GroupedAdmission(AtomicU8::new(GROUPED_CLAIMED))),
-                    reply,
-                    origin: create.origin,
-                    recorded: true,
-                });
-                outcomes.push((create, outcome));
-            }
-        }
-        checkout
-            .apply_grouped_requests(requests, &CancellationToken::new())
-            .await;
-        drop(checkout);
-        for (create, outcome) in outcomes {
-            create.finish_applying(outcome.await.unwrap_or(Err(MountSourceError::Stale)));
-        }
-    }
-
-    /// Admits one callback to the current view alongside every other reader,
-    /// once every pending creation is applied. A callback that already reads
-    /// the view reads the one it began with.
+    /// Admits one callback alongside other readers of the current view.
     pub(super) async fn observe(
         &self,
         owner: CallbackOwner,
-    ) -> Result<SharedCheckoutObservation<'_, A, O>, MountSourceError>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        if !self.view_gate.reads_for_callback(owner) {
-            self.settle_pending().await;
-        }
-        self.observe_as_is(owner).await
-    }
-
-    /// Admits one callback to the view as it stands, pending creations and
-    /// all: for facts no creation changes.
-    async fn observe_as_is(
-        &self,
-        owner: CallbackOwner,
+        carrier: &mut NativeDemandCarrier<'_>,
+        cancellation: &CancellationToken,
+        lifetime: Option<&CancellationToken>,
     ) -> Result<SharedCheckoutObservation<'_, A, O>, MountSourceError> {
-        let view = self.view_gate.read_for_callback(owner, None).await?;
-        let state = self.state.read().await;
+        let view = self
+            .view_gate
+            .read_for_callback_with_carrier(owner, None, carrier, cancellation, lifetime)
+            .await?;
+        let state = await_lock(self.state.read(), carrier, cancellation, lifetime).await?;
         Ok(SharedCheckoutObservation { _view: view, state })
     }
 
@@ -294,12 +170,25 @@ impl<A, O> SharedCheckout<A, O> {
 
     /// Begins an optimistic transaction on a copy of the current candidate.
     /// No reader is excluded: the copy records nothing into this checkout.
-    pub(super) async fn candidate(&self) -> Result<CheckoutCandidate<A, O>, MountSourceError>
+    pub(super) async fn candidate(
+        &self,
+        operation: Option<OperationId>,
+        carrier: &mut NativeDemandCarrier<'_>,
+        cancellation: &CancellationToken,
+        lifetime: Option<&CancellationToken>,
+    ) -> Result<(CheckoutCandidate<A, O>, u64, ViewStamp), MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        self.state.read().await.candidate()
+        let state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
+        let epoch = self.view_gate.generation();
+        let stamp = self.ledger.stamp();
+        Ok((
+            state.candidate(operation, carrier, cancellation)?,
+            epoch,
+            stamp,
+        ))
     }
 
     /// Advances with every recorded change to the checkout's view.
@@ -307,35 +196,6 @@ impl<A, O> SharedCheckout<A, O> {
         self.revision.load(Ordering::Acquire)
     }
 
-    fn unchanged_since(
-        &self,
-        path: &NamespacePath,
-        file_id: Option<FileId>,
-        stamp: ViewStamp,
-    ) -> bool {
-        self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp)
-    }
-
-    fn reported_unchanged_since(
-        &self,
-        path: &NamespacePath,
-        file_id: Option<FileId>,
-        stamp: ViewStamp,
-    ) -> bool {
-        self.view_gate.is_stable() && self.ledger.reported_unchanged_since(path, file_id, stamp)
-    }
-
-    fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp)
-    }
-
-    fn listing_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.listing_unchanged_since(path, stamp)
-    }
-
-    fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.binding_unchanged_since(path, stamp)
-    }
 }
 
 impl<A, O> Deref for SharedCheckoutGuard<'_, A, O> {

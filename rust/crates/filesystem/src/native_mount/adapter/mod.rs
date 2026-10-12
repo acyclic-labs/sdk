@@ -6,7 +6,7 @@ use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    NativeMountError, ViewObserver, ViewOrigin, capture_root_identity,
+    MountSparseRange, NativeMountError, ViewObserver, ViewOrigin, capture_root_identity,
     capture_subtree, seal_checkout,
 };
 use crate::heap_future::in_heap;
@@ -23,7 +23,7 @@ use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
     Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, GroupedChange,
     GroupedOutcome, NamedAttributeWriteMode, NativeRootIdentity, ObjectId, OperationFailure,
-    OperationId, VolumeId, WorkBudget,
+    OperationId, VolumeId, WorkBudget, WorkError,
 };
 use bytes::Bytes;
 use std::future::Future;
@@ -138,35 +138,46 @@ fn fs_error(error: FsError) -> MountSourceError {
         | FsError::Mutation(
             GenerationMutationError::MissingParent | GenerationMutationError::MissingSource,
         ) => MountSourceError::NotFound,
-        other => MountSourceError::Engine(other.to_string()),
+        FsError::Work(error) => MountSourceError::Work(error),
+        FsError::NativeKernel(error) => MountSourceError::NativeWork(error),
+        FsError::Cancelled(_) => MountSourceError::Cancelled,
+        FsError::SourceSnapshotStale => MountSourceError::Stale,
+        other => MountSourceError::Filesystem(other),
     }
 }
 
-fn boundary_budget() -> WorkBudget { crate::performance::BOUNDARY_BUDGET }
+fn boundary_budget() -> WorkBudget {
+    crate::performance::BOUNDARY_BUDGET
+}
 
 mod runtime;
-pub(super) use runtime::{CallbackRuntime, PreparedCallbackWait};
 pub use runtime::initialize_native_mount_services;
+pub(super) use runtime::{CallbackRuntime, PreparedCallbackWait};
 mod source_io;
-pub use source_io::NativeSourceIoLease;
 use source_io::CaptureProducer;
+pub use source_io::NativeSourceIoLease;
 #[cfg(windows)]
 pub(super) use source_io::namespace_gate_is_fresh;
 include!("detached.rs");
 include!("attached.rs");
 include!("checkout.rs");
-include!("pending.rs");
-include!("grouped.rs");
 include!("publication.rs");
+include!("publication_guard.rs");
 include!("candidate.rs");
+include!("installation.rs");
+include!("creation.rs");
 include!("namespace.rs");
 include!("source.rs");
 mod source_factory;
+pub(super) use source_factory::validate_native_source_io_binding;
 include!("work.rs");
 include!("locks.rs");
+include!("view_changes.rs");
 include!("inputs.rs");
 include!("native_names.rs");
 mod capture;
+mod directory;
+mod file_handles;
 include!("operations.rs");
 mod records;
 use records::mount_node;

@@ -53,8 +53,22 @@ where
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                        boundary_budget(),
+                        &self.cancellation,
+                    )),
+                    &self.cancellation,
+                    None,
+                )
+                .await?;
+            let mut checkout = observation
+                .observer(boundary_budget(), &self.cancellation)
+                .map_err(facade_error)?
+                .value;
             let record = checkout
                 .read_file_record_by_id(self.file_id, boundary_budget(), &self.cancellation)
                 .await
@@ -75,8 +89,22 @@ where
     fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                        boundary_budget(),
+                        &self.cancellation,
+                    )),
+                    &self.cancellation,
+                    None,
+                )
+                .await?;
+            let mut checkout = observation
+                .observer(boundary_budget(), &self.cancellation)
+                .map_err(facade_error)?
+                .value;
             checkout
                 .read_file_range_by_id(
                     self.file_id,
@@ -96,8 +124,22 @@ where
     fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                        boundary_budget(),
+                        &self.cancellation,
+                    )),
+                    &self.cancellation,
+                    None,
+                )
+                .await?;
+            let mut checkout = observation
+                .observer(boundary_budget(), &self.cancellation)
+                .map_err(facade_error)?
+                .value;
             checkout
                 .read_file_up_to_by_id(
                     self.file_id,
@@ -115,8 +157,22 @@ where
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                        boundary_budget(),
+                        &self.cancellation,
+                    )),
+                    &self.cancellation,
+                    None,
+                )
+                .await?;
+            let mut checkout = observation
+                .observer(boundary_budget(), &self.cancellation)
+                .map_err(facade_error)?
+                .value;
             checkout
                 .seek_file_extent_by_id(
                     self.file_id,
@@ -179,8 +235,22 @@ where
         let name = self.attribute_name(name)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                        boundary_budget(),
+                        &self.cancellation,
+                    )),
+                    &self.cancellation,
+                    None,
+                )
+                .await?;
+            let mut checkout = observation
+                .observer(boundary_budget(), &self.cancellation)
+                .map_err(facade_error)?
+                .value;
             checkout
                 .read_named_attribute_by_id(
                     self.file_id,
@@ -202,8 +272,22 @@ where
         let cursor = cursor.map(|name| self.attribute_name(name)).transpose()?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                        boundary_budget(),
+                        &self.cancellation,
+                    )),
+                    &self.cancellation,
+                    None,
+                )
+                .await?;
+            let mut checkout = observation
+                .observer(boundary_budget(), &self.cancellation)
+                .map_err(facade_error)?
+                .value;
             let receipt = checkout
                 .list_named_attributes_by_id(
                     self.file_id,

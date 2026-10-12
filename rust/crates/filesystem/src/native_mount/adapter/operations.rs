@@ -107,9 +107,6 @@ where
     ) -> Result<Box<dyn Send>, MountSourceError> {
         let owner = ViewGate::callback_owner();
         let lease = self.runtime.wait(|| async {
-            if !self.checkout.view_gate.reads_for_callback(owner) {
-                self.checkout.settle_pending().await;
-            }
             Arc::clone(&self.checkout.view_gate)
                 .read_for_callback(owner, expected_epoch)
                 .await
@@ -119,103 +116,48 @@ where
 
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
         let owner = ViewGate::callback_owner();
-        self.runtime.wait(|| self.lookup_async(path, owner))
+        let mut work = crate::demand::DemandWork::new(boundary_budget(), &self.cancellation);
+        let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
+        self.runtime
+            .wait(|| self.lookup_async(path, owner, &mut carrier))
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        let path = self.path(path)?;
-        let owner = ViewGate::callback_owner();
-        let file_id = self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
-            let record = checkout
-                .lookup_no_follow(&path, boundary_budget(), &self.cancellation)
-                .await
-                .map_err(engine_error)?
-                .value
-                .record
-                .ok_or(MountSourceError::NotFound)?;
-            if record.kind != FileKind::Regular {
-                return Err(MountSourceError::Invalid(
-                    "only regular files can own native file handles".to_owned(),
-                ));
-            }
-            Ok(record.file_id)
-        })?;
-        Ok(Arc::new(CheckoutAttachedFile {
-            checkout: Arc::clone(&self.checkout),
-            file_id,
-            runtime: self.runtime.clone(),
-            cancellation: self.cancellation.clone(),
-            profile: self.profile,
-            limits: self.limits,
-        }))
+        CheckoutMountSource::open_file(self, path)
     }
 
     fn open_created(
         &self,
-        _path: &MountPath,
+        path: &MountPath,
         created: &MountLookup,
     ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        let attached = CheckoutAttachedFile {
-            checkout: Arc::clone(&self.checkout),
-            file_id: created.node.file_id,
-            runtime: self.runtime.clone(),
-            cancellation: self.cancellation.clone(),
-            profile: self.profile,
-            limits: self.limits,
-        };
-        Ok(match self.checkout.pending_create(created.node.file_id) {
-            Some(pending) => Arc::new(PendingCreatedFile { pending, attached }),
-            None => Arc::new(attached),
-        })
+        CheckoutMountSource::open_created(self, path, created)
     }
 
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        let path = self.path(path)?;
-        let owner = ViewGate::callback_owner();
-        let (file, metadata) = self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            observation.ensure_publication_resolved()?;
-            let mut checkout = observation.observer();
-            let lookup = checkout
-                .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
-                .await
-                .map_err(engine_error)?
-                .value
-                .ok_or(MountSourceError::NotFound)?;
-            if lookup.record.kind != FileKind::Regular {
-                return Err(MountSourceError::Invalid(
-                    "only regular files can own detached native handles".to_owned(),
-                ));
-            }
-            let file = checkout
-                .detach_regular_file(&path, boundary_budget(), &self.cancellation)
-                .await
-                .map_err(engine_error)?
-                .value;
-            Ok((file, lookup.metadata))
-        })?;
-        Ok(Arc::new(CheckoutDetachedFile {
-            state: tokio::sync::Mutex::new(DetachedMountState {
-                file,
-                metadata,
-                mutation_epoch: 0,
-            }),
-            ledger: Arc::clone(&self.checkout.ledger),
-            runtime: self.runtime.clone(),
-            cancellation: self.cancellation.clone(),
-            profile: self.profile,
-            limits: self.limits,
-        }))
+        CheckoutMountSource::detach_file(self, path)
     }
 
     fn read_link(&self, path: &MountPath) -> Result<Bytes, MountSourceError> {
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                        boundary_budget(),
+                        &self.cancellation,
+                    )),
+                    &self.cancellation,
+                    None,
+                )
+                .await?;
+            let mut checkout = observation
+                .observer(boundary_budget(), &self.cancellation)
+                .map_err(facade_error)?
+                .value;
             checkout
                 .read_symbolic_link(&path, boundary_budget(), &self.cancellation)
                 .await
@@ -233,8 +175,22 @@ where
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                        boundary_budget(),
+                        &self.cancellation,
+                    )),
+                    &self.cancellation,
+                    None,
+                )
+                .await?;
+            let mut checkout = observation
+                .observer(boundary_budget(), &self.cancellation)
+                .map_err(facade_error)?
+                .value;
             checkout
                 .read_file_range(
                     &path,
@@ -260,8 +216,22 @@ where
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                        boundary_budget(),
+                        &self.cancellation,
+                    )),
+                    &self.cancellation,
+                    None,
+                )
+                .await?;
+            let mut checkout = observation
+                .observer(boundary_budget(), &self.cancellation)
+                .map_err(facade_error)?
+                .value;
             checkout
                 .seek_file_extent(
                     &path,
@@ -285,217 +255,80 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        let path = self.path(path)?;
-        let cursor = cursor.map(|bytes| self.logical_name(bytes)).transpose()?;
-        let owner = ViewGate::callback_owner();
-        self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
-            let receipt = checkout
-                .list_directory_records(
-                    &path,
-                    cursor.as_ref(),
-                    maximum_entries,
-                    boundary_budget(),
-                    &self.cancellation,
-                )
-                .await
-                .map_err(engine_error)?;
-            let has_more = receipt.value.has_more;
-            let entries = receipt
-                .value
-                .entries
-                .into_iter()
-                .map(|entry| {
-                    Ok(MountDirectoryEntry {
-                        name: native_mount_name(&entry.name)?,
-                        node: mount_node(entry.record),
-                        metadata: entry.metadata,
-                        // A checkout lookup issues no content pin.
-                        pin: None,
-                    })
-                })
-                .collect::<Result<Vec<_>, MountSourceError>>()?;
-            let next_cursor = has_more
-                .then(|| entries.last().map(|entry| entry.name.clone()))
-                .flatten();
-            Ok(MountDirectoryPage {
-                entries,
-                next_cursor,
-            })
-        })
+        CheckoutMountSource::read_directory(self, path, cursor, maximum_entries)
     }
 
     fn create_file(
         &self,
         path: &MountPath,
         metadata: FileMetadata,
+        _absent_since: Option<ViewStamp>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<MountLookup, MountSourceError> {
-        // Sampled before the lookup, so it proves what the lookup found.
-        let absent_since = self.checkout.ledger.stamp();
-        if self.lookup(path)?.is_some() {
-            return Err(MountSourceError::AlreadyExists);
-        }
-        self.create_absent_file(path, metadata, absent_since)
-    }
-
-    fn create_absent_file(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-        absent_since: ViewStamp,
-    ) -> Result<MountLookup, MountSourceError> {
-        let mount_path = path;
-        let path = self.path(path)?;
-        // A creation waits to be applied, but not for publication to resolve.
-        // An uncontended state answers in place, without entering the runtime.
-        match self.checkout.state.try_read() {
-            Ok(state) => state.ensure_publication_resolved()?,
-            Err(_) => self.runtime.wait(|| async {
-                self.checkout
-                    .state
-                    .read()
-                    .await
-                    .ensure_publication_resolved()
-            })?,
-        }
-        let waiting = self
-            .checkout
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .len();
-        if waiting >= MAXIMUM_GROUPED_CHANGES {
-            self.runtime.wait(|| async {
-                self.checkout.settle_pending().await;
-                Ok(())
-            })?;
-        }
-        let file_id = FileId::new();
-        let pending = || {
-            Arc::new(PendingCreate {
-                path: path.clone(),
-                file_id,
-                origin: ViewOrigin::current(),
-                maximum_bytes: PENDING_CREATE_BYTES.min(self.limits.maximum_read_bytes),
-                state: StdMutex::new(PendingState::Pending {
-                    metadata: Box::new(metadata),
-                    bytes: Vec::new(),
-                }),
-            })
-        };
-        if !self.checkout.hold_pending(pending(), Some(absent_since)) {
-            // Something rebound the path since the caller looked, or another
-            // creation holds it: this lookup decides instead.
-            if self.lookup(mount_path)?.is_some() || !self.checkout.hold_pending(pending(), None) {
-                return Err(MountSourceError::AlreadyExists);
-            }
-        }
-        Ok(MountLookup {
-            node: MountNode {
-                file_id,
-                kind: MountNodeKind::Regular,
-                logical_bytes: 0,
-                link_count: 1,
-                device: None,
-            },
-            metadata,
-        })
+        self.runtime
+            .block_on(
+                || {
+                    tokio::time::timeout(
+                        CALLBACK_TIMEOUT,
+                        self.create(path, work, |path| AuthoredMutation::CreateFile {
+                            path,
+                            metadata,
+                            bytes: acyclic_stream::OwnedBytes::new(),
+                        }),
+                    )
+                },
+                Some(work.runtime_meter().as_ref()),
+            )
+            .map_err(|error| MountSourceError::NativeWork(work.runtime_error(error)))?
+            .map_err(|_| MountSourceError::Stale)?
     }
 
     fn create_directory(
         &self,
         path: &MountPath,
         metadata: FileMetadata,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<MountLookup, MountSourceError> {
-        let path = self.path(path)?;
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            let receipt = checkout
-                .apply_authored_transaction(
-                    vec![AuthoredMutation::CreateDirectory {
-                        path: path.clone(),
-                        metadata,
-                    }],
-                    boundary_budget(),
-                    &self.cancellation,
-                )
-                .await
-                .map_err(facade_error)?;
-            let file_id = receipt
-                .value
-                .created_file_ids
-                .first()
-                .copied()
-                .flatten()
-                .ok_or_else(|| {
-                    MountSourceError::Engine("create omitted file identity".to_owned())
-                })?;
-            checkout
-                .publish_after_mutation(ViewChange::Bound(&path), &self.cancellation)
-                .await?;
-            Ok(MountLookup {
-                node: MountNode {
-                    file_id,
-                    kind: MountNodeKind::Directory,
-                    logical_bytes: 0,
-                    link_count: 1,
-                    device: None,
+        self.runtime
+            .block_on(
+                || {
+                    tokio::time::timeout(
+                        CALLBACK_TIMEOUT,
+                        self.create(path, work, |path| AuthoredMutation::CreateDirectory {
+                            path,
+                            metadata,
+                        }),
+                    )
                 },
-                metadata,
-            })
-        })
+                Some(work.runtime_meter().as_ref()),
+            )
+            .map_err(|error| MountSourceError::NativeWork(work.runtime_error(error)))?
+            .map_err(|_| MountSourceError::Stale)?
     }
 
     fn create_symbolic_link(
         &self,
         path: &MountPath,
-        target: Bytes,
+        target: crate::kernel::OwnedSourceChunk,
         metadata: FileMetadata,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<MountLookup, MountSourceError> {
-        let path = self.path(path)?;
-        let logical_bytes = u64::try_from(target.len()).map_err(|_| {
-            MountSourceError::Unsupported("symbolic-link target is too large".to_owned())
-        })?;
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            let receipt = checkout
-                .apply_authored_transaction(
-                    vec![AuthoredMutation::CreateSymbolicLink {
-                        path: path.clone(),
-                        target,
-                        metadata,
-                    }],
-                    boundary_budget(),
-                    &self.cancellation,
-                )
-                .await
-                .map_err(facade_error)?;
-            let file_id = receipt
-                .value
-                .created_file_ids
-                .first()
-                .copied()
-                .flatten()
-                .ok_or_else(|| {
-                    MountSourceError::Engine("create omitted file identity".to_owned())
-                })?;
-            checkout
-                .publish_after_mutation(ViewChange::Bound(&path), &self.cancellation)
-                .await?;
-            Ok(MountLookup {
-                node: MountNode {
-                    file_id,
-                    kind: MountNodeKind::SymbolicLink,
-                    logical_bytes,
-                    link_count: 1,
-                    device: None,
+        self.runtime
+            .block_on(
+                || {
+                    tokio::time::timeout(
+                        CALLBACK_TIMEOUT,
+                        self.create(path, work, |path| AuthoredMutation::CreateSymbolicLink {
+                            path,
+                            metadata,
+                            target: target.bytes,
+                        }),
+                    )
                 },
-                metadata,
-            })
-        })
+                Some(work.runtime_meter().as_ref()),
+            )
+            .map_err(|error| MountSourceError::NativeWork(work.runtime_error(error)))?
+            .map_err(|_| MountSourceError::Stale)?
     }
 
     fn create_special(
@@ -504,84 +337,45 @@ where
         kind: MountNodeKind,
         device: Option<(u32, u32)>,
         metadata: FileMetadata,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<MountLookup, MountSourceError> {
-        let path = self.path(path)?;
-        let (file_kind, mutation) = match (kind, device) {
-            (MountNodeKind::Fifo, None) => (
-                FileKind::Fifo,
-                AuthoredMutation::CreateEmptySpecial {
-                    path: path.clone(),
-                    kind: FileKind::Fifo,
-                    metadata,
-                },
-            ),
-            (MountNodeKind::Socket, None) => (
-                FileKind::Socket,
-                AuthoredMutation::CreateEmptySpecial {
-                    path: path.clone(),
-                    kind: FileKind::Socket,
-                    metadata,
-                },
-            ),
-            (MountNodeKind::CharacterDevice, Some((major, minor))) => (
-                FileKind::CharacterDevice,
-                AuthoredMutation::CreateDevice {
-                    path: path.clone(),
-                    kind: FileKind::CharacterDevice,
-                    major,
-                    minor,
-                    metadata,
-                },
-            ),
-            (MountNodeKind::BlockDevice, Some((major, minor))) => (
-                FileKind::BlockDevice,
-                AuthoredMutation::CreateDevice {
-                    path: path.clone(),
-                    kind: FileKind::BlockDevice,
-                    major,
-                    minor,
-                    metadata,
-                },
-            ),
+        let kind = match (kind, device) {
+            (MountNodeKind::Fifo, None) => FileKind::Fifo,
+            (MountNodeKind::Socket, None) => FileKind::Socket,
+            (MountNodeKind::CharacterDevice, Some(_)) => FileKind::CharacterDevice,
+            (MountNodeKind::BlockDevice, Some(_)) => FileKind::BlockDevice,
             _ => {
-                return Err(MountSourceError::Unsupported(
-                    "special-file kind and device identity disagree".to_owned(),
-                ));
+                return Err(MountSourceError::NativeText {
+                    kind: super::NativeSourceTextKind::Unsupported,
+                    text: "special-file kind and device identity disagree",
+                });
             }
         };
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            let receipt = checkout
-                .apply_authored_transaction(vec![mutation], boundary_budget(), &self.cancellation)
-                .await
-                .map_err(facade_error)?;
-            let file_id = receipt
-                .value
-                .created_file_ids
-                .first()
-                .copied()
-                .flatten()
-                .ok_or_else(|| {
-                    MountSourceError::Engine("create omitted file identity".to_owned())
-                })?;
-            checkout
-                .publish_after_mutation(ViewChange::Bound(&path), &self.cancellation)
-                .await?;
-            Ok(MountLookup {
-                node: MountNode {
-                    file_id,
-                    kind,
-                    logical_bytes: 0,
-                    link_count: 1,
-                    device: match file_kind {
-                        FileKind::CharacterDevice | FileKind::BlockDevice => device,
-                        _ => None,
-                    },
+        self.runtime
+            .block_on(
+                || {
+                    tokio::time::timeout(
+                        CALLBACK_TIMEOUT,
+                        self.create(path, work, |path| match device {
+                            Some((major, minor)) => AuthoredMutation::CreateDevice {
+                                path,
+                                kind,
+                                major,
+                                minor,
+                                metadata,
+                            },
+                            None => AuthoredMutation::CreateEmptySpecial {
+                                path,
+                                kind,
+                                metadata,
+                            },
+                        }),
+                    )
                 },
-                metadata,
-            })
-        })
+                Some(work.runtime_meter().as_ref()),
+            )
+            .map_err(|error| MountSourceError::NativeWork(work.runtime_error(error)))?
+            .map_err(|_| MountSourceError::Stale)?
     }
 
     fn set_attributes(
@@ -624,8 +418,22 @@ where
         let name = self.posix_attribute_name(name)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                        boundary_budget(),
+                        &self.cancellation,
+                    )),
+                    &self.cancellation,
+                    None,
+                )
+                .await?;
+            let mut checkout = observation
+                .observer(boundary_budget(), &self.cancellation)
+                .map_err(facade_error)?
+                .value;
             checkout
                 .read_named_attribute(&path, &name, boundary_budget(), &self.cancellation)
                 .await
@@ -646,8 +454,22 @@ where
             .transpose()?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let observation = self.checkout.observe(owner).await?;
-            let mut checkout = observation.observer();
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                        boundary_budget(),
+                        &self.cancellation,
+                    )),
+                    &self.cancellation,
+                    None,
+                )
+                .await?;
+            let mut checkout = observation
+                .observer(boundary_budget(), &self.cancellation)
+                .map_err(facade_error)?
+                .value;
             let receipt = checkout
                 .list_named_attributes(
                     &path,
@@ -791,7 +613,7 @@ where
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
             checkout
-                .change_content_by_id(
+                .change_content(
                     destination_file_id,
                     ContentChange::CloneFrom {
                         source: source_file_id,
@@ -925,11 +747,24 @@ where
             return Ok(());
         }
         let expected_root_identity = capture_root_identity(source_root).map_err(engine_error)?;
-        self.capture_host_with_identity(source_root, paths, expected_root_identity, HostCaptureScope::ExactPaths)
+        self.capture_host_with_identity(
+            source_root,
+            paths,
+            expected_root_identity,
+            HostCaptureScope::ExactPaths,
+        )
     }
 
-    fn capture_host_subtree(&self, source_root: &Path, path: &MountPath) -> Result<(), MountSourceError> {
-        self.capture_host_with_identity(source_root, std::slice::from_ref(path),
-            capture_root_identity(source_root).map_err(engine_error)?, HostCaptureScope::Subtree)
+    fn capture_host_subtree(
+        &self,
+        source_root: &Path,
+        path: &MountPath,
+    ) -> Result<(), MountSourceError> {
+        self.capture_host_with_identity(
+            source_root,
+            std::slice::from_ref(path),
+            capture_root_identity(source_root).map_err(engine_error)?,
+            HostCaptureScope::Subtree,
+        )
     }
 }

@@ -1,19 +1,56 @@
-pub(super) fn native_mount_name(name: &LogicalName) -> Result<Vec<u8>, MountSourceError> {
-    match (name.encoding(), std::env::consts::OS) {
-        (NameEncoding::Utf8 | NameEncoding::PosixBytes, "linux" | "macos") => {
-            Ok(name.as_bytes().to_vec())
+pub(super) fn native_mount_name(
+    name: &LogicalName,
+    carrier: &mut NativeDemandCarrier<'_>,
+) -> Result<(Vec<u8>, Option<crate::NativeAllocation>), MountSourceError> {
+    let mut inputs = InputBuffers::new(carrier)?;
+    inputs.items(1)?;
+    let bytes = match (name.encoding(), std::env::consts::OS) {
+        (NameEncoding::Utf8 | NameEncoding::PosixBytes, "linux" | "macos")
+        | (NameEncoding::WindowsUtf16Le, "windows") => {
+            let delta = crate::WorkCounters {
+                bytes_copied: name.as_bytes().len() as u64,
+                ..crate::WorkCounters::UNCHARGED
+            };
+            inputs.admit(delta)?;
+            let mut bytes = inputs.vec(name.as_bytes().len())?;
+            bytes.extend_from_slice(name.as_bytes());
+            inputs.record(delta)?;
+            bytes
         }
-        (NameEncoding::WindowsUtf16Le, "windows") => Ok(name.as_bytes().to_vec()),
         (NameEncoding::Utf8, "windows") => {
-            let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
-                MountSourceError::Invalid("authenticated UTF-8 name is malformed".to_owned())
-            })?;
-            Ok(text.encode_utf16().flat_map(u16::to_le_bytes).collect())
+            let text =
+                std::str::from_utf8(name.as_bytes()).map_err(|_| MountSourceError::NativeText {
+                    kind: super::NativeSourceTextKind::Invalid,
+                    text: "authenticated UTF-8 name is malformed",
+                })?;
+            let mut length = 0_usize;
+            for scalar in text.chars() {
+                inputs.items(1)?;
+                length = length
+                    .checked_add(scalar.len_utf16() * 2)
+                    .ok_or(MountSourceError::Work(WorkError::Overflow))?;
+            }
+            let mut bytes = inputs.vec(length)?;
+            for unit in text.encode_utf16() {
+                let delta = crate::WorkCounters {
+                    items_examined: 1,
+                    bytes_encoded: 2,
+                    ..crate::WorkCounters::UNCHARGED
+                };
+                inputs.admit(delta)?;
+                bytes.extend_from_slice(&unit.to_le_bytes());
+                inputs.record(delta)?;
+            }
+            bytes
         }
-        _ => Err(MountSourceError::Unsupported(
-            "authenticated name encoding is incompatible with this native mount".to_owned(),
-        )),
-    }
+        _ => {
+            return Err(MountSourceError::NativeText {
+                kind: super::NativeSourceTextKind::Unsupported,
+                text: "authenticated name encoding is incompatible with this native mount",
+            });
+        }
+    };
+    Ok((bytes, inputs.retain()))
 }
 
 impl<A, O> CheckoutMountSource<A, O> {
@@ -38,7 +75,15 @@ impl<A, O> CheckoutMountSource<A, O> {
             self.limits.maximum_component_bytes,
         )
         .ok()?;
-        native_mount_name(&folded).ok()
+        native_mount_name(
+            &folded,
+            &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                boundary_budget(),
+                &self.cancellation,
+            )),
+        )
+        .ok()
+        .map(|result| result.0)
     }
 
     fn logical_name(&self, bytes: &[u8]) -> Result<LogicalName, MountSourceError> {
@@ -96,7 +141,6 @@ impl<A, O> CheckoutMountSource<A, O> {
         )
         .map_err(engine_error)
     }
-
 }
 fn profile_is_native(profile: FilesystemProfile) -> bool {
     match std::env::consts::OS {
@@ -114,4 +158,3 @@ fn profile_name(profile: FilesystemProfile) -> &'static str {
         FilesystemProfile::Browser => "browser",
     }
 }
-

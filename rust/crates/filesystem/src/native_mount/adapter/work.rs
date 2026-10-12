@@ -8,7 +8,10 @@ pub(super) enum NativeDemandCarrier<'a> {
 }
 
 impl NativeDemandCarrier<'_> {
-    pub(super) fn with_work<T>(&mut self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> T) -> T {
+    pub(super) fn with_work<T>(
+        &mut self,
+        operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
+    ) -> T {
         match self {
             Self::Borrowed(work) => operation(work),
             Self::Shared(meter) => operation(&mut meter.lock()),
@@ -24,7 +27,10 @@ impl NativeDemandCarrier<'_> {
     }
 
     pub(super) fn original_native_work(&self) -> Option<crate::NativeMaterializationWork> {
-        match self { Self::Native(work) => Some((**work).clone()), _ => None }
+        match self {
+            Self::Native(work) => Some((**work).clone()),
+            _ => None,
+        }
     }
 
     pub(super) fn reborrow(&mut self) -> NativeDemandCarrier<'_> {
@@ -35,30 +41,46 @@ impl NativeDemandCarrier<'_> {
         }
     }
 
-    pub(super) fn new_custody(&mut self) -> Result<super::NativeMountAllocationCustody, MountSourceError> {
+    pub(super) fn new_custody(
+        &mut self,
+    ) -> Result<super::NativeMountAllocationCustody, MountSourceError> {
         match self.original_native_work() {
             Some(work) => super::NativeMountAllocationCustody::new(
-                &mut crate::demand::NativeSourceWork::from_native_materialization_work(&work)),
+                &mut crate::demand::NativeSourceWork::from_native_materialization_work(&work),
+            ),
             None => self.with_work(super::NativeMountAllocationCustody::new),
-        }.map_err(super::lazy::mount_demand_error)
+        }
+        .map_err(super::lazy::mount_demand_error)
     }
 
-    pub(super) fn empty_source_chunk(&self) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
+    pub(super) fn empty_source_chunk(
+        &self,
+    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         let Some(work) = self.original_native_work() else {
-            return Ok(crate::kernel::OwnedSourceChunk::claimed(OwnedBytes::new(), 0));
+            return Ok(crate::kernel::OwnedSourceChunk::claimed(
+                OwnedBytes::new(),
+                0,
+            ));
         };
-        let allocation = work.claim(0).map_err(MountSourceError::NativeWork)?;
-        let bytes = OwnedBytes::from_vec_with_guard(Vec::new(), allocation, work.runtime_meter_owner())
+        let allocation = work
+            .claim(0, 0, crate::WorkCounters::UNCHARGED)
+            .map_err(MountSourceError::NativeWork)?;
+        let bytes = OwnedBytes::from_vec_with_guard(Vec::new(), allocation, work.runtime_meter())
             .map_err(|failure| match failure.into_error() {
-                acyclic_stream::PreparedOwnedBytesError::Admission(error) => MountSourceError::NativeWork(work.runtime_error(error)),
-                acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized =>
-                    MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout),
-            })?;
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                MountSourceError::NativeWork(work.runtime_error(error))
+            }
+            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout)
+            }
+        })?;
         Ok(crate::kernel::OwnedSourceChunk::intrinsic(bytes, 0))
     }
 
     pub(super) fn accept_with_prior_live<T, E>(
-        &mut self, result: crate::MeasuredResult<crate::OperationReceipt<T>, E>, prior_live: u64,
+        &mut self,
+        result: crate::MeasuredResult<crate::OperationReceipt<T>, E>,
+        prior_live: u64,
         map: impl FnOnce(E) -> MountSourceError,
     ) -> Result<T, MountSourceError> {
         let (result, completed) = match result {
@@ -71,16 +93,20 @@ impl NativeDemandCarrier<'_> {
     }
 }
 
-fn capture_meter(budget: WorkBudget, cancellation: &CancellationToken)
-    -> Result<crate::NativeMaterializationWork, OperationFailure<MountSourceError>>
-{
-    crate::NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(error, completed)| OperationFailure::new(MountSourceError::NativeWork(error), completed))
+fn capture_meter(
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<crate::NativeMaterializationWork, OperationFailure<MountSourceError>> {
+    crate::NativeMaterializationWork::new(budget, cancellation).map_err(|(error, completed)| {
+        OperationFailure::new(MountSourceError::NativeWork(error), completed)
+    })
 }
 
-pub(super) fn boundary<T>(cancellation: &CancellationToken,
+pub(super) fn boundary<T>(
+    cancellation: &CancellationToken,
     operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, MountSourceError>,
 ) -> Result<T, MountSourceError> {
-    let work = capture_meter(crate::performance::BOUNDARY_BUDGET, cancellation).map_err(|failure| failure.error)?;
+    let work = capture_meter(crate::performance::BOUNDARY_BUDGET, cancellation)
+        .map_err(|failure| failure.error)?;
     operation(&work)
 }

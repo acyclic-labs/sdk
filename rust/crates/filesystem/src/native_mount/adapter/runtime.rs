@@ -7,7 +7,8 @@ pub(in crate::native_mount) struct CallbackRuntime {
     handle: tokio::runtime::Handle,
 }
 
-static CALLBACK_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, Arc<std::io::Error>>> = OnceLock::new();
+static CALLBACK_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, Arc<std::io::Error>>> =
+    OnceLock::new();
 
 struct ParkedCallback {
     woken: StdMutex<bool>,
@@ -16,7 +17,9 @@ struct ParkedCallback {
 }
 
 impl Wake for ParkedCallback {
-    fn wake(self: Arc<Self>) { self.wake_by_ref(); }
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
     fn wake_by_ref(self: &Arc<Self>) {
         *self.woken.lock().unwrap_or_else(PoisonError::into_inner) = true;
         self.changed.notify_one();
@@ -30,7 +33,9 @@ pub(in crate::native_mount) struct PreparedCallbackWait {
 }
 
 impl PreparedCallbackWait {
-    pub(in crate::native_mount) fn logical_owned_bytes(&self) -> u64 { self.bytes }
+    pub(in crate::native_mount) fn logical_owned_bytes(&self) -> u64 {
+        self.bytes
+    }
 }
 
 struct RuntimeAllocation<'a> {
@@ -40,8 +45,13 @@ struct RuntimeAllocation<'a> {
 
 impl RuntimeAllocation<'_> {
     fn reserve(&mut self, bytes: u64) -> std::io::Result<()> {
-        let total = self.bytes.checked_add(bytes).ok_or_else(|| std::io::Error::other("callback allocation overflow"))?;
-        if let Some(meter) = self.meter { meter.allocate(bytes)?; }
+        let total = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| std::io::Error::other("callback allocation overflow"))?;
+        if let Some(meter) = self.meter {
+            meter.allocate(bytes)?;
+        }
         self.bytes = total;
         Ok(())
     }
@@ -49,7 +59,9 @@ impl RuntimeAllocation<'_> {
 
 impl Drop for RuntimeAllocation<'_> {
     fn drop(&mut self) {
-        if let Some(meter) = self.meter { meter.release(self.bytes); }
+        if let Some(meter) = self.meter {
+            meter.release(self.bytes);
+        }
     }
 }
 
@@ -60,8 +72,14 @@ pub fn initialize_native_mount_services() -> Result<(), NativeMountError> {
 
 impl CallbackRuntime {
     pub(in crate::native_mount) fn create() -> Result<Self, NativeMountError> {
-        CALLBACK_RUNTIME.get_or_init(|| tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2).enable_all().thread_name("acyclic-fs-mount").build().map_err(Arc::new));
+        CALLBACK_RUNTIME.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .thread_name("acyclic-fs-mount")
+                .build()
+                .map_err(Arc::new)
+        });
         Self::existing()
     }
 
@@ -69,22 +87,38 @@ impl CallbackRuntime {
         Self::existing_startup().map_err(Into::into)
     }
 
-    pub(in crate::native_mount) fn existing_startup() -> Result<Self, NativeMountStartupAdmissionError> {
-        match CALLBACK_RUNTIME.get().ok_or(NativeMountStartupAdmissionError::ServicesCold)? {
-            Ok(runtime) => Ok(Self { handle: runtime.handle().clone() }),
-            Err(error) => Err(NativeMountStartupAdmissionError::ServiceUnavailable(Arc::clone(error))),
+    pub(in crate::native_mount) fn existing_startup()
+    -> Result<Self, NativeMountStartupAdmissionError> {
+        match CALLBACK_RUNTIME
+            .get()
+            .ok_or(NativeMountStartupAdmissionError::ServicesCold)?
+        {
+            Ok(runtime) => Ok(Self {
+                handle: runtime.handle().clone(),
+            }),
+            Err(error) => Err(NativeMountStartupAdmissionError::ServiceUnavailable(
+                Arc::clone(error),
+            )),
         }
     }
 
-    pub(in crate::native_mount) fn prepare_wait(&self, work: &mut crate::demand::DemandWork)
-        -> Result<PreparedCallbackWait, MountSourceError>
-    {
-        work.check().map_err(crate::native_mount::lazy::mount_demand_error)?;
+    pub(in crate::native_mount) fn prepare_wait(
+        &self,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<PreparedCallbackWait, MountSourceError> {
+        work.check()
+            .map_err(crate::native_mount::lazy::mount_demand_error)?;
         let bytes = std::mem::size_of::<ParkedCallback>() as u64;
-        work.allocate(bytes).map_err(crate::native_mount::lazy::mount_demand_error)?;
-        Ok(PreparedCallbackWait { parked: Arc::new(ParkedCallback {
-            woken: StdMutex::new(false), changed: std::sync::Condvar::new(), _allocation: None,
-        }), bytes })
+        work.allocate(bytes)
+            .map_err(crate::native_mount::lazy::mount_demand_error)?;
+        Ok(PreparedCallbackWait {
+            parked: Arc::new(ParkedCallback {
+                woken: StdMutex::new(false),
+                changed: std::sync::Condvar::new(),
+                _allocation: None,
+            }),
+            bytes,
+        })
     }
 
     fn enter<T>(&self, poll: impl FnOnce() -> T) -> T {
@@ -94,14 +128,19 @@ impl CallbackRuntime {
             poll()
         };
         match tokio::runtime::Handle::try_current() {
-            Ok(current) if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
-                tokio::task::block_in_place(poll),
+            Ok(current)
+                if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
+            {
+                tokio::task::block_in_place(poll)
+            }
             _ => poll(),
         }
     }
 
     pub(in crate::native_mount) fn wait_prepared<F: Future>(
-        &self, prepared: PreparedCallbackWait, create: impl FnOnce() -> F,
+        &self,
+        prepared: PreparedCallbackWait,
+        create: impl FnOnce() -> F,
     ) -> F::Output {
         self.enter(|| {
             let mut future = std::pin::pin!(tokio::task::unconstrained(create()));
@@ -109,19 +148,33 @@ impl CallbackRuntime {
         })
     }
 
-    pub(in crate::native_mount) fn verify_callback<F: Future<Output = Result<(), NativeMountError>>>(
-        &self, work: &crate::NativeMaterializationWork, create: impl FnOnce() -> Result<F, NativeMountError>,
+    pub(in crate::native_mount) fn verify_callback<
+        F: Future<Output = Result<(), NativeMountError>>,
+    >(
+        &self,
+        work: &crate::NativeMaterializationWork,
+        create: impl FnOnce() -> Result<F, NativeMountError>,
     ) -> Result<(), NativeMountError> {
-        let allocation = work.claim_allocation(std::mem::size_of::<ParkedCallback>() as u64, 1,
-            crate::WorkCounters::UNCHARGED)?;
-        let prepared = PreparedCallbackWait { parked: Arc::new(ParkedCallback {
-            woken: StdMutex::new(false), changed: std::sync::Condvar::new(), _allocation: Some(allocation),
-        }), bytes: 0 };
+        let allocation = work.claim(
+            std::mem::size_of::<ParkedCallback>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?;
+        let prepared = PreparedCallbackWait {
+            parked: Arc::new(ParkedCallback {
+                woken: StdMutex::new(false),
+                changed: std::sync::Condvar::new(),
+                _allocation: Some(allocation),
+            }),
+            bytes: 0,
+        };
         self.wait_prepared(prepared, || async { create()?.await })
     }
 
     pub(in crate::native_mount) fn block_on<F: Future>(
-        &self, create: impl FnOnce() -> F, meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
+        &self,
+        create: impl FnOnce() -> F,
+        meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<F::Output> {
         self.enter(|| {
             let mut allocation = RuntimeAllocation { meter, bytes: 0 };
@@ -132,7 +185,9 @@ impl CallbackRuntime {
             )?;
             allocation.reserve(std::mem::size_of::<ParkedCallback>() as u64)?;
             let parked = Arc::new(ParkedCallback {
-                woken: StdMutex::new(false), changed: std::sync::Condvar::new(), _allocation: None,
+                woken: StdMutex::new(false),
+                changed: std::sync::Condvar::new(),
+                _allocation: None,
             });
             Ok(Self::poll(future, parked))
         })
@@ -147,15 +202,22 @@ impl CallbackRuntime {
                 return output;
             }
             let mut woken = parked.woken.lock().unwrap_or_else(PoisonError::into_inner);
-            while !*woken { woken = parked.changed.wait(woken).unwrap_or_else(PoisonError::into_inner); }
+            while !*woken {
+                woken = parked
+                    .changed
+                    .wait(woken)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
             *woken = false;
         }
     }
 
     pub(in crate::native_mount) fn wait<T, F: Future<Output = Result<T, MountSourceError>>>(
-        &self, create: impl FnOnce() -> F,
+        &self,
+        create: impl FnOnce() -> F,
     ) -> Result<T, MountSourceError> {
         self.block_on(|| tokio::time::timeout(CALLBACK_TIMEOUT, create()), None)
-            .map_err(capture_io_error)?.map_err(|_| MountSourceError::Stale)?
+            .map_err(capture_io_error)?
+            .map_err(|_| MountSourceError::Stale)?
     }
 }
