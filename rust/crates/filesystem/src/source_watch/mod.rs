@@ -781,7 +781,7 @@ impl NativeSourceWatch {
         let delivery = Arc::new(Delivery::new_measured(sink, &callback));
         let ordinary = crate::cancellation::CancellationToken::new();
         let mut bootstrap = crate::demand::DemandWork::new(crate::performance::WorkBudget::UNBOUNDED, &ordinary);
-        PlatformWatch::start_held_root_measured(directory, delivery, complete, recursive, &mut bootstrap)
+        PlatformWatch::start_held_root_with_work(directory, delivery, complete, recursive, &mut bootstrap)
             .map(|platform| Self { platform })
             .map_err(|error| std::io::Error::other(error.to_string()))
     }
@@ -936,7 +936,7 @@ impl NativeSourceWatch {
 
     #[cfg(windows)]
     pub(crate) fn owned_bytes(&self) -> u64 {
-        self.platform.owned_bytes()
+        self.platform.logical_owned_bytes()
             + arc_control_bytes::<Delivery>()
     }
 
