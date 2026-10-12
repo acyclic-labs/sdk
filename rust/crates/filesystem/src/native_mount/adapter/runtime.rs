@@ -109,7 +109,7 @@ impl CallbackRuntime {
         work.check()
             .map_err(crate::native_mount::lazy::mount_demand_error)?;
         let bytes = std::mem::size_of::<ParkedCallback>() as u64;
-        work.allocate(bytes)
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)
             .map_err(crate::native_mount::lazy::mount_demand_error)?;
         Ok(PreparedCallbackWait {
             parked: Arc::new(ParkedCallback {

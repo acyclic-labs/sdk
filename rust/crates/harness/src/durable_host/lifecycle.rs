@@ -10,7 +10,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .pull_owned(&self.owner, &self.owner_scope, &self.verifier, worker)
+            .pull_owned(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                worker,
+                None,
+                &mut None,
+            )
             .await
     }
 
@@ -23,12 +30,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .pull_owned_operation(
+            .pull_owned(
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
                 worker,
-                operation_id,
+                Some(operation_id),
+                &mut None,
             )
             .await
     }
@@ -44,13 +52,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         self.admission(operation_id).await?;
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh().await?;
-        let operation = coordinator.observe_operation(
-            &self.owner,
-            &self.owner_scope,
-            &self.verifier,
-            operation_id,
-        )?;
+        coordinator.refresh(&mut None).await?;
+        let operation = coordinator
+            .observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+                &mut None,
+            )?
+            .clone();
         let Some(reservation) = operation.reservation else {
             return Ok(WorkPull::Idle);
         };
@@ -81,13 +92,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
         self.admission(operation_id).await?;
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh().await?;
-        let operation = coordinator.observe_operation(
-            &self.owner,
-            &self.owner_scope,
-            &self.verifier,
-            operation_id,
-        )?;
+        coordinator.refresh(&mut None).await?;
+        let operation = coordinator
+            .observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+                &mut None,
+            )?
+            .clone();
         if operation.spec != lease.operation
             || operation.reservation.as_ref() != Some(&lease.reservation)
         {
@@ -96,7 +110,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         if operation.phase == crate::scheduler::OperationPhase::Running {
-            return crate::scheduler::require_execution_owner(&operation, &fence, false);
+            return crate::scheduler::require_execution_owner(&operation, &fence, false, &mut None);
         }
         let event = if operation.phase == crate::scheduler::OperationPhase::Reconciling {
             crate::scheduler::SchedulerEvent::ReconciliationResumed {
@@ -111,9 +125,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         coordinator
             .apply(
-                operation_id,
                 worker_key("start", operation_id, &fence, operation.revision)?,
                 event,
+                &mut None,
             )
             .await?;
         Ok(())
@@ -131,10 +145,19 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let admission = self.admission(operation_id).await?;
         self.verify_owner(task, &fence, true).await?;
-        let digest = crate::contract::canonical_json_digest(&outcome)?;
+        let digest = crate::contract::canonical_json_digest(
+            &outcome,
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            &mut None,
+        )?;
         let key = IdempotencyKey::new(format!(
             "task-settle:{operation_id}:{}:{}",
-            blake3::Hash::from_bytes(crate::contract::canonical_json_digest(&fence)?).to_hex(),
+            blake3::Hash::from_bytes(crate::contract::canonical_json_digest(
+                &fence,
+                acyclic_stream::MAX_RECORD_BYTES as u64,
+                &mut None
+            )?)
+            .to_hex(),
             blake3::Hash::from_bytes(digest).to_hex()
         ))?;
         let outcome = match outcome {
@@ -153,7 +176,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 }
                 Outcome::Succeeded(
                     self.payloads
-                        .stage(operation_id, key.as_str(), &bytes)
+                        .stage(operation_id, key.as_str(), &bytes, None)?
                         .await?,
                 )
             }
@@ -165,7 +188,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .lock()
             .await
             .apply(
-                operation_id,
                 key,
                 crate::scheduler::SchedulerEvent::Completed {
                     operation_id,
@@ -173,6 +195,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     fence: Some(fence),
                     execution_duration_ns: None,
                 },
+                &mut None,
             )
             .await?;
         Ok(())
@@ -185,14 +208,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         settlement: bool,
     ) -> Result<()> {
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh().await?;
-        let operation = coordinator.observe_operation(
-            &self.owner,
-            &self.owner_scope,
-            &self.verifier,
-            OperationId::from_bytes(task_id.into_bytes()),
-        )?;
-        crate::scheduler::require_execution_owner(&operation, fence, settlement)
+        coordinator.refresh(&mut None).await?;
+        let operation = coordinator
+            .observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                OperationId::from_bytes(task_id.into_bytes()),
+                &mut None,
+            )?
+            .clone();
+        crate::scheduler::require_execution_owner(&operation, fence, settlement, &mut None)
     }
 
     /// Binds journal publications to the authenticated task's exact current lease.
@@ -207,34 +233,29 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .await?;
         let machine = self
             .machines
-            .resolve(&admission.machine)
+            .resolve(&admission.machine, &mut None)?
             .ok_or_else(|| Error::Unsupported("pinned task machine is unavailable".into()))?;
         let workflow = crate::workflow::WorkflowAdmission {
             operation_id: admission.operation_id,
-            request_digest: crate::contract::canonical_json_digest(&admission)?,
+            request_digest: crate::contract::canonical_json_digest(
+                &admission,
+                acyclic_stream::MAX_RECORD_BYTES as u64,
+                &mut None,
+            )?,
             initial: crate::workflow::MachineCheckpoint {
                 machine: admission.machine.clone(),
                 revision: 0,
                 state: machine.initialize(&admission.input)?,
             },
         };
-        self.machines.validate_checkpoint(&workflow.initial)?;
-        let stream = self.coordinator.lock().await.journal_client();
+        self.machines.validate_checkpoint(&workflow.initial, None)?;
         let owner = TaskJournalOwner {
             host: self.clone(),
-            stream,
-            task_id,
             fence,
             workflow,
-            maximum_payload_bytes: admission.limits.file_bytes,
-            output_schema: admission.output_schema,
-            input_grants: admission.grants,
-            input_limits: admission.limits,
-            extensions: admission.extensions,
-            extension_schemas: self.root_scope.extension_schema_registry(),
-            extension_runtime: self.root_scope.extension_runtime(),
+            admission: Arc::new(admission),
         };
-        owner.verify(true).await?;
+        owner.verify(true, &mut None).await?;
         Ok(owner)
     }
 
@@ -277,13 +298,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             key
         };
-        let outcome = crate::distributed::append_keyed(
+        let outcome = crate::distributed::append(
             (stream, &self.stream),
-            OwnedBytes::copy_from_slice(bytes),
+            [OwnedBytes::copy_from_slice(bytes)],
+            0,
             expected_tail,
             key,
             operation_id,
-            "control identity",
+            &mut None,
         )
         .await?;
         match outcome {

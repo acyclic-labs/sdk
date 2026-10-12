@@ -76,7 +76,6 @@ impl BrowserChangeSet {
         #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
     ) -> Result<BrowserChangeSet, JsValue> {
         let maximum_changes = wasm_u32(&maximum_changes)?;
-
         let engine = sdk_value!(unbounded_future!(
             self.engine,
             compose(&next.engine, maximum_changes)

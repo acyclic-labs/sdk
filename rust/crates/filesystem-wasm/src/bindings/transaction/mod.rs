@@ -192,7 +192,7 @@ impl BrowserTransaction {
                 source_offset,
                 &destination,
                 destination_offset,
-                length,
+                length
             )
         ))
     }

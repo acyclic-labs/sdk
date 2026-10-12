@@ -67,7 +67,7 @@ pub(super) enum ProofDataAdmissionLedger<'a> {
         original: &'a NativeMaterializationWork,
         staged: &'a mut NativeAllocation,
         pending: Option<NativeAllocation>,
-        witness: crate::demand::NativeCheckoutControlWitness,
+        witness: std::sync::Arc<crate::kernel::ProofDataCustody>,
     },
 }
 

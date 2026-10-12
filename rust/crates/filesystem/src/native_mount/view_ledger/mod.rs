@@ -109,7 +109,7 @@ pub trait ViewObserver: Send + Sync {
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
 
     /// Known native allocation ownership for an SDK observer.
-    fn allocation_custody(&self) -> Option<crate::demand::NativeMountAllocationCustody> {
+    fn allocation_custody(&self) -> Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>> {
         None
     }
 
@@ -177,7 +177,7 @@ pub(crate) struct ViewLedger {
     directories: RwLock<ChangePositions>,
     nodes: RwLock<ChangePositions>,
     observers: Mutex<Observers>,
-    _custody: Option<crate::demand::NativeMountAllocationCustody>,
+    _custody: Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>>,
 }
 
 impl ViewLedger {
@@ -542,7 +542,7 @@ fn admitted_names<T>(
     work.charge(scan_work(items))
         .map_err(super::lazy::mount_demand_error)?;
     if scratch != 0 {
-        work.allocate(scratch)
+        work.claim_allocation(scratch, u64::from((scratch) != 0), crate::WorkCounters::UNCHARGED)
             .map_err(super::lazy::mount_demand_error)?;
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(read));

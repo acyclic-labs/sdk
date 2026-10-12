@@ -1484,35 +1484,6 @@ impl ConversationMessage {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn clone_native_reference_text(
-    source: &str, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(String, acyclic_fs::NativeAllocation)> {
-    if source.is_empty() {
-        return Ok((String::new(), work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?));
-    }
-    work.admit(acyclic_fs::WorkCounters {
-        bytes_copied: source.len() as u64, ..acyclic_fs::WorkCounters::default()
-    }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    let mut component = work.claim(source.len() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    let mut text = String::new();
-    work.charge(acyclic_fs::WorkCounters {
-        allocation_operations: 1, ..acyclic_fs::WorkCounters::default()
-    }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    text.try_reserve_exact(source.len()).map_err(|cause| Error::NativeWork {
-        cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause), custody: None,
-    })?;
-    component.reconcile_capacity(text.capacity() as u64)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    work.charge(acyclic_fs::WorkCounters {
-        bytes_copied: source.len() as u64, ..acyclic_fs::WorkCounters::default()
-    }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    text.push_str(source);
-    Ok((text, component))
-}
-
 impl FileRef {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         [self.path.capacity(), self.version.capacity(),
@@ -1669,8 +1640,6 @@ struct NativeConversationCustody {
     indexes: Vec<acyclic_fs::NativeAllocation>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     index_buffer: Option<acyclic_fs::NativeAllocation>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    cache_carrier: Option<acyclic_fs::NativeAllocation>,
 }
 
 const INDEX_ROW_BYTES: usize = std::mem::size_of::<(Uuid, (Option<usize>, Option<usize>))>();
@@ -2006,7 +1975,7 @@ impl ConversationState {
         if (self.native_custody.messages.is_some() || self.native_custody.digests.is_some()
             || self.native_custody.archive.is_some()
             || self.native_custody.index_buffer.is_some()
-            || self.native_custody.cache_carrier.is_some() || !self.native_custody.indexes.is_empty())
+            || !self.native_custody.indexes.is_empty())
             && !work.as_deref().is_some_and(|io| io.original_native_work().is_some())
         {
             return Err(Error::NativeBoundary {
@@ -2015,79 +1984,6 @@ impl ConversationState {
             });
         }
         let _ = work;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn native_unclaimed_message_buffer_bytes(&self) -> Result<u64> {
-        if self.native_custody.messages.is_some() { return Ok(0); }
-        conversation_buffer_bytes::<ConversationMessage>(self.messages.capacity())
-            .map_err(|reason| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn native_unclaimed_archived_prefix_bytes(&self) -> Result<u64> {
-        if self.native_custody.archive.is_some() { return Ok(0); }
-        self.archived_prefix.as_ref().map_or(Ok(0), |prefix| prefix.checkpoint.logical_owned_bytes())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn install_native_message_buffer(&mut self, allocation: acyclic_fs::NativeAllocation) {
-        assert!(self.native_custody.messages.is_none(), "message buffer already has custody");
-        self.native_custody.messages = Some(allocation);
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn install_native_archived_prefix(&mut self, allocation: acyclic_fs::NativeAllocation) {
-        assert!(self.native_custody.archive.is_none(), "archived prefix already has custody");
-        self.native_custody.archive = Some(allocation);
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn native_unclaimed_cache_bytes(&self) -> Result<u64> {
-        if self.native_custody.cache_carrier.is_some() { return Ok(0); }
-        let mut bytes = 0_u64;
-        if self.native_custody.digests.is_none() {
-            bytes += conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.capacity())
-                .map_err(|reason| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason })?;
-        }
-        self.by_id.len().checked_sub(self.native_custody.indexes.len())
-            .and_then(|rows| rows.checked_mul(INDEX_ROW_BYTES))
-            .and_then(|rows| u64::try_from(rows).ok())
-            .and_then(|rows| bytes.checked_add(rows))
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "conversation cache transfer overflows" })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn install_native_preclaimed_caches(
-        &mut self, allocation: acyclic_fs::NativeAllocation,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        if self.native_custody.cache_carrier.is_none() {
-            self.native_custody.cache_carrier = Some(allocation);
-        } else {
-            assert_eq!(allocation.bytes(), 0, "cache source already has custody");
-        }
-        let carrier = self.native_custody.cache_carrier.as_mut().expect("installed cache source custody");
-        if self.native_custody.digests.is_none() {
-            let bytes = conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.capacity())
-                .map_err(|reason| conversation_error(work, crate::wire::ErrorCode::Invalid, reason))?;
-            self.native_custody.digests = Some(carrier.split_off(bytes)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?);
-        }
-        for _ in self.native_custody.indexes.len()..self.by_id.len() {
-            let io = work.as_deref_mut().filter(|io| io.original_native_work().is_some())
-                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "cache metadata requires original native work" })?;
-            io.check_cancellation()?;
-            grow_conversation_buffer(&mut self.native_custody.indexes, &mut Some(&mut *io),
-                &mut self.native_custody.index_buffer)?;
-            let source = carrier.split_off(INDEX_ROW_BYTES as u64)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            self.native_custody.indexes.push(source);
-        }
-        assert_eq!(carrier.bytes(), 0, "cache source transfer inventory must match");
         Ok(())
     }
 
@@ -2173,15 +2069,6 @@ impl ConversationState {
             through_sequence, history_digest, checkpoint,
         });
         Ok(retained)
-    }
-
-    /// Logical payload cloned from caches omitted by the wire projection.
-    pub(crate) fn clone_cache_logical_bytes(&self) -> Result<u64> {
-        let digests = self.prefix_digests.len().checked_mul(std::mem::size_of::<[u8; 32]>());
-        let maps = self.by_id.len().checked_mul(INDEX_ROW_BYTES);
-        digests.and_then(|bytes| maps.and_then(|maps| bytes.checked_add(maps)))
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or_else(|| Error::Invalid("conversation clone cache inventory overflows".into()))
     }
 
     fn history_digest(&self) -> [u8; 32] {
@@ -2431,10 +2318,6 @@ impl ConversationState {
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-            if self.native_custody.cache_carrier.as_ref().is_some_and(|carrier| carrier.bytes() != 0) {
-                let no_data = io.take_native_custody(0)?;
-                self.install_native_preclaimed_caches(no_data, &mut Some(&mut *io))?;
-            }
             adopt_existing_buffer::<ConversationMessage>(&mut self.native_custody.messages, self.messages.capacity(), io)?;
             adopt_existing_buffer::<[u8; 32]>(&mut self.native_custody.digests, self.prefix_digests.capacity(), io)?;
             if self.native_custody.archive.is_none()
@@ -2731,8 +2614,6 @@ mod tests {
         );
         let (held, produced) = source.copy(&mut Some(&mut io), None)?;
         assert_eq!(held, source);
-        assert_eq!(held.native_unclaimed_message_buffer_bytes()?, 0);
-        assert_eq!(held.native_unclaimed_cache_bytes()?, 0);
         let deep = io.into_custody()?;
         assert_eq!(deep.bytes(), produced, "only observer-owned deep payload is reported");
         let original_receipt = first.receipt();
@@ -2762,9 +2643,6 @@ mod tests {
         assert!(components.iter().all(|(_, guard)| guard.work().shares_ledger(&second)));
         assert_eq!(first.receipt(), original_receipt, "cancelled source ledger is neither rebound nor absorbed");
         assert_eq!(suffix.history_digest(), source.history_digest());
-        assert_eq!(suffix.native_unclaimed_message_buffer_bytes()?, 0);
-        assert_eq!(suffix.native_unclaimed_archived_prefix_bytes()?, 0);
-        assert_eq!(suffix.native_unclaimed_cache_bytes()?, 0);
         drop(suffix);
         drop(components);
         second.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
