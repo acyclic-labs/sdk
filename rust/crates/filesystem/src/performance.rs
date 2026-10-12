@@ -207,7 +207,7 @@ impl WorkCounters {
     }
 
     /// No work at all, as a constant: [`WorkCounters::default`] usable in `const` charges such as one page read.
-    pub(crate) const UNCHARGED: Self = Self {
+    pub const UNCHARGED: Self = Self {
         authority_records_read: 0,
         authority_records_appended: 0,
         authority_bytes_read: 0,
