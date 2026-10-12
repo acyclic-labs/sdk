@@ -200,11 +200,11 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
     publication: &mut operations::IndexedPublication,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
-    let verifier = reducer.event_verifier(work)?;
+    let verifier = reducer.event_verifier();
     let result = async {
         let Some(effect_id) = crate::core::event_effect_id(&event.payload) else {
             return effect_heads::publication_with_work(
-                client, reducer.authority(), &verifier, event, None, publication, work,
+                client, reducer.authority(), verifier, event, None, publication, work,
             ).await;
         };
         let mut path = Some(path_with_work(reducer.authority(), effect_id, work)?);
@@ -223,7 +223,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
                     .await?
                     .ok_or_else(|| Error::Storage("effect transition head is missing".into()))?;
                 let prior = verified_with_work(
-                    client, reducer.authority(), &verifier, effect_id, &record,
+                    client, reducer.authority(), verifier, effect_id, &record,
                     2 * acyclic_stream::MAX_RECORD_BYTES as u64, work,
                 ).await;
                 let record_bytes = operations::sdk_record_retained_bytes(&record, work);
@@ -262,7 +262,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
                 path.take().expect("original effect path"), expected, encoded, work);
             operations::release_owned_after_drop(appended, location_capacity, work)?;
             effect_heads::publication_with_work(
-                client, reducer.authority(), &verifier, event,
+                client, reducer.authority(), verifier, event,
                 Some((effect_id, effect_heads::Head { revision: event.revision, position: expected })),
                 publication, work,
             ).await
@@ -275,12 +275,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
             None => result,
         }
     }.await;
-    let verifier_capacity = verifier.logical_owned_bytes();
-    drop(verifier);
-    match verifier_capacity {
-        Ok(capacity) => operations::release_owned_after_drop(result, capacity, work),
-        Err(error) => match result { Err(original) => Err(original), Ok(()) => Err(error) },
-    }
+    result
 }
 
 /// Reads authenticated effect events at a bounded committed cut.

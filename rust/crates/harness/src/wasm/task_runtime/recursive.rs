@@ -186,7 +186,7 @@ impl WasmTaskRuntime {
         let history_limits: HistoryReadLimits = from_js(history_limits)?;
         let snapshot = original_owner.reducer.snapshot(1, &mut None).map(|(snapshot, _)| snapshot).map_err(js_error)?;
         let head = snapshot.events.last().ok_or_else(|| js_error(Error::Unauthorized("fork source has no committed caller event".into())))?;
-        let reader = HistoryReader::new(&self.stream, original_owner.reducer.authority(), original_owner.issuer.verifier(&mut None).expect("verifier copy")).map_err(js_error)?;
+        let reader = HistoryReader::new(&self.stream, original_owner.reducer.authority(), &(original_owner.issuer.verifier(&mut None).expect("verifier copy")), &mut None).map_err(js_error)?;
         let revision = original_owner.reducer.revision();
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let page = reader.read_page(&HistoryCursor { authority: original_owner.reducer.authority().clone(),

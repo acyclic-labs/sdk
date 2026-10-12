@@ -2449,10 +2449,10 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     let operation = native_root_output_binding_operation(
         &audience, private_volume, original_creation, work,
     )?;
-    let reader = crate::store::HistoryReader::new_with_native_work(
-        stream, &audience, &verifier.0, work,
-    )?;
-    let event = reader.0.operation_event_bounded_with_native_work(
+    let mut reader_io = crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+    let reader = crate::store::HistoryReader::new(stream, &audience, &verifier.0, &mut Some(&mut reader_io))?;
+    let reader_custody = reader_io.into_custody();
+    let event = reader.operation_event_bounded_with_native_work(
         operation, limits.file_bytes, work,
     ).await?;
     let original_revision = match event.0.as_ref() {
@@ -2473,6 +2473,7 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     };
     drop(event);
     drop(reader);
+    drop(reader_custody);
     let aggregate = crate::store::StreamAggregate::open_with_native_work(
         stream, audience,
         verifier.0, crate::core::SchemaRegistry::new(), work,

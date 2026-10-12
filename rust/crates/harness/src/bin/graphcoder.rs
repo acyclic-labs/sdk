@@ -494,8 +494,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let binding = native.caller_binding(request.caller).await?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
                 &binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
-            let reader = acyclic_harness::store::HistoryReader::new(
-                &native.stream, &binding.authority, verifier)?;
+            let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &binding.authority, &(verifier), &mut None)?;
             let cursor = match request.cursor {
                 Some(cursor) if cursor.authority == binding.authority => cursor,
                 Some(_) => return Err(Error::Unauthorized("history cursor belongs to a different caller conversation".into())),
@@ -531,7 +530,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
                 .ok_or_else(|| Error::Unsupported("original parent history verifier unavailable".into()))?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
                 &parent.issuer, parent.key, parent.authority.clone()).verifier(&mut None).expect("verifier copy");
-            let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &parent.authority, verifier)?;
+            let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &parent.authority, &(verifier), &mut None)?;
             let messages = reader.inherited_conversation_page(
                 &request.seed, child.agent()?, request.after_sequence,
                 acyclic_harness::store::HistoryReadLimits {

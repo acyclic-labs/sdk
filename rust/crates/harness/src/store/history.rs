@@ -266,40 +266,6 @@ pub struct HistoryReader<P> {
 }
 
 impl<P: StreamProvider> HistoryReader<P> {
-    /// Binds the existing canonical Stream without reading or restoring history.
-    pub fn new(
-        client: &std::sync::Arc<P>,
-        authority: &Authority,
-        verifier: AuthorityVerifier,
-    ) -> Result<Self> {
-        Self::new_owned(client, authority, verifier, &mut None)
-    }
-
-    pub(crate) fn new_with_work(
-        client: &std::sync::Arc<P>,
-        authority: &Authority,
-        verifier: &AuthorityVerifier,
-        work: Option<&mut dyn HistoryIo>,
-    ) -> Result<Self> {
-        let mut work = work;
-        verifier.verify_audience(authority, &mut work)?;
-        let verifier = verifier.copy(&mut work)?;
-        Self::new_owned(client, authority, verifier, &mut work)
-    }
-
-    /// Constructs the original authenticated reader with pre-admitted issuer and path copies on the caller's exact native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn new_with_native_work(
-        client: &std::sync::Arc<P>,
-        authority: &Authority,
-        verifier: &AuthorityVerifier,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let mut io = native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let reader = Self::new_with_work(client, authority, verifier, Some(&mut io))?;
-        Ok((reader, io.into_custody()))
-    }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.verifier.logical_owned_bytes()?
@@ -307,16 +273,20 @@ impl<P: StreamProvider> HistoryReader<P> {
             .ok_or_else(|| Error::Invalid("history reader metadata byte count overflows".into()))
     }
 
-    pub(super) fn new_owned(
+    /// Binds the canonical Stream with an authenticated verifier and optional work.
+    pub fn new(
         client: &std::sync::Arc<P>,
         authority: &Authority,
-        verifier: AuthorityVerifier,
+        verifier: &AuthorityVerifier,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
         verifier.verify_audience(authority, work)?;
-        let path = authority.stream_path(work)?;
+        let verifier = verifier.copy(work)?;
+        let verifier_bytes = if work.is_some() { verifier.logical_owned_bytes()? } else { 0 };
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, verifier_bytes);
+        let path = authority.stream_path(quota.work())?;
         let temporary_bytes = path.capacity() as u64;
-        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, temporary_bytes);
+        quota.adopt(temporary_bytes)?;
         let path_bytes = path.len() as u64;
         let stream: Result<_> = (|| {
             if let Some(work) = quota.work().as_deref_mut() {
@@ -919,8 +889,6 @@ impl<P: StreamProvider> HistoryReader<P> {
         }
     }
 }
-
-
 
 pub(crate) fn verify_history_record_with_retained_quota(
     verifier: &AuthorityVerifier,
