@@ -331,7 +331,6 @@ fn hash_leaf(
         if crate::native_host::directory_identity(&directory, &mut &*work)?
             != metadata
                 .identity()
-                .map_err(native_materialization_work_error)?
         {
             return Err(NativeTreeMaterializationError::ExternalMutation);
         }
@@ -341,10 +340,8 @@ fn hash_leaf(
         let opened = crate::native_host::stat_file(&file, &mut &*work)?;
         if opened
             .identity()
-            .map_err(native_materialization_work_error)?
             != metadata
                 .identity()
-                .map_err(native_materialization_work_error)?
             || opened.len() != metadata.len()
         {
             return Err(NativeTreeMaterializationError::ExternalMutation);
@@ -380,10 +377,8 @@ fn hash_leaf(
         let current = crate::native_host::stat_file(&file, &mut &*work)?;
         if current
             .identity()
-            .map_err(native_materialization_work_error)?
             != metadata
                 .identity()
-                .map_err(native_materialization_work_error)?
             || current.len() != metadata.len()
         {
             return Err(NativeTreeMaterializationError::ExternalMutation);
@@ -473,7 +468,6 @@ pub(super) fn hash_native_metadata_edit(
             hasher.update(
                 &metadata
                     .identity()
-                    .map_err(native_materialization_work_error)?
                     .to_bytes(),
             );
         }
@@ -512,7 +506,6 @@ fn remove_frame(
     if crate::native_host::directory_identity(&directory, &mut &*work)?
         != metadata
             .identity()
-            .map_err(native_materialization_work_error)?
     {
         return Err(NativeTreeMaterializationError::ExternalMutation);
     }

@@ -167,18 +167,7 @@ pub(super) fn prepare_source_link_buffer<W: SourceDemandReadWork>(
         .ok_or(DemandError::NativeWorkUnavailable)?
         .materialization_work()?;
     let ownership = crate::demand::SourcePayloadOwnership::new(work)?;
-    let mut allocation = work.claim(size)?;
-    let mut buffer = Vec::new();
-    if let Err(error) = buffer.try_reserve_exact(size as usize) {
-        drop(buffer);
-        let _cleanup = work.release(allocation);
-        return Err(W::allocation_failed(error));
-    }
-    if let Err(error) = work.reconcile_allocation(&mut allocation, buffer.capacity() as u64) {
-        drop(buffer);
-        let _cleanup = work.release(allocation);
-        return Err(error);
-    }
+    let (mut buffer, allocation) = buffer(size as usize, work)?;
     if let Err(error) = ownership.retain(allocation, work) {
         drop(buffer);
         let _cleanup = work.release(allocation);
