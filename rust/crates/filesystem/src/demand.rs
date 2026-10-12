@@ -812,15 +812,15 @@ pub enum DemandError {
     /// A held Linux metadata mutation failed without losing its typed cause.
     #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
     #[error(transparent)]
-    LinuxMetadata(#[from] crate::native_host::LinuxMetadataError),
+    LinuxMetadata(#[from] crate::native_host::NativeMetadataError),
     /// A held macOS metadata mutation failed without losing its typed cause.
     #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
     #[error(transparent)]
-    MacMetadata(#[from] crate::native_host::MacMetadataError),
+    MacMetadata(#[from] crate::native_host::NativeMetadataError),
     /// A held Windows metadata mutation failed without losing its typed cause.
     #[cfg(all(windows, any(feature = "native-mount", test)))]
     #[error(transparent)]
-    WindowsMetadata(#[from] crate::native_host::WindowsMetadataError),
+    WindowsMetadata(#[from] crate::native_host::NativeMetadataError),
 }
 
 impl From<std::io::Error> for DemandError {

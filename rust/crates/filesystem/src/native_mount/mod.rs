@@ -736,15 +736,15 @@ pub enum MountSourceError {
     /// Original Linux metadata cause, moved without formatting a diagnostic.
     #[cfg(target_os = "linux")]
     #[error("filesystem engine failure: source demand failed: {0}")]
-    LinuxMetadata(#[source] crate::native_host::LinuxMetadataError),
+    LinuxMetadata(#[source] crate::native_host::NativeMetadataError),
     /// Original macOS metadata cause, moved without formatting a diagnostic.
     #[cfg(target_os = "macos")]
     #[error("filesystem engine failure: source demand failed: {0}")]
-    MacMetadata(#[source] crate::native_host::MacMetadataError),
+    MacMetadata(#[source] crate::native_host::NativeMetadataError),
     /// Original Windows metadata cause, moved without formatting a diagnostic.
     #[cfg(windows)]
     #[error("filesystem engine failure: source demand failed: {0}")]
-    WindowsMetadata(#[source] crate::native_host::WindowsMetadataError),
+    WindowsMetadata(#[source] crate::native_host::NativeMetadataError),
     /// Original preallocated source-watch failure and its physical owner.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     #[error("filesystem engine failure: source demand failed: {0}")]
