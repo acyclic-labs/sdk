@@ -118,24 +118,8 @@ async fn run<T>(
 type Backend = crate::grpc::Client;
 #[cfg(target_arch = "wasm32")]
 type Backend = wire::workers_service_client::WorkersServiceClient<
-    tonic::service::interceptor::InterceptedService<tonic_web_wasm_client::Client, BrowserAuth>,
+    tonic::service::interceptor::InterceptedService<tonic_web_wasm_client::Client, crate::BearerAuth>,
 >;
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone)]
-struct BrowserAuth(tonic::metadata::MetadataValue<tonic::metadata::Ascii>);
-#[cfg(target_arch = "wasm32")]
-impl tonic::service::Interceptor for BrowserAuth {
-    fn call(
-        &mut self,
-        mut request: tonic::Request<()>,
-    ) -> Result<tonic::Request<()>, tonic::Status> {
-        request
-            .metadata_mut()
-            .insert("authorization", self.0.clone());
-        Ok(request)
-    }
-}
 
 /// Connected source-owned Workers transport, cloned per unary RPC.
 pub struct Client {
@@ -208,7 +192,7 @@ impl Client {
                     );
                     wire::workers_service_client::WorkersServiceClient::with_interceptor(
                         transport,
-                        BrowserAuth(options.authorization),
+                        options.authorization,
                     )
                 };
                 Ok(Self {

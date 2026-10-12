@@ -9,10 +9,9 @@ use super::tree_mutation::TreeFormat;
 use super::{CanonicalDecodeError, DecodeLimits, FileRecord, LogicalName, TreeEntry};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
-use crate::storage::{ObjectId, ObjectStoreError};
+use crate::performance::{WorkCounters, WorkError};
+use crate::storage::ObjectId;
 use crate::FsError;
-use thiserror::Error;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ValueChange<K, V> {
@@ -29,24 +28,6 @@ pub(crate) struct Diff<K, V> {
     pub(crate) retained_allocation_bytes: u64,
 }
 
-#[derive(Debug, Error)]
-pub(crate) enum DiffError {
-    #[error("persistent diff roots have the wrong object kind")]
-    WrongRootKind,
-    #[error("persistent diff requires a positive change bound")]
-    InvalidLimit,
-    #[error("persistent diff allocation failed")]
-    AllocationFailed,
-    #[error(transparent)]
-    Storage(#[from] ObjectStoreError),
-    #[error(transparent)]
-    Decode(#[from] CanonicalDecodeError),
-    #[error(transparent)]
-    Work(#[from] WorkError),
-    #[error("persistent diff was cancelled")]
-    Cancelled,
-}
-
 #[derive(Clone, Copy)]
 enum Task {
     Compare(ObjectId, ObjectId),
@@ -55,24 +36,6 @@ enum Task {
 }
 
 type Changes<F> = Owned<Vec<ValueChange<<F as Format>::Key, <F as Format>::Value>>>;
-
-pub(crate) async fn diff_async<S: AsyncObjectStore, F: Format>(
-    store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
-    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
-) -> Result<Diff<F::Key, F::Value>, OperationFailure<DiffError>> {
-    // Preserve the standalone error distinction used by facade/merge projections.
-    if before.is_some_and(|id| id.kind != F::kind()) || after.is_some_and(|id| id.kind != F::kind()) {
-        return Err(OperationFailure::before_work(DiffError::WrongRootKind));
-    }
-    if maximum_changes == 0 {
-        return Err(OperationFailure::before_work(DiffError::InvalidLimit));
-    }
-    let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = diff_with_accounting::<S, F>(store, before, after, maximum_changes, limits, &mut accounting, cancellation).await;
-    let work = accounting.spent();
-    result.map(|(mut diff, _)| { diff.work = work; diff })
-        .map_err(|error| OperationFailure::new(project_failure(error), work))
-}
 
 async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
     store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
@@ -305,18 +268,6 @@ fn allocation_error(error: FsError) -> FsError {
     match error { FsError::Decode(CanonicalDecodeError::AllocationFailed) => FsError::DiffAllocationFailed, other => other }
 }
 
-fn project_failure(error: FsError) -> DiffError {
-    match error {
-        FsError::InvalidDiff => DiffError::InvalidLimit,
-        FsError::DiffAllocationFailed | FsError::Decode(CanonicalDecodeError::AllocationFailed) => DiffError::AllocationFailed,
-        FsError::Object(error) => DiffError::Storage(error),
-        FsError::Decode(error) => DiffError::Decode(error),
-        FsError::Work(error) => DiffError::Work(error),
-        FsError::Cancelled(_) => DiffError::Cancelled,
-        _ => unreachable!("canonical persistent diff only produces its typed failures"),
-    }
-}
-
 pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
     store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
     limits: DecodeLimits, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -329,20 +280,6 @@ pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
     limits: DecodeLimits, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
 ) -> Result<(Diff<LogicalName, TreeEntry>, KernelOwnedAllocation), FsError> {
     diff_with_accounting::<S, TreeFormat>(store, before, after, maximum_changes, limits, accounting, cancellation).await
-}
-
-pub(crate) async fn diff_file_records_async<S: AsyncObjectStore>(
-    store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
-    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
-) -> Result<Diff<crate::FileId, FileRecord>, OperationFailure<DiffError>> {
-    diff_async::<S, FileTableFormat>(store, before, after, maximum_changes, limits, budget, cancellation).await
-}
-
-pub(crate) async fn diff_tree_entries_async<S: AsyncObjectStore>(
-    store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
-    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
-) -> Result<Diff<LogicalName, TreeEntry>, OperationFailure<DiffError>> {
-    diff_async::<S, TreeFormat>(store, before, after, maximum_changes, limits, budget, cancellation).await
 }
 
 #[cfg(all(test, feature = "memory"))]

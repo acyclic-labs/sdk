@@ -329,7 +329,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             if !workers.is_empty() {
                 return Err(Error::Conflict("active worker handles must settle or the process must close before native reopen; no implicit cancellation".into()));
             }
-            let config = api.native()?.config.clone();
+            let config = api.native()?.config();
             drop(backend.take());
             *backend = Some(Backend::Native(std::sync::Arc::new(native::NativeSession::open(config).await?)));
             return Ok("native providers reopened; no admission or effect resent\n".into());

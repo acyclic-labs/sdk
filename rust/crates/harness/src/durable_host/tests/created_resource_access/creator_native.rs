@@ -14,7 +14,6 @@ async fn original_native_creator_scope_carries_custody_through_real_content_io()
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(test_budget(16_384, 16 * 1_024 * 1_024), &cancellation)
         .expect("finite original native invocation");
-    let baseline = work.remaining().expect("remaining native quota").peak_allocation_bytes;
     let (receipt, custody) = creator.verify_with_native_work(&created.request, proof, &work)?.await?;
     assert!(custody.bytes() > 0);
     assert!(work.receipt().backend_read_operations > 0);
@@ -160,7 +159,6 @@ async fn native_created_seal_preserves_typed_identity_and_first_cancellation_fai
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(test_budget(16_384, 16 * 1_024 * 1_024), &cancellation)
             .expect("original adversarial finite ledger");
-        let baseline = work.remaining().expect("initial quota").peak_allocation_bytes;
         let mut observer = crate::store::history::native_work_io(&work)?;
         let mut receipts = authenticated_native_receipts(creator.as_ref(), &created.request, &work, &mut observer).await?;
         if cancel {
@@ -168,7 +166,6 @@ async fn native_created_seal_preserves_typed_identity_and_first_cancellation_fai
         } else {
             receipts[0].origin.preparation_task = TaskId::from_bytes([180;16]);
         }
-        let prefix = work.receipt();
         let rejected = CreatedResourceAccess::consume(
             &created.request.child, &mut receipts, Some(created.request.child.operation_id), &mut Some(&mut observer),
         );
@@ -183,8 +180,6 @@ async fn native_created_seal_preserves_typed_identity_and_first_cancellation_fai
         }
         drop(receipts);
         drop(observer);
-        if !cancel {
-        }
     }
     Ok(())
 }

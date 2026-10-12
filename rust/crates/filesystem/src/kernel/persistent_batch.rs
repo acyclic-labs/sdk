@@ -1,11 +1,4 @@
 //! Shared-frontier batch lookup for authenticated persistent B+trees.
-//!
-//! Standalone projections and native callers use one frontier/routing machine.
-//! Native primitives admit and complete on the original ledger; SDK allocation,
-//! copying and probes execute outside every original mutex. Each query, result,
-//! request, match and visited buffer retains its own physical
-//! allocation custody across provider awaits. Moving decoded values transfers
-//! their existing claims rather than reconstructing ownership from a receipt.
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::persistent_point::{Owned, absorb, query_error, project_failure, split_allocation, retire_allocation};
@@ -124,8 +117,6 @@ where S: AsyncObjectStore, F: Format {
         .map_err(|error| failed(project_failure(error), work))
 }
 
-/// One shared frontier machine, borrowing either standalone or original-native
-/// accounting only at its synchronous leaves.
 pub(crate) async fn lookup_async_with_accounting<S, F>(
     store: &S, root: ObjectId, keys: &[F::Key], maximum_queries: u32,
     limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
@@ -408,8 +399,6 @@ impl<'a, F: Format> Machine<'a, F> {
         Ok(())
     }
 
-
-
     fn retire_request(request: RequestState<F::Key>, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
         let RequestState { request, lower_allocation, upper_allocation } = request;
         let lower_bytes = request.lower.as_ref().map_or(0, F::key_owned_bytes);
@@ -655,8 +644,6 @@ fn route<K: Ord>(children: &[Child<K>], key: &K) -> (usize, u64) {
     let (after, comparisons) = counted_partition_point(children, |child| child.first <= *key);
     (after.saturating_sub(1), comparisons)
 }
-
-
 
 fn failed(error: Error, work: WorkCounters) -> Failure {
     OperationFailure::new(error, work)

@@ -128,7 +128,7 @@ impl TryFrom<wire::Attachment> for Attachment {
             file: required(value.file, "attachment.file")?.try_into()?,
             label: value.label,
         };
-        result.validate()?;
+        result.validate(&mut None)?;
         Ok(result)
     }
 }
@@ -158,7 +158,7 @@ impl TryFrom<wire::ReferencedAttachments> for ReferencedAttachments {
                 item_count: value.item_count,
             },
         };
-        result.validate()?;
+        result.validate(&mut None)?;
         Ok(result)
     }
 }
@@ -221,7 +221,7 @@ impl TryFrom<wire::ConversationMessage> for ConversationMessage {
                 .map(|(name, file)| Ok((name, file.try_into()?)))
                 .collect::<Result<BTreeMap<_, _>>>()?,
         };
-        result.validate()?;
+        result.validate(&mut None)?;
         Ok(result)
     }
 }

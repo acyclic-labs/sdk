@@ -554,7 +554,7 @@ where
                 code: crate::wire::ErrorCode::Invalid, reason: "native runtime configuration has no original work",
             })?;
             volume.validate_with_native_work(work)?;
-        } else { volume.validate()?; }
+        } else { volume.validate(&mut None)?; }
         #[cfg(target_arch = "wasm32")]
         volume.validate()?;
         if maximum_payload_bytes == 0 {
@@ -773,13 +773,15 @@ where
             .ok_or_else(|| Error::Unauthorized("model wait has no task".into()))?;
         let operation = execution_operation(task, turn);
         let journal = FilesystemExecutionJournal::new(
-            self.stream.clone(),
-            self.filesystem.clone(),
-            self.volume.clone(),
-            self.verifier.clone(), crate::core::SchemaRegistry::new(),
-            self.signed.clone(),
-            self.maximum_payload_bytes.min(limits.file_bytes),
-        )?
+                self.stream.clone(),
+                self.filesystem.clone(),
+                &self.volume,
+                &self.verifier,
+                &crate::core::SchemaRegistry::new(),
+                &self.signed,
+                self.maximum_payload_bytes.min(limits.file_bytes),
+                None,
+            )?
         .with_turn(operation, turn);
         let mut replay = ExecutionReplay::new(operation);
         let mut latest = None;
@@ -997,10 +999,7 @@ where
         }
         if let Some(owner) = &self.interaction_owner {
             journal.with_interaction_owner(
-                owner.verifier.clone(),
-                owner.schemas.clone(),
-                owner.scope.clone(),
-                owner.volume.clone(),
+                &owner.verifier, &owner.schemas, &owner.scope, &owner.volume, None,
             )
         } else {
             Ok(journal)
@@ -1230,15 +1229,21 @@ where
         let admission = self.admission_observed(task, Some(&io)).await?;
         let operation = execution_operation_with_native_work(task, turn, work)?;
         let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
-        let journal = FilesystemExecutionJournal::for_task_with_native_work(
-            owner, operation, turn, Arc::clone(&self.filesystem), &self.volume,
-            &self.verifier, &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes), work,
-        )?;
+        let journal = FilesystemExecutionJournal::for_task(
+                owner,
+                operation,
+                turn,
+                Arc::clone(&self.filesystem),
+                &self.volume,
+                &self.verifier,
+                &self.signed,
+                self.maximum_payload_bytes.min(admission.limits.file_bytes),
+                Some(&io),
+            )?;
         let journal = if admission.grants.contains(crate::contract::capability::INTERACTION_ROUTE) {
             if let Some(owner) = &self.interaction_owner {
-                journal.with_interaction_owner_with_native_work(
-                    &owner.verifier, &owner.schemas, &owner.scope, &owner.volume, work,
+                journal.with_interaction_owner(
+                    &owner.verifier, &owner.schemas, &owner.scope, &owner.volume, Some(&io),
                 )?
             } else { journal }
         } else { journal };
@@ -1254,11 +1259,17 @@ where
         let admission = self.admission_observed(task, Some(&io)).await?;
         let operation = execution_operation_with_native_work(task, turn, work)?;
         let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?;
-        let journal = FilesystemExecutionJournal::for_task_with_native_work(
-            owner, operation, turn, Arc::clone(&self.filesystem), &self.volume,
-            &self.verifier, &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes), work,
-        )?;
+        let journal = FilesystemExecutionJournal::for_task(
+                owner,
+                operation,
+                turn,
+                Arc::clone(&self.filesystem),
+                &self.volume,
+                &self.verifier,
+                &self.signed,
+                self.maximum_payload_bytes.min(admission.limits.file_bytes),
+                Some(&io),
+            )?;
         Ok((journal.into_native_shared(work)?, operation))
     }
 
@@ -1275,10 +1286,11 @@ where
                 execution_operation(task, turn),
                 turn,
                 self.filesystem.clone(),
-                self.volume.clone(),
-                self.verifier.clone(),
-                self.signed.clone(),
+                &self.volume,
+                &self.verifier,
+                &self.signed,
                 self.maximum_payload_bytes.min(admission.limits.file_bytes),
+                None,
             )?,
             admission
                 .grants
@@ -1739,7 +1751,7 @@ where
             ))?;
             return if guard_execution {
                 self.execution_journal_with_native_work(task, fence, command, work).await?.0
-                    .suspend_workflow_command_if_quiescent_with_native_work(revision, command, work).await
+                    .suspend_workflow_command_if_quiescent(revision, command, Some(io)).await
             } else {
                 self.host.suspend_workflow(task, fence, revision, Some(command), None, None, &mut Some(&mut crate::store::history::native_work_io(work)?)).await
             };
@@ -1747,7 +1759,7 @@ where
         if guard_execution {
             self.execution_journal(task, fence.clone(), command)
                 .await?
-                .suspend_workflow_command_if_quiescent(revision, command)
+                .suspend_workflow_command_if_quiescent(revision, command, None)
                 .await
         } else {
             self.host

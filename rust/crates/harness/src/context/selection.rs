@@ -185,14 +185,14 @@ impl ContextSelection {
         limits: Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         let native = selection_has_native_work(work);
         if native {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
             }
             match &self.source {
-                ContextSourceValue::File { file } => limits.validate_file_with_work(file, work)?,
+                ContextSourceValue::File { file } => limits.validate_file(file, work)?,
                 ContextSourceValue::Attribute { attribute } => attribute.preflight_source(work)?,
             }
         }
@@ -200,7 +200,7 @@ impl ContextSelection {
         match &self.source {
             ContextSourceValue::File { file } => {
                 if !native {
-                    limits.validate_file_with_work(file, work)?;
+                    limits.validate_file(file, work)?;
                 }
                 if let ContextExtent::Span { start, end } = self.extent
                     && (start >= end || end > file.descriptor().byte_length())
@@ -397,7 +397,7 @@ impl ContextStage for SelectionStage {
             super::validate_projected_context(&context, limits, None)?;
             self.selection.validate(limits)?;
             if let ContextSourceValue::File { file } = &self.selection.source {
-                limits.validate_file(file)?;
+                limits.validate_file(file, &mut None)?;
                 self.verifier.verify(file).await?;
             }
             let messages = self

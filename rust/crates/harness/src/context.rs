@@ -129,7 +129,7 @@ impl CanonicalContextCheckpoint {
     pub fn validate(
         &self, limits: Limits, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
+        crate::executor::with_history_io(io, |work| limits.validate(work))?;
         if self.selection.conversation_revision == 0
             || self.selection.message_ids.is_empty()
             || self.selection.message_ids.len() > limits.context_messages
@@ -138,7 +138,7 @@ impl CanonicalContextCheckpoint {
         }
         // Validate immutable references before the bounded scratch set grows.
         for reference in [&self.source, &self.retained, &self.compaction] {
-            crate::executor::with_history_io(io, |work| limits.validate_file_with_work(reference, work))?;
+            crate::executor::with_history_io(io, |work| limits.validate_file(reference, work))?;
             if reference.volume() != self.source.volume()
                 || reference.descriptor().media_type() != "application/json"
             {
@@ -146,7 +146,7 @@ impl CanonicalContextCheckpoint {
             }
         }
         if let Some(previous) = &self.selection.checkpoint {
-            crate::executor::with_history_io(io, |work| limits.validate_file_with_work(previous, work))?;
+            crate::executor::with_history_io(io, |work| limits.validate_file(previous, work))?;
         }
         #[cfg(feature = "filesystem")]
         let mut history = io.map(crate::executor::PreparationIo::history_io);
@@ -281,7 +281,7 @@ impl DurableContextProvider {
     ) -> Result<Self> {
         let source = source.into();
         let source_revision = source_revision.into();
-        limits.validate()?;
+        limits.validate(&mut None)?;
         crate::contract::validate_component_label(&source, "context source")?;
         crate::contract::validate_component_label(&source_revision, "context source revision")?;
         if source.trim().is_empty()
@@ -306,7 +306,7 @@ impl DurableContextProvider {
 
     /// Installs an owner-bound writer for immutable projection payloads.
     pub fn with_publisher(mut self, publisher: Arc<dyn ContentPublisher>) -> Result<Self> {
-        publisher.volume().validate()?;
+        publisher.volume().validate(&mut None)?;
         self.publisher = Some(publisher);
         Ok(self)
     }
@@ -349,7 +349,7 @@ impl DurableContextProvider {
                 "context.json",
             )
             .await?;
-        self.limits.validate_file(&content)?;
+        self.limits.validate_file(&content, &mut None)?;
         if content.volume() != publisher.volume()
             || content.descriptor().media_type() != "application/json"
         {
@@ -357,7 +357,7 @@ impl DurableContextProvider {
                 "context publisher returned another binding".into(),
             ));
         }
-        content.descriptor().verify(&bytes)?;
+        content.descriptor().verify(&bytes, &mut None)?;
         self.content_verifier.verify(&content).await?;
         let stored = StoredContextRevision {
             format_version: 5,
@@ -587,7 +587,7 @@ impl DurableContextProvider {
             return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Storage,
                 "durable context identity, revision or canonical bytes are invalid"));
         }
-        crate::executor::with_history_io(io, |work| limits.validate_file_with_work(&revision.context, work))?;
+        crate::executor::with_history_io(io, |work| limits.validate_file(&revision.context, work))?;
         if revision.context.descriptor().media_type() != "application/json"
             || revision.context.descriptor().byte_length() > limits.render_bytes
         {
@@ -595,26 +595,15 @@ impl DurableContextProvider {
                 "context payload descriptor is invalid"));
         }
         verify_file(&revision.context, self.content_verifier.as_ref(), io).await?;
-        let payload = match io {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Some(io) if io.original_native_work().is_some() => {
-                let work = io.original_native_work().expect("native IO retains original work");
-                if !self.content_verifier.supports_native_read(revision.context.volume(), work)? {
-                    return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
-                        "context reader has no original native capability"));
-                }
-                self.content_verifier.read_with_native_work(
-                    &revision.context, revision.context.descriptor().byte_length(), work)?.await?
-            }
-            #[cfg(feature = "filesystem")]
-            Some(io) => crate::executor::receive_preparation(io, self.content_verifier.read_measured(
-                &revision.context, revision.context.descriptor().byte_length(), io.remaining()?, &io.cancellation,
-            ).await)?,
-            _ => self.content_verifier.read(&revision.context).await?,
-        };
+        if !self.content_verifier.supports_read(revision.context.volume(), io)? {
+            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Unsupported,
+                "context reader has no bounded capability"));
+        }
+        let payload = self.content_verifier.read(&revision.context,
+            revision.context.descriptor().byte_length(), io)?.await?;
         #[cfg(feature = "filesystem")]
         let _payload_hold = io.map(|io| io.guard_bytes(&payload)).transpose()?;
-        crate::executor::with_history_io(io, |work| revision.context.descriptor().verify_with_work(&payload, work))?;
+        crate::executor::with_history_io(io, |work| revision.context.descriptor().verify(&payload, work))?;
         let context = decode_context_json(&payload, limits.render_bytes, io,
             "context payload is not canonical")?;
         validate_context_refs(&context, self.content_verifier.as_ref(), limits, io).await?;
@@ -844,14 +833,14 @@ pub(crate) fn validate_projected_context(
     context: &Context, limits: Limits, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     crate::executor::with_history_io(io, |work| {
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         context.validate_current_input(io)?;
         if context.messages.len() > limits.context_messages || context.metadata.len() > limits.attachments {
             return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
                 "context projection exceeded declared bounds"));
         }
         for message in &context.messages { message.content.validate_limits(limits, work)?; }
-        for file in context.metadata.values() { limits.validate_file_with_work(file, work)?; }
+        for file in context.metadata.values() { limits.validate_file(file, work)?; }
         crate::contract::validate_trusted_json_byte_bound(context, limits.render_bytes, work)
     })
 }
@@ -933,20 +922,11 @@ pub(super) async fn verify_file(
     file: &FileRef, verifier: &dyn ContentResidencyVerifier,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        if !verifier.supports_native_read(file.volume(), work)? {
-            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
-                "context verifier has no original native capability"));
-        }
-        return verifier.verify_with_native_work(file, file.descriptor().byte_length(), work)?.await;
+    if !verifier.supports_read(file.volume(), io)? {
+        return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Unsupported,
+            "context verifier has no bounded capability"));
     }
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        return io.receive_content(verifier.verify_measured(file, file.descriptor().byte_length(), io.remaining()?, &io.cancellation).await);
-    }
-    let _ = io;
-    verifier.verify(file).await
+    verifier.verify(file, file.descriptor().byte_length(), io)?.await
 }
 
 async fn validate_context_refs(
@@ -976,7 +956,7 @@ impl ContextSource for DurableContextProvider {
         limits: Limits,
     ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
         Box::pin(async move {
-            limits.validate()?;
+            limits.validate(&mut None)?;
             let tail = self.tail_revision(None).await?;
             if tail == 0 {
                 return Ok(Vec::new());
@@ -994,8 +974,8 @@ impl ContextSource for DurableContextProvider {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<ModelMessage>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
-            limits.validate_with_native_work(work)?;
             let io = crate::executor::PreparationIo::from_native_work(work)?;
+            crate::executor::with_history_io(Some(&io), |work| limits.validate(work))?;
             let tail = self.tail_revision(Some(&io)).await?;
             if tail == 0 {
                 return Ok((Vec::new(), work.retain_owned(0)
@@ -1067,7 +1047,7 @@ impl ContextSource for Context {
 pub(super) fn validate_source_messages(
     messages: &[ModelMessage], limits: Limits, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
+    crate::executor::with_history_io(io, |work| limits.validate(work))?;
     BorrowedContext {
         messages: ContextMessages { first: messages, user: None, second: &[] },
         metadata: &BTreeMap::new(), current_input_index: None,
@@ -1079,8 +1059,8 @@ pub(crate) fn restrict_context_limits(
     pinned: Limits, admitted: Limits, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Limits> {
     crate::executor::with_history_io(io, |work| {
-        pinned.validate_with_work(work)?;
-        admitted.validate_with_work(work)
+        pinned.validate(work)?;
+        admitted.validate(work)
     })?;
     Ok(Limits {
         file_bytes: pinned.file_bytes.min(admitted.file_bytes),
@@ -1748,7 +1728,7 @@ impl ContextPipeline {
         limits: Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Context> {
-        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
+        crate::executor::with_history_io(io, |work| limits.validate(work))?;
         let metadata = BTreeMap::new();
         let messages = ContextMessages {
             first: input
@@ -1824,7 +1804,7 @@ impl ContextPipeline {
         limits: Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Context> {
-        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
+        crate::executor::with_history_io(io, |work| limits.validate(work))?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let native = io.and_then(crate::executor::PreparationIo::original_native_work);
         self.validate(io)?;
@@ -2755,7 +2735,7 @@ mod tests {
 
     impl ContentResidencyVerifier for TestPayloadStore {
         fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async move { file.validate() })
+            Box::pin(async move { file.validate(&mut None) })
         }
 
         fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
@@ -3198,7 +3178,7 @@ mod tests {
         fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                file.validate()
+                file.validate(&mut None)
             })
         }
 
@@ -3381,7 +3361,7 @@ mod tests {
             &'a self,
             reference: &'a FileRef,
         ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { reference.validate() })
+            Box::pin(async move { reference.validate(&mut None) })
         }
     }
 
