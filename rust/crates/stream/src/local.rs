@@ -337,20 +337,10 @@ impl JournalFlushWork {
     }
 }
 
-struct MutationCompletion<T> {
-    result: MemoryResult<()>,
-    flush: Option<JournalFlushPlan>,
-    // Keep SDK-owned request controls alive through accepted durability drain.
-    _input: Option<MutationInput>,
-    visibility: Option<CommitVisibility>,
-    value: Option<T>,
-    primary_failure: bool,
-}
-
 struct CommitCompletion<T> {
     value: T,
     error: Option<std::io::Error>,
-    input: Option<MutationInput>,
+    _input: Option<MutationInput>,
     revision: Option<u64>,
     visibility: Option<CommitVisibility>,
     // A rejected original guard did not publish and must not write its frame.
@@ -378,6 +368,7 @@ enum MutationVisibility {
 enum MutationInput {
     Append(AppendInput),
     Commit(CommitInput),
+    Fork(ForkRequest),
 }
 
 struct AppendInput {
@@ -472,7 +463,7 @@ impl PreparedLocalWork {
                 ),
             );
             self.stream.inner.commit_clock.unpin();
-            let completion = completion.map_err(MemoryFailure::Observer)?
+            let (outcome, error) = completion.map_err(MemoryFailure::Observer)?
                 .map_err(MemoryFailure::Provider)?;
             let (physical, observed) = self.persist.run(JournalPersistWork::run);
             if physical.is_err() { self.stream.inner.poison(); }
@@ -484,9 +475,9 @@ impl PreparedLocalWork {
             keep_observation(&mut work.late, observed);
             drop(visibility);
             work.late?;
-            if let Some(error) = completion.error { return Err(MemoryFailure::Observer(error)); }
+            if let Some(error) = error { return Err(MemoryFailure::Observer(error)); }
             physical.map_err(publication_error)?;
-            Ok(completion.outcome)
+            Ok(crate::memory::native(Ok(outcome), &self.meter)?.expect("completed publication"))
         })();
         let required = self.stream.inner.journal.required().unwrap_or(0);
         let flushed = JournalFlushWork { plan: self.flush, target: required }.run();
@@ -781,13 +772,6 @@ impl LocalStream {
         Ok(())
     }
 
-    /// Writes `frame`, in the order its mutation applied, without waiting for the device: [`Self::exclusive`] waits for the flush once it has released visibility, so concurrent mutations share one flush.
-    async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
-        let plan = self.plan_persist(frame, None, None)
-            .map_err(|_| self.inner.poison())?;
-        self.persist_planned(plan, None).await.map_err(ordinary_failure)
-    }
-
     fn plan_persist(
         &self,
         frame: PreparedFrame,
@@ -951,114 +935,6 @@ impl LocalStream {
         }
     }
 
-    /// Runs one mutation under exclusive visibility on its own task, so a cancelled caller can neither expose it before its frame is durable nor leave a failed persist unpoisoned.
-    async fn exclusive<T, F>(
-        &self,
-        span: &obs::OwnedSpan,
-        mutation: impl FnOnce(Self) -> F + Send + 'static,
-    ) -> Result<T, StreamError>
-    where
-        T: Send + 'static,
-        F: Future<Output = Result<T, StreamError>> + Send + 'static,
-    {
-        self.exclusive_observed(span, None, MutationVisibility::BeforeMutation, move |stream| async move {
-            let (result, value) = match mutation(stream).await {
-                Ok(value) => (Ok(()), Some(value)),
-                Err(error) => (Err(MemoryFailure::Provider(error)), None),
-            };
-            MutationCompletion {
-                result,
-                flush: None,
-                _input: None,
-                visibility: None,
-                value,
-                primary_failure: false,
-            }
-        }).await.map_err(ordinary_failure)
-    }
-
-    async fn exclusive_observed<T, F>(
-        &self,
-        span: &obs::OwnedSpan,
-        meter: Option<Arc<dyn NativeReadMeter>>,
-        visibility: MutationVisibility,
-        mutation: impl FnOnce(Self) -> F + Send + 'static,
-    ) -> MemoryResult<T>
-    where
-        T: Send + 'static,
-        F: Future<Output = MutationCompletion<T>> + Send + 'static,
-    {
-        self.check_available().inspect_err(|error| obs::failed(span, error.code()))?;
-        if let Some(meter) = &meter { meter.check()?; }
-        let stream = self.clone();
-        let deferred = deferred();
-        let operation = span.clone();
-        let observer = meter.clone();
-        let task = DEFERRED.scope(deferred, async move {
-            let result = operation.scope(async {
-                let (mut completion, required) = {
-                    let _visibility = match visibility {
-                        MutationVisibility::BeforeMutation =>
-                            Some(Arc::clone(&stream.inner.visibility).write_owned().await),
-                        MutationVisibility::FromCommit => None,
-                    };
-                    stream.check_available()?;
-                    if let Some(meter) = &observer { meter.check()?; }
-                    {
-                        let _compaction_visibility = match visibility {
-                            MutationVisibility::BeforeMutation => None,
-                            MutationVisibility::FromCommit =>
-                                Some(Arc::clone(&stream.inner.visibility).write_owned().await),
-                        };
-                        if stream.inner.prepared_compaction.load(Ordering::Acquire) {
-                            stream.compact_if_due_observed(observer.as_ref()).await?;
-                            stream.inner.prepared_compaction.store(false, Ordering::Release);
-                        }
-                    }
-                    let mut completion = mutation(stream.clone()).await;
-                    if matches!(visibility, MutationVisibility::BeforeMutation) {
-                        stream.inner.commit_clock.unpin();
-                    }
-                    let required = stream.inner.journal.required();
-                    drop(completion.visibility.take());
-                    (completion, required)
-                };
-                let durable = match required {
-                    Ok(required) => stream.await_durable_observed(
-                        required, observer.as_ref(), completion.flush,
-                    ).await,
-                    Err(error) => {
-                        if let Some(plan) = completion.flush {
-                            let work = JournalFlushWork { plan, target: 0 };
-                            let _ = tokio::task::spawn_blocking(move || work.run()).await;
-                        }
-                        Err(MemoryFailure::Provider(error))
-                    }
-                };
-                completion.result?;
-                if !completion.primary_failure {
-                    durable?;
-                    if let Some(meter) = &observer { meter.check()?; }
-                }
-                Ok(completion.value.take().expect("successful mutation owns its value"))
-            }).await;
-            match &result {
-                Ok(_) => { let _ = obs::finish(&operation, Ok::<(), StreamError>(())); }
-                Err(MemoryFailure::Provider(error)) => obs::failed(&operation, error.code()),
-                Err(MemoryFailure::Observer(_)) => obs::failed(
-                    &operation,
-                    if observer.is_some() { "native_work" } else { StreamError::Unavailable.code() },
-                ),
-            }
-            result
-        });
-        let task = FundedLocalTask::new(task, meter.as_ref())?;
-        tokio::spawn(task).await.map_err(|_| {
-            obs::failed(span, StreamError::Unavailable.code());
-            MemoryFailure::Provider(StreamError::Unavailable)
-        })?
-    }
-
     async fn visible<T, E>(
         &self,
         read: impl Future<Output = Result<T, E>>,
@@ -1084,8 +960,7 @@ impl LocalStream {
         self.visible(self.inner.provider.read(request), None).await.map_err(ordinary_failure)
     }
 
-    /// The ordinary and native calls share frame preparation, visibility, persistence, compaction, clock pinning, and group completion.
-    async fn mutation_with<T, F>(
+    async fn mutation<T, F>(
         &self,
         input: MutationInput,
         deadline: Option<u64>,
@@ -1103,70 +978,116 @@ impl LocalStream {
                 "acyclic.stream.commit", items = input.request.mutations.len(),
                 outcome = Empty, error.kind = Empty,
             ),
+            MutationInput::Fork(_) => tracing::info_span!("acyclic.stream.fork", outcome = Empty, error.kind = Empty),
             MutationInput::Append(input) => tracing::info_span!(
                 "acyclic.stream.append", items = input.request.records.len(),
                 bytes = input.request.records.iter().map(crate::OwnedBytes::len).sum::<usize>(),
                 rev = Empty, outcome = Empty, error.kind = Empty,
             ),
         });
+        self.check_available().inspect_err(|error| obs::failed(&span, error.code()))?;
+        if let Some(meter) = &meter { meter.check()?; }
+        let stream = self.clone();
+        let deferred = deferred();
         let operation = span.clone();
         let observer = meter.clone();
-        span.scope(self.exclusive_observed(&span, meter, visibility, move |stream| async move {
-            let mut accepted_flush = None;
-            let mut accepted_input = None;
-            let mut accepted_visibility = None;
-            let mut accepted_value = None;
-            let mut primary_failure = false;
-            let result = async {
-                let command = match &input {
-                    MutationInput::Commit(input) => CommandRef::Commit(&input.request),
-                    MutationInput::Append(input) => CommandRef::Append(&input.request),
+        let task = DEFERRED.scope(deferred, async move {
+            let result = operation.scope(async {
+                let mut accepted_flush = None;
+                let mut completion = None;
+                let (result, required) = {
+                    let _visibility = match visibility {
+                        MutationVisibility::BeforeMutation =>
+                            Some(Arc::clone(&stream.inner.visibility).write_owned().await),
+                        MutationVisibility::FromCommit => None,
+                    };
+                    stream.check_available()?;
+                    if let Some(meter) = &observer { meter.check()?; }
+                    {
+                        let _compaction_visibility = match visibility {
+                            MutationVisibility::BeforeMutation => None,
+                            MutationVisibility::FromCommit =>
+                                Some(Arc::clone(&stream.inner.visibility).write_owned().await),
+                        };
+                        if stream.inner.prepared_compaction.load(Ordering::Acquire) {
+                            stream.compact_if_due_observed(observer.as_ref()).await?;
+                            stream.inner.prepared_compaction.store(false, Ordering::Release);
+                        }
+                    }
+                    let result = async {
+                        let command = match &input {
+                            MutationInput::Commit(input) => CommandRef::Commit(&input.request),
+                            MutationInput::Append(input) => CommandRef::Append(&input.request),
+                            MutationInput::Fork(request) => CommandRef::Fork(request),
+                        };
+                        let (frame, committed_at) = stream.prepare(
+                            command, observer.as_ref(),
+                            matches!(visibility, MutationVisibility::BeforeMutation),
+                        )?;
+                        let frame_bytes = frame.bytes;
+                        let admission = observer.as_ref()
+                            .map(|meter| AdmittedFrameWrite::new(meter, frame.encoded.len()))
+                            .transpose()?;
+                        let mut flush = if observer.is_some() && !deferred {
+                            Some(stream.plan_flush(observer.as_ref())?)
+                        } else { None };
+                        if is_commit { accepted_flush = flush.take(); }
+                        let persist = stream.plan_persist(frame, admission, observer.as_ref())?;
+                        completion = Some(execute(stream.inner.provider.clone(), input, deadline, committed_at, frame_bytes).await?);
+                        let completion = completion.as_mut().expect("executed mutation");
+                        let persisted = if completion.persist {
+                            if !is_commit { accepted_flush = flush.take(); }
+                            stream.persist_planned(persist, observer.as_ref()).await
+                        } else {
+                            drop(persist);
+                            Ok(())
+                        };
+                        if let Some(error) = completion.error.take() { return Err(MemoryFailure::Observer(error)); }
+                        if completion.primary_failure { return Ok(()); }
+                        persisted?;
+                        if let Some(revision) = completion.revision { operation.record("rev", revision); }
+                        Ok(())
+                    }.await;
+                    if matches!(visibility, MutationVisibility::BeforeMutation) { stream.inner.commit_clock.unpin(); }
+                    let required = stream.inner.journal.required();
+                    if let Some(completion) = &mut completion { drop(completion.visibility.take()); }
+                    (result, required)
                 };
-                let (frame, committed_at) = stream.prepare(
-                    command, observer.as_ref(),
-                    matches!(visibility, MutationVisibility::BeforeMutation),
-                )?;
-                let frame_bytes = frame.bytes;
-                let admission = observer.as_ref()
-                    .map(|meter| AdmittedFrameWrite::new(meter, frame.encoded.len()))
-                    .transpose()?;
-                let mut flush = if observer.is_some() && !deferred() {
-                    Some(stream.plan_flush(observer.as_ref())?)
-                } else {
-                    None
+                let durable = match required {
+                    Ok(required) => stream.await_durable_observed(required, observer.as_ref(), accepted_flush).await,
+                    Err(error) => {
+                        if let Some(plan) = accepted_flush {
+                            let work = JournalFlushWork { plan, target: 0 };
+                            let _ = tokio::task::spawn_blocking(move || work.run()).await;
+                        }
+                        Err(MemoryFailure::Provider(error))
+                    }
                 };
-                if is_commit { accepted_flush = flush.take(); }
-                let persist = stream.plan_persist(frame, admission, observer.as_ref())?;
-                let completion = execute(stream.inner.provider.clone(), input, deadline, committed_at, frame_bytes).await?;
-                accepted_input = completion.input;
-                accepted_visibility = completion.visibility;
-                accepted_value = Some(completion.value);
-                primary_failure = completion.primary_failure;
-                let persisted = if completion.persist {
-                    if !is_commit { accepted_flush = flush.take(); }
-                    stream.persist_planned(persist, observer.as_ref()).await
-                } else {
-                    drop(persist);
-                    Ok(())
-                };
-                if let Some(error) = completion.error {
-                    return Err(MemoryFailure::Observer(error));
+                result?;
+                let completion = completion.expect("successful mutation owns its value");
+                if !completion.primary_failure {
+                    durable?;
+                    if let Some(meter) = &observer { meter.check()?; }
                 }
-                if primary_failure {
-                    return Ok(());
-                }
-                persisted?;
-                if let Some(revision) = completion.revision { operation.record("rev", revision); }
-                Ok(())
-            }.await;
-            MutationCompletion {
-                result, flush: accepted_flush,
-                _input: accepted_input,
-                visibility: accepted_visibility,
-                value: accepted_value,
-                primary_failure,
+                Ok(completion.value)
+            }).await;
+            match &result {
+                Ok(_) => { let _ = obs::finish(&operation, Ok::<(), StreamError>(())); }
+                Err(MemoryFailure::Provider(error)) => obs::failed(&operation, error.code()),
+                Err(MemoryFailure::Observer(_)) => obs::failed(
+                    &operation,
+                    if observer.is_some() { "native_work" } else { StreamError::Unavailable.code() },
+                ),
             }
-        })).await
+            result
+        });
+        span.scope(async {
+            let task = FundedLocalTask::new(task, meter.as_ref())?;
+            tokio::spawn(task).await.map_err(|_| {
+                obs::failed(&span, StreamError::Unavailable.code());
+                MemoryFailure::Provider(StreamError::Unavailable)
+            })?
+        }).await
     }
 
     fn native_commit_with_deadline(
@@ -1204,7 +1125,7 @@ impl LocalStream {
             } else {
                 MutationVisibility::BeforeMutation
             };
-            let result = self.mutation_with(
+            let result = self.mutation(
                 MutationInput::Commit(input), deadline, Some(observer), visibility,
                 move |provider, input, deadline, committed_at, frame_bytes| async move {
                     let MutationInput::Commit(mut input) = input else { unreachable!() };
@@ -1264,10 +1185,10 @@ impl LocalStream {
                     ).await;
                     drop(acquire);
                     let (result, visibility, persist) = match completion {
-                        Ok(Ok((completion, visibility))) => {
-                            let result = match completion.error {
+                        Ok(Ok((outcome, error, visibility))) => {
+                            let result = match error {
                                 Some(error) => Err(error),
-                                None => crate::memory::native(Ok(completion.outcome), &execute_meter).map(|result| result.map_err(E::from)),
+                                None => crate::memory::native(Ok(outcome), &execute_meter).map(|result| result.map_err(E::from)),
                             };
                             (result, visibility, true)
                         }
@@ -1280,7 +1201,7 @@ impl LocalStream {
                     let primary_failure = !matches!(&result, Ok(Ok(_)));
                     Ok(CommitCompletion {
                         value: (result, before),
-                        error: None, input: Some(MutationInput::Commit(input)), revision: None, visibility, persist, primary_failure,
+                        error: None, _input: Some(MutationInput::Commit(input)), revision: None, visibility, persist, primary_failure,
                     })
                 },
             ).await;
@@ -1315,7 +1236,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.mutation_with(MutationInput::Append(AppendInput { request, _allocation: None }), None, None, MutationVisibility::BeforeMutation, |provider, input, _, _, _| async move {
+        self.mutation(MutationInput::Append(AppendInput { request, _allocation: None }), None, None, MutationVisibility::BeforeMutation, |provider, input, _, _, _| async move {
             let MutationInput::Append(input) = input else { unreachable!() };
             let retain_conflict = input.request.idempotency_key.is_some();
             let value = provider.append(input.request).await?;
@@ -1324,26 +1245,16 @@ impl StreamProvider for LocalStream {
                 AppendOutcome::Committed(receipt) => Some(receipt.tail),
                 _ => None,
             };
-            Ok(CommitCompletion { value, error: None, persist, revision, input: None, visibility: None, primary_failure: false })
+            Ok(CommitCompletion { value, error: None, persist, revision, _input: None, visibility: None, primary_failure: false })
         }).await.map_err(ordinary_failure)
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
-            "acyclic.stream.fork",
-            outcome = Empty,
-            error.kind = Empty
-        ));
-        span.scope(async {
-            self.exclusive(&span, |stream| async move {
-                let frame = stream.prepare(CommandRef::Fork(&request), None, true).map(|(frame, _)| frame).map_err(ordinary_failure)?;
-                let outcome = stream.inner.provider.fork(request).await?;
-                stream.persist(frame).await?;
-                Ok(outcome)
-            })
-            .await
-        })
-        .await
+        self.mutation(MutationInput::Fork(request), None, None, MutationVisibility::BeforeMutation, |provider, input, _, _, _| async move {
+            let MutationInput::Fork(request) = input else { unreachable!() };
+            let value = provider.fork(request).await?;
+            Ok(CommitCompletion { value, error: None, persist: true, revision: None, _input: None, visibility: None, primary_failure: false })
+        }).await.map_err(ordinary_failure)
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
@@ -1439,10 +1350,10 @@ impl StreamProvider for LocalStream {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.mutation_with(MutationInput::Commit(CommitInput { request, _allocation: None }), None, None, MutationVisibility::BeforeMutation, |provider, input, _, _, _| async move {
+        self.mutation(MutationInput::Commit(CommitInput { request, _allocation: None }), None, None, MutationVisibility::BeforeMutation, |provider, input, _, _, _| async move {
             let MutationInput::Commit(input) = input else { unreachable!() };
             let value = provider.commit(input.request).await?;
-            Ok(CommitCompletion { value, error: None, input: None, revision: None, visibility: None, persist: true, primary_failure: false })
+            Ok(CommitCompletion { value, error: None, _input: None, revision: None, visibility: None, persist: true, primary_failure: false })
         }).await.map_err(ordinary_failure)
     }
 
@@ -1451,12 +1362,12 @@ impl StreamProvider for LocalStream {
         request: CommitRequest,
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        self.mutation_with(
+        self.mutation(
             MutationInput::Commit(CommitInput { request, _allocation: None }), Some(deadline_unix_millis), None, MutationVisibility::BeforeMutation,
             |provider, input, deadline, _, _| async move {
                 let MutationInput::Commit(input) = input else { unreachable!() };
                 let value = provider.commit_before(input.request, deadline.expect("deadline is supplied")).await?;
-                Ok(CommitCompletion { value, error: None, input: None, revision: None, visibility: None, persist: true, primary_failure: false })
+                Ok(CommitCompletion { value, error: None, _input: None, revision: None, visibility: None, persist: true, primary_failure: false })
             },
         ).await.map_err(ordinary_failure)
     }
@@ -1493,15 +1404,15 @@ impl StreamProvider for LocalStream {
             drop(request);
             let execute_meter = Arc::clone(&observer);
             let failure_meter = Arc::clone(&observer);
-            let result = self.mutation_with(
+            let result = self.mutation(
                 MutationInput::Append(input), None, Some(observer), MutationVisibility::BeforeMutation,
                 move |provider, input, _, _, _| async move {
                     let MutationInput::Append(mut input) = input else { unreachable!() };
                     let retain_conflict = input.request.idempotency_key.is_some();
-                    let completion = provider.apply_append(
+                    let (outcome, error) = provider.apply_append(
                         &mut input.request, &MemoryObserver { meter: Some(Arc::clone(&execute_meter)) },
                     ).await?;
-                    let value = crate::memory::native(Ok(completion.outcome), &execute_meter)?
+                    let value = crate::memory::native(Ok(outcome), &execute_meter)?
                         .expect("successful append completion");
                     let persist = matches!(value.value(), AppendOutcome::Committed(_))
                         || retain_conflict;
@@ -1510,8 +1421,8 @@ impl StreamProvider for LocalStream {
                         _ => None,
                     };
                     Ok(CommitCompletion {
-                        value, error: completion.error,
-                        persist, revision, input: Some(MutationInput::Append(input)), visibility: None, primary_failure: false,
+                        value, error,
+                        persist, revision, _input: Some(MutationInput::Append(input)), visibility: None, primary_failure: false,
                     })
                 },
             ).await;
