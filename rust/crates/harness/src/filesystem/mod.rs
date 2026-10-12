@@ -350,12 +350,6 @@ impl<A, O> FilesystemContentVerifier<A, O> {
             #[cfg(not(target_arch = "wasm32"))] _native_metadata })
     }
 
-    /// Owned configuration bytes.
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        self.scope.logical_owned_bytes()?.checked_add(self.verifier.logical_owned_bytes()?)
-            .ok_or_else(|| Error::Invalid("content verifier ownership overflow".into()))
-    }
-
     /// Shares the already-funded verifier without copying configuration payloads.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
@@ -502,7 +496,7 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
             let grant = ContentGrant::verify_directory_read(&self.verifier, &self.scope, volume,
                 granted_prefix, &mut history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?;
             let grant_hold = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
-            let (file, bytes) = self.host.read_private_path_with_io(volume, &grant, path, expected_generation,
+            let (file, bytes) = self.host.read_private_path(volume, &grant, path, expected_generation,
                 maximum_bytes.min(self.maximum_bytes), io).await?;
             drop(grant); drop(grant_hold);
             let hold = io.map(|io| io.guard_owned(file.logical_owned_bytes()?)).transpose()?;
@@ -669,7 +663,7 @@ where
             granted_prefix,
             &mut None,
         )?;
-        self.host.read_private_path(volume, &grant, path, expected_generation, self.maximum_bytes).await
+        self.host.read_private_path(volume, &grant, path, expected_generation, self.maximum_bytes, None).await
     }
 
     fn require_read(&self, reference: &FileRef, io: &PreparationIo) -> Result<()> {
@@ -1596,18 +1590,12 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
             Ok(crate::fork::ObservedForkPublicationGuard { guard: guard as Box<dyn ForkPublicationGuard>, _allocation: Some(header) })
                 }.await;
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            let native = work.as_ref().and_then(|io| io.original_native_work()).cloned();
             let cancellation = work.as_ref().map(|io| io.cancellation().clone()).unwrap_or_default();
             let budget = work.as_ref().map(|io| io.remaining()).transpose()?.unwrap_or(acyclic_fs::WorkBudget::UNBOUNDED);
-            let io = {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(native) = &native { PreparationIo::from_native_work(native)? }
-                else if budget == acyclic_fs::WorkBudget::UNBOUNDED { PreparationIo::for_unmeasured(&cancellation)? }
-                else { PreparationIo::from_budget(budget, &cancellation)? }
-                #[cfg(target_arch = "wasm32")]
-                if budget == acyclic_fs::WorkBudget::UNBOUNDED { PreparationIo::for_unmeasured(&cancellation)? }
-                else { PreparationIo::from_budget(budget, &cancellation)? }
+            let io = if budget == acyclic_fs::WorkBudget::UNBOUNDED {
+                PreparationIo::for_unmeasured(&cancellation)?
+            } else {
+                PreparationIo::from_budget(budget, &cancellation)?
             };
             let result = async {
                 if seed.child_private_volume.provider() != &self.host.provider {
@@ -1644,11 +1632,6 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                 Ok(crate::fork::ObservedForkPublicationGuard { guard: guard as Box<dyn ForkPublicationGuard>,
                     #[cfg(not(target_arch = "wasm32"))] _allocation: None })
             }.await;
-            #[cfg(not(target_arch = "wasm32"))]
-            if native.is_none() {
-                if let Some(observer) = work.as_deref_mut() { observer.receive_work(io.receipt())?; }
-            }
-            #[cfg(target_arch = "wasm32")]
             if let Some(observer) = work.as_deref_mut() { observer.receive_work(io.receipt())?; }
             result
         })
@@ -3983,21 +3966,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(((reference, page), custody))
     }
 
-    /// Lazily resolves a named private file and returns an immutable ref plus verified bytes.
+    /// Resolves a private file and verifies its bytes with optional original IO.
     pub async fn read_private_path(
-        &self,
-        volume: &VolumeRef,
-        grant: &ContentGrant,
-        path: &str,
-        expected_generation: Option<&GenerationRef>,
-        maximum_bytes: u64,
-    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
-        self.read_private_path_with_io(
-            volume, grant, path, expected_generation, maximum_bytes, None,
-        ).await
-    }
-
-    async fn read_private_path_with_io(
         &self, volume: &VolumeRef, grant: &ContentGrant, path: &str,
         expected_generation: Option<&GenerationRef>, maximum_bytes: u64,
         io: Option<&PreparationIo>,

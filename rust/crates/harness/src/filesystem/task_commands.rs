@@ -1038,7 +1038,7 @@ where
             }
         };
         match progress {
-            StockTurnProgress::Ready(output) => mail::mail_ready(Outcome::Succeeded(output), io),
+            StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
             StockTurnProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
             StockTurnProgress::Rejected(reason) => rejected(reason, io),
         }
@@ -1050,6 +1050,11 @@ where
     ) -> Result<TaskCommandProgress> {
         use super::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let WorkerContext::Native(_) = &context {
+            let io = io.ok_or_else(|| boundary(io, ErrorCode::Unsupported, "native tool requires original observer"))?;
+            io.original_native_work().ok_or_else(|| boundary(Some(io), ErrorCode::Unsupported, "native tool requires original work"))?;
+        }
         let input: ToolTaskCommand = mail::decode_command(payload, io)?;
         let definition = self.runtime.tool_definition(&input.name, &input.revision, io)?;
         let (journal, operation) = 'journal: {
@@ -1123,7 +1128,7 @@ where
         };
         match outcome {
             Outcome::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
-            outcome => mail::mail_ready(outcome, io),
+            outcome => ready(outcome, io),
         }
     }
 
@@ -1267,7 +1272,7 @@ fn rejected(reason: crate::InteractionRejection, io: Option<&super::PreparationI
         }
         break 'message reason.to_string();
     };
-    mail::mail_ready(Outcome::<Value>::Failed { message }, io)
+    ready(Outcome::<Value>::Failed { message }, io)
 }
 
 fn tool_invocation(
