@@ -10,6 +10,7 @@ fn guarded_publication_error(error: Error, operation: OperationId) -> Error {
 
 pub(super) enum GuardedBoundary {
     Invalid,
+    NotFound,
     Unauthorized,
     Conflict,
     Unsupported,
@@ -24,6 +25,7 @@ pub(super) fn guarded_boundary(
     if work.as_ref().is_some_and(|work| work.original_native_work().is_some()) {
         let code = match kind {
             GuardedBoundary::Invalid => crate::wire::ErrorCode::Invalid,
+            GuardedBoundary::NotFound => crate::wire::ErrorCode::NotFound,
             GuardedBoundary::Unauthorized => crate::wire::ErrorCode::Unauthorized,
             GuardedBoundary::Conflict => crate::wire::ErrorCode::Conflict,
             GuardedBoundary::Unsupported => crate::wire::ErrorCode::Unsupported,
@@ -34,6 +36,7 @@ pub(super) fn guarded_boundary(
     let _ = work;
     match kind {
         GuardedBoundary::Invalid => Error::Invalid(reason.into()),
+        GuardedBoundary::NotFound => Error::NotFound(reason.into()),
         GuardedBoundary::Unauthorized => Error::Unauthorized(reason.into()),
         GuardedBoundary::Conflict => Error::Conflict(reason.into()),
         GuardedBoundary::Unsupported => Error::Unsupported(reason.into()),
@@ -368,8 +371,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if reference.authority == *self.reducer.authority() { return Ok(()); }
         let path = reference.authority.stream_path_with_work(work)?;
         let path_bytes = if work.is_some() { path.capacity() as u64 } else { 0 };
-        let read = operations::one_record_with_work(&self.client, &path,
-            reference.revision.saturating_sub(1), work).await;
+        let read = match operations::stream_text_with_work(&self.client, &path, work) {
+            Ok(stream) => operations::one_record_with_work(&self.client, stream.stream.path(),
+                reference.revision.saturating_sub(1), work).await,
+            Err(error) => Err(error),
+        };
         drop(path);
         let released_path = match work.as_deref_mut() {
             Some(observer) => observer.release_owned(path_bytes), None => Ok(()),
