@@ -47,7 +47,7 @@ fn result(operation: OperationId, value: Outcome<FileRef>) -> Value {
 }
 
 fn binding() -> PiTaskBinding {
-    let provider = ProviderRef::new("pi-recovery-test", "filesystem", "1").unwrap();
+    let provider = ProviderRef::new("pi-recovery-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent_id = AgentId::from_bytes([31; 16]);
     PiTaskBinding {
         native_session_id: "pi-root".to_owned(),

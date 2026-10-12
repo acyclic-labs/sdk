@@ -88,8 +88,8 @@ async fn browser_defaults_root_two_children_grandchild_and_foreign_project_use_a
     let operations = [OperationId::new(), OperationId::new(), OperationId::new(), OperationId::new()];
     let tasks = operations.map(task_id_for_admission);
     let authorities = ["root","left","right","grandchild"].map(|label| Authority { kind:AggregateKind::Conversation, id:format!("{id}-{label}") });
-    let provider = ProviderRef::new("browser-recursive", "filesystem", "2").map_err(js_error)?;
-    let stream_provider = ProviderRef::new("browser-recursive", "stream", "1").map_err(js_error)?;
+    let provider = ProviderRef::new("browser-recursive".into(), "filesystem".into(), "2".into(), &mut None).map_err(js_error)?;
+    let stream_provider = ProviderRef::new("browser-recursive".into(), "stream".into(), "1".into(), &mut None).map_err(js_error)?;
     let projects = ["root","left","right","grandchild"].map(|label| VolumeRef::new(provider.clone(),format!("{id}-{label}-project"),VolumeClass::Project,VolumeOwner::Project(id.clone())).unwrap());
     let private = [0,1,2,3].map(|index| VolumeRef::new(provider.clone(),format!("{id}-{index}-scratch"),VolumeClass::AgentPrivate,VolumeOwner::Agent(agents[index])).unwrap());
     let bootstrap_agent = AgentId::new();

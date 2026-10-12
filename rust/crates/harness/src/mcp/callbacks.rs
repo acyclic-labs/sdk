@@ -202,7 +202,7 @@ impl McpRuntimeCallbacks {
                         let bytes = self.journal.load(&answer).await?;
                         answer.descriptor().verify(&bytes, &mut None)?;
                         let response: InteractionResponse = crate::contract::json_from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
-                        interaction.validate_response(&response)?;
+                        interaction.validate_response(&response, &mut None)?;
                         let InteractionResponse::Form { value } = response else { return Err(Error::Invalid("MCP form answer kind differs".into())); };
                         json!({"action":"accept","content":value})
                     }

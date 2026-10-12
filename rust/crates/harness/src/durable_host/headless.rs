@@ -33,7 +33,7 @@ pub(super) fn copy_generation(
         .version()
         .map(|value| crate::core::copy_text(value, &mut quota))
         .transpose()?;
-    let reference = crate::resources::ResourceRef::new_with_work(
+    let reference = crate::resources::ResourceRef::new(
         source.kind(),
         provider,
         key,

@@ -52,7 +52,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.verify(false, &mut None).await?;
         let snapshot_bytes = crate::contract::json_byte_length(&snapshot, maximum_bytes)?;
         snapshot.project.validate(&mut None)?;
-        snapshot.generation.validate()?;
+        snapshot.generation.validate(&mut None)?;
         if snapshot.project.class() != crate::conversation::VolumeClass::Project
             || snapshot.project.provider() != snapshot.generation.as_resource().provider()
         {
@@ -158,7 +158,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             drop(verifier);
             observer.as_deref_mut().expect("original source observer").release_owned(verifier_bytes)?;
             snapshot.project.validate(&mut observer)?;
-            snapshot.generation.validate_with_work(&mut observer)?;
+            snapshot.generation.validate(&mut observer)?;
             if snapshot.project.class() != crate::conversation::VolumeClass::Project
                 || snapshot.project.provider() != snapshot.generation.as_resource().provider()
             {

@@ -50,7 +50,7 @@ impl Fixture {
         let agent = AgentId::from_bytes([111; 16]);
         let task = TaskId::from_bytes([112; 16]);
         let root = [113; 16];
-        let provider = ProviderRef::new("pi-provider-tests", "filesystem", "1").unwrap();
+        let provider = ProviderRef::new("pi-provider-tests".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
         let journal = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project(hex::encode(root))).unwrap();

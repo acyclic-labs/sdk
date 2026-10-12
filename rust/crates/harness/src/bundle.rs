@@ -874,7 +874,7 @@ mod tests {
 
         let file = FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("example", "filesystem", "1")?,
+                ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?,
                 "custom-turn",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes(1_u128.to_be_bytes())),

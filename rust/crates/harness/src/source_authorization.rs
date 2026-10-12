@@ -142,7 +142,7 @@ impl ProjectSourceAuthorization {
         let project = self.project.copy(quota.work())?;
         quota.adopt(project.logical_owned_bytes()?)?;
         let reference = self.generation.as_resource();
-        let provider = crate::resources::ProviderRef::new_with_work(
+        let provider = crate::resources::ProviderRef::new(
             crate::core::copy_text(reference.provider().namespace(), &mut quota)?,
             crate::core::copy_text(reference.provider().family(), &mut quota)?,
             crate::core::copy_text(reference.provider().version(), &mut quota)?,
@@ -150,7 +150,7 @@ impl ProjectSourceAuthorization {
         )?;
         let key = crate::core::copy_copy_vector(reference.key(), &mut quota)?;
         let version = reference.version().map(|version| crate::core::copy_text(version, &mut quota)).transpose()?;
-        let reference = crate::resources::ResourceRef::new_with_work(
+        let reference = crate::resources::ResourceRef::new(
             reference.kind(), provider, key, version, quota.work(),
         )?;
         let generation = GenerationRef::from_resource_with_work(reference, quota.work())?;
@@ -182,7 +182,7 @@ impl ProjectSourceAuthorization {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.project.validate(work)?;
-        self.generation.validate_with_work(work)?;
+        self.generation.validate(work)?;
         if self.project.class() != VolumeClass::Project
             || self.project.provider() != self.generation.as_resource().provider()
             || self.maximum_work == 0 || self.maximum_work == u64::MAX

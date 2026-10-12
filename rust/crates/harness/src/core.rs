@@ -5003,7 +5003,7 @@ mod tests {
         use crate::resources::ProviderRef;
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "effects",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
@@ -5794,7 +5794,7 @@ mod tests {
             *volume = seed.child_private_volume.clone();
         }
         let history = ResourceRevision::History(StreamRef::new(
-            ProviderRef::new("acyclic", "stream", "1")?, parent.stream_path(&mut None)?.into_bytes(),
+            ProviderRef::new("acyclic".into(), "stream".into(), "1".into(), &mut None)?, parent.stream_path(&mut None)?.into_bytes(),
             Some("1".into()))?);
         seed.resources[1] = CapturedResource { source: history.clone(), revision: history };
         let extension = ResourceRevision::Extension {
@@ -5803,9 +5803,9 @@ mod tests {
             implementation_digest: [9; 32],
             reference: ResourceRef::new(
                 ResourceKind::Artifact,
-                ProviderRef::new("test", "objects", "1")?,
-                b"extension-state".to_vec(),
-                Some("immutable-1".into()),
+                ProviderRef::new("test".into(), "objects".into(), "1".into(), &mut None)?,
+                b"extension-state".to_vec().into(),
+                Some("immutable-1".into()), &mut None
             )?,
         };
         let mut extension_seed = seed.clone();
@@ -5818,9 +5818,9 @@ mod tests {
         {
             *reference = ResourceRef::new(
                 ResourceKind::Artifact,
-                ProviderRef::new("test", "objects", "1")?,
-                b"child-extension-state".to_vec(),
-                Some("immutable-1".into()),
+                ProviderRef::new("test".into(), "objects".into(), "1".into(), &mut None)?,
+                b"child-extension-state".to_vec().into(),
+                Some("immutable-1".into()), &mut None
             )?;
         }
         for (policy, selected_seed, allowed) in [
@@ -5988,7 +5988,7 @@ mod tests {
         reused_private.child.id = "conversation-3".into();
         reused_private.parent_revision = 2;
         let next_history = ResourceRevision::History(StreamRef::new(
-            ProviderRef::new("acyclic", "stream", "1")?,
+            ProviderRef::new("acyclic".into(), "stream".into(), "1".into(), &mut None)?,
             parent.stream_path(&mut None)?.into_bytes(),
             Some("2".into()),
         )?);
@@ -6119,7 +6119,7 @@ mod tests {
 
         let agent = crate::AgentId::from_bytes([9; 16]);
         let volume = VolumeRef::new(
-            ProviderRef::new("acyclic", "filesystem", "2")?,
+            ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?,
             "agent-9",
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),

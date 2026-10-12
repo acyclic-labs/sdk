@@ -21,7 +21,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Result<Self> {
-        let provider = ProviderRef::new("pi-mail", "filesystem", "2")?;
+        let provider = ProviderRef::new("pi-mail".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let agent = AgentId::from_bytes([71;16]);
         let volume = VolumeRef::new(provider, "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;

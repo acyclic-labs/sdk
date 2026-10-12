@@ -2095,7 +2095,7 @@ mod tests {
 
     fn state_ref() -> Result<FileRef> {
         let volume = VolumeRef::new(
-            ProviderRef::new("test", "filesystem", "2")?,
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
             "project".into(),
             VolumeClass::Project,
             VolumeOwner::Project("project".into()),
@@ -2479,7 +2479,7 @@ mod tests {
             Step::Checkpoint(op, lease) => SchedulerEvent::Checkpointed {
                 operation_id: id(op),
                 checkpoint: crate::resources::CheckpointRef::new(
-                    ProviderRef::new("example", "machines", "1")?,
+                    ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?,
                     vec![1],
                     None,
                 )?,
@@ -2858,7 +2858,7 @@ mod tests {
         let controls = [
             SchedulerEvent::Started { operation_id: id(82), fence: fence(4) },
             SchedulerEvent::Checkpointed { operation_id: id(82),
-                checkpoint: CheckpointRef::new(ProviderRef::new("example", "machines", "1")?, vec![1], None)?,
+                checkpoint: CheckpointRef::new(ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?, vec![1], None)?,
                 fence: fence(5) },
             SchedulerEvent::LeaseReleased { operation_id: id(82), fence: fence(5) },
             SchedulerEvent::Admitted { operation_id: id(83), reservation: reservation(6, 1) },

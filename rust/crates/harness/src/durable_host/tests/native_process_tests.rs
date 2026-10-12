@@ -865,10 +865,10 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let provider = ProviderRef::new("native-test", "filesystem", "1")?;
+    let provider = ProviderRef::new("native-test".into(), "filesystem".into(), "1".into(), &mut None)?;
     let files = Arc::new(FilesystemHost::new(filesystem.clone(), provider.clone())?);
     let agent = AgentId::from_bytes([61; 16]);
-    let auxiliary_provider = ProviderRef::new("native-test-aux", "filesystem", "1")?;
+    let auxiliary_provider = ProviderRef::new("native-test-aux".into(), "filesystem".into(), "1".into(), &mut None)?;
     let auxiliary_host = Arc::new(FilesystemHost::new(
         auxiliary_filesystem,
         auxiliary_provider.clone(),
@@ -2313,7 +2313,7 @@ async fn reopen_native(
         Fs::local(acyclic_fs::LocalOptions::new(storage.join("filesystem")))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        ProviderRef::new("native-test", "filesystem", "1")?,
+        ProviderRef::new("native-test".into(), "filesystem".into(), "1".into(), &mut None)?,
     )?);
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),

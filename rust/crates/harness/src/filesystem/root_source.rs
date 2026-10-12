@@ -219,7 +219,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
     ) -> Result<Self> {
         let mut observer = io.map(super::PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        host.provider.validate_with_work(&mut work)?;
+        host.provider.validate(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(super::PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let owner = match work.as_deref_mut() {
@@ -305,7 +305,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         }
         if io.is_none() {
             snapshot.project.validate(&mut None)?;
-            snapshot.generation.validate()?;
+            snapshot.generation.validate(&mut None)?;
         }
         if snapshot.project.class() != VolumeClass::Project
             || snapshot.project.provider() != &self.host.provider
@@ -500,7 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_filesystem_birth_without_protected_root_association_is_not_source_authority() -> Result<()> {
-        let provider = crate::resources::ProviderRef::new("root-birth", "filesystem", "2")?;
+        let provider = crate::resources::ProviderRef::new("root-birth".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider.clone())?);
         let project = VolumeRef::new(provider, "root-project", VolumeClass::Project,
             VolumeOwner::Project("root-project".into()))?;

@@ -2029,7 +2029,7 @@ mod tests {
     fn content() -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "extension",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
@@ -2816,7 +2816,7 @@ mod tests {
         {
             use crate::executor::ExecutionJournal as _;
             let filesystem_provider =
-                crate::resources::ProviderRef::new("cold-selected-context", "filesystem", "2")?;
+                crate::resources::ProviderRef::new("cold-selected-context".into(), "filesystem".into(), "2".into(), &mut None)?;
             let host = Arc::new(crate::filesystem::FilesystemHost::new(
                 acyclic_fs::Fs::memory(),
                 filesystem_provider.clone(),
@@ -3534,7 +3534,7 @@ mod tests {
         };
         let publisher = TestPublisher {
             volume: VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "extension-child",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])),
@@ -3692,7 +3692,7 @@ mod tests {
         use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost};
 
         let agent = crate::AgentId::from_bytes([94; 16]);
-        let provider = ProviderRef::new("admission-bytes", "filesystem", "2")?;
+        let provider = ProviderRef::new("admission-bytes".into(), "filesystem".into(), "2".into(), &mut None)?;
         let volume = VolumeRef::new(provider.clone(), "admission-bytes",
             VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider)?);

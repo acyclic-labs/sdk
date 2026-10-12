@@ -261,7 +261,7 @@ async fn bind_conversation(
 }
 
 async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, AuthorityIssuer, Scope)> {
-    let provider = ProviderRef::new("mcp-fault", "filesystem", "2")?;
+    let provider = ProviderRef::new("mcp-fault".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(
         Fs::local(LocalOptions::new(root.join("fs")))
             .await

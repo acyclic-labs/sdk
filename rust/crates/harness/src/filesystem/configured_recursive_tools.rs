@@ -866,12 +866,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         drop(observer);
         drop(history);
         let provider = crate::resources::ProviderRef::new(
-            crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.namespace(), Some(&io))?, crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.family(), Some(&io))?,
-            crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.version(), Some(&io))?,
+            crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.namespace(), Some(&io))?.into(), crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.family(), Some(&io))?.into(),
+            crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.version(), Some(&io))?.into(), &mut None
         )?;
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        let reference = crate::resources::ResourceRef::new_with_work(
+        let reference = crate::resources::ResourceRef::new(
             crate::resources::ResourceKind::Stream, provider, path, Some(version), &mut observer,
         )?;
         let reference = crate::resources::StreamRef::from_resource_with_work(reference, &mut observer)?;

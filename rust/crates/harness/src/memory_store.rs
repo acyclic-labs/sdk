@@ -575,7 +575,7 @@ mod tests {
     use crate::resources::ProviderRef;
 
     fn store(maximum_bytes: u64, maximum_files: u64) -> Result<MemoryStore> {
-        let provider = ProviderRef::new("local", "memory", "2")?;
+        let provider = ProviderRef::new("local".into(), "memory".into(), "2".into(), &mut None)?;
         let volume = VolumeRef::new(
             provider,
             "test-volume",

@@ -1564,8 +1564,8 @@ impl ExecutionPlacement {
             return Err(crate::store::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
                 "execution qualification is invalid"));
         }
-        self.build.validate_with_work(work)?;
-        if let Some(environment) = &self.environment { environment.validate_with_work(work)?; }
+        self.build.validate(work)?;
+        if let Some(environment) = &self.environment { environment.validate(work)?; }
         Ok(())
     }
 }
@@ -1709,7 +1709,7 @@ impl TaskAdmissionRecord {
             let provider = crate::core::copy_provider(source.provider(), quota)?;
             let key = crate::core::copy_copy_vector(source.key(), quota)?;
             let version = source.version().map(|value| crate::core::copy_text(value, quota)).transpose()?;
-            crate::resources::ResourceRef::new_with_work(
+            crate::resources::ResourceRef::new(
                 source.kind(), provider, key, version, quota.work(),
             )
         }
@@ -2175,7 +2175,7 @@ impl TaskAdmissionRecord {
         let family = Self::decode_owned_fixed(Self::take_owned_field(&mut fields, "family", work)?, work)?;
         let version = Self::decode_owned_fixed(Self::take_owned_field(&mut fields, "version", work)?, work)?;
         if !fields.is_empty() { return Err(crate::store::guarded_boundary(work, crate::wire::ErrorCode::Invalid, "provider has unknown fields")); }
-        crate::resources::ProviderRef::new_with_work(namespace, family, version, work)
+        crate::resources::ProviderRef::new(namespace, family, version, work)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2202,7 +2202,7 @@ impl TaskAdmissionRecord {
         }
         let version = Self::decode_owned_fixed(Self::take_owned_field(&mut fields, "version", quota.work())?, quota.work())?;
         if !fields.is_empty() { return Err(crate::store::guarded_boundary(quota.work(), crate::wire::ErrorCode::Invalid, "resource has unknown fields")); }
-        let reference = crate::resources::ResourceRef::new_with_work(kind, provider, key, version, quota.work())?;
+        let reference = crate::resources::ResourceRef::new(kind, provider, key, version, quota.work())?;
         let added = quota.retained();
         quota.transfer();
         Ok((reference, added))
@@ -5291,7 +5291,7 @@ impl AgentHarness {
                 "project workspaces require fork:publish or project:merge".into(),
             ));
         }
-        workspaces.provider().validate()?;
+        workspaces.provider().validate(&mut None)?;
         workspaces.project().validate(&mut None)?;
         if workspaces.project().class() != crate::conversation::VolumeClass::Project
             || workspaces.project().provider() != workspaces.provider()
@@ -9617,13 +9617,13 @@ mod tests {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn retained_proof_copy_input() -> crate::resource_preparation::ResourceCreationProofRef {
         use crate::resources::{ResourceKind, ResourceRef};
-        let provider = ProviderRef::new("org.example", "filesystem", "1")
+        let provider = ProviderRef::new("org.example".into(), "filesystem".into(), "1".into(), &mut None)
             .expect("validated SDK provider reference");
         let resource = ResourceRef::new(
-            ResourceKind::Artifact, provider.clone(), b"resource-key".to_vec(), Some("v1".into()),
+            ResourceKind::Artifact, provider.clone(), b"resource-key".to_vec().into(), Some("v1".into()), &mut None
         ).expect("validated SDK resource reference");
         let evidence = ResourceRef::new(
-            ResourceKind::Artifact, provider.clone(), b"evidence-key".to_vec(), Some("v2".into()),
+            ResourceKind::Artifact, provider.clone(), b"evidence-key".to_vec().into(), Some("v2".into()), &mut None
         ).expect("validated SDK evidence reference");
         crate::resource_preparation::ResourceCreationProofRef {
             provider, preparation: TaskId::new(), resource, evidence,
@@ -10299,7 +10299,7 @@ mod tests {
         assert_eq!(child_dispatch.step, 1);
         let foreign = FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("other", "filesystem", "2")?,
+                ProviderRef::new("other".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "private",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([77; 16])),
@@ -11337,7 +11337,7 @@ mod tests {
     #[test]
     fn private_root_directory_grant_reads_descendants_without_write_authority() -> Result<()> {
         let volume = VolumeRef::new(
-            ProviderRef::new("local", "filesystem", "2")?,
+            ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?,
             "private",
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(crate::AgentId::from_bytes([77; 16])),
@@ -11992,21 +11992,21 @@ mod tests {
         let wire: Value = serde_json::from_str(include_str!("../fixtures/v2/task-admission.json"))
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let mut admission = TaskAdmissionRecord::from_canonical_value(wire.clone())?;
-        let provider = ProviderRef::new("test", "creator", "1")?;
+        let provider = ProviderRef::new("test".into(), "creator".into(), "1".into(), &mut None)?;
         let proof = ResourceCreationProofRef {
             provider: provider.clone(),
             preparation: TaskId::from_bytes([71; 16]),
             resource: ResourceRef::new(
                 ResourceKind::Sandbox,
                 provider.clone(),
-                b"child".to_vec(),
-                None,
+                b"child".to_vec().into(),
+                None, &mut None
             )?,
             evidence: ResourceRef::new(
                 ResourceKind::Stream,
                 provider,
-                b"allocation".to_vec(),
-                None,
+                b"allocation".to_vec().into(),
+                None, &mut None
             )?,
         };
         assert!(

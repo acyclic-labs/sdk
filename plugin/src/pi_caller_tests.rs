@@ -5,7 +5,7 @@ use acyclic_harness::{AgentId, Capabilities, TaskId,
     resources::ProviderRef, runtime::TaskRunLimits, scheduler::SessionLimits};
 
 fn fixture() -> (pi_owner::PiOwnerConfig, AdapterState) {
-    let provider = ProviderRef::new("pi-caller-test", "filesystem", "1").unwrap();
+    let provider = ProviderRef::new("pi-caller-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent = AgentId::from_bytes([71; 16]);
     let task = TaskId::from_bytes([72; 16]);
     let journal = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate,

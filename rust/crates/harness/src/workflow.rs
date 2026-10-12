@@ -1427,7 +1427,7 @@ mod tests {
         };
         let payload = FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("workflow-test", "filesystem", "2")?,
+                ProviderRef::new("workflow-test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([4; 16])), &mut None

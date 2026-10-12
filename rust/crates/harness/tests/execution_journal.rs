@@ -367,7 +367,7 @@ impl ModelProvider for TextModel {
 
 #[tokio::test]
 async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
-    let provider = ProviderRef::new("tool-claim-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("tool-claim-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([55; 16]);
     let private = VolumeRef::new(
@@ -584,7 +584,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
 
 #[tokio::test]
 async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
-    let provider = ProviderRef::new("tool-owner-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("tool-owner-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([58; 16]);
     let private = VolumeRef::new(
@@ -967,7 +967,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
 
 #[tokio::test]
 async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()> {
-    let provider = ProviderRef::new("journal-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("journal-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([42; 16]);
     let private = VolumeRef::new(
@@ -1084,7 +1084,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
 
 #[tokio::test]
 async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Result<()> {
-    let provider = ProviderRef::new("interaction-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("interaction-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let private = VolumeRef::new(
         provider,
@@ -1237,7 +1237,7 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
 
 #[tokio::test]
 async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> Result<()> {
-    let provider = ProviderRef::new("tool-approval-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("tool-approval-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let private = VolumeRef::new(
         provider,
@@ -1379,7 +1379,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
 
 #[tokio::test]
 async fn typed_file_input_requires_resident_authorized_bytes_before_journaling() -> Result<()> {
-    let provider = ProviderRef::new("file-input-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("file-input-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let private = VolumeRef::new(
         provider.clone(),

@@ -60,7 +60,7 @@ impl Fixture {
         let agent = AgentId::from_bytes([161; 16]);
         let task = TaskId::from_bytes([162; 16]);
         let root = [163; 16];
-        let provider = acyclic_harness::resources::ProviderRef::new("pi-fork-tests", "filesystem", "1").unwrap();
+        let provider = acyclic_harness::resources::ProviderRef::new("pi-fork-tests".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
         let journal_volume = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project(hex::encode(root))).unwrap();
@@ -351,7 +351,7 @@ impl Fixture {
 
 pub(crate) fn policy() -> PiOwnerPolicy {
     let agent = AgentId::from_bytes([81; 16]);
-    let provider = acyclic_harness::resources::ProviderRef::new("pi-owner-test", "filesystem", "1").unwrap();
+    let provider = acyclic_harness::resources::ProviderRef::new("pi-owner-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let scratch = VolumeRef::new(
         provider.clone(),
         "scratch",

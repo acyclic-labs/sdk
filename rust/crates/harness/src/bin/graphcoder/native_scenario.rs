@@ -97,8 +97,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         Err(error) => return Err(Error::Storage(error.to_string())),
     }
     let deployment = format!("{ISSUER}.{}", uuid::Uuid::new_v4());
-    let filesystem_provider = ProviderRef::new(&deployment, "filesystem", "2")?;
-    let stream_provider = ProviderRef::new(&deployment, "stream", "2")?;
+    let filesystem_provider = ProviderRef::new(&deployment.into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new(&deployment.into(), "stream".into(), "2".into(), &mut None)?;
     let seed_agent = AgentId::new();
     let private = VolumeRef::new(filesystem_provider.clone(), "bootstrap-private".into(),
         VolumeClass::AgentPrivate, VolumeOwner::Agent(seed_agent), &mut None)?;

@@ -663,7 +663,7 @@ mod native_effect_paid_point_tests {
         let issuer = AuthorityIssuer::new("paid-effect-point", [7; 32], authority.clone());
         let reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
         let volume = VolumeRef::new(
-            ProviderRef::new("test", "filesystem", "2")?, "effect-volume",
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, "effect-volume",
             VolumeClass::AgentPrivate, VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
         )?;
         let request = FileRef::new(volume.clone(), "effects/request.json", "generation-1",

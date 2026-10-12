@@ -207,7 +207,7 @@ impl VolumeRef {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             inspect_native_metadata(native, 0)?;
-            provider.validate_with_native_work(native)?;
+            provider.validate(&mut Some(&mut crate::store::native_work_io(native)?))?;
         }
         if let Some(reason) = provider.validation_error() {
             return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, reason));
@@ -880,7 +880,7 @@ pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = u32::MAX as usize;
 impl PrivateDirectoryPage {
     /// Rejects malformed, duplicate, or out-of-order names independently of the concrete Filesystem page implementation.
     pub fn validate(&self) -> Result<()> {
-        self.generation.validate()?;
+        self.generation.validate(&mut None)?;
         if self.entries.len() as u64 > MAX_PRIVATE_DIRECTORY_PAGE as u64 {
             return Err(Error::Invalid(
                 "private directory page exceeds protocol limit".into(),
@@ -3249,7 +3249,7 @@ mod tests {
     fn file(agent: AgentId, path: &str) -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("acyclic", "filesystem", "2")?,
+                ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "scratch".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent),
@@ -3433,8 +3433,8 @@ mod tests {
             }
         }
         let owner = VolumeOwner::Agent(AgentId::from_bytes([1; 16]));
-        let manifest_provider = ProviderRef::new("test", "filesystem", "a")?;
-        let member_provider = ProviderRef::new("test", "filesystem", "b")?;
+        let manifest_provider = ProviderRef::new("test".into(), "filesystem".into(), "a".into(), &mut None)?;
+        let member_provider = ProviderRef::new("test".into(), "filesystem".into(), "b".into(), &mut None)?;
         let member = FileRef::new(
             VolumeRef::new(
                 member_provider.clone(),

@@ -1337,7 +1337,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
     match kind {
         "provider_ref" => {
             let value: ProviderRef = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "file_descriptor" => {
@@ -1426,7 +1426,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "resource_ref" => {
             let value: ResourceRef = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "private_directory_page" => {

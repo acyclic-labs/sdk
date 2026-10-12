@@ -55,7 +55,7 @@ impl ObjectContentStore {
         maximum_bytes: u64,
     ) -> Result<Arc<Self>> {
         volume.validate()?;
-        expected_provider.validate()?;
+        expected_provider.validate(&mut None)?;
         verifier.verify(&scope)?;
         ContentGrant::verify(&verifier, &owner_scope, &volume, VolumeOperation::Write)?;
         if maximum_bytes == 0
@@ -280,7 +280,7 @@ impl ObjectContentStore {
     }
 
     async fn verify_artifact(&self, artifact: &ArtifactRef) -> Result<()> {
-        artifact.validate()?;
+        artifact.validate(&mut None)?;
         ContentGrant::verify(
             &self.verifier,
             &self.scope,
@@ -416,7 +416,7 @@ impl crate::conversation::ContentMountResolver for ObjectContentMountResolver {
         >,
     > {
         Box::pin(async move {
-            reference.validate()?;
+            reference.validate(&mut None)?;
             let store = self.store(reference.volume())?;
             // Authenticate the current scope against this exact content reference before returning either the grant or the owner reader.
             let grant = ContentGrant::verify_read(&store.verifier, &store.scope, reference)?;
@@ -674,7 +674,7 @@ mod tests {
         let owner = AgentId::from_bytes([7; 16]);
         let reader = AgentId::from_bytes([8; 16]);
         let volume = VolumeRef::new(
-            ProviderRef::new("local", "objects", "1")?,
+            ProviderRef::new("local".into(), "objects".into(), "1".into(), &mut None)?,
             bucket.name.clone(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(owner),
@@ -770,7 +770,7 @@ mod tests {
             kind: AggregateKind::Conversation,
             id: "artifact-parent".into(),
         };
-        let filesystem = ProviderRef::new("local", "filesystem", "2")?;
+        let filesystem = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
         let project_owner = VolumeOwner::Project("artifact-project".into());
         let child_agent = AgentId::from_bytes([14; 16]);
         let request = ForkRequest {
@@ -821,7 +821,7 @@ mod tests {
                 ForkSelection {
                     required: true,
                     revision: ResourceRevision::History(StreamRef::new(
-                        ProviderRef::new("local", "stream", "2")?,
+                        ProviderRef::new("local".into(), "stream".into(), "2".into(), &mut None)?,
                         parent.stream_path(&mut None)?.into_bytes(),
                         Some("1".into()),
                     )?),
@@ -1032,7 +1032,7 @@ mod tests {
             ObjectContentStore::new(
                 objects.clone(),
                 bucket.clone(),
-                ProviderRef::new("impostor", "objects", "1")?,
+                ProviderRef::new("impostor".into(), "objects".into(), "1".into(), &mut None)?,
                 volume.clone(),
                 issuer.verifier(&mut None).expect("verifier copy"),
                 owner_scope.clone(),
@@ -1130,7 +1130,7 @@ mod tests {
                 id: "objects-mount-test".into(),
             },
         );
-        let provider = ProviderRef::new("local", "objects", "1")?;
+        let provider = ProviderRef::new("local".into(), "objects".into(), "1".into(), &mut None)?;
         let volume_a = VolumeRef::new(
             provider.clone(),
             bucket_a.name.clone(),

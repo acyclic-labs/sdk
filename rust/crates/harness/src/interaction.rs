@@ -237,7 +237,7 @@ impl InteractionTicket {
             bytes, crate::contract::JsonValueSchema::InteractionResponse,
             std::mem::size_of::<String>() as u64, work,
         )?;
-        let result = request.validate_response_with_work(&response.value, response.custody.work());
+        let result = request.validate_response(&response.value, response.custody.work());
         drop(response);
         result
     }
@@ -313,7 +313,7 @@ impl InteractionTicket {
         response: &InteractionResponse,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        request.validate_response_with_work(response, work)?;
+        request.validate_response(response, work)?;
         match (outcome, response) {
             (InteractionOutcome::Approved, InteractionResponse::Approval { approved: true, .. })
             | (InteractionOutcome::Declined, InteractionResponse::Approval { approved: false, .. }) => Ok(()),
@@ -747,13 +747,8 @@ impl Interaction {
         Ok(())
     }
 
-    /// Validates one response against this exact interaction request.
-    pub fn validate_response(&self, response: &InteractionResponse) -> Result<()> {
-        self.validate_response_with_work(response, &mut None)
-    }
-
-    /// The same response/schema engine, borrowing the caller's funded payloads.
-    pub(crate) fn validate_response_with_work(
+    /// Validates a response on the optional history observer.
+    pub fn validate_response(
         &self,
         response: &InteractionResponse,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -773,14 +768,9 @@ impl Interaction {
                 },
                 InteractionResponse::Form { value },
             ) => {
-                if work.is_none() {
-                    crate::contract::validate_json_schema_value(
-                        response_schema, value, "interaction response", None)
-                } else {
-                    crate::contract::validate_json_schema_value_with_work(
-                        response_schema, value, "interaction response", work,
-                    )
-                }
+                crate::contract::validate_json_schema_value_with_work(
+                    response_schema, value, "interaction response", work,
+                )
             }
             (
                 Self::Choice {
@@ -1078,7 +1068,7 @@ mod tests {
     fn file(path: &str, bytes: &[u8]) -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "interaction-private",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([8; 16])),

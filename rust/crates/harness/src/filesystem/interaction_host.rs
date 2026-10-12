@@ -397,7 +397,7 @@ where
             .read_request(id, None)
             .await?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
-        request.validate_response(&response)?;
+        request.validate_response(&response, &mut None)?;
         let answer = self
             .stage_answer(id, expected_version, operation_id, &response, None)
             .await?;

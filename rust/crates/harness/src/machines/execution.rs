@@ -53,9 +53,9 @@ impl MachinesTaskBuild {
                 "Machines task build identity is invalid".into(),
             ));
         }
-        self.build.validate()?;
-        self.image.validate()?;
-        self.environment.validate()
+        self.build.validate(&mut None)?;
+        self.image.validate(&mut None)?;
+        self.environment.validate(&mut None)
     }
 }
 

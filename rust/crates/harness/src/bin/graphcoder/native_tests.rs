@@ -8,8 +8,8 @@ async fn composition(root: &std::path::Path) -> Result<Config> {
     #[cfg(feature = "native-execution")]
     acyclic_fs::initialize_native_mount_services()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let provider = ProviderRef::new("terminal-native-regression", "filesystem", "2")?;
-    let stream_provider = ProviderRef::new("terminal-native-regression", "stream", "2")?;
+    let provider = ProviderRef::new("terminal-native-regression".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("terminal-native-regression".into(), "stream".into(), "2".into(), &mut None)?;
     let agent = AgentId::from_bytes([21; 16]);
     let volume = VolumeRef::new(provider.clone(), "private".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
     let authority = Authority { kind: AggregateKind::Task, id: "terminal-native-owner".into() };
