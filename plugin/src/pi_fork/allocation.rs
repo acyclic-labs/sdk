@@ -246,7 +246,7 @@ impl<'a> PiForkCoordinator<'a> {
     )]
     pub(super) async fn native_preparer(
         &self,
-        shared: &Arc<acyclic_harness::runtime::NativeTaskContext>,
+        shared: &Arc<acyclic_harness::runtime::TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>,
@@ -261,7 +261,7 @@ impl<'a> PiForkCoordinator<'a> {
             >,
         >,
     > {
-        let context = shared.context();
+        let context = shared.as_ref();
         let admission = self
             .runtime
             .runtime

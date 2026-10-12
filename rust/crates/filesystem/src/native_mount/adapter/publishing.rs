@@ -74,6 +74,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             notification: Some(notification),
         };
         drop(state);
+        let mut before_publication = before_publication.clone();
         let result: Result<(), E> = async {
             carrier.check(cancellation, lifetime)?;
             let original = publication.original.as_mut().expect("original checkout");
@@ -81,7 +82,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 && (force || original.checkout.has_pending_mutations())
                 && let Some(context) = context
             {
-                let (digest, evidence) = crate::lazy_workspace::native_publication_evidence(
+                let (digest, evidence) = crate::lazy_workspace::publication_evidence(
                     context,
                     operation,
                     permit,
@@ -101,7 +102,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                     None => (context, None, None, None),
                 };
             let producer = original.checkout.private_control_custody();
-            let mut before_publication = before_publication.clone();
             let source_lifetime = lifetime.cloned();
             let mut guarded = move |work: &crate::NativeMaterializationWork| {
                 if source_lifetime
