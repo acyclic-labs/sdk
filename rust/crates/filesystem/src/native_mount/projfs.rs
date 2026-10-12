@@ -7215,7 +7215,7 @@ mod tests {
                 .env("ACYCLIC_FS_TEST_GO", &go),
         )?;
         while !ready.exists() {
-            assert!(editor.try_wait()?.is_none(), "editor exited early");
+            assert!(editor.try_wait(None)?.is_none(), "editor exited early");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         session.flush_callbacks()?;
