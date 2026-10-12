@@ -20,25 +20,19 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
         let mut directory = DirectoryHandle::new(path, binding, epochs);
         directory.keep_current(context, work)?;
         let allocated = context.allocate_handle().map_err(driver_errno)?;
-        let directory = shared(work, Mutex::new(directory))?;
+        let directory = shared(work, DarwinOwned::empty(Mutex::new(directory)))?;
         let mut directories = context
             .directories
             .lock()
             .map_err(|_| driver_errno(libc::EIO))?;
         grow_map(&mut directories, work)?;
-        copying(
-            work,
-            copy_work(
-                std::mem::size_of::<(u64, Arc<DarwinOwned<Mutex<DirectoryHandle>>>)>() as u64,
-            ),
-            || directories.insert(allocated, directory),
-        )?;
+        work.charge(copy_work(
+            std::mem::size_of::<(u64, Arc<DarwinOwned<Mutex<DirectoryHandle>>>)>() as u64,
+        ))?;
+        directories.insert(allocated, directory);
         // SAFETY: the bridge supplies a writable handle slot.
-        copying(
-            work,
-            copy_work(std::mem::size_of::<u64>() as u64),
-            || unsafe { handle.write(allocated) },
-        )?;
+        work.charge(copy_work(std::mem::size_of::<u64>() as u64))?;
+        unsafe { handle.write(allocated) };
         Ok(0)
     })
 }
@@ -75,25 +69,6 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
         }
         if directory.epochs.is_none() {
             directory.rewind();
-            context
-                .directory_checkpoints
-                .lock()
-                .map_err(|_| driver_errno(libc::EIO))?
-                .remove(&*directory.path);
-        } else if offset > 0 && directory.emitted == 0 {
-            let checkpoints = context
-                .directory_checkpoints
-                .lock()
-                .map_err(|_| driver_errno(libc::EIO))?;
-            work.charge(scan_work(checkpoints.capacity() as u64))?;
-            if let Some(checkpoint) = checkpoints.get(&*directory.path)
-                && checkpoint.1 == offset
-                && Some(checkpoint.0.binding) == directory.binding_epoch
-                && context.source.view_is_stable_with_meter(work)?
-                && context.unchanged_since(&directory.path, None, checkpoint.0.view, work)?
-            {
-                directory.epochs = Some(checkpoint.0);
-            }
         }
         if offset < directory.emitted {
             directory.rewind();
@@ -114,7 +89,6 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             };
             if full != 0 {
                 directory.keep_current(context, work)?;
-                checkpoint_directory(context, &directory, work)?;
                 return Ok(0);
             }
             directory.emitted = next;
@@ -123,11 +97,6 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             ensure_directory_page(context, &mut directory, work)?;
             let Some(entry) = directory.entries.front() else {
                 directory.keep_current(context, work)?;
-                context
-                    .directory_checkpoints
-                    .lock()
-                    .map_err(|_| driver_errno(libc::EIO))?
-                    .remove(&*directory.path);
                 return Ok(0);
             };
             let (name, attributes) = directory_entry(context, &directory, entry, work)?;
@@ -147,7 +116,6 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             };
             if full != 0 {
                 directory.keep_current(context, work)?;
-                checkpoint_directory(context, &directory, work)?;
                 return Ok(0);
             }
             directory.pop_entry();
@@ -230,46 +198,6 @@ pub(super) fn ensure_directory_page(
         return Ok(());
     }
     Err(driver_errno(libc::ESTALE))
-}
-
-pub(super) fn checkpoint_directory(
-    context: &DarwinMountContext,
-    directory: &DirectoryHandle,
-    work: &crate::NativeMaterializationWork,
-) -> Result<(), NativeMountError> {
-    const MAXIMUM_DIRECTORY_CHECKPOINTS: usize = 64;
-    let Some(epochs) = directory.epochs else {
-        return Ok(());
-    };
-    let mut checkpoints = context
-        .directory_checkpoints
-        .lock()
-        .map_err(|_| driver_errno(libc::EIO))?;
-    work.charge(scan_work(checkpoints.capacity() as u64))?;
-    if checkpoints.len() >= MAXIMUM_DIRECTORY_CHECKPOINTS
-        && !checkpoints.contains_key(&*directory.path)
-    {
-        checkpoints.clear();
-    }
-    if !checkpoints.contains_key(&*directory.path) {
-        grow_map(&mut checkpoints, work)?;
-    }
-    let (path, allocation) = clone_path(&directory.path, work)?.into_parts();
-    drop(checkpoints.remove_entry(&path));
-    copying(
-        work,
-        copy_work(std::mem::size_of::<(MountPath, DarwinOwned<(CacheEpochs, i64)>)>() as u64),
-        || {
-            checkpoints.insert(
-                path,
-                DarwinOwned {
-                    value: (epochs, directory.emitted),
-                    allocation,
-                },
-            )
-        },
-    )?;
-    Ok(())
 }
 
 #[unsafe(no_mangle)]
