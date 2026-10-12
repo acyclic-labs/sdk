@@ -953,44 +953,23 @@ impl std::future::Future for NativeMountCallbackFuture<'_> {
     }
 }
 
-/// One callback's preadmitted failure payload, never a shared diagnostic slot.
-struct NativeMountCallbackCause<E> {
-    source: Option<E>,
-}
-
-impl<E> std::fmt::Debug for NativeMountCallbackCause<E> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("NativeMountCallbackCause")
-    }
-}
-
-impl<E> std::fmt::Display for NativeMountCallbackCause<E> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("native callback authorization failed")
-    }
-}
-
-impl<E: std::error::Error + 'static> std::error::Error for NativeMountCallbackCause<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|source| source as &dyn std::error::Error)
-    }
-}
-
 fn callback_failure_slot<E>(
     work: &NativeMaterializationWork,
-) -> Result<(Box<NativeMountCallbackCause<E>>, crate::NativeAllocation), NativeMountError> {
-    let slot_bytes = std::mem::size_of::<NativeMountCallbackCause<E>>();
+) -> Result<(Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), NativeMountError> {
+    let slot_bytes = std::mem::size_of::<E>();
     let allocation = work.claim_allocation(
         slot_bytes as u64, u64::from(slot_bytes != 0), crate::WorkCounters::UNCHARGED,
     )?;
     // Tuple fields retire the boxed slot before its allocation.
-    Ok((Box::new(NativeMountCallbackCause { source: None }), allocation))
+    Ok((Box::new(std::mem::MaybeUninit::uninit()), allocation))
 }
 
 fn callback_failure<E: std::error::Error + Send + Sync + 'static>(
-    (mut source, custody): (Box<NativeMountCallbackCause<E>>, crate::NativeAllocation), error: E,
+    (mut source, custody): (Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), error: E,
 ) -> NativeMountError {
-    source.source = Some(error);
+    source.write(error);
+    // SAFETY: the same preallocated slot now contains the complete original error.
+    let source = unsafe { source.assume_init() };
     NativeMountError::CallbackDenied { source, custody }
 }
 
@@ -3130,7 +3109,6 @@ const NATIVE_REGISTRY_NAME: &str = ".acyclic-fs-mount-registry.lock";
 struct MountDestinationGuard {
     file: Option<File>,
     lock_path: PathBuf,
-    registry_path: PathBuf,
     // Retain the physical parent and fixed leaf so replacing an alias cannot redirect cleanup.
     parent_directory: Option<cap_std::fs::Dir>,
     fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
@@ -3330,7 +3308,7 @@ impl MountDestinationGuard {
             &parent_directory, Path::new(std::str::from_utf8(&name).expect("literal prefix, hex and suffix are UTF-8")),
             &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
         )?;
-        let admitted = Self { file: Some(file), lock_path: PathBuf::new(), registry_path: PathBuf::new(),
+        let admitted = Self { file: Some(file), lock_path: PathBuf::new(),
             parent_directory: Some(parent_directory), fence_name: Some(name),
             registry_file: Some(registry), cleanup_name, birth_cleanup };
         if recovery {
@@ -3380,7 +3358,6 @@ impl MountDestinationGuard {
         Ok(Self {
             file: Some(file),
             lock_path,
-            registry_path,
             parent_directory: None,
             fence_name: None,
             registry_file: None,
@@ -3475,14 +3452,12 @@ impl MountDestinationGuard {
                 &opened_directory
             }
         };
-        let registry_name = if self.fence_name.is_some() { Path::new(NATIVE_REGISTRY_NAME) }
-            else { Path::new(self.registry_path.file_name().ok_or(NativeMountError::InvalidDestination)?) };
         let lock_name = match self.fence_name.as_ref() {
             Some(name) => Path::new(std::str::from_utf8(name).expect("literal prefix, hex and suffix are UTF-8")),
             None => Path::new(self.lock_path.file_name().ok_or(NativeMountError::InvalidDestination)?),
         };
         let registry = crate::native_host::open_leaf_with_work(
-            directory, registry_name,
+            directory, Path::new(NATIVE_REGISTRY_NAME),
             &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
         )?;
         lock_mount_file_with_work(&registry, true, work)?;
