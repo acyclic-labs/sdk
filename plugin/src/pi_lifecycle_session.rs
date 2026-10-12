@@ -143,8 +143,6 @@ impl PiSession {
         &mut self, query_work: &acyclic_fs::NativeMaterializationWork,
     ) -> RootResult<()> {
         let cancellation = query_work.cancellation().clone();
-        let budget = query_work.remaining()
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let _graph_receipt = pi_recovery::observe_pi_session(
             &self.runtime.runtime, &self.state, query_work).await?;
         if self.state.routes.is_empty() { return Ok(()); }
@@ -160,7 +158,7 @@ impl PiSession {
         for route in self.state.routes.values() {
             let parent = self.alias_task(&route.parent_agent_id)?;
             let original = pi_fork::original_operation(root_task, parent, &route.turn_id, query_work)?;
-            let plan = coordinator.load_original_plan(original, budget, &cancellation)
+            let plan = coordinator.load_original_plan(original)
                 .await?.ok_or_else(|| Error::Invalid("Pi Created route has no original immutable fork plan".to_owned()))?;
             validate_created_native_route(route, parent, &plan, query_work)?;
             plans.insert(plan.commit.child.task_id, (route, parent, plan));
@@ -188,7 +186,7 @@ impl PiSession {
                     index += 1;
                     continue;
                 };
-                let observed = coordinator.observe_prepared(plan, source.clone(), budget,
+                let observed = coordinator.observe_prepared(plan, source.clone(),
                     cancellation.clone()).await?.ok_or_else(|| Error::Invalid("Pi Created route has no authenticated successful original creator".to_owned()))?;
                 validate_created_native_report(route, &observed)?;
                 native.register_observed_source(observed).await?;

@@ -249,7 +249,7 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Admission<TaskId>, acyclic_fs::NativeAllocation)> {
         binding.validate_with_native_work(None, binding.project_volumes.keys().map(String::as_str), true, work)?;
-        root.validate_with_native_work(binding, work)?;
+        root.validate(binding, work)?;
         if binding.task_id != self.policy.root_task
             || binding.agent_id != self.policy.agent
             || !matches!(binding.scratch.allocation, PiScratchAllocation::Preparing) {

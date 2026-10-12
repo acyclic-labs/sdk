@@ -143,7 +143,7 @@ async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
         .journal_owner_with_native_work(task, &fence, &query_work).await.unwrap()
         .into_native_shared(&query_work).unwrap();
     let context = fixture.runtime.runtime.task_context_with_native_work(task, &fence, &query_work).await.unwrap();
-    host.hydrate_child(&context, &owner, &fence, crate::pi_root_provider::allocation_budget(),
+    host.hydrate_child(&context, &owner, &fence,
         &query_cancellation, &query_work).await.unwrap();
     assert_eq!(host.binding(task, &query_work).unwrap().unwrap().0, original.binding);
     assert_eq!(host.frozen_source(task), Some(original.frozen_source));

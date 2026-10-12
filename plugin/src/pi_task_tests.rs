@@ -413,7 +413,7 @@ fn pi_root_intent_rejects_unselected_or_unbounded_paths_and_invalid_identity() {
         )
         .unwrap(),
     );
-    assert!(PiRootIntent::ScratchOnly {}.validate(&binding).is_err());
+    assert!(PiRootIntent::ScratchOnly {}.validate(&binding, &crate::pi_fork::tests::work()).is_err());
     let directory = tempfile::tempdir().unwrap();
     let path = directory
         .path()

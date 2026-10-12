@@ -248,7 +248,7 @@ impl<'a> PiControlHost<'a> {
         let import_operation = if command.kind == "acyclic.pi.writeback" {
             derived(base_selection_operation, "writeback-import", &work)? } else { base_selection_operation };
         let prior_import = if matches!(command.kind.as_str(), "acyclic.pi.import" | "acyclic.pi.writeback") {
-            self.read_import_intent(&context, import_operation, cancellation, work).await?
+            self.read_import_intent(&context, import_operation, work).await?
         } else { None };
         let pinned = pinned.or_else(|| prior_import.as_ref().map(|(intent, _)| intent.source_snapshot));
         let selected_custody = self.selected(&context, native_context, &owner, input.source,
@@ -498,7 +498,7 @@ impl PiControlHost<'_> {
         acyclic_fs::PublicationPermit::Unrestricted
     } else { return Err(denied("destination live owner unavailable")); };
     let import_operation = if writeback { derived(operation, "writeback-import", &work)? } else { operation };
-    let prior = self.read_import_intent(context, import_operation, cancellation, work).await?;
+    let prior = self.read_import_intent(context, import_operation, work).await?;
     let resuming_import = prior.is_some();
     let intent_custody = if let Some((intent, _custody)) = &prior {
         if intent.caller != input.caller || intent.source != input.source || intent.root != key
@@ -591,7 +591,7 @@ impl PiControlHost<'_> {
     self.writeback(context, native_context,
         owner, input, key, volume, selected.volume(), imported, operation, publication,
         &verifier.0, scope, import_receipt, reconcile, cancellation, work).await }
-    async fn read_import_intent(&self, context: &TaskContext, operation: OperationId, _cancellation: &CancellationToken,
+    async fn read_import_intent(&self, context: &TaskContext, operation: OperationId,
         work: &acyclic_fs::NativeMaterializationWork) -> Result<Option<(SelectedImportIntent, acyclic_fs::NativeAllocation)>> {
         crate::pi_root_provider::read_pi_input_with_native_work(&self.protected, &self.filesystem,
             operation, "selected-import-intent", crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
@@ -799,15 +799,13 @@ pub(crate) async fn read_imported_selected_files(
         }
     }
     let capacity = paths.0.len();
-    let slots = capacity.checked_mul(std::mem::size_of::<(&str, Option<String>)>()
-        + std::mem::size_of::<acyclic_fs::NativeAllocation>())
+    let slots = capacity.checked_mul(std::mem::size_of::<(&str, Option<String>)>())
         .ok_or_else(|| invalid("selected evidence payload allocation overflow"))?;
     let payload_custody = work.claim(slots as u64).map_err(native_error)?;
-    work.charge(WorkCounters { allocation_operations: if capacity == 0 { 0 } else { 2 },
+    work.charge(WorkCounters { allocation_operations: u64::from(capacity != 0),
         ..WorkCounters::default() }).map_err(native_error)?;
-    let mut payload = (Vec::<(&str, Option<String>)>::with_capacity(capacity), None,
-        Vec::with_capacity(capacity), payload_custody);
-    let (files, cursor, allocations, _) = &mut payload;
+    let mut payload = (Vec::<(&str, Option<String>)>::with_capacity(capacity), None, payload_custody);
+    let (files, cursor, custody) = &mut payload;
     let mut remaining = u64::from(maximum);
     let start = evidence.map(|request| request.path.as_str());
     for &path in &paths.0 {
@@ -844,7 +842,7 @@ pub(crate) async fn read_imported_selected_files(
         if bytes.len() as u64 != count { return Err(denied("candidate evidence range differs from its authenticated immutable length")); }
         let encoded_length = count.checked_add(2).and_then(|size| size.checked_div(3))
             .and_then(|size| size.checked_mul(4)).ok_or_else(|| invalid("file evidence encoded size overflow"))?;
-        allocations.push(work.claim(encoded_length).map_err(native_error)?);
+        custody.grow(encoded_length).map_err(native_error)?;
         work.charge(WorkCounters { bytes_encoded: encoded_length,
             allocation_operations: u64::from(encoded_length != 0),
             ..WorkCounters::default() }).map_err(native_error)?;
