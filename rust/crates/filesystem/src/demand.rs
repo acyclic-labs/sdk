@@ -5064,6 +5064,7 @@ impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native {
     use super::*;
+    use crate::native_host::{HostRoot, HostStat, HostStatReader, NativeHostWork as _};
     use crate::model::{FilesystemProfile, VolumeLimits};
     #[cfg(unix)]
     use crate::native_host::HostListedEntry;

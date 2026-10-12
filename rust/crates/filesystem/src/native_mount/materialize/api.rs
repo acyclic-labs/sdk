@@ -38,7 +38,7 @@ where
         .split_off((std::mem::size_of::<F>()) as u64)
         .map_err(materialize_native_error)
         .map_err(|error| (E::from(error), receipt.custody.work().receipt()))?;
-    let meter = Arc::clone(receipt.custody.work().native_read_meter());
+    let meter = Arc::clone(&receipt.custody.work().state);
     let mut future = in_heap(move || create(receipt));
     let result = future.as_mut().await;
     drop(future);
@@ -171,7 +171,7 @@ where
     let cancellation = receipt
         .custody
         .work()
-        .native_read_meter()
+        .state
         .with_original_leaf(|original| original.cancellation().clone());
     let cancellation = &cancellation;
     let reader = match &source {
@@ -598,7 +598,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
     }
     let native_work = crate::NativeMaterializationWork::new(budget, cancellation)
         .map_err(|(error, work)| OperationFailure::new(materialize_native_error(error), work))?;
-    let work = Arc::clone(native_work.native_read_meter());
+    let work = Arc::clone(&native_work.state);
     let result = async {
         validate_bounds(options)?;
         let allocation_work = native_work.clone();

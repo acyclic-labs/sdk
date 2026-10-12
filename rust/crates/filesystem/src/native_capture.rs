@@ -4,6 +4,7 @@ use crate::kernel::{
     FileKind, FileMetadata, FileRecord, LogicalName, MetadataField, NameEncoding, NamespacePath,
 };
 use crate::model::FilesystemProfile;
+use crate::demand::{DemandError, native_demand_error};
 use crate::native_host::NativeHostWork as _;
 use crate::native_host::{HostDataRange, HostRoot, HostStat, allocated_data_ranges};
 use crate::{
@@ -861,7 +862,7 @@ fn native_device_control_in_scope(
 ) -> Result<usize, DemandError> {
     acyclic_native_runtime::device_control_in_place(
         file, code, input, output, Some((scope.native.runtime_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Read)),
-    ).map_err(|error| scope.native.native_read_meter().take_native_io_failure()
+    ).map_err(|error| scope.native.state.take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error)))
 }
 
@@ -870,7 +871,7 @@ fn capture_scope_result<T>(
     result: Result<T, CaptureError>,
 ) -> Result<OperationReceipt<T>, OperationFailure<CaptureError>> {
     let released = scope.release();
-    let completed = scope.native.native_read_meter().lock().work;
+    let completed = scope.native.state.lock().work;
     result.and_then(|value| released.map(|()| value))
         .map(|value| OperationReceipt { value, work: completed })
         .map_err(|error| OperationFailure::new(error, completed))
@@ -1978,7 +1979,7 @@ pub(crate) async fn capture_baseline_with_native_work<A: AsyncAuthorityStore, O:
     cancellation: &CancellationToken,
     work: &crate::NativeMaterializationWork,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
-    let meter = work.native_read_meter();
+    let meter = &work.state;
     let completed = { meter.lock().work };
     if checkout.has_pending_mutations() {
         return Err(OperationFailure::new(CaptureError::DirtyCheckout, completed));
@@ -4055,7 +4056,7 @@ async fn settled_sparse_ranges(native: &std::sync::Arc<acyclic_native_runtime::N
                     .map_err(CaptureError::from)?;
                 let value = reader.read(wanted as usize, runtime, true)
                     .await.map_err(|error| {
-                        let cause = if let Some(cause) = meter.native.native_read_meter().take_native_io_failure() {
+                        let cause = if let Some(cause) = meter.native.state.take_native_io_failure() {
                             capture_demand_error(cause)
                         } else if error.kind() == std::io::ErrorKind::UnexpectedEof {
                             CaptureError::Kernel(crate::FsError::SourceSnapshotStale)
@@ -4175,7 +4176,7 @@ fn native_positional_file(
     result.map_err(|(error, file)| {
         // This is an ordinary std file, not an explicit SDK close operation. Retire its physical handle before projecting the original failure.
         drop(file);
-        capture_demand_error(original.native_read_meter().take_native_io_failure()
+        capture_demand_error(original.state.take_native_io_failure()
             .unwrap_or_else(|| native_demand_error(error)))
     })
 }
@@ -4210,7 +4211,7 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
         let runtime = capture_runtime_meter_owner(original, &self.capture_custody)?;
         let result = reader.read(maximum, runtime, true).await
             .map_err(|error| {
-                original.native_read_meter().take_native_io_failure()
+                original.state.take_native_io_failure()
                     .map(crate::materializer::native_materialization_work_error)
                     .map(crate::FsError::NativeKernel)
                     .unwrap_or_else(|| if error.kind() == std::io::ErrorKind::UnexpectedEof {

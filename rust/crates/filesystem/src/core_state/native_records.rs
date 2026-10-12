@@ -30,7 +30,7 @@ pub(super) fn checked_packet<T>(
 ) -> Result<Owned<T>, Error> {
     // Keep the value-first tuple intact through every rejecting branch.
     let parts = owned.into_parts();
-    if !parts.1.matches_work(work) {
+    if !parts.1.work().shares_allocation_context(work) {
         return Err(Error::NativeLedgerMismatch);
     }
     if parts.1.bytes() != bytes(&parts.0)? {
@@ -41,7 +41,7 @@ pub(super) fn checked_packet<T>(
 
 fn transfer<T>(owned: Owned<T>, work: &Work, held: &mut NativeAllocation) -> Result<T, Error> {
     let (value, mut allocation) = owned.into_parts();
-    let result = if allocation.matches_work(work) {
+    let result = if allocation.work().shares_allocation_context(work) {
         held.absorb(&mut allocation).map_err(Error::from)
     } else {
         Err(Error::NativeLedgerMismatch)
