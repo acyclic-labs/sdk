@@ -31,7 +31,7 @@ async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let volume = VolumeRef::new(
         provider,
         "owned".into(),
@@ -128,7 +128,7 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let project = |name: &str| {
         VolumeRef::new(
             provider.clone(),

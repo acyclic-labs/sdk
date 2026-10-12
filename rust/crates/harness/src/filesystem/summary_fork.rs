@@ -52,7 +52,9 @@ pub(super) fn split_references<'a>(
         .flat_map(|message| message.content.file_refs())
         .chain(prepared.context().metadata.values())
     {
-        let key = super::task_runtime::observed::digest(file, io, u64::MAX)?;
+        let key = crate::executor::with_history_io(io, |work| {
+            crate::contract::canonical_json_digest_with_work(file, u64::MAX, work)
+        })?;
         let selected = if crate::conversation::is_internal_path(file.path())
             && !crate::conversation::is_inherited_context_path(file.path())
         {
@@ -88,9 +90,9 @@ fn rewritten_context(
         replacements: &References,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if let Some(copy) =
-            replacements.get(&super::task_runtime::observed::digest(file, io, u64::MAX)?)
-        {
+        if let Some(copy) = replacements.get(&crate::executor::with_history_io(io, |work| {
+            crate::contract::canonical_json_digest_with_work(file, u64::MAX, work)
+        })?) {
             *file = crate::executor::with_history_io(io, |work| copy.copy(work))?;
         }
         Ok(())
@@ -236,7 +238,8 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     )
     .await?;
     fork_preparer_io::retain(&generation, io).await?;
-    let reference = fork_preparer_io::generation_ref(&controller.host.provider, generation.id(), io)?;
+    let reference =
+        fork_preparer_io::generation_ref(&controller.host.provider, generation.id(), io)?;
     Ok(reference)
 }
 
@@ -252,7 +255,8 @@ async fn original_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return Ok(None);
     };
     fork_preparer_io::retain(&generation, io).await?;
-    let reference = fork_preparer_io::generation_ref(&controller.host.provider, generation.id(), io)?;
+    let reference =
+        fork_preparer_io::generation_ref(&controller.host.provider, generation.id(), io)?;
     Ok(Some(reference))
 }
 

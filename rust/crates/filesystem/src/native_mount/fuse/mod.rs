@@ -12,6 +12,7 @@ use super::{
     ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or, system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
+use crate::model::AccessMode;
 use fuser::{
     BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
     FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags, KernelConfig, LockOwner,

@@ -76,12 +76,6 @@ pub enum GitCompatRunError<S: std::error::Error + 'static, E: std::error::Error 
     /// The filesystem executor failed; prepared state remains recoverable.
     #[error("Git compatibility filesystem action failed: {0}")]
     Executor(E),
-    /// The executor returned a result that does not match the requested action.
-    #[error("Git compatibility executor returned an invalid result")]
-    InvalidResult,
-    /// A typed action could not be encoded for its deterministic identity.
-    #[error("Git compatibility action encoding failed: {0}")]
-    Encoding(#[from] serde_json::Error),
 }
 
 pub(super) fn map_state_error<E: std::error::Error + 'static>(

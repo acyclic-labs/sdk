@@ -59,7 +59,7 @@ impl ContentResidencyVerifier for ReaderSpy {
 )]
 async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity() -> Result<()> {
     let provider = ProviderRef::new("text-variants".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent = AgentId::new();
     let volume = VolumeRef::new(
         provider,
@@ -127,12 +127,12 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let read_definition = read_tool.definition.clone();
     let search_projector = search_tool.projection.clone();
     let mut tools = ToolRegistry::default();
-    tools.register(read_tool)?;
-    tools.register(search_tool)?;
-    tools.register(files::read_file()?)?;
-    tools.register(files::write_file()?)?;
-    tools.register(files::edit_file()?)?;
-    tools.register(files::patch_file(65_536, 16)?)?;
+    tools.register((read_tool, None), &mut None, None)?;
+    tools.register((search_tool, None), &mut None, None)?;
+    tools.register((files::read_file()?, None), &mut None, None)?;
+    tools.register((files::write_file()?, None), &mut None, None)?;
+    tools.register((files::edit_file()?, None), &mut None, None)?;
+    tools.register((files::patch_file(65_536, 16)?, None), &mut None, None)?;
     let captured_reader = reader.clone();
     let task = TaskDefinition::live("fixture.text_variants", "1", move |context, (): ()| {
         let source = source.clone();

@@ -7,15 +7,31 @@ impl HttpObjects {
         query: wire::PutObjectHeader,
         body: UploadBody,
     ) -> Result<wire::ObjectInfo, Error> {
-        Ok(self
-            .put_stream_controlled(response::RequestInput::Ordinary(query), body, None)
-            .await?
-            .0)
+        obs::traced(
+            obs::span!(
+                INFO,
+                "acyclic.objects.http.call",
+                route = "objects/put",
+                rpc.code = obs::Empty
+            ),
+            async {
+                request::put(&query)?;
+                let header = line(
+                    "PutObjectRequest",
+                    &wire::PutObjectRequest {
+                        frame: Some(wire::put_object_request::Frame::Header(query)),
+                    },
+                    None,
+                )?;
+                Ok(self.send_upload(header, body, None).await?.0)
+            },
+        )
+        .await
     }
 
-    pub(super) async fn put_stream_controlled(
+    pub(super) async fn send_upload(
         &self,
-        request_input: response::RequestInput<wire::PutObjectHeader>,
+        header: Bytes,
         body: UploadBody,
         controls: Option<Arc<super::NativeTransportErrors>>,
     ) -> Result<
@@ -25,100 +41,79 @@ impl HttpObjects {
         ),
         Error,
     > {
-        obs::traced(
-            obs::span!(
-                INFO,
-                "acyclic.objects.http.call",
-                route = "objects/put",
-                rpc.code = obs::Empty
-            ),
-            async {
-                let query = request_input.value();
-                let mut response_allocation = controls
-                    .as_ref()
-                    .map(|controls| {
-                        acyclic_native_runtime::ReadAllocation::adopt(
-                            &controls.meter,
-                            self.maximum.saturating_mul(4),
-                        )
-                        .map_err(|error| controls.fail(error))
-                    })
-                    .transpose()?;
-                request::put(query)?;
-                let header_frame = request_input.map(|query| wire::PutObjectRequest {
-                    frame: Some(wire::put_object_request::Frame::Header(query)),
-                });
-                let header = line("PutObjectRequest", header_frame.value(), controls.as_ref())?;
-                drop(header_frame);
-                let (chunks, state) = upload::chunks(body, controls.clone())?;
-                let frame_controls = controls.clone();
-                let frames = chunks.map(move |chunk| {
-                    let chunk = chunk?;
-                    let (bytes, allocation) = if let Some(controls) = &frame_controls {
-                        let (bytes, allocation) = controls.copy(chunk.as_ref())?;
-                        (bytes, Some(allocation))
-                    } else {
-                        (chunk.to_vec(), None)
-                    };
-                    let frame = wire::PutObjectRequest {
-                        frame: Some(wire::put_object_request::Frame::Body(bytes)),
-                    };
-                    let encoded = line("PutObjectRequest", &frame, frame_controls.as_ref());
-                    drop(frame);
-                    drop(allocation);
-                    encoded
-                });
-                let complete = line(
-                    "PutObjectRequest",
-                    &wire::PutObjectRequest {
-                        frame: Some(wire::put_object_request::Frame::Complete(true)),
-                    },
-                    controls.as_ref(),
-                )?;
-                let terminal_controls = controls.clone();
-                let header_controls = controls.clone();
-                let (result, retained_response): (wire::ObjectInfo, _) = upload::run(
-                    async {
-                        let reply = self
-                            .post(
-                                "objects/put",
-                                "application/x-ndjson",
-                                response::http_body(
-                                    stream::once(async move {
-                                        if let Some(controls) = header_controls {
-                                            controls.check()?;
-                                        }
-                                        Ok::<_, Error>(header)
-                                    })
-                                    .chain(frames)
-                                    .chain(stream::once(
-                                        async move {
-                                            if let Some(controls) = terminal_controls {
-                                                controls.check()?;
-                                            }
-                                            Ok::<_, Error>(complete)
-                                        },
-                                    )),
-                                    controls.as_ref(),
-                                )?,
-                                controls.as_ref(),
-                            )
-                            .await?;
-                        self.decode_put(reply, controls.as_ref(), response_allocation.take())
-                            .await
-                    },
-                    &state,
+        let response_allocation = controls
+            .as_ref()
+            .map(|controls| {
+                acyclic_native_runtime::ReadAllocation::adopt(
+                    &controls.meter,
+                    self.maximum.saturating_mul(4),
                 )
-                .await?;
-                response::validate_put_controlled(
-                    result,
-                    retained_response,
-                    state.finish(),
-                    controls.as_ref(),
-                )
+                .map_err(|error| controls.fail(error))
+            })
+            .transpose()?;
+        let (chunks, state) = upload::chunks(body, controls.clone())?;
+        let frame_controls = controls.clone();
+        let frames = chunks.map(move |chunk| {
+            let chunk = chunk?;
+            let (bytes, allocation) = if let Some(controls) = &frame_controls {
+                let (bytes, allocation) = controls.copy(chunk.as_ref())?;
+                (bytes, Some(allocation))
+            } else {
+                (chunk.to_vec(), None)
+            };
+            let frame = wire::PutObjectRequest {
+                frame: Some(wire::put_object_request::Frame::Body(bytes)),
+            };
+            let encoded = line("PutObjectRequest", &frame, frame_controls.as_ref());
+            drop(frame);
+            drop(allocation);
+            encoded
+        });
+        let complete = line(
+            "PutObjectRequest",
+            &wire::PutObjectRequest {
+                frame: Some(wire::put_object_request::Frame::Complete(true)),
             },
+            controls.as_ref(),
+        )?;
+        let terminal_controls = controls.clone();
+        let header_controls = controls.clone();
+        let result: wire::ObjectInfo = upload::run(
+            async {
+                let reply = self
+                    .post(
+                        "objects/put",
+                        "application/x-ndjson",
+                        response::http_body(
+                            stream::once(async move {
+                                if let Some(controls) = header_controls {
+                                    controls.check()?;
+                                }
+                                Ok::<_, Error>(header)
+                            })
+                            .chain(frames)
+                            .chain(stream::once(async move {
+                                if let Some(controls) = terminal_controls {
+                                    controls.check()?;
+                                }
+                                Ok::<_, Error>(complete)
+                            })),
+                            controls.as_ref(),
+                        )?,
+                        controls.as_ref(),
+                    )
+                    .await?;
+                self.decode("ObjectInfo", reply, controls.as_ref()).await
+            },
+            &state,
         )
-        .await
+        .await?;
+        response::validate_put_controlled(
+            result,
+            response_allocation,
+            state.finish(),
+            controls.as_ref(),
+        )
     }
 
     /// Streams one independently staged multipart part.
@@ -175,7 +170,7 @@ impl HttpObjects {
                                 None,
                             )
                             .await?;
-                        self.decode("UploadedPart", reply).await
+                        self.decode("UploadedPart", reply, None).await
                     },
                     &state,
                 )

@@ -211,7 +211,7 @@ where
                     ErrorCode::Storage,
                 )?;
                 crate::executor::with_history_io(Some(io), |work| {
-                    ticket.validate_decoded_request_with_work(&request.0, work)
+                    ticket.validate_decoded_request(&request.0, work)
                 })?;
                 (request.0, Some(request.1))
             }
@@ -238,7 +238,7 @@ where
                         ErrorCode::Storage,
                     )?;
                     crate::executor::with_history_io(Some(io), |work| {
-                        ticket.validate_decoded_decision_with_work(
+                        ticket.validate_decision(
                             &request.0,
                             &resolution.outcome,
                             detail,

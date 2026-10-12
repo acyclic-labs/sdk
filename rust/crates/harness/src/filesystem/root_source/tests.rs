@@ -60,10 +60,7 @@ async fn real_filesystem_birth_without_protected_root_association_is_not_source_
         "2".into(),
         &mut None,
     )?;
-    let host = Arc::new(FilesystemHost::new(
-        acyclic_fs::Fs::memory(),
-        provider.clone(),
-    )?);
+    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
     let project = VolumeRef::new(
         provider,
         "root-project".into(),

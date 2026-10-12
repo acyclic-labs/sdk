@@ -197,11 +197,10 @@ fn observation_consumes_changes(batch: &WatchBatch) -> bool {
 impl SharedPhysicalRoot {
     pub(crate) async fn validate_path_identity(&self, path: PathBuf) -> Result<(), String> {
         let display_path = path.clone();
-        let current =
-            tokio::task::spawn_blocking(move || HostRoot::open(&path).map(|root| root.identity()))
-                .await
-                .map_err(|error| format!("physical root validation worker failed: {error}"))?
-                .map_err(display)?;
+        let current = tokio::task::spawn_blocking(move || acyclic_fs::capture_root_identity(&path))
+            .await
+            .map_err(|error| format!("physical root validation worker failed: {error}"))?
+            .map_err(display)?;
         if current != self.source.inner().root_identity() {
             return Err(format!(
                 "physical root {} changed identity while it was in use",
@@ -239,17 +238,19 @@ impl SharedPhysicalRoot {
                 .watcher
                 .lock()
                 .map_err(|_| "physical root watcher state is poisoned".to_owned())?;
-            match watcher.fence_measured(
-                WATCH_FENCE_TIMEOUT,
+            let fence_work = match acyclic_fs::NativeMaterializationWork::new(
                 work.remaining(budget).map_err(display)?,
                 cancellation,
             ) {
-                Ok(receipt) => work = work.checked_add(receipt.work).map_err(display)?,
-                Err(failure) => {
-                    work = work.checked_add(*failure.work).map_err(display)?;
-                    return Err(display(failure.error));
+                Ok(work) => work,
+                Err((cause, spent)) => {
+                    work = work.checked_add(spent).map_err(display)?;
+                    return Err(display(cause));
                 }
-            }
+            };
+            let fenced = watcher.fence_with_native_work(WATCH_FENCE_TIMEOUT, &fence_work);
+            work = work.checked_add(fence_work.receipt()).map_err(display)?;
+            fenced.map_err(display)?;
             match watcher.poll(
                 65_536,
                 work.remaining(budget).map_err(display)?,
@@ -510,12 +511,20 @@ impl LocalMount {
         permit: PublicationPermit,
     ) -> Result<(), String> {
         let name = std::str::from_utf8(name).map_err(display)?;
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, _)| display(cause))?;
         self.routes
             .get(name)
             .ok_or_else(|| "mounted root route is missing".to_owned())?
-            .sync_with_permit(permit)
+            .sync_with_permit(permit, &work, |_| {
+                std::future::ready(Ok::<(), acyclic_fs::native_mount::MountLifecycleError>(()))
+            })
             .await
-            .map_err(display)
+            .map(|_| ())
+            .map_err(|failure| display(failure.cause))
     }
 
     pub(crate) async fn sync(&self) -> Result<(), String> {

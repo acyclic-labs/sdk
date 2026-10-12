@@ -110,9 +110,20 @@ where
         }
         let operation = checkpoint_operation(context.operation_id());
         let source_checkpoint = match original {
-            Some(original) => {
-                crate::executor::with_history_io(io, |work| original.source_checkpoint.copy(work))?
-            }
+            Some(original) => crate::executor::with_history_io(io, |work| {
+                original
+                    .request
+                    .source_checkpoint
+                    .as_ref()
+                    .ok_or_else(|| {
+                        failure(
+                            io,
+                            ErrorCode::Unauthorized,
+                            "original fork has no source checkpoint",
+                        )
+                    })?
+                    .copy(work)
+            })?,
             None => {
                 let bytes = observer.encode(
                     intent,

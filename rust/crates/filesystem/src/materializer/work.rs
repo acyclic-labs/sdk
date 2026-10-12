@@ -523,7 +523,7 @@ impl NativeMaterializationWork {
             .state(|demand| {
                 demand
                     .reconcile_native_controls()
-                    .map_err(native_materialization_work_error)?;
+                    .map_err(NativeTreeMaterializationError::from)?;
                 let (allocations, counters, budget, cancellation) = demand.allocation_parts();
                 let before = allocations.live_bytes();
                 let result = operation(allocations, counters, budget, cancellation);

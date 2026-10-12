@@ -5,8 +5,6 @@ pub(in crate::v1) struct NativeTransportMeter {
     pub cancelled: std::sync::atomic::AtomicBool,
     pub cancel_on_copy: std::sync::atomic::AtomicU64,
     pub quota_on_copy: std::sync::atomic::AtomicU64,
-    pub allocations: std::sync::atomic::AtomicU64,
-    pub allocation_limit: std::sync::atomic::AtomicU64,
     pending_allocations: parking_lot::Mutex<(u64, u64)>,
     pub reads: std::sync::atomic::AtomicU64,
     pub writes: std::sync::atomic::AtomicU64,
@@ -24,8 +22,6 @@ impl NativeTransportMeter {
             cancelled: false.into(),
             cancel_on_copy: u64::MAX.into(),
             quota_on_copy: u64::MAX.into(),
-            allocations: 0.into(),
-            allocation_limit: u64::MAX.into(),
             pending_allocations: parking_lot::Mutex::new((0, 0)),
             reads: 0.into(),
             writes: 0.into(),
@@ -62,7 +58,7 @@ impl NativeTransportMeter {
             .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
         Ok(())
     }
-    fn claim(&self, bytes: u64, allocations: u64) -> std::io::Result<()> {
+    fn claim(&self, bytes: u64) -> std::io::Result<()> {
         use std::sync::atomic::Ordering::SeqCst;
         acyclic_native_runtime::NativeReadMeter::check(self)?;
         let pending = self.pending_allocations.lock();
@@ -71,22 +67,13 @@ impl NativeTransportMeter {
             .load(SeqCst)
             .checked_add(bytes)
             .ok_or(std::io::ErrorKind::OutOfMemory)?;
-        let attempts = self
-            .allocations
-            .load(SeqCst)
-            .checked_add(allocations)
-            .ok_or(std::io::ErrorKind::OutOfMemory)?;
         if retained
             .checked_add(pending.0)
             .is_none_or(|value| value > self.limit.load(SeqCst))
-            || attempts
-                .checked_add(pending.1)
-                .is_none_or(|value| value > self.allocation_limit.load(SeqCst))
         {
             return Err(std::io::ErrorKind::OutOfMemory.into());
         }
         self.memory.fetch_add(bytes, SeqCst);
-        self.allocations.fetch_add(allocations, SeqCst);
         Ok(())
     }
 }
@@ -101,7 +88,7 @@ impl acyclic_native_runtime::NativeReadMeter for NativeTransportMeter {
         }
     }
     fn allocate(&self, bytes: u64) -> std::io::Result<()> {
-        self.claim(bytes, 1)
+        self.claim(bytes)
     }
     fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
         use std::sync::atomic::Ordering::SeqCst;
@@ -120,11 +107,6 @@ impl acyclic_native_runtime::NativeReadMeter for NativeTransportMeter {
             .load(SeqCst)
             .checked_add(retained)
             .is_none_or(|value| value > self.limit.load(SeqCst))
-            || self
-                .allocations
-                .load(SeqCst)
-                .checked_add(attempts)
-                .is_none_or(|value| value > self.allocation_limit.load(SeqCst))
         {
             return Err(std::io::ErrorKind::OutOfMemory.into());
         }
@@ -150,17 +132,16 @@ impl acyclic_native_runtime::NativeReadMeter for NativeTransportMeter {
         pending.0 -= bytes;
         pending.1 -= 1;
         self.memory.fetch_add(bytes, SeqCst);
-        self.allocations.fetch_add(1, SeqCst);
         Ok(())
     }
     fn allocation_failed(&self, _: std::collections::TryReserveError) -> std::io::Error {
         std::io::ErrorKind::OutOfMemory.into()
     }
     fn allocate_refcount_header(&self) -> std::io::Result<()> {
-        self.claim(0, 1)
+        self.claim(0)
     }
     fn adopt(&self, bytes: u64) -> std::io::Result<()> {
-        self.claim(bytes, 0)
+        self.claim(bytes)
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
         self.memory
@@ -262,12 +243,6 @@ impl acyclic_native_runtime::NativeReadMeter for NativeTransportMeter {
     fn admit_read(&self, maximum: usize) -> std::io::Result<()> {
         self.table_event(maximum, &self.reads, &self.read_limit)
     }
-    fn admit_operations(&self, _: u64) -> std::io::Result<()> {
-        Err(std::io::ErrorKind::Unsupported.into())
-    }
-    fn record_operations(&self, _: u64) -> std::io::Result<()> {
-        Err(std::io::ErrorKind::Unsupported.into())
-    }
     fn record_read(&self, _: usize) -> std::io::Result<()> {
         Err(std::io::ErrorKind::Unsupported.into())
     }
@@ -278,12 +253,6 @@ impl acyclic_native_runtime::NativeReadMeter for NativeTransportMeter {
         self.table_event(maximum, &self.writes, &self.write_limit)
     }
     fn record_write(&self, _: usize) -> std::io::Result<()> {
-        Err(std::io::ErrorKind::Unsupported.into())
-    }
-    fn admit_write_operations(&self, _: u64) -> std::io::Result<()> {
-        Err(std::io::ErrorKind::Unsupported.into())
-    }
-    fn record_write_operations(&self, _: u64) -> std::io::Result<()> {
         Err(std::io::ErrorKind::Unsupported.into())
     }
     fn admit_durability(&self) -> std::io::Result<()> {

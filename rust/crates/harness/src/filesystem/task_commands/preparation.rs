@@ -181,7 +181,11 @@ where
             retained.preparer
         };
         ready(
-            Outcome::Succeeded(preparer.prepare_for_task(fork, &preparation).await?),
+            Outcome::Succeeded(
+                preparer
+                    .prepare_for_task(fork, &Arc::new(preparation))
+                    .await?,
+            ),
             None,
         )
     }
@@ -265,8 +269,7 @@ where
                         )
                     })?;
                 let admission = (admission, io.take_native_custody(bytes)?);
-                let fence =
-                    crate::filesystem::task_runtime::observed::clone_fence_with_custody(fence, io)?;
+                let fence = fence.clone_with_native_work(work)?;
                 let (result, custody) = crate::runtime::TaskSpawner::admit_owned_with_native_work(
                     self.runtime.task_host().as_ref(),
                     admission,

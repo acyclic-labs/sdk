@@ -1,17 +1,6 @@
 use super::*;
 
 impl FuseProjection {
-    pub(super) fn attributes_to_write(
-        &self,
-        inode: u64,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<AttributeTarget, NativeMountError> {
-        self.check_source_write(work)?;
-        let state = self.core.state()?;
-        state.admit_write()?;
-        Ok(state.attribute_target(inode, work)?)
-    }
-
     pub(super) fn write_named_attribute(
         &self,
         inode: u64,
@@ -34,23 +23,26 @@ impl FuseProjection {
             (false, false) => crate::native_mount::MountAttributeWriteMode::Upsert,
         };
         let _names = self.core.names()?;
-        let target = self.attributes_to_write(inode, work)?;
+        self.check_source_write(work)?;
+        let target = {
+            let state = self.core.state()?;
+            state.admit_write()?;
+            state.attribute_target(inode, work)?
+        };
         let value = fuse_source_chunk(value, work)?;
         self.source_write(work, || {
-            match target {
+            Ok(match target {
                 AttributeTarget::Handle(open_file) => {
-                    let file = open_file.file(work)?;
-                    file.write_attribute(name.as_bytes(), value, mode, work)
+                    open_file
+                        .file(work)?
+                        .write_attribute(name.as_bytes(), value, mode, work)?
                 }
-                AttributeTarget::Path(path) => self.core.source.as_ref().write_attribute(
-                    &path,
-                    name.as_bytes(),
-                    value,
-                    mode,
-                    work,
-                ),
-            }
-            .map_err(NativeMountError::from)
+                AttributeTarget::Path(path) => {
+                    self.core
+                        .source
+                        .write_attribute(&path, name.as_bytes(), value, mode, work)?
+                }
+            })
         })
     }
 
@@ -72,7 +64,6 @@ impl FuseProjection {
             Some(AttributeTarget::Path(path)) => {
                 self.core
                     .source
-                    .as_ref()
                     .read_attribute(&path, name.as_bytes(), work)
             }
             None => Ok(None),
@@ -81,7 +72,7 @@ impl FuseProjection {
             MountSourceError::NotFound => NativeMountError::from(libc::ENODATA),
             error => error.into(),
         })?
-        .ok_or_else(|| NativeMountError::from(libc::ENODATA))?;
+        .ok_or(libc::ENODATA)?;
         fuse_owned_source_chunk(value, work)
     }
 
@@ -91,11 +82,11 @@ impl FuseProjection {
         work: &crate::NativeMaterializationWork,
     ) -> Result<FuseOwned<Vec<u8>>, NativeMountError> {
         let _names = self.core.names()?;
-        let target =
+        let Some(target) =
             self.core
                 .state()?
-                .attributes_to_read(self.core.source.as_ref(), inode, work)?;
-        let Some(target) = target else {
+                .attributes_to_read(self.core.source.as_ref(), inode, work)?
+        else {
             return fuse_vec(0, work);
         };
         let mut previous: Option<(
@@ -112,11 +103,12 @@ impl FuseProjection {
                 AttributeTarget::Handle(open_file) => open_file
                     .file(work)?
                     .list_attributes_with_meter(cursor, ATTRIBUTE_PAGE_SIZE, work),
-                AttributeTarget::Path(path) => self
-                    .core
-                    .source
-                    .as_ref()
-                    .list_attributes_with_meter(path, cursor, ATTRIBUTE_PAGE_SIZE, work),
+                AttributeTarget::Path(path) => self.core.source.list_attributes_with_meter(
+                    path,
+                    cursor,
+                    ATTRIBUTE_PAGE_SIZE,
+                    work,
+                ),
             }?;
             for name in &page.0.names {
                 fuse_item(work)?;
@@ -149,7 +141,12 @@ impl FuseProjection {
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let _names = self.core.names()?;
-        let target = self.attributes_to_write(inode, work)?;
+        self.check_source_write(work)?;
+        let target = {
+            let state = self.core.state()?;
+            state.admit_write()?;
+            state.attribute_target(inode, work)?
+        };
         self.source_write(work, || {
             match target {
                 AttributeTarget::Handle(open_file) => open_file
@@ -158,7 +155,6 @@ impl FuseProjection {
                 AttributeTarget::Path(path) => {
                     self.core
                         .source
-                        .as_ref()
                         .remove_attribute(&path, name.as_bytes(), work)
                 }
             }

@@ -2,7 +2,6 @@ use super::*;
 use crate::filesystem::default_tools::{
     decode, encode, recursive_command_outbox, recursive_reject,
 };
-use crate::filesystem::task_runtime::observed::digest;
 use crate::filesystem::{PreparationIo, PreparationRecord};
 use crate::wire::ErrorCode;
 
@@ -115,7 +114,13 @@ impl ForkPreparationMachine {
         encode(
             &State::Ready {
                 command,
-                request_digest: digest(&request.payload, io, u64::MAX)?,
+                request_digest: crate::executor::with_history_io(io, |work| {
+                    crate::contract::canonical_json_digest_with_work(
+                        &request.payload,
+                        u64::MAX,
+                        work,
+                    )
+                })?,
             },
             io,
         )
@@ -171,7 +176,13 @@ impl ForkPreparationMachine {
                     Outcome::Succeeded(report) => {
                         crate::executor::with_history_io(io, |work| report.validate(work))?;
                         if report.request.operation_id != operation_id
-                            || digest(&report.request, io, u64::MAX)? != request_digest
+                            || crate::executor::with_history_io(io, |work| {
+                                crate::contract::canonical_json_digest_with_work(
+                                    &report.request,
+                                    u64::MAX,
+                                    work,
+                                )
+                            })? != request_digest
                         {
                             return Err(recursive_reject(
                                 io,

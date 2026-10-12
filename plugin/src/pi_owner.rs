@@ -804,7 +804,7 @@ pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
         });
     }
     let mut providers = EffectRegistry::new(Some(work))?.with_result_resolver(content.clone());
-    providers.register_with_native_work(provider, work)?;
+    providers.register(provider, Some(work))?;
     let ((audience, issuer, scope), custody) = authorization;
     ConversationEffectHost::new(
         stream,

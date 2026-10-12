@@ -68,9 +68,9 @@ pub(super) fn validate_layout(
     #[cfg(windows)]
     let nested = {
         let (root, _root_allocation) =
-            crate::native_host::canonical_directory_wide_with_work(&root, &mut &*work)?;
+            crate::native_host::canonical_directory_wide(&root, &mut &*work)?;
         let (mut operation, mut allocation) =
-            crate::native_host::canonical_directory_wide_with_work(&operation, &mut &*work)?;
+            crate::native_host::canonical_directory_wide(&operation, &mut &*work)?;
         if !suffix.as_os_str().is_empty() {
             with_native_walk_leaf(suffix, work, |suffix| {
                 let separator = usize::from(operation.last() != Some(&92));

@@ -69,23 +69,6 @@ where
             .map_err(Into::into)
     }
 
-    /// Keeps actual callback custody through the caller's physical operation.
-    pub async fn with_original_work<T, F, Fut>(
-        &self,
-        work: &NativeMaterializationWork,
-        operation: F,
-    ) -> Result<T, MountLifecycleError>
-    where
-        T: Send,
-        F: FnOnce(&super::super::NativeMountWorkScope) -> Fut + Send,
-        Fut: Future<Output = T> + Send,
-    {
-        let scope = self.begin_original_work(work)?;
-        let result = operation(&scope).await;
-        drop(scope);
-        Ok(result)
-    }
-
     /// Publishes pending authored effects with an unrestricted permit.
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         let work = NativeMaterializationWork::new(
@@ -231,12 +214,6 @@ where
             .map_err(Into::into)
     }
 
-    /// Publishes and advances this live checkout to workspace head.
-    pub async fn refresh(&self) -> Result<(), MountLifecycleError> {
-        self.sync().await?;
-        self.advance_to_head().await
-    }
-
     /// Advances a clean checkout and settles its native visibility.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
         let advanced = self.source.advance_to_head_async().await;
@@ -296,36 +273,6 @@ where
             .map_err(|(cause, accounting)| (cause.into(), accounting))
     }
 
-    /// Validates the supplied immutable view on the original work allowance.
-    pub async fn validate_snapshot_with_work(
-        &self,
-        frozen: crate::LazySnapshotRef,
-        work: &NativeMaterializationWork,
-    ) -> Result<(), MountLifecycleError> {
-        self.source
-            .lazy
-            .validate_snapshot(
-                frozen,
-                &LazyTreapWork::native_with_work(work, work.cancellation())?,
-            )
-            .await
-            .map_err(Into::into)
-    }
-
-    /// Looks up exactly the supplied frozen view on the original work allowance.
-    pub async fn lookup_at_snapshot_with_work(
-        &self,
-        frozen: crate::LazySnapshotRef,
-        path: &str,
-        work: &NativeMaterializationWork,
-    ) -> Result<(LazyLookup, NativeAllocation), MountLifecycleError> {
-        self.source
-            .lazy
-            .lookup_at_snapshot_with_work(frozen, path, &work, work.cancellation())
-            .await
-            .map_err(Into::into)
-    }
-
     /// Publishes through the source's dedicated callback runtime.
     pub fn sync_blocking(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
@@ -335,43 +282,17 @@ where
     /// Publishes and detaches, retaining the owner on any failure.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
-        self.detach()
+        self.retire(&crate::CancellationToken::new()).map(drop)
     }
 
     /// Publishes and detaches for foreign-runtime worker threads.
     pub fn unmount_blocking(&self) -> Result<(), MountLifecycleError> {
         self.sync_blocking()?;
-        self.detach()
-    }
-
-    /// Detaches callbacks, driver, source and fence through the supplied work.
-    pub fn abandon(&self, work: &NativeMaterializationWork) -> Result<(), MountLifecycleError> {
-        let mut owner = self
-            .session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let result = (|| {
-            let Some(session) = owner.as_mut() else {
-                return Ok(());
-            };
-            work.admit(crate::WorkCounters::default())?;
-            session.stop_with_meter(work)?;
-            if !session.cleanup_state().cleanup_complete() {
-                return Err(NativeMountError::ControlPending.into());
-            }
-            owner.take();
-            Ok(())
-        })();
-        if result.is_err() {
-            if let Some(session) = owner.as_mut() {
-                session.record_measured_cleanup_failure();
-            }
-        }
-        result
+        self.retire(&crate::CancellationToken::new()).map(drop)
     }
 
     /// Retires physical work on birth-time credit and preserves uncaptured data.
-    pub fn retire_with_work(
+    pub fn retire(
         &self,
         wait: &crate::CancellationToken,
     ) -> Result<NativeMountDrainProof, MountLifecycleError> {
@@ -407,16 +328,5 @@ where
             }
         }
         result
-    }
-
-    fn detach(&self) -> Result<(), MountLifecycleError> {
-        #[cfg(target_os = "macos")]
-        acyclic_native_runtime::initialize_native_io_services().map_err(NativeMountError::from)?;
-        let work = NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?;
-        self.abandon(&work)
     }
 }

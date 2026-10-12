@@ -2584,7 +2584,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         let digest = generation.id().digest().into_bytes();
         let volume = &self.preparation.request.binding.scratch.volume;
         let (reference, custody) =
-            GenerationRef::new_with_native_work(volume.provider(), &digest, None, work)?;
+            GenerationRef::new(volume.provider(), &digest, None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
         let scratch = (
             PiScratchCreation {
                 workspace_id: generation.workspace().id().into_bytes(),
@@ -3150,4 +3150,4 @@ impl<P: StreamProvider + 'static> EffectProvider for PiRootProvider<P> {
 
 #[cfg(test)]
 #[path = "pi_root_provider_tests.rs"]
-mod tests;
+pub(crate) mod tests;

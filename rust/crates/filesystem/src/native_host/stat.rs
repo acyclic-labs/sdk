@@ -259,8 +259,8 @@ impl HostStat {
     }
     /// How many names the file record has, which the file record keeps exact for every one of them.
     #[must_use]
-    pub const fn number_of_links(&self) -> Option<u32> {
-        Some(self.number_of_links)
+    pub const fn nlink(&self) -> u64 {
+        self.number_of_links as u64
     }
     pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
         Ok(windows_time(self.creation_time))
@@ -351,20 +351,20 @@ pub(crate) fn stat_file<W: NativeHostWork>(
 }
 
 impl HostStat {
-    pub(crate) fn identity(&self) -> Result<crate::NativeRootIdentity, DemandError> {
+    pub(crate) fn identity(&self) -> NativeRootIdentity {
         #[cfg(unix)]
         {
-            Ok(crate::NativeRootIdentity {
+            NativeRootIdentity {
                 device: self.dev(),
                 object: self.ino(),
-            })
+            }
         }
         #[cfg(windows)]
         {
-            Ok(crate::NativeRootIdentity {
+            NativeRootIdentity {
                 device: u64::from(self.volume_serial_number()),
                 object: self.file_index(),
-            })
+            }
         }
     }
 }

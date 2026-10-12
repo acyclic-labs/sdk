@@ -100,7 +100,7 @@ use acyclic_fs::path::PortablePath;
 use acyclic_fs::workspace_context_wire;
 use acyclic_fs::{
     ApplyOptions, AuthoredMutation, ByteRange, CachedObjectStore, CancellationToken, ChangeSet,
-    Checkout, CheckoutCommitOutcome, DependencyRegion, DependencyState, DependencyUse, Digest,
+    Checkout, LivePublicationObservation, DependencyRegion, DependencyState, DependencyUse, Digest,
     DirectoryPage, EmbeddedCapabilities, FileCloneRequest, FileId, ForkOptions, Fs, Generation,
     GenerationExportManifest, GitCommand, GitCompatRepository, IdempotencyKey, JoinHistory,
     JoinOutcome, JoinPlan, LiveMutationOutcome, LogicalObjectStore, MemoryGitCompatStore,

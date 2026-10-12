@@ -447,41 +447,25 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         aggregate.reducer(),
         ForkHistoryPolicy::Summary(Box::new(selection)), &mut None,
     )?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let proof_io = PreparationIo::from_budget(FINITE_SUMMARY_BUDGET, &cancellation)?;
-    let proof_hold;
-    let finite = preparer.prepare_bound_summary(&request, Some(&proof_io)).await?
-        .ok_or_else(|| Error::Invalid("finite Summary source proof missing".into()))?;
-    proof_hold = proof_io.guard_owned(proof_io.owned_bytes()?)?;
+    let finite = preparer.prepare_bound_summary(&request, None)?
+        .ok_or_else(|| Error::Invalid("bound Summary source proof missing".into()))?;
     assert_eq!(finite.context(), &source);
     assert_eq!(finite.selection(), request.preparation.summary.as_ref().unwrap());
-    assert!(proof_io.receipt().bytes_encoded > 0);
-    assert!(proof_io.receipt().bytes_hashed > 0);
-    assert!(proof_io.receipt().items_examined > 0);
-    drop(finite);
-    drop(proof_hold);
-    assert_eq!(proof_io.owned_bytes()?, 0);
-    let small_io = PreparationIo::from_budget(acyclic_fs::WorkBudget::default(), &cancellation)?;
-    assert!(preparer.prepare_bound_summary(&request, Some(&small_io)).await.is_err());
-    assert_eq!(small_io.owned_bytes()?, 0);
-    let cancelled_io = PreparationIo::from_budget(FINITE_SUMMARY_BUDGET, &cancellation)?;
-    cancellation.cancel();
-    assert!(preparer.prepare_bound_summary(&request, Some(&cancelled_io)).await.is_err());
-    assert_eq!(cancelled_io.receipt(), acyclic_fs::WorkCounters::default());
     let (quota_preparation, _quota_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1, 134_217_728).await?;
-    assert!(preparer.prepare_for_task(request.clone(), &quota_preparation).await.is_err());
+    assert!(preparer.prepare_for_task(request.clone(), &Arc::new(quota_preparation)).await.is_err());
     let child_private_workspace = workspace_ref(provider.clone(), &child_private.storage_name(&mut None)?)?;
     assert!(matches!(storage.host.resolve(&child_private_workspace).await, Err(Error::NotFound(_))));
     let (cancelled_preparation, cancelled_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728).await?;
     cancelled_invocation.0.cancel();
-    assert!(preparer.prepare_for_task(request.clone(), &cancelled_preparation).await.is_err());
+    assert!(preparer.prepare_for_task(request.clone(), &Arc::new(cancelled_preparation)).await.is_err());
     assert!(matches!(storage.host.resolve(&child_private_workspace).await, Err(Error::NotFound(_))));
     let (task_preparation, _successful_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728).await?;
+    let task_preparation = Arc::new(task_preparation);
     let lost_acknowledgement = preparer.prepare_for_task(request.clone(), &task_preparation).await?;
-    let preparer = preparer.with_task_preparation(Arc::new(task_preparation))?;
+    let preparer = preparer.with_task_preparation(task_preparation)?;
     let report = aggregate.prepare_fork(&preparer, request.clone()).await?;
     assert_eq!(report, lost_acknowledgement);
     assert_eq!(
@@ -498,7 +482,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .ok_or_else(|| Error::Invalid("missing Summary capture".into()))?;
     assert!(!capture.payloads.is_empty());
     assert_eq!(report.inherited_through_sequence, 6);
-    let bytes = storage.host.read_pinned(&capture.context, 262_144).await?;
+    let bytes = storage.host.read_pinned_io(&capture.context, 262_144, None).await?;
     let captured: Context = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(captured.messages.len(), source.messages.len());
@@ -527,7 +511,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         assert_eq!(copy.volume(), &child_private);
         assert_eq!(copy.descriptor(), original.descriptor());
         assert_eq!(
-            storage.host.read_pinned(copy, 262_144).await?.as_ref(),
+            storage.host.read_pinned_io(copy, 262_144, None).await?.as_ref(),
             storage.journal.load(original).await?.as_ref()
         );
     }

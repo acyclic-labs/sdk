@@ -1,9 +1,7 @@
 use super::*;
 
-#[cfg(windows)]
 pub(super) const STAGING_PREFIX: &str = ".acyclic-copy-";
 
-#[cfg(windows)]
 pub(super) async fn copy_windows_file_worker(
     source_root: HostRoot,
     source_path: std::path::PathBuf,

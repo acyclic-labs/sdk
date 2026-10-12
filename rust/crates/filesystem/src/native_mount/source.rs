@@ -505,7 +505,7 @@ pub enum MountSourceError {
     Indeterminate,
     /// The original SDK seal returned an exact semantic decision.
     #[error("selected import publication was not committed: {0:?}")]
-    SelectedPublication(crate::CheckoutCommitOutcome),
+    SelectedPublication(crate::LivePublicationObservation),
     /// Canonical namespace validation retains its exact typed cause.
     #[error(transparent)]
     NamespacePath(crate::kernel::NamespacePathError),
@@ -587,8 +587,8 @@ pub enum MountSourceError {
         accounting: crate::WorkspaceError,
     },
     /// Whole original workspace cause and its already funded outer custody.
-    #[error(transparent)]
-    NativeWorkspaceCause(crate::lazy_workspace::NativeLazyWorkspaceCause),
+    #[error("{0}")]
+    NativeWorkspaceCause(#[source] crate::WorkspaceError, Option<crate::NativeAllocation>),
     /// Original authorization denial in its already funded callback slot.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("native callback authorization failed")]
@@ -655,15 +655,12 @@ impl MountSourceError {
 
     pub(crate) fn native_allocation_mut(&mut self) -> Option<&mut Option<crate::NativeAllocation>> {
         match self {
-            Self::Io(_, allocation)
-            | Self::NativeRecordJson(_, allocation)
-            | Self::NativeRecordLockTimeout(_, allocation)
-            | Self::NativeRecordOwnershipConflict(_, allocation)
-            | Self::NativeRecordContextTransaction(_, allocation)
-            | Self::NativeRecordCorrupt(_, allocation) => Some(allocation),
+            Self::Io(_, allocation) | Self::NativeRecordJson(_, allocation)
+            | Self::NativeRecordLockTimeout(_, allocation) | Self::NativeRecordOwnershipConflict(_, allocation)
+            | Self::NativeRecordContextTransaction(_, allocation) | Self::NativeRecordCorrupt(_, allocation) =>
+                Some(allocation),
             Self::MutationFinalization { custody, .. } => Some(custody),
-            Self::NativeWorkspaceCause(cause) => Some(&mut cause.custody),
-            Self::NativeWork(error) => error.native_failure_allocation_mut(),
+            Self::NativeWorkspaceCause(_, allocation) => Some(allocation),
             _ => None,
         }
     }
@@ -732,7 +729,6 @@ pub(crate) fn native_workspace_failure_is_fatal(error: &crate::WorkspaceError) -
         Some(
             crate::WorkspaceError::Work(_)
                 | crate::WorkspaceError::Cancelled(_)
-                | crate::WorkspaceError::Filesystem(crate::FsError::RootReadWorkMerge { .. })
         )
     ) || matches!(
         error,
@@ -750,7 +746,7 @@ pub(crate) fn native_materialization_failure_is_fatal(
             | crate::NativeTreeMaterializationError::Cancelled
             | crate::NativeTreeMaterializationError::AllocationFailed(_)
             | crate::NativeTreeMaterializationError::IndeterminatePreparation
-            | crate::NativeTreeMaterializationError::ExternalMutation(..)
+            | crate::NativeTreeMaterializationError::ExternalMutation
             | crate::NativeTreeMaterializationError::AllocationChanged { .. }
     )
 }

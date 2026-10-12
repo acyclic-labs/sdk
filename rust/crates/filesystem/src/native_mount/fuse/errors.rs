@@ -114,8 +114,8 @@ pub(super) fn fatal_handler_error(error: &NativeMountError) -> bool {
                     crate::native_mount::native_workspace_failure_is_fatal(source)
                         || crate::native_mount::native_workspace_failure_is_fatal(accounting)
                 }
-                MountSourceError::NativeWorkspaceCause(error) => {
-                    crate::native_mount::native_workspace_failure_is_fatal(&error.source)
+                MountSourceError::NativeWorkspaceCause(error, _) => {
+                    crate::native_mount::native_workspace_failure_is_fatal(error)
                 }
                 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 MountSourceError::SourceWatchStartup(_)
@@ -162,8 +162,8 @@ pub(super) fn native_callback_errno(error: &NativeMountError) -> i32 {
                 MountSourceError::WorkspaceCause(error) => {
                     crate::native_mount::native_workspace_errno(error)
                 }
-                MountSourceError::NativeWorkspaceCause(error) => {
-                    crate::native_mount::native_workspace_errno(&error.source)
+                MountSourceError::NativeWorkspaceCause(error, _) => {
+                    crate::native_mount::native_workspace_errno(error)
                 }
                 MountSourceError::Io(error, _) => error.raw_os_error().unwrap_or(libc::EIO),
                 MountSourceError::Allocation(_)

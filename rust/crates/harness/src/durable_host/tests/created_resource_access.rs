@@ -2,7 +2,6 @@
 use crate::wire::ErrorCode;
 
 use super::*;
-use crate::runtime::TaskStateProvider;
 use crate::conversation::VolumeOperation;
 use crate::filesystem::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
@@ -15,6 +14,7 @@ use crate::resource_preparation::{
     TaskResourcePreparation, created_resource_capability,
 };
 use crate::resources::{GenerationRef, ResourceKind, ResourceRef, WorkspaceRef};
+use crate::runtime::TaskStateProvider;
 use crate::runtime::{AgentHarness, Bindings};
 use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_stream::BoxProviderFuture;
@@ -58,26 +58,38 @@ struct CreatedControlMachine {
 }
 
 impl ResumableMachine for CreatedControlMachine {
-    fn identity(&self) -> &MachineIdentity { &self.identity }
-    fn state_schema(&self) -> &Value { &self.schema }
-    fn initialize(&self, input: &Value) -> Result<Value> { Ok(input.clone()) }
+    fn identity(&self) -> &MachineIdentity {
+        &self.identity
+    }
+    fn state_schema(&self) -> &Value {
+        &self.schema
+    }
+    fn initialize(&self, input: &Value) -> Result<Value> {
+        Ok(input.clone())
+    }
     fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
         if state.get("emitted") == Some(&Value::Bool(true)) {
             return Ok(MachineTransition {
-                state: state.clone(), commands: Vec::new(),
-                status: MachineStatus::Completed { value: serde_json::json!({"ok":true}) },
+                state: state.clone(),
+                commands: Vec::new(),
+                status: MachineStatus::Completed {
+                    value: serde_json::json!({"ok":true}),
+                },
             });
         }
         if let Some(command) = input.get("created_command") {
             let command = serde_json::from_value(command.clone())
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             return Ok(MachineTransition {
-                state: serde_json::json!({"emitted":true}), commands: vec![command],
+                state: serde_json::json!({"emitted":true}),
+                commands: vec![command],
                 status: MachineStatus::Suspended,
             });
         }
         Ok(MachineTransition {
-            state: state.clone(), commands: Vec::new(), status: MachineStatus::Suspended,
+            state: state.clone(),
+            commands: Vec::new(),
+            status: MachineStatus::Suspended,
         })
     }
 }
@@ -88,26 +100,53 @@ async fn native_stock_startup_retains_original_configuration_and_current_context
     let tool = crate::tool::files::read_file()?;
     let grant = format!("tool:{}", tool.definition.name);
     let mut tools = crate::tool::ToolRegistry::default();
-    tools.register(tool)?;
+    tools.register((tool, None), &mut None, None)?;
     let fixture = NativeCustomerFixture::new_with_grants(&[&grant], tools.clone()).await?;
-    let volume = VolumeRef::new(fixture.creation.filesystem_provider.clone(), "scheduler".into(),
-        VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80; 16])), &mut None)?;
+    let volume = VolumeRef::new(
+        fixture.creation.filesystem_provider.clone(),
+        "scheduler".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
+        &mut None,
+    )?;
     let resumable = crate::durable_tool::ResumableToolRegistry::default();
     let original = &fixture.creation.host;
-    let limits = original.session_limits.expect("the original fixture configures session limits");
+    let limits = original
+        .session_limits
+        .expect("the original fixture configures session limits");
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(metadata_control_budget(), &cancellation)?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     let runtime = NativeCustomerRuntime::open(
-        fixture.creation.stream.clone(), fixture.creation.filesystem.clone(),
-        &volume, &original.verifier, &original.owner_scope, &fixture.creation.root_scope,
-        &original.tasks, &original.machines, &tools,
-        limits, 16, fixture.creation.root_scope.limits().file_bytes,
-        original.clock.clone(), original.policy.clone(), &original.resource_creation, &resumable, Some(&io),
-    ).await?;
-    let fence = NativeCustomerRuntime::original_lease_fence_with_io(&fixture.creation.root_lease, &io)?;
-    let context = runtime.task_context_with_native_work(fixture.creation.root, &fence, &work).await?;
-    assert!(context.context().original_task_binding_matches(fixture.creation.root, &fence));
+        fixture.creation.stream.clone(),
+        fixture.creation.filesystem.clone(),
+        &volume,
+        &original.verifier,
+        &original.owner_scope,
+        &fixture.creation.root_scope,
+        &original.tasks,
+        &original.machines,
+        &tools,
+        limits,
+        16,
+        fixture.creation.root_scope.limits().file_bytes,
+        original.clock.clone(),
+        original.policy.clone(),
+        &original.resource_creation,
+        &resumable,
+        Some(&io),
+    )
+    .await?;
+    let fence =
+        NativeCustomerRuntime::original_lease_fence_with_io(&fixture.creation.root_lease, &io)?;
+    let context = runtime
+        .task_context_with_native_work(fixture.creation.root, &fence, &work)
+        .await?;
+    assert!(
+        context
+            .context()
+            .original_task_binding_matches(fixture.creation.root, &fence)
+    );
     assert!(work.receipt().backend_read_operations > 0);
     assert!(work.live_allocation_bytes() > 0);
     drop(context);
@@ -121,28 +160,54 @@ async fn native_stock_startup_retains_original_configuration_and_current_context
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_stock_startup_denies_preallocation_and_precancel_before_sdk_io() -> Result<()> {
-    let fixture = NativeCustomerFixture::new_with_grants(&[], crate::tool::ToolRegistry::default()).await?;
-    let volume = VolumeRef::new(fixture.creation.filesystem_provider.clone(), "scheduler".into(),
-        VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80; 16])), &mut None)?;
+    let fixture =
+        NativeCustomerFixture::new_with_grants(&[], crate::tool::ToolRegistry::default()).await?;
+    let volume = VolumeRef::new(
+        fixture.creation.filesystem_provider.clone(),
+        "scheduler".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
+        &mut None,
+    )?;
     let resumable = crate::durable_tool::ResumableToolRegistry::default();
     let original = &fixture.creation.host;
-    let limits = original.session_limits.expect("the original fixture configures session limits");
+    let limits = original
+        .session_limits
+        .expect("the original fixture configures session limits");
     for cancelled in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
         let mut budget = metadata_control_budget();
-        if !cancelled { budget.allocation_operations = 0; }
+        if !cancelled {
+            budget.allocation_operations = 0;
+        }
         let work = test_work(budget, &cancellation)?;
-        if cancelled { cancellation.cancel(); }
+        if cancelled {
+            cancellation.cancel();
+        }
         let result = async {
             let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
             NativeCustomerRuntime::open(
-            fixture.creation.stream.clone(), fixture.creation.filesystem.clone(),
-            &volume, &original.verifier, &original.owner_scope, &fixture.creation.root_scope,
-            &original.tasks, &original.machines, &crate::tool::ToolRegistry::default(),
-            limits, 16, fixture.creation.root_scope.limits().file_bytes,
-            original.clock.clone(), original.policy.clone(), &original.resource_creation, &resumable, Some(&io),
-            ).await
-        }.await;
+                fixture.creation.stream.clone(),
+                fixture.creation.filesystem.clone(),
+                &volume,
+                &original.verifier,
+                &original.owner_scope,
+                &fixture.creation.root_scope,
+                &original.tasks,
+                &original.machines,
+                &crate::tool::ToolRegistry::default(),
+                limits,
+                16,
+                fixture.creation.root_scope.limits().file_bytes,
+                original.clock.clone(),
+                original.policy.clone(),
+                &original.resource_creation,
+                &resumable,
+                Some(&io),
+            )
+            .await
+        }
+        .await;
         assert!(matches!(&result, Err(error) if error.is_native_failure()));
         assert_eq!(work.receipt().backend_read_operations, 0);
         assert_eq!(work.receipt().backend_write_operations, 0);
@@ -174,9 +239,12 @@ struct SandboxCreator {
 impl SandboxCreator {
     fn proof(&self, preparation: TaskId) -> Result<ResourceCreationProofRef> {
         let evidence_volume = VolumeRef::new(
-            self.filesystem_provider.clone(), "sandbox-allocation".into(), VolumeClass::AgentPrivate,
+            self.filesystem_provider.clone(),
+            "sandbox-allocation".into(),
+            VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([81; 16])),
-         &mut None)?;
+            &mut None,
+        )?;
         Ok(ResourceCreationProofRef {
             provider: self.provider.clone(),
             preparation,
@@ -184,11 +252,15 @@ impl SandboxCreator {
                 ResourceKind::Sandbox,
                 self.provider.clone(),
                 b"isolated-sandbox".to_vec().into(),
-                None, &mut None
+                None,
+                &mut None,
             )?,
-            evidence: workspace_ref(self.filesystem_provider.clone(), &evidence_volume.storage_name(&mut None)?)?
-                .as_resource()
-                .clone(),
+            evidence: workspace_ref(
+                self.filesystem_provider.clone(),
+                &evidence_volume.storage_name(&mut None)?,
+            )?
+            .as_resource()
+            .clone(),
         })
     }
 
@@ -207,33 +279,48 @@ impl SandboxCreator {
             || request.child.resource_proofs != [proof.clone()]
             || request.maximum_work < 4
         {
-            return Err(Error::Unauthorized("sandbox creation request changed".into()));
+            return Err(Error::Unauthorized(
+                "sandbox creation request changed".into(),
+            ));
         }
         let sandbox = VolumeRef::new(
             self.filesystem_provider.clone(),
             "isolated-sandbox".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([81; 16])),
-         &mut None)?;
+            &mut None,
+        )?;
         let workspace = self.filesystem.create_volume(&sandbox).await?.workspace;
         let payload = crate::contract::canonical_json_bytes(&request.payload)?;
         let manifest_bytes = payload.len() as u64;
-        let sandbox_generation = self.filesystem.apply(
-            &workspace,
-            None,
-            &[WorkspaceMutation::PutFile { path: "/manifest.json".into(), bytes: payload.into() }],
-            &IdempotencyKey::new("sandbox-manifest")?,
-        ).await?;
+        let sandbox_generation = self
+            .filesystem
+            .apply(
+                &workspace,
+                None,
+                &[WorkspaceMutation::PutFile {
+                    path: "/manifest.json".into(),
+                    bytes: payload.into(),
+                }],
+                &IdempotencyKey::new("sandbox-manifest")?,
+            )
+            .await?;
         preparation.verify_creation().await?;
         let evidence_volume = VolumeRef::new(
             self.filesystem_provider.clone(),
             "sandbox-allocation".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([81; 16])),
-         &mut None)?;
-        let evidence = self.filesystem.create_volume(&evidence_volume).await?.workspace;
+            &mut None,
+        )?;
+        let evidence = self
+            .filesystem
+            .create_volume(&evidence_volume)
+            .await?
+            .workspace;
         let expected_evidence = workspace_ref(
-            self.filesystem_provider.clone(), &evidence_volume.storage_name(&mut None)?,
+            self.filesystem_provider.clone(),
+            &evidence_volume.storage_name(&mut None)?,
         )?;
         let mut origin = preparation.origin().clone();
         corrupt_origin(&mut origin);
@@ -249,24 +336,35 @@ impl SandboxCreator {
         let bytes = crate::contract::canonical_json_bytes(&allocation)?;
         crate::contract::validate_json_byte_bound(&allocation, request.maximum_bytes)?;
         if manifest_bytes.saturating_add(bytes.len() as u64) > request.maximum_bytes {
-            return Err(Error::Invalid("sandbox allocation exceeds its aggregate IO bound".into()));
+            return Err(Error::Invalid(
+                "sandbox allocation exceeds its aggregate IO bound".into(),
+            ));
         }
-        let generation = self.filesystem.apply(
-            &evidence,
-            None,
-            &[WorkspaceMutation::PutFile { path: "/allocation.json".into(), bytes: bytes.into() }],
-            &IdempotencyKey::new("sandbox-allocation")?,
-        ).await?;
+        let generation = self
+            .filesystem
+            .apply(
+                &evidence,
+                None,
+                &[WorkspaceMutation::PutFile {
+                    path: "/allocation.json".into(),
+                    bytes: bytes.into(),
+                }],
+                &IdempotencyKey::new("sandbox-allocation")?,
+            )
+            .await?;
         preparation.verify_creation().await?;
         self.allocations.lock().await.insert(
-            crate::contract::canonical_json_bytes(&proof.resource)?, generation,
+            crate::contract::canonical_json_bytes(&proof.resource)?,
+            generation,
         );
         Ok(())
     }
 }
 
 impl ResourceCreationProvider for SandboxCreator {
-    fn provider(&self) -> &ProviderRef { &self.provider }
+    fn provider(&self) -> &ProviderRef {
+        &self.provider
+    }
 
     fn verify<'a>(
         &'a self,
@@ -278,18 +376,33 @@ impl ResourceCreationProvider for SandboxCreator {
             if request.provider != self.provider || proof != &self.proof(proof.preparation)? {
                 return Err(Error::Unauthorized("sandbox proof identity changed".into()));
             }
-            let generation = self.allocations.lock().await
+            let generation = self
+                .allocations
+                .lock()
+                .await
                 .get(&crate::contract::canonical_json_bytes(&proof.resource)?)
                 .cloned()
                 .ok_or_else(|| Error::Unauthorized("sandbox allocation is absent".into()))?;
             let volume = VolumeRef::new(
-                self.filesystem_provider.clone(), "sandbox-allocation".into(), VolumeClass::AgentPrivate,
+                self.filesystem_provider.clone(),
+                "sandbox-allocation".into(),
+                VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([81; 16])),
-             &mut None)?;
-            let evidence = workspace_ref(self.filesystem_provider.clone(), &volume.storage_name(&mut None)?)?;
-            let bytes = self.filesystem.read(
-                &evidence, Some(&generation), "/allocation.json", request.maximum_bytes,
-            ).await?;
+                &mut None,
+            )?;
+            let evidence = workspace_ref(
+                self.filesystem_provider.clone(),
+                &volume.storage_name(&mut None)?,
+            )?;
+            let bytes = self
+                .filesystem
+                .read(
+                    &evidence,
+                    Some(&generation),
+                    "/allocation.json",
+                    request.maximum_bytes,
+                )
+                .await?;
             let allocation: SandboxAllocation = crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(error.to_string()))?;
             if crate::contract::canonical_json_bytes(&allocation)? != bytes.as_ref()
@@ -298,14 +411,23 @@ impl ResourceCreationProvider for SandboxCreator {
                 || allocation.evidence != proof.evidence
                 || allocation.origin.preparation_task != proof.preparation
             {
-                return Err(Error::Unauthorized("sandbox allocation differs from request".into()));
+                return Err(Error::Unauthorized(
+                    "sandbox allocation differs from request".into(),
+                ));
             }
-            let manifest = self.filesystem.read(
-                &allocation.workspace, Some(&allocation.sandbox_generation),
-                "/manifest.json", request.maximum_bytes,
-            ).await?;
+            let manifest = self
+                .filesystem
+                .read(
+                    &allocation.workspace,
+                    Some(&allocation.sandbox_generation),
+                    "/manifest.json",
+                    request.maximum_bytes,
+                )
+                .await?;
             if manifest.as_ref() != crate::contract::canonical_json_bytes(&request.payload)? {
-                return Err(Error::Unauthorized("sandbox allocation payload changed".into()));
+                return Err(Error::Unauthorized(
+                    "sandbox allocation payload changed".into(),
+                ));
             }
             Ok(CreatedResourceReceipt {
                 origin: allocation.origin,
@@ -334,7 +456,8 @@ pub(crate) struct CreationFixture {
     pub(crate) filesystem: Arc<MemoryFilesystem>,
     pub(crate) stream: std::sync::Arc<MemoryStream>,
     pub(crate) filesystem_provider: ProviderRef,
-    pub(crate) filesystem_creator: Arc<FilesystemResourceCreationProvider<MemoryAuthorityBackend, MemoryObjectBackend>>,
+    pub(crate) filesystem_creator:
+        Arc<FilesystemResourceCreationProvider<MemoryAuthorityBackend, MemoryObjectBackend>>,
     creator: Arc<SandboxCreator>,
     pub(crate) root_scope: RuntimeScope,
     task: crate::registry::ComponentIdentity,
@@ -348,7 +471,9 @@ pub(crate) struct CreationFixture {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) type NativeCustomerRuntime = crate::filesystem::FilesystemTaskRuntime<
-    MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend,
+    MemoryStream,
+    MemoryAuthorityBackend,
+    MemoryObjectBackend,
 >;
 
 /// One configured real customer, shared by native transport and stock controls.
@@ -362,23 +487,32 @@ pub(crate) struct NativeCustomerFixture {
 impl NativeCustomerFixture {
     /// Setup is ordinary configured construction, before native observation.
     pub(crate) async fn new_with_grants(
-        grants: &[&str], tools: crate::tool::ToolRegistry,
+        grants: &[&str],
+        tools: crate::tool::ToolRegistry,
     ) -> Result<Self> {
         let creation = CreationFixture::new_with_grants(grants).await?;
         let volume = VolumeRef::new(
-            creation.filesystem_provider.clone(), "scheduler".into(),
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
-         &mut None)?;
+            creation.filesystem_provider.clone(),
+            "scheduler".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
+            &mut None,
+        )?;
         let runtime = NativeCustomerRuntime::from_host(
-            creation.stream.clone(), Arc::clone(&creation.harness),
-            Arc::clone(&creation.host), Arc::clone(&creation.filesystem), volume,
-            creation.host.verifier.clone(), creation.host.owner_scope.clone(),
-            tools, creation.root_scope.limits().file_bytes, None, None,
+            creation.stream.clone(),
+            Arc::clone(&creation.harness),
+            Arc::clone(&creation.host),
+            Arc::clone(&creation.filesystem),
+            volume,
+            creation.host.verifier.clone(),
+            creation.host.owner_scope.clone(),
+            tools,
+            creation.root_scope.limits().file_bytes,
+            None,
+            None,
         )?;
         Ok(Self { creation, runtime })
     }
-
-
 }
 
 impl CreationFixture {
@@ -388,9 +522,13 @@ impl CreationFixture {
 
     pub(crate) async fn new_with_grants(extra: &[&str]) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
-        { Self::new_with_creation(extra, None).await }
+        {
+            Self::new_with_creation(extra, None).await
+        }
         #[cfg(target_arch = "wasm32")]
-        { Self::new_with_creation(extra).await }
+        {
+            Self::new_with_creation(extra).await
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -402,51 +540,107 @@ impl CreationFixture {
 
     async fn new_with_creation(
         extra: &[&str],
-        #[cfg(not(target_arch = "wasm32"))] bootstrap: Option<&acyclic_fs::NativeMaterializationWork>,
+        #[cfg(not(target_arch = "wasm32"))] bootstrap: Option<
+            &acyclic_fs::NativeMaterializationWork,
+        >,
     ) -> Result<Self> {
         let stream = Arc::new(MemoryStream::default());
-        let filesystem_provider = ProviderRef::new("created-controls".into(), "filesystem".into(), "2".into(), &mut None)?;
+        let filesystem_provider = ProviderRef::new(
+            "created-controls".into(),
+            "filesystem".into(),
+            "2".into(),
+            &mut None,
+        )?;
         let fs = Fs::memory();
-        let filesystem = Arc::new(FilesystemHost::new(fs.clone(), filesystem_provider.clone())?);
+        let filesystem = FilesystemHost::new(
+            fs.clone(),
+            &filesystem_provider, None,
+        )?;
         let payload_volume = VolumeRef::new(
-            filesystem_provider.clone(), "scheduler".into(), VolumeClass::AgentPrivate,
+            filesystem_provider.clone(),
+            "scheduler".into(),
+            VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
-         &mut None)?;
+            &mut None,
+        )?;
         #[cfg(not(target_arch = "wasm32"))]
         let original_root_births = if let Some(work) = bootstrap {
-            let project = VolumeRef::new(filesystem_provider.clone(), "parent-project".into(), VolumeClass::Project,
-                VolumeOwner::Project("created-project".into()), &mut None)?;
+            let project = VolumeRef::new(
+                filesystem_provider.clone(),
+                "parent-project".into(),
+                VolumeClass::Project,
+                VolumeOwner::Project("created-project".into()),
+                &mut None,
+            )?;
             let config = acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable);
             let mut births = Vec::new();
             for (volume, operation, contents) in [
-                (project, acyclic_fs::OperationId::from_bytes([177; 16]), b"original project import".as_slice()),
-                (payload_volume.clone(), acyclic_fs::OperationId::from_bytes([178; 16]), b"original root private".as_slice()),
+                (
+                    project,
+                    acyclic_fs::OperationId::from_bytes([177; 16]),
+                    b"original project import".as_slice(),
+                ),
+                (
+                    payload_volume.clone(),
+                    acyclic_fs::OperationId::from_bytes([178; 16]),
+                    b"original root private".as_slice(),
+                ),
             ] {
                 let mut name_io = crate::store::history::native_work_io(work)?;
                 let name = volume.storage_name(&mut Some(&mut name_io))?;
                 let name_custody = name_io.into_custody();
-                let initial = fs.create_workspace_with_operation_with_native_work(
-                    &name, config, operation, work, work.cancellation(),
-                ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                let initial = fs
+                    .create_workspace_with_operation_with_native_work(
+                        &name,
+                        config,
+                        operation,
+                        work,
+                        work.cancellation(),
+                    )
+                    .await
+                    .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
                 let initial_generation = initial.id();
                 let workspace = workspace_ref(filesystem_provider.clone(), &name)?;
-                let initial_ref = GenerationRef::new(filesystem_provider.clone(),
-                    initial_generation.digest().into_bytes().to_vec(), None)?;
-                let selected = filesystem.apply(&workspace, Some(&initial_ref), &[WorkspaceMutation::PutFile {
-                    path: "/root.txt".into(), bytes: contents.to_vec().into(),
-                }], &IdempotencyKey::new(format!("original-root-import-{}", uuid::Uuid::from_bytes(operation.into_bytes())))?).await?;
-                let selected_generation = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
-                    selected.as_resource().key().try_into().map_err(|_| Error::Invalid("fixture generation size".into()))?,
-                ));
+                let initial_ref = GenerationRef::new(&(filesystem_provider), &(initial_generation.digest().into_bytes()), None, None)?.0;
+                let selected = filesystem
+                    .apply(
+                        &workspace,
+                        Some(&initial_ref),
+                        &[WorkspaceMutation::PutFile {
+                            path: "/root.txt".into(),
+                            bytes: contents.to_vec().into(),
+                        }],
+                        &IdempotencyKey::new(format!(
+                            "original-root-import-{}",
+                            uuid::Uuid::from_bytes(operation.into_bytes())
+                        ))?,
+                    )
+                    .await?;
+                let selected_generation =
+                    acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
+                        selected
+                            .as_resource()
+                            .key()
+                            .try_into()
+                            .map_err(|_| Error::Invalid("fixture generation size".into()))?,
+                    ));
                 assert_ne!(initial_generation, selected_generation);
                 births.push(OriginalRootFilesystemBirth {
-                    volume, operation, config, initial_generation, selected_generation,
+                    volume,
+                    operation,
+                    config,
+                    initial_generation,
+                    selected_generation,
                 });
                 drop(initial);
                 drop(name);
                 drop(name_custody);
             }
-            Some(births.try_into().map_err(|_| Error::Invalid("fixture Root birth count".into()))?)
+            Some(
+                births
+                    .try_into()
+                    .map_err(|_| Error::Invalid("fixture Root birth count".into()))?,
+            )
         } else {
             filesystem.create_volume(&payload_volume).await?;
             None
@@ -456,43 +650,95 @@ impl CreationFixture {
             filesystem.create_volume(&payload_volume).await?;
             None
         };
-        let authority = Authority { kind: AggregateKind::Task, id: "created-owner".into() };
+        let authority = Authority {
+            kind: AggregateKind::Task,
+            id: "created-owner".into(),
+        };
         let issuer = AuthorityIssuer::new("created-owner", [80; 32], authority.clone());
-        let grants = Capabilities::new([
-            "operation:declare".into(), "operation:observe".into(), "operation:cancel".into(),
-            "task:spawn:test.created@1".into(), "resource:create:custom".into(),
-            "fork:publish".into(), payload_volume.capability(VolumeOperation::Read, &mut None)?,
-            "conversation:bind".into(),
-            payload_volume.capability(VolumeOperation::Write, &mut None)?,
-            VolumeRef::new(filesystem_provider.clone(), "parent-project".into(), VolumeClass::Project,
-                VolumeOwner::Project("created-project".into()), &mut None)?.capability(VolumeOperation::Read, &mut None)?,
-            VolumeRef::new(filesystem_provider.clone(), "parent-private".into(), VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(AgentId::from_bytes([90;16])), &mut None)?.capability(VolumeOperation::Read, &mut None)?,
-        ].into_iter().chain(extra.iter().map(|grant| (*grant).to_owned())));
-        let signed = issuer.issue("owner", &grants, Some(AgentId::from_bytes([80; 16])), None, &mut None).expect("scope proof");
-        let root_scope = RuntimeScope::new(grants, Limits::default())?
-            .with_run_limits(crate::runtime::TaskRunLimits {
-                concurrency: Some(16), max_steps: Some(4), deadline_epoch_ms: None,
-            }, &mut None)?;
+        let grants = Capabilities::new(
+            [
+                "operation:declare".into(),
+                "operation:observe".into(),
+                "operation:cancel".into(),
+                "task:spawn:test.created@1".into(),
+                "resource:create:custom".into(),
+                "fork:publish".into(),
+                payload_volume.capability(VolumeOperation::Read, &mut None)?,
+                "conversation:bind".into(),
+                payload_volume.capability(VolumeOperation::Write, &mut None)?,
+                VolumeRef::new(
+                    filesystem_provider.clone(),
+                    "parent-project".into(),
+                    VolumeClass::Project,
+                    VolumeOwner::Project("created-project".into()),
+                    &mut None,
+                )?
+                .capability(VolumeOperation::Read, &mut None)?,
+                VolumeRef::new(
+                    filesystem_provider.clone(),
+                    "parent-private".into(),
+                    VolumeClass::AgentPrivate,
+                    VolumeOwner::Agent(AgentId::from_bytes([90; 16])),
+                    &mut None,
+                )?
+                .capability(VolumeOperation::Read, &mut None)?,
+            ]
+            .into_iter()
+            .chain(extra.iter().map(|grant| (*grant).to_owned())),
+        );
+        let signed = issuer
+            .issue(
+                "owner",
+                &grants,
+                Some(AgentId::from_bytes([80; 16])),
+                None,
+                &mut None,
+            )
+            .expect("scope proof");
+        let root_scope = RuntimeScope::new(grants, Limits::default())?.with_run_limits(
+            crate::runtime::TaskRunLimits {
+                concurrency: Some(16),
+                max_steps: Some(4),
+                deadline_epoch_ms: None,
+            },
+            &mut None,
+        )?;
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
-            filesystem.clone(), &payload_volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed,
-            root_scope.limits().file_bytes, None,
+            filesystem.clone(),
+            &payload_volume,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &signed,
+            root_scope.limits().file_bytes,
+            None,
         )?);
-        let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, root_scope.limits().file_bytes, None)?;
+        let reader = FilesystemContentVerifier::new(
+            filesystem.clone(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &signed,
+            root_scope.limits().file_bytes,
+            None,
+        )?;
         let schema = serde_json::json!({"type":"object"});
         let implementation = Arc::new(CreatedControlMachine {
             identity: MachineIdentity {
-                name: "test.created".into(), version: "1".into(),
-                digest: *blake3::hash(include_str!("created_resource_access.rs").as_bytes()).as_bytes(),
+                name: "test.created".into(),
+                version: "1".into(),
+                digest: *blake3::hash(include_str!("created_resource_access.rs").as_bytes())
+                    .as_bytes(),
             },
             schema: schema.clone(),
         });
-        let (task, machine, tasks, machines) = test_registries::<Value>(
-            implementation, schema.clone(), schema.clone(),
-        )?;
+        let (task, machine, tasks, machines) =
+            test_registries::<Value>(implementation, schema.clone(), schema.clone())?;
         let creator = Arc::new(SandboxCreator {
-            provider: ProviderRef::new("created-controls".into(), "sandbox".into(), "1".into(), &mut None)?,
-            filesystem_provider: filesystem_provider.clone(), filesystem: filesystem.clone(),
+            provider: ProviderRef::new(
+                "created-controls".into(),
+                "sandbox".into(),
+                "1".into(),
+                &mut None,
+            )?,
+            filesystem_provider: filesystem_provider.clone(),
+            filesystem: filesystem.clone(),
             allocations: Mutex::new(BTreeMap::new()),
         });
         #[cfg(not(target_arch = "wasm32"))]
@@ -500,13 +746,46 @@ impl CreationFixture {
             FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, Some(work))?
                 .into_native_shared(work)?
         } else {
-            Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?)
+            Arc::new(FilesystemResourceCreationProvider::new(
+                filesystem.clone(),
+                &issuer,
+                #[cfg(not(target_arch = "wasm32"))]
+                None,
+            )?)
         };
         #[cfg(target_arch = "wasm32")]
-        let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
-        let host = Arc::new(CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?, stream, payloads, reader, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), root_scope.clone(), tasks.clone(), machines, Arc::new(SystemUnixMillisClock), None)?.with_session_limits(crate::scheduler::SessionLimits {
-            active_tasks: 16, total_tasks: 32, depth: 4, model_steps: 4,
-        }, None)?.with_resource_creation_providers(&[creator.clone(), fs_creator.clone()], None)?);
+        let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(
+            filesystem.clone(),
+            &issuer,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )?);
+        let host = Arc::new(
+            CoordinatorTaskHost::new(
+                DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?,
+                stream,
+                payloads,
+                reader,
+                &(authority),
+                signed,
+                issuer.verifier(&mut None).expect("verifier copy"),
+                root_scope.clone(),
+                tasks.clone(),
+                machines,
+                Arc::new(SystemUnixMillisClock),
+                None,
+            )?
+            .with_session_limits(
+                crate::scheduler::SessionLimits {
+                    active_tasks: 16,
+                    total_tasks: 32,
+                    depth: 4,
+                    model_steps: 4,
+                },
+                None,
+            )?
+            .with_resource_creation_providers(&[creator.clone(), fs_creator.clone()], None)?,
+        );
         let mut bindings = Bindings::local();
         bindings.tasks = tasks;
         bindings.scope = root_scope.clone();
@@ -515,33 +794,68 @@ impl CreationFixture {
         let root_op = OperationId::from_bytes([82; 16]);
         let root = TaskId::from_bytes(root_op.into_bytes());
         let admission = TaskAdmissionRecord {
-            resource_proofs: Vec::new(), operation_id: root_op, task: task.clone(),
-            machine: machine.clone(), input: serde_json::json!({}), input_schema: schema.clone(),
-            output_schema: schema.clone(), parent: None, grants: root_scope.grants().clone(),
-            limits: root_scope.limits(), run_limits: root_scope.run_limits(), policy: None,
-            extensions: None, execution: None,
+            resource_proofs: Vec::new(),
+            operation_id: root_op,
+            task: task.clone(),
+            machine: machine.clone(),
+            input: serde_json::json!({}),
+            input_schema: schema.clone(),
+            output_schema: schema.clone(),
+            parent: None,
+            grants: root_scope.grants().clone(),
+            limits: root_scope.limits(),
+            run_limits: root_scope.run_limits(),
+            policy: None,
+            extensions: None,
+            execution: None,
         };
         assert!(matches!(host.admit(admission).await?, Admission::Accepted(id) if id == root));
         let worker = crate::distributed::Worker {
-            id: "created-worker".into(), available: Default::default(), labels: BTreeMap::new(),
+            id: "created-worker".into(),
+            available: Default::default(),
+            labels: BTreeMap::new(),
         };
-        let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await? else {
+        let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await?
+        else {
             return Err(Error::NotFound("created root lease".into()));
         };
         host.start_task(&root_lease, None).await?;
         let stream = host.stream.clone();
-        Ok(Self { host, harness, filesystem, stream, filesystem_provider, creator,
-            root_scope, task, machine, schema, root, root_lease, worker, original_root_births,
-            filesystem_creator: fs_creator })
+        Ok(Self {
+            host,
+            harness,
+            filesystem,
+            stream,
+            filesystem_provider,
+            creator,
+            root_scope,
+            task,
+            machine,
+            schema,
+            root,
+            root_lease,
+            worker,
+            original_root_births,
+            filesystem_creator: fs_creator,
+        })
     }
 
     pub(crate) fn admission(&self, byte: u8, input: Value) -> TaskAdmissionRecord {
         TaskAdmissionRecord {
-            resource_proofs: Vec::new(), operation_id: OperationId::from_bytes([byte; 16]),
-            task: self.task.clone(), machine: self.machine.clone(), input,
-            input_schema: self.schema.clone(), output_schema: self.schema.clone(), parent: Some(self.root),
-            grants: self.root_scope.grants().clone(), limits: self.root_scope.limits(),
-            run_limits: self.root_scope.run_limits(), policy: None, extensions: None, execution: None,
+            resource_proofs: Vec::new(),
+            operation_id: OperationId::from_bytes([byte; 16]),
+            task: self.task.clone(),
+            machine: self.machine.clone(),
+            input,
+            input_schema: self.schema.clone(),
+            output_schema: self.schema.clone(),
+            parent: Some(self.root),
+            grants: self.root_scope.grants().clone(),
+            limits: self.root_scope.limits(),
+            run_limits: self.root_scope.run_limits(),
+            policy: None,
+            extensions: None,
+            execution: None,
         }
     }
 
@@ -554,37 +868,87 @@ impl CreationFixture {
             "task:spawn:test.created@1".into(),
         ]);
         child = child.with_resource_proofs(vec![proof.clone()])?;
-        Ok(ResourcePreparationRequest { command: None, source_checkpoint:None, provider: self.creator.provider.clone(), child, resources: vec![proof.resource],
-        input_files: Vec::new(), read_authorization: None,
-        creation_grant: "resource:create:custom".into(), maximum_resources: 1,
-        maximum_work: 4, maximum_bytes: 65_536, payload: serde_json::json!({"image":"isolated"}), })
+        Ok(ResourcePreparationRequest {
+            command: None,
+            source_checkpoint: None,
+            provider: self.creator.provider.clone(),
+            child,
+            resources: vec![proof.resource],
+            input_files: Vec::new(),
+            read_authorization: None,
+            creation_grant: "resource:create:custom".into(),
+            maximum_resources: 1,
+            maximum_work: 4,
+            maximum_bytes: 65_536,
+            payload: serde_json::json!({"image":"isolated"}),
+        })
     }
 
-    async fn prepare(&self, request: &ResourcePreparationRequest)
-        -> Result<(TaskResourcePreparation, crate::distributed::WorkLease, crate::filesystem::InvocationCancellation)> {
-        let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
-        let prep = self.admission(83, serde_json::to_value(request).map_err(|e| Error::Invalid(e.to_string()))?);
-        assert!(matches!(self.host.admit_owned(prep, (&self.root_lease.reservation).into()).await?,
-            Admission::Accepted(id) if id == TaskId::from_bytes([83; 16])));
-        let crate::distributed::WorkPull::Claimed(lease) = self.host.pull_work(&self.worker).await? else {
+    async fn prepare(
+        &self,
+        request: &ResourcePreparationRequest,
+    ) -> Result<(
+        TaskResourcePreparation,
+        crate::distributed::WorkLease,
+        crate::filesystem::InvocationCancellation,
+    )> {
+        let invocation =
+            crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
+        let prep = self.admission(
+            83,
+            serde_json::to_value(request).map_err(|e| Error::Invalid(e.to_string()))?,
+        );
+        assert!(
+            matches!(self.host.admit_owned(prep, (&self.root_lease.reservation).into()).await?,
+            Admission::Accepted(id) if id == TaskId::from_bytes([83; 16]))
+        );
+        let crate::distributed::WorkPull::Claimed(lease) =
+            self.host.pull_work(&self.worker).await?
+        else {
             return Err(Error::NotFound("created preparation lease".into()));
         };
         self.host.start_task(&lease, None).await?;
-        let owner = Arc::new(self.host.journal_owner(
-            TaskId::from_bytes(lease.operation.operation_id.into_bytes()),
-            (&lease.reservation).into(),
-        ).await?.with_invocation_cancellation(&invocation.0));
-        Ok((owner.resource_preparation(request.clone(), &mut None).await?, lease, invocation))
+        let owner = Arc::new(
+            self.host
+                .journal_owner(
+                    TaskId::from_bytes(lease.operation.operation_id.into_bytes()),
+                    (&lease.reservation).into(),
+                )
+                .await?
+                .with_invocation_cancellation(&invocation.0),
+        );
+        Ok((
+            owner
+                .resource_preparation(request.clone(), &mut None)
+                .await?,
+            lease,
+            invocation,
+        ))
     }
 
-    pub(crate) async fn admit_child(&self, child: TaskAdmissionRecord) -> Result<Admission<TaskId>> {
+    pub(crate) async fn admit_child(
+        &self,
+        child: TaskAdmissionRecord,
+    ) -> Result<Admission<TaskId>> {
         let preparation = TaskId::from_bytes([83; 16]);
         let current = self.host.observe_task(preparation).await?;
         if current.phase == crate::scheduler::OperationPhase::Running {
-            let reservation = current.reservation.ok_or_else(|| Error::NotFound("preparation completion lease".into()))?;
-            self.host.settle_task(preparation, &(&reservation).into(), Outcome::Succeeded(serde_json::json!({"prepared":true})), &mut None).await?;
+            let reservation = current
+                .reservation
+                .ok_or_else(|| Error::NotFound("preparation completion lease".into()))?;
+            self.host
+                .settle_task(
+                    preparation,
+                    &(&reservation).into(),
+                    Outcome::Succeeded(serde_json::json!({"prepared":true})),
+                    &mut None,
+                )
+                .await?;
         }
-        let admitted = self.host.admit_owned(child, (&self.root_lease.reservation).into()).await?;
+        let admitted = self
+            .host
+            .admit_owned(child, (&self.root_lease.reservation).into())
+            .await?;
         if let Admission::Accepted(task) = &admitted {
             self.start_next(*task).await?;
         }
@@ -592,43 +956,90 @@ impl CreationFixture {
     }
 
     async fn start_next(&self, expected: TaskId) -> Result<()> {
-        let crate::distributed::WorkPull::Claimed(lease) = self.host.pull_work(&self.worker).await? else {
+        let crate::distributed::WorkPull::Claimed(lease) =
+            self.host.pull_work(&self.worker).await?
+        else {
             return Err(Error::NotFound("created child publication lease".into()));
         };
-        assert_eq!(lease.operation.operation_id.into_bytes(), expected.into_bytes());
+        assert_eq!(
+            lease.operation.operation_id.into_bytes(),
+            expected.into_bytes()
+        );
         self.host.start_task(&lease, None).await
     }
 }
 
 #[tokio::test]
-async fn created_custom_operation_requires_canonical_admission_not_a_caller_receipt() -> Result<()> {
+async fn created_custom_operation_requires_canonical_admission_not_a_caller_receipt() -> Result<()>
+{
     let fixture = CreationFixture::new().await?;
     let request = fixture.sandbox_request()?;
     let label = created_resource_capability(&request.resources[0], "execute", &mut None)?;
     assert!(!fixture.root_scope.grants().contains(&label));
     let (preparation, _, _invocation) = fixture.prepare(&request).await?;
     fixture.creator.create(&preparation, |_| {}).await?;
-    let raw = fixture.creator.verify(&request, &request.child.resource_proofs[0]).await?;
+    let raw = fixture
+        .creator
+        .verify(&request, &request.child.resource_proofs[0])
+        .await?;
     assert_eq!(raw.origin, *preparation.origin());
     let unsealed = RuntimeScope::new(Capabilities::new([label.clone()]), request.child.limits)?;
-    assert!(fixture.root_scope.narrow(unsealed.grants().clone(), unsealed.limits()).is_err());
-    assert!(!fixture.harness.durable_context(fixture.root, OperationId::from_bytes(fixture.root.into_bytes()))
-        .await?.scope().grants().contains(&label));
+    assert!(
+        fixture
+            .root_scope
+            .narrow(unsealed.grants().clone(), unsealed.limits())
+            .is_err()
+    );
+    assert!(
+        !fixture
+            .harness
+            .durable_context(
+                fixture.root,
+                OperationId::from_bytes(fixture.root.into_bytes())
+            )
+            .await?
+            .scope()
+            .grants()
+            .contains(&label)
+    );
     let mut unrelated = request.child.clone();
     unrelated.operation_id = OperationId::from_bytes([85; 16]);
     assert!(fixture.admit_child(unrelated).await.is_err());
     assert!(fixture.host.admit(request.child.clone()).await.is_err());
     assert!(matches!(fixture.admit_child(request.child.clone()).await?,
         Admission::Accepted(id) if id == TaskId::from_bytes([84; 16])));
-    let context = fixture.harness.durable_context(TaskId::from_bytes([84; 16]), request.child.operation_id).await?;
+    let context = fixture
+        .harness
+        .durable_context(TaskId::from_bytes([84; 16]), request.child.operation_id)
+        .await?;
     assert!(context.scope().grants().contains(&label));
     assert!(!context.scope().grants().contains("resource:create:custom"));
     assert!(!fixture.root_scope.grants().contains(&label));
     let narrowed = context.scoped(Capabilities::default(), context.scope().limits())?;
     assert!(!narrowed.scope().grants().contains(&label));
-    assert!(narrowed.scoped(Capabilities::new([label.clone()]), narrowed.scope().limits()).is_err());
-    let foreign = ResourceRef::new(ResourceKind::Sandbox, fixture.creator.provider.clone(), b"foreign".to_vec().into(), None, &mut None)?;
-    assert!(context.scoped(Capabilities::new([created_resource_capability(&foreign, "execute", &mut None)?]), context.scope().limits()).is_err());
+    assert!(
+        narrowed
+            .scoped(
+                Capabilities::new([label.clone()]),
+                narrowed.scope().limits()
+            )
+            .is_err()
+    );
+    let foreign = ResourceRef::new(
+        ResourceKind::Sandbox,
+        fixture.creator.provider.clone(),
+        b"foreign".to_vec().into(),
+        None,
+        &mut None,
+    )?;
+    assert!(
+        context
+            .scoped(
+                Capabilities::new([created_resource_capability(&foreign, "execute", &mut None)?]),
+                context.scope().limits()
+            )
+            .is_err()
+    );
     Ok(())
 }
 
@@ -638,18 +1049,30 @@ async fn corrupt_genuine_allocation_provenance_never_derives_scope() -> Result<(
         let fixture = CreationFixture::new().await?;
         let request = fixture.sandbox_request()?;
         let (preparation, _, _invocation) = fixture.prepare(&request).await?;
-        fixture.creator.create(&preparation, |origin| match corruption {
-            0 => origin.intended_child = OperationId::from_bytes([85; 16]),
-            1 => origin.admission_digest[0] ^= 1,
-            2 => origin.request_digest[0] ^= 1,
-            3 => origin.owner.id = "foreign-owner".into(),
-            4 => origin.parent_task = TaskId::from_bytes([85; 16]),
-            _ => origin.creation_fence.reservation_id = "foreign-creation-lease".into(),
-        }).await?;
-        let receipt = fixture.creator.verify(&request, &request.child.resource_proofs[0]).await?;
+        fixture
+            .creator
+            .create(&preparation, |origin| match corruption {
+                0 => origin.intended_child = OperationId::from_bytes([85; 16]),
+                1 => origin.admission_digest[0] ^= 1,
+                2 => origin.request_digest[0] ^= 1,
+                3 => origin.owner.id = "foreign-owner".into(),
+                4 => origin.parent_task = TaskId::from_bytes([85; 16]),
+                _ => origin.creation_fence.reservation_id = "foreign-creation-lease".into(),
+            })
+            .await?;
+        let receipt = fixture
+            .creator
+            .verify(&request, &request.child.resource_proofs[0])
+            .await?;
         assert_ne!(receipt.origin, *preparation.origin());
         assert!(fixture.admit_child(request.child.clone()).await.is_err());
-        assert!(fixture.harness.durable_context(TaskId::from_bytes([84; 16]), request.child.operation_id).await.is_err());
+        assert!(
+            fixture
+                .harness
+                .durable_context(TaskId::from_bytes([84; 16]), request.child.operation_id)
+                .await
+                .is_err()
+        );
     }
     Ok(())
 }
@@ -662,15 +1085,33 @@ async fn changed_child_request_evidence_and_provider_revision_are_rejected() -> 
     fixture.creator.create(&preparation, |_| {}).await?;
     let mut changed_request = request.clone();
     changed_request.payload = serde_json::json!({"image":"foreign"});
-    assert!(fixture.creator.verify(&changed_request, &request.child.resource_proofs[0]).await.is_err());
+    assert!(
+        fixture
+            .creator
+            .verify(&changed_request, &request.child.resource_proofs[0])
+            .await
+            .is_err()
+    );
     for change in 0..7 {
         let mut child = request.child.clone();
         match change {
             0 => child.operation_id = OperationId::from_bytes([85; 16]),
             1 => child.input = serde_json::json!({"action":"foreign"}),
             2 => child.grants = fixture.root_scope.grants().clone(),
-            3 => child.resource_proofs[0].evidence = workspace_ref(fixture.filesystem_provider.clone(), "foreign-evidence")?.as_resource().clone(),
-            4 => child.resource_proofs[0].provider = ProviderRef::new("created-controls".into(), "sandbox".into(), "2".into(), &mut None)?,
+            3 => {
+                child.resource_proofs[0].evidence =
+                    workspace_ref(fixture.filesystem_provider.clone(), "foreign-evidence")?
+                        .as_resource()
+                        .clone()
+            }
+            4 => {
+                child.resource_proofs[0].provider = ProviderRef::new(
+                    "created-controls".into(),
+                    "sandbox".into(),
+                    "2".into(),
+                    &mut None,
+                )?
+            }
             5 => child.resource_proofs[0].preparation = TaskId::from_bytes([85; 16]),
             _ => child.parent = None,
         }
@@ -680,12 +1121,26 @@ async fn changed_child_request_evidence_and_provider_revision_are_rejected() -> 
     self_authorizing.parent = Some(preparation.origin().preparation_task);
     self_authorizing.grants = request.child.grants.clone();
     self_authorizing.resource_proofs = request.child.resource_proofs.clone();
-    let prep_lease = fixture.host.recover_work(preparation.origin().preparation_task, &mut None).await?;
+    let prep_lease = fixture
+        .host
+        .recover_work(preparation.origin().preparation_task, &mut None)
+        .await?;
     let crate::distributed::WorkPull::Claimed(prep_lease) = prep_lease else {
-        return Err(Error::NotFound("preparation lease for self-authorization control".into()));
+        return Err(Error::NotFound(
+            "preparation lease for self-authorization control".into(),
+        ));
     };
-    assert!(fixture.host.admit_owned(self_authorizing, (&prep_lease.reservation).into()).await.is_err());
-    assert!(matches!(fixture.admit_child(request.child.clone()).await?, Admission::Accepted(_)));
+    assert!(
+        fixture
+            .host
+            .admit_owned(self_authorizing, (&prep_lease.reservation).into())
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        fixture.admit_child(request.child.clone()).await?,
+        Admission::Accepted(_)
+    ));
     Ok(())
 }
 
@@ -695,31 +1150,70 @@ async fn original_creation_fence_survives_current_preparation_and_parent_recover
     let request = fixture.sandbox_request()?;
     let (preparation, original_prep, _invocation) = fixture.prepare(&request).await?;
     fixture.creator.create(&preparation, |_| {}).await?;
-    fixture.host.coordinator.lock().await.release_lease(
-        &original_prep, IdempotencyKey::new("release-created-preparation")?,
-    ).await?;
-    let crate::distributed::WorkPull::Claimed(recovered_prep) = fixture.host.pull_work(&fixture.worker).await? else {
+    fixture
+        .host
+        .coordinator
+        .lock()
+        .await
+        .apply(IdempotencyKey::new("release-created-preparation")?, crate::scheduler::SchedulerEvent::LeaseReleased { operation_id: original_prep.operation.operation_id, fence: crate::scheduler::LeaseFence::from(&original_prep.reservation) }, &mut None)
+        .await?;
+    let crate::distributed::WorkPull::Claimed(recovered_prep) =
+        fixture.host.pull_work(&fixture.worker).await?
+    else {
         return Err(Error::NotFound("recovered preparation lease".into()));
     };
     fixture.host.start_task(&recovered_prep, None).await?;
     assert_ne!(recovered_prep.reservation, original_prep.reservation);
     assert!(preparation.verify_creation().await.is_err());
-    fixture.host.coordinator.lock().await.release_lease(
-        &fixture.root_lease, IdempotencyKey::new("release-created-parent")?,
-    ).await?;
+    fixture
+        .host
+        .coordinator
+        .lock()
+        .await
+        .apply(IdempotencyKey::new("release-created-parent")?, crate::scheduler::SchedulerEvent::LeaseReleased { operation_id: fixture.root_lease.operation.operation_id, fence: crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation) }, &mut None)
+        .await?;
     let old_parent_fence = (&fixture.root_lease.reservation).into();
-    let crate::distributed::WorkPull::Claimed(recovered_parent) = fixture.host.pull_work(&fixture.worker).await? else {
+    let crate::distributed::WorkPull::Claimed(recovered_parent) =
+        fixture.host.pull_work(&fixture.worker).await?
+    else {
         return Err(Error::NotFound("recovered parent lease".into()));
     };
     fixture.host.start_task(&recovered_parent, None).await?;
     assert_ne!(recovered_parent.reservation, fixture.root_lease.reservation);
     fixture.root_lease = recovered_parent;
-    let receipt = fixture.creator.verify(&request, &request.child.resource_proofs[0]).await?;
-    assert_eq!(receipt.origin.creation_fence, (&original_prep.reservation).into());
-    assert!(fixture.host.admit_owned(request.child.clone(), old_parent_fence).await.is_err());
-    assert!(matches!(fixture.admit_child(request.child.clone()).await?, Admission::Accepted(_)));
-    let context = fixture.harness.durable_context(TaskId::from_bytes([84; 16]), request.child.operation_id).await?;
-    assert!(context.scope().grants().contains(&created_resource_capability(&request.resources[0], "execute", &mut None)?));
+    let receipt = fixture
+        .creator
+        .verify(&request, &request.child.resource_proofs[0])
+        .await?;
+    assert_eq!(
+        receipt.origin.creation_fence,
+        (&original_prep.reservation).into()
+    );
+    assert!(
+        fixture
+            .host
+            .admit_owned(request.child.clone(), old_parent_fence)
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        fixture.admit_child(request.child.clone()).await?,
+        Admission::Accepted(_)
+    ));
+    let context = fixture
+        .harness
+        .durable_context(TaskId::from_bytes([84; 16]), request.child.operation_id)
+        .await?;
+    assert!(
+        context
+            .scope()
+            .grants()
+            .contains(&created_resource_capability(
+                &request.resources[0],
+                "execute",
+                &mut None
+            )?)
+    );
     Ok(())
 }
 
@@ -729,11 +1223,24 @@ async fn cancelled_parent_cannot_consume_existing_created_allocation() -> Result
     let request = fixture.sandbox_request()?;
     let (preparation, _, _invocation) = fixture.prepare(&request).await?;
     fixture.creator.create(&preparation, |_| {}).await?;
-    assert!(!preparation.cancellation().expect("caller invocation is sealed").is_cancelled());
+    assert!(
+        !preparation
+            .cancellation()
+            .expect("caller invocation is sealed")
+            .is_cancelled()
+    );
     fixture.host.cancel(fixture.root, None).await?;
     assert!(preparation.verify_creation().await.is_err());
-    assert!(preparation.cancellation().expect("same caller invocation").is_cancelled());
-    fixture.creator.verify(&request, &request.child.resource_proofs[0]).await?;
+    assert!(
+        preparation
+            .cancellation()
+            .expect("same caller invocation")
+            .is_cancelled()
+    );
+    fixture
+        .creator
+        .verify(&request, &request.child.resource_proofs[0])
+        .await?;
     assert!(fixture.admit_child(request.child.clone()).await.is_err());
     Ok(())
 }
@@ -743,9 +1250,19 @@ async fn sealed_preparation_borrows_the_actual_callers_drop_guard_token() -> Res
     let fixture = CreationFixture::new().await?;
     let request = fixture.sandbox_request()?;
     let (preparation, _, invocation) = fixture.prepare(&request).await?;
-    assert!(!preparation.cancellation().expect("actual owner invocation").is_cancelled());
+    assert!(
+        !preparation
+            .cancellation()
+            .expect("actual owner invocation")
+            .is_cancelled()
+    );
     drop(invocation);
-    assert!(preparation.cancellation().expect("same owner invocation").is_cancelled());
+    assert!(
+        preparation
+            .cancellation()
+            .expect("same owner invocation")
+            .is_cancelled()
+    );
     Ok(())
 }
 
@@ -765,201 +1282,448 @@ impl CreationFixture {
         self.create_filesystem_child_with_grants(&[]).await
     }
 
-    pub(crate) async fn create_filesystem_child_with_grants(&self, additional: &[&str]) -> Result<PreparedFilesystemChild> {
-        self.create_filesystem_child_with_options(additional, false).await
+    pub(crate) async fn create_filesystem_child_with_grants(
+        &self,
+        additional: &[&str],
+    ) -> Result<PreparedFilesystemChild> {
+        self.create_filesystem_child_with_options(additional, false)
+            .await
     }
 
-    async fn create_filesystem_child_with_options(&self, additional: &[&str], with_result: bool) -> Result<PreparedFilesystemChild> {
+    async fn create_filesystem_child_with_options(
+        &self,
+        additional: &[&str],
+        with_result: bool,
+    ) -> Result<PreparedFilesystemChild> {
         use crate::core::{Action, Command, SchemaRegistry};
-        use crate::fork::{ForkPreparation, ForkPreparer, ForkRequest, ForkSelection, ResourceRevision};
+        use crate::fork::{
+            ForkPreparation, ForkPreparer, ForkRequest, ForkSelection, ResourceRevision,
+        };
         use crate::resources::StreamRef;
         use crate::store::StreamAggregate;
 
-        let parent = Authority { kind: AggregateKind::Conversation, id: "created-fork-parent".into() };
+        let parent = Authority {
+            kind: AggregateKind::Conversation,
+            id: "created-fork-parent".into(),
+        };
         let parent_agent = AgentId::from_bytes([80; 16]);
         let child_agent = AgentId::from_bytes([91; 16]);
         let fork_issuer = AuthorityIssuer::new("created-owner", [80; 32], parent.clone());
         let parent_project = VolumeRef::new(
-            self.filesystem_provider.clone(), "parent-project".into(), VolumeClass::Project,
+            self.filesystem_provider.clone(),
+            "parent-project".into(),
+            VolumeClass::Project,
             VolumeOwner::Project("created-project".into()),
-         &mut None)?;
+            &mut None,
+        )?;
         let project_head = self.filesystem.create_volume(&parent_project).await?;
         let parent_private = VolumeRef::new(
-            self.filesystem_provider.clone(), "parent-private".into(), VolumeClass::AgentPrivate,
+            self.filesystem_provider.clone(),
+            "parent-private".into(),
+            VolumeClass::AgentPrivate,
             VolumeOwner::Agent(parent_agent),
-         &mut None)?;
+            &mut None,
+        )?;
         let private_head = self.filesystem.create_volume(&parent_private).await?;
-        let fork_scope = fork_issuer.issue("fork-parent", &Capabilities::new([
-            "conversation:bind".into(), "fork:publish".into(),
-            parent_project.capability(VolumeOperation::Read, &mut None)?,
-            parent_private.capability(VolumeOperation::Read, &mut None)?,
-        ]), Some(parent_agent), None, &mut None).expect("scope proof");
-        let resolver = FilesystemContentVerifier::new(self.filesystem.clone(), &fork_issuer.verifier(&mut None).expect("verifier copy"), &fork_scope, 65_536, None)?;
+        let fork_scope = fork_issuer
+            .issue(
+                "fork-parent",
+                &Capabilities::new([
+                    "conversation:bind".into(),
+                    "fork:publish".into(),
+                    parent_project.capability(VolumeOperation::Read, &mut None)?,
+                    parent_private.capability(VolumeOperation::Read, &mut None)?,
+                ]),
+                Some(parent_agent),
+                None,
+                &mut None,
+            )
+            .expect("scope proof");
+        let resolver = FilesystemContentVerifier::new(
+            self.filesystem.clone(),
+            &fork_issuer.verifier(&mut None).expect("verifier copy"),
+            &fork_scope,
+            65_536,
+            None,
+        )?;
         let fork_stream = self.host.stream.clone();
         let mut aggregate = StreamAggregate::open(
-            &fork_stream, parent.clone(), fork_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
-        aggregate.execute(Command {
-            operation_id: OperationId::from_bytes([90; 16]),
-            idempotency_key: IdempotencyKey::new("created-fork-bind")?,
-            expected_revision: 0, scope: fork_scope.clone(), causal_parent: None,
-            action: Action::BindConversation { agent: parent_agent },
-        }, #[cfg(feature = "filesystem")] None, &mut None).await?;
+            &fork_stream,
+            parent.clone(),
+            fork_issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+            None,
+            crate::store::default_projection_read_limits(),
+            crate::store::DEFAULT_TERMINAL_EFFECTS,
+            None,
+            &mut None,
+        )
+        .await?;
+        aggregate
+            .execute(
+                Command {
+                    operation_id: OperationId::from_bytes([90; 16]),
+                    idempotency_key: IdempotencyKey::new("created-fork-bind")?,
+                    expected_revision: 0,
+                    scope: fork_scope.clone(),
+                    causal_parent: None,
+                    action: Action::BindConversation {
+                        agent: parent_agent,
+                    },
+                },
+                #[cfg(feature = "filesystem")]
+                None,
+                &mut None,
+            )
+            .await?;
         let project = VolumeRef::new(
-            self.filesystem_provider.clone(), "child-project".into(), VolumeClass::Project,
+            self.filesystem_provider.clone(),
+            "child-project".into(),
+            VolumeClass::Project,
             VolumeOwner::Project("created-project".into()),
-         &mut None)?;
+            &mut None,
+        )?;
         let private = VolumeRef::new(
-            self.filesystem_provider.clone(), "child-private".into(), VolumeClass::AgentPrivate,
+            self.filesystem_provider.clone(),
+            "child-private".into(),
+            VolumeClass::AgentPrivate,
             VolumeOwner::Agent(child_agent),
-         &mut None)?;
-        let result = with_result.then(|| VolumeRef::new(
-            self.filesystem_provider.clone(), "child-result".into(), VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(child_agent),
-         &mut None)).transpose()?;
-        let stream_provider = ProviderRef::new("created-controls".into(), "stream".into(), "2".into(), &mut None)?;
+            &mut None,
+        )?;
+        let result = with_result
+            .then(|| {
+                VolumeRef::new(
+                    self.filesystem_provider.clone(),
+                    "child-result".into(),
+                    VolumeClass::AgentPrivate,
+                    VolumeOwner::Agent(child_agent),
+                    &mut None,
+                )
+            })
+            .transpose()?;
+        let stream_provider = ProviderRef::new(
+            "created-controls".into(),
+            "stream".into(),
+            "2".into(),
+            &mut None,
+        )?;
         let fork = ForkRequest {
             authorized_source: None,
-            operation_id: OperationId::from_bytes([92; 16]), parent: parent.clone(),
+            operation_id: OperationId::from_bytes([92; 16]),
+            parent: parent.clone(),
             parent_revision: aggregate.reducer().revision(),
-            child: Authority { kind: AggregateKind::Conversation, id: "created-fork-child".into() },
-            child_agent, attached_agents: Vec::new(),
+            child: Authority {
+                kind: AggregateKind::Conversation,
+                id: "created-fork-child".into(),
+            },
+            child_agent,
+            attached_agents: Vec::new(),
             preparation: ForkPreparation {
-                child_project_volume: project.clone(), child_private_volume: private.clone(),
+                child_project_volume: project.clone(),
+                child_private_volume: private.clone(),
                 child_result_volume: result.clone(),
-                summary: None, inherited_through_sequence: 0, maximum_inherited_messages: 1,
-                maximum_inherited_bytes: 65_536, maximum_inherited_references: 1,
+                summary: None,
+                inherited_through_sequence: 0,
+                maximum_inherited_messages: 1,
+                maximum_inherited_bytes: 65_536,
+                maximum_inherited_references: 1,
             },
             selections: vec![
-                ForkSelection { required: true, revision: ResourceRevision::History(StreamRef::new(
-                    stream_provider.clone(), parent.stream_path(&mut None)?.into_bytes(),
-                    Some(aggregate.reducer().revision().to_string()),
-                )?) },
-                ForkSelection { required: true, revision: ResourceRevision::Project {
-                    volume: parent_project, generation: project_head.generation,
-                } },
-                ForkSelection { required: true, revision: ResourceRevision::PrivateVolume {
-                    volume: parent_private, generation: private_head.generation, paths: Vec::new(),
-                } },
-            ], boundary: None,
+                ForkSelection {
+                    required: true,
+                    revision: ResourceRevision::History(StreamRef::new(
+                        stream_provider.clone(),
+                        parent.stream_path(&mut None)?.into_bytes(),
+                        Some(aggregate.reducer().revision().to_string()),
+                    )?),
+                },
+                ForkSelection {
+                    required: true,
+                    revision: ResourceRevision::Project {
+                        volume: parent_project,
+                        generation: project_head.generation,
+                    },
+                },
+                ForkSelection {
+                    required: true,
+                    revision: ResourceRevision::PrivateVolume {
+                        volume: parent_private,
+                        generation: private_head.generation,
+                        paths: Vec::new(),
+                    },
+                },
+            ],
+            boundary: None,
         };
-        let history = crate::store::HistoryReader::new(&fork_stream, &parent, &(fork_issuer.verifier(&mut None).expect("verifier copy")), &mut None)?.fork_history(
-            aggregate.reducer(), 0,
-            crate::store::HistoryReadLimits { maximum_events:2, maximum_bytes:65_536 },
-         &mut None).await?;
+        let history = crate::store::HistoryReader::new(
+            &fork_stream,
+            &parent,
+            &(fork_issuer.verifier(&mut None).expect("verifier copy")),
+            &mut None,
+        )?
+        .fork_history(
+            aggregate.reducer(),
+            0,
+            crate::store::HistoryReadLimits {
+                maximum_events: 2,
+                maximum_bytes: 65_536,
+            },
+            &mut None,
+        )
+        .await?;
         let preparer = FilesystemForkPreparer::new(
-            self.filesystem.clone(), aggregate.reducer().copy(&mut None)?, fork_issuer.verifier(&mut None).expect("verifier copy"),
-            fork_scope.clone(), fork.selections.iter().find_map(|selection| match &selection.revision {
-                ResourceRevision::Project { volume, .. } => Some(volume.clone()), _ => None,
-            }).ok_or_else(|| Error::Invalid("fork fixture project missing".into()))?,
-            stream_provider, resolver,
-            Some(history), None, #[cfg(not(target_arch = "wasm32"))] None,
+            self.filesystem.clone(),
+            aggregate.reducer().copy(&mut None)?,
+            fork_issuer.verifier(&mut None).expect("verifier copy"),
+            fork_scope.clone(),
+            fork.selections
+                .iter()
+                .find_map(|selection| match &selection.revision {
+                    ResourceRevision::Project { volume, .. } => Some(volume.clone()),
+                    _ => None,
+                })
+                .ok_or_else(|| Error::Invalid("fork fixture project missing".into()))?,
+            stream_provider,
+            resolver,
+            Some(history),
+            None,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
         )?;
         let mut child = self.admission(84, serde_json::json!({"action":"filesystem-io"}));
         child.grants = Capabilities::new([
             "task:spawn:test.created@1".into(),
-            private.capability(VolumeOperation::Read, &mut None)?, private.capability(VolumeOperation::Write, &mut None)?,
-            project.capability(VolumeOperation::Read, &mut None)?, project.capability(VolumeOperation::Write, &mut None)?,
+            private.capability(VolumeOperation::Read, &mut None)?,
+            private.capability(VolumeOperation::Write, &mut None)?,
+            project.capability(VolumeOperation::Read, &mut None)?,
+            project.capability(VolumeOperation::Write, &mut None)?,
         ]);
         child.grants = Capabilities::new(child.grants.iter().chain(additional.iter().copied()));
         if let Some(result) = &result {
-            child.grants = Capabilities::new(child.grants.iter().chain([
-                result.capability(VolumeOperation::Read, &mut None)?, result.capability(VolumeOperation::Write, &mut None)?,
-            ].iter().map(String::as_str)));
+            child.grants = Capabilities::new(
+                child.grants.iter().chain(
+                    [
+                        result.capability(VolumeOperation::Read, &mut None)?,
+                        result.capability(VolumeOperation::Write, &mut None)?,
+                    ]
+                    .iter()
+                    .map(String::as_str),
+                ),
+            );
         }
-        let (resources, proofs) = preparer.creation_allocations(&fork, TaskId::from_bytes([83; 16]), None)?;
+        let (resources, proofs) =
+            preparer.creation_allocations(&fork, TaskId::from_bytes([83; 16]), None)?;
         child = child.with_resource_proofs(proofs)?;
         let request = ResourcePreparationRequest {
-            command: None, source_checkpoint: None,
-            provider: self.filesystem_provider.clone(), child,
-            resources, creation_grant: "fork:publish".into(),
-            maximum_resources: if with_result {3} else {2}, maximum_work: 16_384, maximum_bytes: 16 * 1_024 * 1_024,
+            command: None,
+            source_checkpoint: None,
+            provider: self.filesystem_provider.clone(),
+            child,
+            resources,
+            creation_grant: "fork:publish".into(),
+            maximum_resources: if with_result { 3 } else { 2 },
+            maximum_work: 16_384,
+            maximum_bytes: 16 * 1_024 * 1_024,
             payload: serde_json::to_value(&fork).map_err(|e| Error::Invalid(e.to_string()))?,
-            input_files: Vec::new(), read_authorization: fork.authorized_source.clone(),
+            input_files: Vec::new(),
+            read_authorization: fork.authorized_source.clone(),
         };
         let (preparation, _, _invocation) = self.prepare(&request).await?;
-        let report = preparer.prepare_for_task(fork, &preparation).await?;
+        let report = preparer.prepare_for_task(fork, &Arc::new(preparation)).await?;
         let seed = report.clone().into_seed(&mut None)?;
-        Ok(PreparedFilesystemChild { request, private, project, seed, report,
-            parent: aggregate.reducer().copy(&mut None)?, parent_scope: fork_scope, parent_verifier: fork_issuer.verifier(&mut None).expect("verifier copy") })
+        Ok(PreparedFilesystemChild {
+            request,
+            private,
+            project,
+            seed,
+            report,
+            parent: aggregate.reducer().copy(&mut None)?,
+            parent_scope: fork_scope,
+            parent_verifier: fork_issuer.verifier(&mut None).expect("verifier copy"),
+        })
     }
 }
 
-mod recursive_lifecycle;
 #[cfg(not(target_arch = "wasm32"))]
 mod creator_native;
+mod recursive_lifecycle;
 
 #[tokio::test]
 async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_widening() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let created = fixture.create_filesystem_child().await?;
-    let read = created.private.capability(VolumeOperation::Read, &mut None)?;
-    let write = created.private.capability(VolumeOperation::Write, &mut None)?;
+    let read = created
+        .private
+        .capability(VolumeOperation::Read, &mut None)?;
+    let write = created
+        .private
+        .capability(VolumeOperation::Write, &mut None)?;
     assert!(!fixture.root_scope.grants().contains(&read));
     assert!(!fixture.root_scope.grants().contains(&write));
-    assert!(matches!(fixture.admit_child(created.request.child.clone()).await?, Admission::Accepted(_)));
+    assert!(matches!(
+        fixture.admit_child(created.request.child.clone()).await?,
+        Admission::Accepted(_)
+    ));
     let task = TaskId::from_bytes([84; 16]);
-    let context = fixture.harness.durable_context(task, created.request.child.operation_id).await?;
-    assert_eq!(context.scope().current_created_private_volume(&mut None)?, Some(&created.private));
-    assert_eq!(context.scope().current_created_agent(&mut None)?, Some(created.seed.child_agent));
-    assert_eq!(context.scope().current_created_authority(&mut None)?, Some(&created.seed.child));
-    let file = context.stage_file(
-        OperationId::from_bytes([93; 16]), "ordinary/result.txt", b"created private bytes",
-        "text/plain", "result.txt",
-    ).await?;
+    let context = fixture
+        .harness
+        .durable_context(task, created.request.child.operation_id)
+        .await?;
+    assert_eq!(
+        context.scope().current_created_private_volume(&mut None)?,
+        Some(&created.private)
+    );
+    assert_eq!(
+        context.scope().current_created_agent(&mut None)?,
+        Some(created.seed.child_agent)
+    );
+    assert_eq!(
+        context.scope().current_created_authority(&mut None)?,
+        Some(&created.seed.child)
+    );
+    let file = context
+        .stage_file(
+            OperationId::from_bytes([93; 16]),
+            "ordinary/result.txt",
+            b"created private bytes",
+            "text/plain",
+            "result.txt",
+        )
+        .await?;
     assert_eq!(file.volume(), &created.private);
     assert_ne!(file.volume(), &created.project);
-    assert_eq!(context.read_file(&file).await?.as_ref(), b"created private bytes".as_ref());
-    let artifact = context.stage_artifact(
-        OperationId::from_bytes([100; 16]), "ordinary/artifact.txt", b"created artifact bytes",
-        "text/plain", "artifact.txt",
-    ).await?;
+    assert_eq!(
+        context.read_file(&file).await?.as_ref(),
+        b"created private bytes".as_ref()
+    );
+    let artifact = context
+        .stage_artifact(
+            OperationId::from_bytes([100; 16]),
+            "ordinary/artifact.txt",
+            b"created artifact bytes",
+            "text/plain",
+            "artifact.txt",
+        )
+        .await?;
     assert_eq!(artifact.volume(), &created.private);
-    assert_eq!(context.read_artifact(&artifact).await?.as_ref(), b"created artifact bytes".as_ref());
-    let reopened = fixture.harness.durable_context(task, created.request.child.operation_id).await?;
-    assert_eq!(reopened.read_file(&file).await?.as_ref(), b"created private bytes".as_ref());
-    let read_only = reopened.scoped(Capabilities::new([read.clone()]), reopened.scope().limits())?;
-    assert_eq!(read_only.read_file(&file).await?.as_ref(), b"created private bytes".as_ref());
-    assert_eq!(read_only.scope().current_created_agent(&mut None)?, Some(created.seed.child_agent));
-    assert_eq!(read_only.scope().current_created_authority(&mut None)?, Some(&created.seed.child));
-    assert!(read_only.stage_file(
-        OperationId::from_bytes([94; 16]), "ordinary/denied.txt", b"denied", "text/plain", "denied.txt",
-    ).await.is_err());
-    assert!(read_only.stage_artifact(
-        OperationId::from_bytes([101; 16]), "ordinary/denied-artifact.txt", b"denied",
-        "text/plain", "denied-artifact.txt",
-    ).await.is_err());
+    assert_eq!(
+        context.read_artifact(&artifact).await?.as_ref(),
+        b"created artifact bytes".as_ref()
+    );
+    let reopened = fixture
+        .harness
+        .durable_context(task, created.request.child.operation_id)
+        .await?;
+    assert_eq!(
+        reopened.read_file(&file).await?.as_ref(),
+        b"created private bytes".as_ref()
+    );
+    let read_only =
+        reopened.scoped(Capabilities::new([read.clone()]), reopened.scope().limits())?;
+    assert_eq!(
+        read_only.read_file(&file).await?.as_ref(),
+        b"created private bytes".as_ref()
+    );
+    assert_eq!(
+        read_only.scope().current_created_agent(&mut None)?,
+        Some(created.seed.child_agent)
+    );
+    assert_eq!(
+        read_only.scope().current_created_authority(&mut None)?,
+        Some(&created.seed.child)
+    );
+    assert!(
+        read_only
+            .stage_file(
+                OperationId::from_bytes([94; 16]),
+                "ordinary/denied.txt",
+                b"denied",
+                "text/plain",
+                "denied.txt",
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        read_only
+            .stage_artifact(
+                OperationId::from_bytes([101; 16]),
+                "ordinary/denied-artifact.txt",
+                b"denied",
+                "text/plain",
+                "denied-artifact.txt",
+            )
+            .await
+            .is_err()
+    );
     let no_access = reopened.scoped(Capabilities::default(), reopened.scope().limits())?;
     assert!(no_access.read_file(&file).await.is_err());
-    assert!(no_access.scoped(Capabilities::new([write]), no_access.scope().limits()).is_err());
-    let root = fixture.harness.durable_context(
-        fixture.root, OperationId::from_bytes(fixture.root.into_bytes()),
-    ).await?;
+    assert!(
+        no_access
+            .scoped(Capabilities::new([write]), no_access.scope().limits())
+            .is_err()
+    );
+    let root = fixture
+        .harness
+        .durable_context(
+            fixture.root,
+            OperationId::from_bytes(fixture.root.into_bytes()),
+        )
+        .await?;
     assert!(root.read_file(&file).await.is_err());
-    let preparation = fixture.harness.durable_context(
-        TaskId::from_bytes([83; 16]), OperationId::from_bytes([83; 16]),
-    ).await?;
+    let preparation = fixture
+        .harness
+        .durable_context(
+            TaskId::from_bytes([83; 16]),
+            OperationId::from_bytes([83; 16]),
+        )
+        .await?;
     assert!(preparation.read_file(&file).await.is_err());
     let mut descendant = created.request.child.clone();
     descendant.operation_id = OperationId::from_bytes([97; 16]);
     descendant.parent = Some(task);
     descendant.grants = Capabilities::new([read.clone()]);
     descendant.limits.file_bytes = 1_024;
-    let crate::distributed::WorkPull::Claimed(parent_lease) = fixture.host.recover_work(task, &mut None).await? else {
+    let crate::distributed::WorkPull::Claimed(parent_lease) =
+        fixture.host.recover_work(task, &mut None).await?
+    else {
         return Err(Error::NotFound("created child parent lease".into()));
     };
-    assert!(matches!(fixture.host.admit_owned(
-        descendant.clone(), (&parent_lease.reservation).into(),
-    ).await?, Admission::Accepted(_)));
+    assert!(matches!(
+        fixture
+            .host
+            .admit_owned(descendant.clone(), (&parent_lease.reservation).into(),)
+            .await?,
+        Admission::Accepted(_)
+    ));
     fixture.start_next(TaskId::from_bytes([97; 16])).await?;
-    let inherited = fixture.harness.durable_context(
-        TaskId::from_bytes([97; 16]), descendant.operation_id,
-    ).await?;
-    assert_eq!(inherited.read_file(&file).await?.as_ref(), b"created private bytes".as_ref());
-    assert!(!inherited.scope().grants().contains(&created.private.capability(VolumeOperation::Write, &mut None)?));
-    assert!(inherited.stage_file(
-        OperationId::from_bytes([98; 16]), "inherited-denied.txt", b"denied",
-        "text/plain", "inherited-denied.txt",
-    ).await.is_err());
+    let inherited = fixture
+        .harness
+        .durable_context(TaskId::from_bytes([97; 16]), descendant.operation_id)
+        .await?;
+    assert_eq!(
+        inherited.read_file(&file).await?.as_ref(),
+        b"created private bytes".as_ref()
+    );
+    assert!(
+        !inherited.scope().grants().contains(
+            &created
+                .private
+                .capability(VolumeOperation::Write, &mut None)?
+        )
+    );
+    assert!(
+        inherited
+            .stage_file(
+                OperationId::from_bytes([98; 16]),
+                "inherited-denied.txt",
+                b"denied",
+                "text/plain",
+                "inherited-denied.txt",
+            )
+            .await
+            .is_err()
+    );
     assert!(!fixture.root_scope.grants().contains(&read));
     Ok(())
 }
@@ -968,38 +1732,79 @@ async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_wideni
 async fn created_content_reauthenticates_allocation_provenance_on_every_io() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let created = fixture.create_filesystem_child().await?;
-    assert!(matches!(fixture.admit_child(created.request.child.clone()).await?, Admission::Accepted(_)));
-    let context = fixture.harness.durable_context(
-        TaskId::from_bytes([84; 16]), created.request.child.operation_id,
-    ).await?;
-    let file = context.stage_file(
-        OperationId::from_bytes([95; 16]), "before-corruption.txt", b"authenticated bytes",
-        "text/plain", "before-corruption.txt",
-    ).await?;
-    assert_eq!(context.read_file(&file).await?.as_ref(), b"authenticated bytes".as_ref());
+    assert!(matches!(
+        fixture.admit_child(created.request.child.clone()).await?,
+        Admission::Accepted(_)
+    ));
+    let context = fixture
+        .harness
+        .durable_context(
+            TaskId::from_bytes([84; 16]),
+            created.request.child.operation_id,
+        )
+        .await?;
+    let file = context
+        .stage_file(
+            OperationId::from_bytes([95; 16]),
+            "before-corruption.txt",
+            b"authenticated bytes",
+            "text/plain",
+            "before-corruption.txt",
+        )
+        .await?;
+    assert_eq!(
+        context.read_file(&file).await?.as_ref(),
+        b"authenticated bytes".as_ref()
+    );
     let claim = workspace_ref(
         fixture.filesystem_provider.clone(),
-        &format!("fork-allocation-{}", created.private.storage_name(&mut None)?),
+        &format!(
+            "fork-allocation-{}",
+            created.private.storage_name(&mut None)?
+        ),
     )?;
-    let bytes = fixture.filesystem.read(&claim, None, "/claim.json", 65_536).await?;
+    let bytes = fixture
+        .filesystem
+        .read(&claim, None, "/claim.json", 65_536)
+        .await?;
     let mut allocation: Value = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
     allocation["task_origin"]["request_digest"] = serde_json::json!(vec![0_u8; 32]);
-    fixture.filesystem.apply(
-        &claim, None,
-        &[WorkspaceMutation::PutFile {
-            path: "/claim.json".into(), bytes: crate::contract::canonical_json_bytes(&allocation)?.into(),
-        }],
-        &IdempotencyKey::new("corrupt-created-content-claim")?,
-    ).await?;
+    fixture
+        .filesystem
+        .apply(
+            &claim,
+            None,
+            &[WorkspaceMutation::PutFile {
+                path: "/claim.json".into(),
+                bytes: crate::contract::canonical_json_bytes(&allocation)?.into(),
+            }],
+            &IdempotencyKey::new("corrupt-created-content-claim")?,
+        )
+        .await?;
     assert!(context.read_file(&file).await.is_err());
-    assert!(context.stage_file(
-        OperationId::from_bytes([96; 16]), "after-corruption.txt", b"must not publish",
-        "text/plain", "after-corruption.txt",
-    ).await.is_err());
-    assert!(fixture.harness.durable_context(
-        TaskId::from_bytes([84; 16]), created.request.child.operation_id,
-    ).await.is_err());
+    assert!(
+        context
+            .stage_file(
+                OperationId::from_bytes([96; 16]),
+                "after-corruption.txt",
+                b"must not publish",
+                "text/plain",
+                "after-corruption.txt",
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        fixture
+            .harness
+            .durable_context(
+                TaskId::from_bytes([84; 16]),
+                created.request.child.operation_id,
+            )
+            .await
+            .is_err()
+    );
     created.seed.validate(&mut None)?;
     Ok(())
 }
@@ -1020,13 +1825,23 @@ impl crate::filesystem::TaskCommandHost for CreatedIoCommands {
             if command.kind != "test.created.content.v1" {
                 return Err(Error::Unsupported("unknown created-content command".into()));
             }
-            let text = payload.get("text").and_then(Value::as_str)
+            let text = payload
+                .get("text")
+                .and_then(Value::as_str)
                 .ok_or_else(|| Error::Invalid("created-content command lacks text".into()))?;
-            let file = context.stage_file_once(
-                command.operation_id, "ordinary/worker.txt", text.as_bytes(), "text/plain", "worker.txt",
-            ).await?;
+            let file = context
+                .stage_file_once(
+                    command.operation_id,
+                    "ordinary/worker.txt",
+                    text.as_bytes(),
+                    "text/plain",
+                    "worker.txt",
+                )
+                .await?;
             *self.output.lock().await = Some(file);
-            Ok(crate::filesystem::TaskCommandProgress::Ready(serde_json::json!({"written":true})))
+            Ok(crate::filesystem::TaskCommandProgress::Ready(
+                serde_json::json!({"written":true}),
+            ))
         })
     }
 }
@@ -1039,64 +1854,119 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     };
     let fixture = CreationFixture::new().await?;
     let created = fixture.create_filesystem_child().await?;
-    assert!(matches!(fixture.admit_child(created.request.child.clone()).await?, Admission::Accepted(_)));
+    assert!(matches!(
+        fixture.admit_child(created.request.child.clone()).await?,
+        Admission::Accepted(_)
+    ));
     let task = TaskId::from_bytes([84; 16]);
     let observation = fixture.host.observe_task(task).await?;
-    let reservation = observation.reservation.ok_or_else(|| Error::NotFound("created task lease".into()))?;
+    let reservation = observation
+        .reservation
+        .ok_or_else(|| Error::NotFound("created task lease".into()))?;
     let lease = crate::distributed::WorkLease {
-        operation: observation.spec, reservation, checkpoint: observation.checkpoint,
+        operation: observation.spec,
+        reservation,
+        checkpoint: observation.checkpoint,
         operation_revision: observation.revision,
     };
     let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
-    let original_owner = fixture.host.journal_owner(task,fence.clone()).await?;
+    let original_owner = fixture.host.journal_owner(task, fence.clone()).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let native_work = test_work(
-        metadata_control_budget(),&cancellation,
-    )?;
-    let pending = original_owner.outcome_with_native_work(&native_work).await?;
+    let native_work = test_work(metadata_control_budget(), &cancellation)?;
+    let pending = original_owner
+        .outcome_with_native_work(&native_work)
+        .await?;
     assert!(pending.0.is_none());
-    assert_eq!(pending.1.bytes(),0);
+    assert_eq!(pending.1.bytes(), 0);
     drop(pending);
-    let context = fixture.harness.durable_context(task, created.request.child.operation_id).await?;
+    let context = fixture
+        .harness
+        .durable_context(task, created.request.child.operation_id)
+        .await?;
     let live_before = native_work.live_allocation_bytes();
-    let staged = context.stage_file_once_with_native_work(
-        OperationId::from_bytes([117;16]),"native/control.txt",b"owned",
-        "text/plain","control.txt",&native_work,
-    ).await?;
-    assert_eq!(staged.0.volume(),&created.private);
+    let staged = context
+        .stage_file_once_with_native_work(
+            OperationId::from_bytes([117; 16]),
+            "native/control.txt",
+            b"owned",
+            "text/plain",
+            "control.txt",
+            &native_work,
+        )
+        .await?;
+    assert_eq!(staged.0.volume(), &created.private);
     assert!(staged.1.bytes() > 0);
-    assert_eq!(native_work.live_allocation_bytes(),live_before+staged.1.bytes());
-    let read = context.read_file_with_native_work(&staged.0,&native_work).await?;
-    assert_eq!(read.as_ref(),b"owned");
-    assert!(native_work.live_allocation_bytes() > live_before+staged.1.bytes());
+    assert_eq!(
+        native_work.live_allocation_bytes(),
+        live_before + staged.1.bytes()
+    );
+    let read = context
+        .read_file_with_native_work(&staged.0, &native_work)
+        .await?;
+    assert_eq!(read.as_ref(), b"owned");
+    assert!(native_work.live_allocation_bytes() > live_before + staged.1.bytes());
     drop(read);
-    assert_eq!(native_work.live_allocation_bytes(),live_before+staged.1.bytes());
+    assert_eq!(
+        native_work.live_allocation_bytes(),
+        live_before + staged.1.bytes()
+    );
     drop(staged);
-    assert_eq!(native_work.live_allocation_bytes(),live_before);
-    let command_payload = context.stage_file_once(
-        OperationId::from_bytes([102; 16]), "ordinary/command.json",
-        &crate::contract::canonical_json_bytes(&serde_json::json!({"text":"real created-volume command"}))?,
-        "application/json", "command.json",
-    ).await?;
+    assert_eq!(native_work.live_allocation_bytes(), live_before);
+    let command_payload = context
+        .stage_file_once(
+            OperationId::from_bytes([102; 16]),
+            "ordinary/command.json",
+            &crate::contract::canonical_json_bytes(
+                &serde_json::json!({"text":"real created-volume command"}),
+            )?,
+            "application/json",
+            "command.json",
+        )
+        .await?;
     let volume = VolumeRef::new(
-        fixture.filesystem_provider.clone(), "scheduler".into(), VolumeClass::AgentPrivate,
+        fixture.filesystem_provider.clone(),
+        "scheduler".into(),
+        VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
-     &mut None)?;
+        &mut None,
+    )?;
     let journal = FilesystemExecutionJournal::for_task(
-        fixture.host.journal_owner(task, fence.clone()).await?, OperationId::from_bytes([103; 16]),
+        fixture.host.journal_owner(task, fence.clone()).await?,
         OperationId::from_bytes([103; 16]),
-        fixture.filesystem.clone(), &volume, &fixture.host.verifier,
-        &fixture.host.owner_scope, 65_536, None,
+        OperationId::from_bytes([103; 16]),
+        fixture.filesystem.clone(),
+        &volume,
+        &fixture.host.verifier,
+        &fixture.host.owner_scope,
+        65_536,
+        None,
     )?;
     journal.verify_input_file(&command_payload).await?;
     let runtime = FilesystemTaskRuntime::open(
-        fixture.host.stream.clone(), fixture.filesystem.clone(), &volume,
-        &fixture.host.verifier, &fixture.host.owner_scope, &fixture.root_scope,
-        &fixture.host.tasks, &fixture.host.machines, &crate::tool::ToolRegistry::default(),
-        crate::scheduler::SessionLimits { active_tasks:16, total_tasks:32, depth:4, model_steps:4 },
-        16, 65_536, Arc::new(SystemUnixMillisClock), None, &fixture.host.resource_creation,
-        &crate::durable_tool::ResumableToolRegistry::default(), None,
-    ).await?;
+        fixture.host.stream.clone(),
+        fixture.filesystem.clone(),
+        &volume,
+        &fixture.host.verifier,
+        &fixture.host.owner_scope,
+        &fixture.root_scope,
+        &fixture.host.tasks,
+        &fixture.host.machines,
+        &crate::tool::ToolRegistry::default(),
+        crate::scheduler::SessionLimits {
+            active_tasks: 16,
+            total_tasks: 32,
+            depth: 4,
+            model_steps: 4,
+        },
+        16,
+        65_536,
+        Arc::new(SystemUnixMillisClock),
+        None,
+        &fixture.host.resource_creation,
+        &crate::durable_tool::ResumableToolRegistry::default(),
+        None,
+    )
+    .await?;
     let mut session = runtime.open_task(task, fence).await?;
     session.step(
         OperationId::from_bytes([104; 16]), IdempotencyKey::new("created-workflow-input")?,
@@ -1105,150 +1975,307 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
             payload:command_payload,
         }}),
     ).await?;
-    let commands = CreatedIoCommands { output:Mutex::new(None) };
+    let commands = CreatedIoCommands {
+        output: Mutex::new(None),
+    };
     assert!(matches!(
         runtime.resume_task(lease, &commands, 2, None).await,
         TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task:completed }) if completed == task
     ));
-    let output = commands.output.lock().await.clone()
+    let output = commands
+        .output
+        .lock()
+        .await
+        .clone()
         .ok_or_else(|| Error::NotFound("created workflow content result".into()))?;
     assert_eq!(output.volume(), &created.private);
-    assert_eq!(context.read_file(&output).await?.as_ref(), b"real created-volume command".as_ref());
-    assert!(!fixture.root_scope.grants().contains(&created.private.capability(VolumeOperation::Write, &mut None)?));
-    assert!(matches!(runtime.task_host().outcome(task).await?, Some(Outcome::Succeeded(_))));
-    let terminal = original_owner.outcome_with_native_work(&native_work).await?;
-    assert!(matches!(&terminal.0,Some(Outcome::Succeeded(_))));
+    assert_eq!(
+        context.read_file(&output).await?.as_ref(),
+        b"real created-volume command".as_ref()
+    );
+    assert!(
+        !fixture.root_scope.grants().contains(
+            &created
+                .private
+                .capability(VolumeOperation::Write, &mut None)?
+        )
+    );
+    assert!(matches!(
+        runtime.task_host().outcome(task).await?,
+        Some(Outcome::Succeeded(_))
+    ));
+    let terminal = original_owner
+        .outcome_with_native_work(&native_work)
+        .await?;
+    assert!(matches!(&terminal.0, Some(Outcome::Succeeded(_))));
     assert!(terminal.1.bytes() > 0);
     drop(terminal);
     assert!(native_work.receipt().backend_read_operations > 0);
-    assert!(original_owner.verify(true, &mut Some(&mut crate::store::history::native_work_io(&native_work)?)).await.is_err());
+    assert!(
+        original_owner
+            .verify(
+                true,
+                &mut Some(&mut crate::store::history::native_work_io(&native_work)?)
+            )
+            .await
+            .is_err()
+    );
     cancellation.cancel();
     let before = native_work.receipt();
-    assert!(matches!(original_owner.outcome_with_native_work(&native_work).await,
-        Err(Error::NativeWork {cause:acyclic_fs::NativeTreeMaterializationError::Cancelled,..})));
-    assert_eq!(native_work.receipt().backend_read_operations,before.backend_read_operations);
+    assert!(matches!(
+        original_owner.outcome_with_native_work(&native_work).await,
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
+    assert_eq!(
+        native_work.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
     Ok(())
 }
 
-
-
 #[tokio::test]
-async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_scope() -> Result<()> {
+async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_scope() -> Result<()>
+{
     let fixture = CreationFixture::new().await?;
-    let created = fixture.create_filesystem_child_with_options(
-        &["fork:publish","conversation:bind"],true,
-    ).await?;
-    assert_eq!(created.request.resources.len(),3);
-    assert_eq!(created.request.child.resource_proofs.len(),3);
+    let created = fixture
+        .create_filesystem_child_with_options(&["fork:publish", "conversation:bind"], true)
+        .await?;
+    assert_eq!(created.request.resources.len(), 3);
+    assert_eq!(created.request.child.resource_proofs.len(), 3);
     let allocation_cancellation = acyclic_fs::CancellationToken::new();
     let allocation_io = crate::filesystem::PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),&allocation_cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &allocation_cancellation,
     )?;
-    fixture.filesystem.read_fork_allocation(
-        &created.seed,&created.private,crate::filesystem::fork_preparer::seed_digest(&created.seed,16 * 1024 * 1024,Some(&allocation_io))?,4 * 1024 * 1024,Some(&allocation_io),
-    ).await?;
+    fixture
+        .filesystem
+        .read_fork_allocation(
+            &created.seed,
+            &created.private,
+            crate::filesystem::fork_preparer::seed_digest(
+                &created.seed,
+                16 * 1024 * 1024,
+                Some(&allocation_io),
+            )?,
+            4 * 1024 * 1024,
+            Some(&allocation_io),
+        )
+        .await?;
     assert!(allocation_io.receipt().backend_read_operations > 0);
-    assert_eq!(allocation_io.owned_bytes()?,0);
-    let result = created.seed.child_result_volume.as_ref()
+    assert_eq!(allocation_io.owned_bytes()?, 0);
+    let result = created
+        .seed
+        .child_result_volume
+        .as_ref()
         .ok_or_else(|| Error::NotFound("created result slot".into()))?;
-    assert_ne!(result,&created.private);
-    assert_ne!(result,&created.project);
+    assert_ne!(result, &created.private);
+    assert_ne!(result, &created.project);
     assert!(created.seed.child_result_generation.is_some());
-    assert!(!created.seed.resources.iter().any(|resource| match &resource.revision {
-        crate::fork::ResourceRevision::PrivateVolume { volume,.. }
-        | crate::fork::ResourceRevision::Project { volume,.. } => volume == result,
-        _ => false,
-    }));
-    assert!(!fixture.root_scope.grants().contains(&result.capability(VolumeOperation::Write, &mut None)?));
+    assert!(
+        !created
+            .seed
+            .resources
+            .iter()
+            .any(|resource| match &resource.revision {
+                crate::fork::ResourceRevision::PrivateVolume { volume, .. }
+                | crate::fork::ResourceRevision::Project { volume, .. } => volume == result,
+                _ => false,
+            })
+    );
+    assert!(
+        !fixture
+            .root_scope
+            .grants()
+            .contains(&result.capability(VolumeOperation::Write, &mut None)?)
+    );
     fixture.admit_child(created.request.child.clone()).await?;
     let task = TaskId::from_bytes(created.request.child.operation_id.into_bytes());
-    let context = fixture.harness.durable_context(task,created.request.child.operation_id).await?;
-    let file = context.stage_file(
-        OperationId::from_bytes([110;16]),"scratch/control.txt",b"scratch",
-        "text/plain","control.txt",
-    ).await?;
-    let artifact = context.stage_artifact(
-        OperationId::from_bytes([111;16]),"artifacts/control.txt",b"result",
-        "text/plain","control.txt",
-    ).await?;
-    assert_eq!(file.volume(),&created.private);
-    assert_eq!(artifact.volume(),result);
-    assert_eq!(context.read_file(&artifact).await?.as_ref(), b"result".as_ref());
-    assert_eq!(context.scope().current_created_agent(&mut None)?,Some(created.seed.child_agent));
+    let context = fixture
+        .harness
+        .durable_context(task, created.request.child.operation_id)
+        .await?;
+    let file = context
+        .stage_file(
+            OperationId::from_bytes([110; 16]),
+            "scratch/control.txt",
+            b"scratch",
+            "text/plain",
+            "control.txt",
+        )
+        .await?;
+    let artifact = context
+        .stage_artifact(
+            OperationId::from_bytes([111; 16]),
+            "artifacts/control.txt",
+            b"result",
+            "text/plain",
+            "control.txt",
+        )
+        .await?;
+    assert_eq!(file.volume(), &created.private);
+    assert_eq!(artifact.volume(), result);
+    assert_eq!(
+        context.read_file(&artifact).await?.as_ref(),
+        b"result".as_ref()
+    );
+    assert_eq!(
+        context.scope().current_created_agent(&mut None)?,
+        Some(created.seed.child_agent)
+    );
     let observation = fixture.host.observe_task(task).await?;
-    let reservation = observation.reservation
+    let reservation = observation
+        .reservation
         .ok_or_else(|| Error::NotFound("created child reservation".into()))?;
-    let owner = fixture.host.journal_owner(task,(&reservation).into()).await?;
-    assert_eq!(owner.authenticated_binding_agent(&mut None)?,Some(created.seed.child_agent));
+    let owner = fixture
+        .host
+        .journal_owner(task, (&reservation).into())
+        .await?;
+    assert_eq!(
+        owner.authenticated_binding_agent(&mut None)?,
+        Some(created.seed.child_agent)
+    );
     owner.authenticate_fork_parent(&created.seed.child, &mut None)?;
-    assert!(owner.authenticate_fork_parent(fixture.host.verifier.audience(), &mut None).is_err());
+    assert!(
+        owner
+            .authenticate_fork_parent(fixture.host.verifier.audience(), &mut None)
+            .is_err()
+    );
     let proof = owner.child_scratch_creation_proof()?;
-    assert_eq!(proof.original_task(),task);
-    assert_eq!(proof.agent(),created.seed.child_agent);
-    assert_eq!(proof.volume(),&created.private);
-    let root_owner = fixture.host.journal_owner(
-        fixture.root,(&fixture.root_lease.reservation).into(),
-    ).await?;
+    assert_eq!(proof.original_task(), task);
+    assert_eq!(proof.agent(), created.seed.child_agent);
+    assert_eq!(proof.volume(), &created.private);
+    let root_owner = fixture
+        .host
+        .journal_owner(fixture.root, (&fixture.root_lease.reservation).into())
+        .await?;
     assert!(root_owner.child_scratch_creation_proof().is_err());
 
-    let claim = workspace_ref(fixture.filesystem_provider.clone(),
-        &format!("fork-allocation-{}",result.storage_name(&mut None)?))?;
-    let bytes = fixture.filesystem.read(&claim,None,"/claim.json",65_536).await?;
+    let claim = workspace_ref(
+        fixture.filesystem_provider.clone(),
+        &format!("fork-allocation-{}", result.storage_name(&mut None)?),
+    )?;
+    let bytes = fixture
+        .filesystem
+        .read(&claim, None, "/claim.json", 65_536)
+        .await?;
     let mut record: Value = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
     record["role"] = serde_json::json!("scratch");
-    fixture.filesystem.apply(&claim,None,&[WorkspaceMutation::PutFile {
-        path:"/claim.json".into(),bytes:crate::contract::canonical_json_bytes(&record)?.into(),
-    }],&IdempotencyKey::new("corrupt-result-role")?).await?;
-    assert!(context.stage_artifact(
-        OperationId::from_bytes([112;16]),"artifacts/after-corruption.txt",b"must not publish",
-        "text/plain","after-corruption.txt",
-    ).await.is_err());
+    fixture
+        .filesystem
+        .apply(
+            &claim,
+            None,
+            &[WorkspaceMutation::PutFile {
+                path: "/claim.json".into(),
+                bytes: crate::contract::canonical_json_bytes(&record)?.into(),
+            }],
+            &IdempotencyKey::new("corrupt-result-role")?,
+        )
+        .await?;
+    assert!(
+        context
+            .stage_artifact(
+                OperationId::from_bytes([112; 16]),
+                "artifacts/after-corruption.txt",
+                b"must not publish",
+                "text/plain",
+                "after-corruption.txt",
+            )
+            .await
+            .is_err()
+    );
     let rejected_io = crate::filesystem::PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),&allocation_cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &allocation_cancellation,
     )?;
-    assert!(fixture.filesystem.read_fork_allocation(
-        &created.seed,result,crate::filesystem::fork_preparer::seed_digest(&created.seed,16 * 1024 * 1024,Some(&rejected_io))?,4 * 1024 * 1024,Some(&rejected_io),
-    ).await.is_err());
+    assert!(
+        fixture
+            .filesystem
+            .read_fork_allocation(
+                &created.seed,
+                result,
+                crate::filesystem::fork_preparer::seed_digest(
+                    &created.seed,
+                    16 * 1024 * 1024,
+                    Some(&rejected_io)
+                )?,
+                4 * 1024 * 1024,
+                Some(&rejected_io),
+            )
+            .await
+            .is_err()
+    );
     assert!(rejected_io.receipt().backend_read_operations > 0);
-    assert_eq!(rejected_io.owned_bytes()?,0);
+    assert_eq!(rejected_io.owned_bytes()?, 0);
     Ok(())
 }
 
 #[tokio::test]
 async fn uncertain_root_choice_is_denial_only_and_rejects_identity_substitution() -> Result<()> {
     let fixture = CreationFixture::new().await?;
-    let owner = fixture.host.journal_owner(
-        fixture.root,(&fixture.root_lease.reservation).into(),
-    ).await?;
-    let operation = OperationId::from_bytes([113;16]);
-    let intent = [114;32];
-    let audience = [115;32];
-    owner.pin_root_binding_choice(operation,intent,audience, &mut None)?;
-    owner.pin_root_binding_choice(operation,intent,audience, &mut None)?;
+    let owner = fixture
+        .host
+        .journal_owner(fixture.root, (&fixture.root_lease.reservation).into())
+        .await?;
+    let operation = OperationId::from_bytes([113; 16]);
+    let intent = [114; 32];
+    let audience = [115; 32];
+    owner.pin_root_binding_choice(operation, intent, audience, &mut None)?;
+    owner.pin_root_binding_choice(operation, intent, audience, &mut None)?;
     for offset in 0..32 {
         let mut changed_intent = intent;
         changed_intent[offset] ^= 1;
-        assert!(matches!(owner.pin_root_binding_choice(operation,changed_intent,audience, &mut None),
-            Err(Error::Conflict(_))));
+        assert!(matches!(
+            owner.pin_root_binding_choice(operation, changed_intent, audience, &mut None),
+            Err(Error::Conflict(_))
+        ));
         let mut changed_audience = audience;
         changed_audience[offset] ^= 1;
-        assert!(matches!(owner.pin_root_binding_choice(operation,intent,changed_audience, &mut None),
-            Err(Error::Conflict(_))));
+        assert!(matches!(
+            owner.pin_root_binding_choice(operation, intent, changed_audience, &mut None),
+            Err(Error::Conflict(_))
+        ));
     }
-    assert!(matches!(owner.pin_root_binding_choice(
-        OperationId::from_bytes([116;16]),intent,audience, &mut None),Err(Error::Conflict(_))));
-    assert!(owner.root_binding.as_ref().and_then(|state| state.proof.get()).is_none());
-    assert!(owner.authenticate_fork_parent(fixture.host.verifier.audience(), &mut None).is_err());
+    assert!(matches!(
+        owner.pin_root_binding_choice(
+            OperationId::from_bytes([116; 16]),
+            intent,
+            audience,
+            &mut None
+        ),
+        Err(Error::Conflict(_))
+    ));
+    assert!(
+        owner
+            .root_binding
+            .as_ref()
+            .and_then(|state| state.proof.get())
+            .is_none()
+    );
+    assert!(
+        owner
+            .authenticate_fork_parent(fixture.host.verifier.audience(), &mut None)
+            .is_err()
+    );
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = test_work(
-            acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+            acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+            &cancellation,
         )?;
         assert!(matches!(
-            owner.authenticated_root_binding_with_native_work(&work).await,
-            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })
+            owner
+                .authenticated_root_binding_with_native_work(&work)
+                .await,
+            Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                ..
+            })
         ));
         assert_eq!(work.receipt().backend_read_operations, 0);
     }
@@ -1264,7 +2291,8 @@ async fn native_cancel_retains_original_retry_and_never_claims_terminal_cleanup(
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
     )?;
     fixture.host.cancel(fixture.root, Some(&work)).await?;
     fixture.host.cancel(fixture.root, Some(&work)).await?;
@@ -1283,9 +2311,7 @@ async fn native_cancel_retains_original_retry_and_never_claims_terminal_cleanup(
     let fresh_cancellation = acyclic_fs::CancellationToken::new();
     let mut minimal = acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024);
     minimal.peak_allocation_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
-    let denied = test_work(
-        minimal, &fresh_cancellation,
-    )?;
+    let denied = test_work(minimal, &fresh_cancellation)?;
     assert!(matches!(
         fixture.host.cancel(fixture.root, Some(&denied)).await,
         Err(Error::NativeWork { .. })
@@ -1299,28 +2325,47 @@ async fn canonical_root_preparation_witness_has_no_fabricated_scratch() -> Resul
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
     )?;
-    let witness = fixture.host.task_admission_readonly_witness_with_native_work(
-        fixture.root, &work,
-    ).await?;
+    let witness = fixture
+        .host
+        .task_admission_readonly_witness_with_native_work(fixture.root, &work)
+        .await?;
     assert_eq!(witness.task(), fixture.root);
-    assert_eq!(witness.admission_operation(), fixture.root_lease.operation.operation_id);
+    assert_eq!(
+        witness.admission_operation(),
+        fixture.root_lease.operation.operation_id
+    );
     assert!(witness.scratch_proof().is_none());
     assert!(witness._native_custody.bytes() > 0);
     witness.verify_with_native_work(&work).await?;
     let foreign = test_work(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
     )?;
     let before = foreign.receipt();
-    assert!(matches!(witness.verify_with_native_work(&foreign).await,
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        witness.verify_with_native_work(&foreign).await,
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(foreign.receipt(), before);
     cancellation.cancel();
     let before = work.receipt();
-    assert!(matches!(witness.verify_with_native_work(&work).await,
-        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+    assert!(matches!(
+        witness.verify_with_native_work(&work).await,
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
+    assert_eq!(
+        work.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
     drop(witness);
     assert_eq!(work.live_allocation_bytes(), 0);
     Ok(())
@@ -1331,12 +2376,18 @@ fn native_registered_root_input(
 ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
     use crate::store::history::HistoryIo;
     #[derive(Serialize)]
-    struct Input<'a> { payload: &'a str }
+    struct Input<'a> {
+        payload: &'a str,
+    }
     let mut io = crate::store::history::native_work_io(work)?;
     let value = crate::contract::json_value_bounded(
-        &Input { payload: "original registered root" },
+        &Input {
+            payload: "original registered root",
+        },
         crate::contract::JsonBounds {
-            maximum_bytes: 4096, maximum_items: 64, maximum_depth: 8,
+            maximum_bytes: 4096,
+            maximum_items: 64,
+            maximum_depth: 8,
         },
         Some(crate::wire::ErrorCode::Invalid),
         &mut |charge| io.codec_charge(charge),
@@ -1350,13 +2401,17 @@ async fn registered_native_root_keeps_configured_scope_and_same_ack_identity() -
     let definition = fixture.host.tasks.get::<Value, Value>("test.created@1")?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
     )?;
     let operation = OperationId::from_bytes([220; 16]);
     let expected = TaskId::from_bytes(operation.into_bytes());
     for _ in 0..2 {
         let record = fixture.harness.registered_root_admission_with_native_work(
-            operation, &definition, native_registered_root_input(&work)?, &work,
+            operation,
+            &definition,
+            native_registered_root_input(&work)?,
+            &work,
         )?;
         assert!(record.0.parent.is_none());
         assert_eq!(record.0.task, fixture.task);
@@ -1364,7 +2419,7 @@ async fn registered_native_root_keeps_configured_scope_and_same_ack_identity() -
         assert_eq!(record.0.run_limits, fixture.root_scope.run_limits());
         let (admitted, custody) = fixture.host.admit_with_native_work(record, &work)?.await?;
         assert!(matches!(admitted, Admission::Accepted(task) if task == expected));
-        assert!(custody.matches_work(&work));
+        assert!(custody.work().shares_allocation_context(&work));
         drop(admitted);
         drop(custody);
     }
@@ -1373,31 +2428,63 @@ async fn registered_native_root_keeps_configured_scope_and_same_ack_identity() -
 }
 
 #[tokio::test]
-async fn registered_native_root_rejects_foreign_input_and_child_without_fence_before_io() -> Result<()> {
+async fn registered_native_root_rejects_foreign_input_and_child_without_fence_before_io()
+-> Result<()> {
     let fixture = CreationFixture::new().await?;
     let definition = fixture.host.tasks.get::<Value, Value>("test.created@1")?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
     )?;
     let foreign = test_work(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
     )?;
     let before = foreign.receipt();
-    assert!(matches!(fixture.harness.registered_root_admission_with_native_work(
-        OperationId::from_bytes([221; 16]), &definition, native_registered_root_input(&work)?, &foreign,
-    ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
-    assert_eq!(foreign.receipt().backend_read_operations, before.backend_read_operations);
-    assert_eq!(foreign.receipt().backend_write_operations, before.backend_write_operations);
+    assert!(matches!(
+        fixture.harness.registered_root_admission_with_native_work(
+            OperationId::from_bytes([221; 16]),
+            &definition,
+            native_registered_root_input(&work)?,
+            &foreign,
+        ),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    assert_eq!(
+        foreign.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(
+        foreign.receipt().backend_write_operations,
+        before.backend_write_operations
+    );
     let mut record = fixture.harness.registered_root_admission_with_native_work(
-        OperationId::from_bytes([221; 16]), &definition, native_registered_root_input(&work)?, &work,
+        OperationId::from_bytes([221; 16]),
+        &definition,
+        native_registered_root_input(&work)?,
+        &work,
     )?;
     record.0.parent = Some(fixture.root);
     let before = work.receipt();
-    assert!(matches!(fixture.host.admit_with_native_work(record, &work),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
-    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
-    assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+    assert!(matches!(
+        fixture.host.admit_with_native_work(record, &work),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    assert_eq!(
+        work.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(
+        work.receipt().backend_write_operations,
+        before.backend_write_operations
+    );
     assert_eq!(work.live_allocation_bytes(), 0);
     Ok(())
 }
@@ -1408,50 +2495,78 @@ async fn registered_native_root_cancellation_precedes_metadata_copy_and_io() -> 
     let definition = fixture.host.tasks.get::<Value, Value>("test.created@1")?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
     )?;
     let input = native_registered_root_input(&work)?;
     cancellation.cancel();
     let before = work.receipt();
-    assert!(matches!(fixture.harness.registered_root_admission_with_native_work(
-        OperationId::from_bytes([222; 16]), &definition, input, &work,
-    ), Err(Error::NativeWork {
-        cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
-    })));
-    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
-    assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+    assert!(matches!(
+        fixture.harness.registered_root_admission_with_native_work(
+            OperationId::from_bytes([222; 16]),
+            &definition,
+            input,
+            &work,
+        ),
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
+    assert_eq!(
+        work.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(
+        work.receipt().backend_write_operations,
+        before.backend_write_operations
+    );
     assert_eq!(work.live_allocation_bytes(), 0);
     Ok(())
 }
 
 #[tokio::test]
-async fn authenticated_root_scope_uses_original_quota_without_created_resource_fallback() -> Result<()> {
+async fn authenticated_root_scope_uses_original_quota_without_created_resource_fallback()
+-> Result<()> {
     use crate::store::history::HistoryIo as _;
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
     )?;
-    let (admission, admission_custody) = fixture.host.observe_admission_with_native_work(
-        fixture.root, &work,
-    ).await?;
+    let (admission, admission_custody) = fixture
+        .host
+        .observe_admission_with_native_work(fixture.root, &work)
+        .await?;
     assert!(admission.resource_proofs.is_empty());
     let mut io = crate::store::history::native_work_io(&work)?;
-    let (scope, held) = fixture.root_scope.with_created_access_with_work(
-        &admission, None, &mut Some(&mut io),
-    )?;
+    let (scope, held) =
+        fixture
+            .root_scope
+            .with_created_access_with_work(&admission, None, &mut Some(&mut io))?;
     assert_eq!(scope.grants(), &admission.grants);
     assert_eq!(scope.run_limits(), admission.run_limits);
     assert!(scope.resource_proofs().is_empty());
     let before = work.receipt();
     cancellation.cancel();
-    assert!(matches!(fixture.root_scope.with_created_access_with_work(
-        &admission, None, &mut Some(&mut io),
-    ), Err(Error::NativeWork {
-        cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
-    })));
-    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
-    assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+    assert!(matches!(
+        fixture
+            .root_scope
+            .with_created_access_with_work(&admission, None, &mut Some(&mut io),),
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
+    assert_eq!(
+        work.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(
+        work.receipt().backend_write_operations,
+        before.backend_write_operations
+    );
     drop(scope);
     io.release_owned(held)?;
     drop(admission);
@@ -1466,14 +2581,25 @@ async fn original_read_source_cannot_become_native_directory_execution_owner() -
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
     )?;
-    let (context, custody) = fixture.harness.durable_context_with_native_work(
-        fixture.root, fixture.root_lease.operation.operation_id, &work,
-    ).await?;
+    let (context, custody) = fixture
+        .harness
+        .durable_context_with_native_work(
+            fixture.root,
+            fixture.root_lease.operation.operation_id,
+            &work,
+        )
+        .await?;
     let before = work.receipt();
-    assert!(matches!(context.verify_original_execution_owner_with_native_work(&work),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        context.verify_original_execution_owner_with_native_work(&work),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(work.receipt(), before);
     drop(context);
     drop(custody);
@@ -1493,10 +2619,21 @@ async fn native_admission_exhaustion_precedes_source_io_and_preserves_old_ack() 
         .expect("only the original ledger allocation");
     let mut io = crate::store::history::native_work_io(&work)?;
     let before = work.receipt();
-    assert!(matches!(fixture.host.admission_with_work(operation, &mut Some(&mut io)).await,
-        Err(Error::NativeWork { .. })));
-    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
-    let retained = fixture.host.admission_with_work(operation, &mut None).await?;
+    assert!(matches!(
+        fixture
+            .host
+            .admission_with_work(operation, &mut Some(&mut io))
+            .await,
+        Err(Error::NativeWork { .. })
+    ));
+    assert_eq!(
+        work.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
+    let retained = fixture
+        .host
+        .admission_with_work(operation, &mut None)
+        .await?;
     assert_eq!(retained.operation_id, operation);
     assert_eq!(retained.parent, None);
     Ok(())
@@ -1507,40 +2644,82 @@ async fn native_admission_exhaustion_precedes_source_io_and_preserves_old_ack() 
 async fn native_admission_json_metadata_denial_precedes_reader_and_hash() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let operation = OperationId::from_bytes(fixture.root.into_bytes());
-    let declaration = fixture.host.retained_declaration_with_work(operation, &mut None).await?
+    let declaration = fixture
+        .host
+        .retained_declaration_with_work(operation, &mut None)
+        .await?
         .expect("original acknowledged declaration");
     let original = declaration.state;
     let descriptor = crate::conversation::FileDescriptor::new(
-        *original.descriptor().sha256(), original.descriptor().byte_length(), "text/plain".into(),
+        *original.descriptor().sha256(),
+        original.descriptor().byte_length(),
+        "text/plain".into(),
     )?;
     let reference = FileRef::new(
-        original.volume().clone(), original.path().into(), original.version().into(), descriptor, original.display_name().into(),
-     &mut None)?;
+        original.volume().clone(),
+        original.path().into(),
+        original.version().into(),
+        descriptor,
+        original.display_name().into(),
+        &mut None,
+    )?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
-    ).expect("original native metadata ledger");
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
+    )
+    .expect("original native metadata ledger");
     let mut io = crate::store::history::native_work_io(&work)?;
-    assert!(matches!(fixture.host.read_json_with_work(&reference, &mut Some(&mut io)).await,
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+    assert!(matches!(
+        fixture
+            .host
+            .read_json_with_work(&reference, &mut Some(&mut io))
+            .await,
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            ..
+        })
+    ));
     assert_eq!(work.receipt().backend_read_operations, 0);
-    assert_eq!(fixture.host.admission_with_work(operation, &mut None).await?.operation_id, operation);
+    assert_eq!(
+        fixture
+            .host
+            .admission_with_work(operation, &mut None)
+            .await?
+            .operation_id,
+        operation
+    );
     Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn native_fixture_scope(
-    fixture: &CreationFixture, operation: OperationId,
+    fixture: &CreationFixture,
+    operation: OperationId,
     work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(TaskAdmissionRecord, RuntimeScope, acyclic_fs::NativeAllocation)> {
+) -> Result<(
+    TaskAdmissionRecord,
+    RuntimeScope,
+    acyclic_fs::NativeAllocation,
+)> {
     let mut io = crate::store::history::native_work_io(work)?;
-    let admission = fixture.host.admission_with_work(operation, &mut Some(&mut io)).await?;
-    let (scope, scope_held) = fixture.host.authenticated_scope_with_work(&admission, &mut Some(&mut io)).await?;
+    let admission = fixture
+        .host
+        .admission_with_work(operation, &mut Some(&mut io))
+        .await?;
+    let (scope, scope_held) = fixture
+        .host
+        .authenticated_scope_with_work(&admission, &mut Some(&mut io))
+        .await?;
     let record_held = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
-        .checked_add(admission.logical_owned_bytes()?).expect("exact retained fixture record");
-    let custody = io.take_native_custody(record_held.checked_add(scope_held)
-        .expect("record and scope retain separate exact allowances"))?;
-    assert!(custody.matches_work(work));
+        .checked_add(admission.logical_owned_bytes()?)
+        .expect("exact retained fixture record");
+    let custody = io.take_native_custody(
+        record_held
+            .checked_add(scope_held)
+            .expect("record and scope retain separate exact allowances"),
+    )?;
+    assert!(custody.work().shares_allocation_context(work));
     Ok((admission, scope, custody))
 }
 
@@ -1551,48 +2730,127 @@ async fn native_original_root_child_grandchild_keep_exact_created_source() -> Re
     let created = fixture.create_filesystem_child().await?;
     fixture.admit_child(created.request.child.clone()).await?;
     let child = TaskId::from_bytes(created.request.child.operation_id.into_bytes());
-    let read = created.private.capability(VolumeOperation::Read, &mut None)?;
-    let write = created.private.capability(VolumeOperation::Write, &mut None)?;
+    let read = created
+        .private
+        .capability(VolumeOperation::Read, &mut None)?;
+    let write = created
+        .private
+        .capability(VolumeOperation::Write, &mut None)?;
     let mut descendant = created.request.child.clone();
     descendant.operation_id = OperationId::from_bytes([97; 16]);
     descendant.parent = Some(child);
     descendant.grants = Capabilities::new([read.clone()]);
     descendant.limits.file_bytes = 1_024;
-    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(child, &mut None).await? else {
+    let crate::distributed::WorkPull::Claimed(lease) =
+        fixture.host.recover_work(child, &mut None).await?
+    else {
         return Err(Error::NotFound("native created parent lease".into()));
     };
-    fixture.host.admit_owned(descendant.clone(), (&lease.reservation).into()).await?;
+    fixture
+        .host
+        .admit_owned(descendant.clone(), (&lease.reservation).into())
+        .await?;
     fixture.start_next(TaskId::from_bytes([97; 16])).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
+    )
+    .unwrap();
     let live = work.live_allocation_bytes();
-    let root = native_fixture_scope(&fixture, OperationId::from_bytes(fixture.root.into_bytes()), &work).await?;
+    let root = native_fixture_scope(
+        &fixture,
+        OperationId::from_bytes(fixture.root.into_bytes()),
+        &work,
+    )
+    .await?;
     assert!(root.0.parent.is_none());
     assert!(root.0.resource_proofs.is_empty());
-    assert!(root.1.current_created_agent(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?.is_none());
+    assert!(
+        root.1
+            .current_created_agent(&mut Some(
+                &mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork {
+                    cause,
+                    custody: None
+                })?
+            ))?
+            .is_none()
+    );
     assert!(!root.1.grants().contains(&read));
-    assert!(root.2.matches_work(&work));
+    assert!(root.2.work().shares_allocation_context(&work));
     let current = native_fixture_scope(&fixture, created.request.child.operation_id, &work).await?;
     assert!(current.0 == created.request.child);
-    assert_eq!(current.1.current_created_agent(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(created.seed.child_agent));
-    assert_eq!(current.1.current_created_authority(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(&created.seed.child));
-    assert_eq!(current.1.current_created_private_volume(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(&created.private));
+    assert_eq!(
+        current.1.current_created_agent(&mut Some(
+            &mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork {
+                cause,
+                custody: None
+            })?
+        ))?,
+        Some(created.seed.child_agent)
+    );
+    assert_eq!(
+        current.1.current_created_authority(&mut Some(
+            &mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork {
+                cause,
+                custody: None
+            })?
+        ))?,
+        Some(&created.seed.child)
+    );
+    assert_eq!(
+        current.1.current_created_private_volume(&mut Some(
+            &mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork {
+                cause,
+                custody: None
+            })?
+        ))?,
+        Some(&created.private)
+    );
     assert!(current.1.grants().contains(&write));
     let inherited = native_fixture_scope(&fixture, descendant.operation_id, &work).await?;
     assert!(inherited.0 == descendant);
-    assert_eq!(inherited.1.current_created_agent(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(created.seed.child_agent));
-    assert_eq!(inherited.1.current_created_authority(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(&created.seed.child));
+    assert_eq!(
+        inherited.1.current_created_agent(&mut Some(
+            &mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork {
+                cause,
+                custody: None
+            })?
+        ))?,
+        Some(created.seed.child_agent)
+    );
+    assert_eq!(
+        inherited.1.current_created_authority(&mut Some(
+            &mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork {
+                cause,
+                custody: None
+            })?
+        ))?,
+        Some(&created.seed.child)
+    );
     assert!(inherited.1.grants().contains(&read));
     assert!(!inherited.1.grants().contains(&write));
     let readonly = current.1.narrow_with_native_work(
-        Capabilities::new_with_native_work([read.as_str()], &work)?, current.1.limits(), &work,
+        Capabilities::new_with_native_work([read.as_str()], &work)?,
+        current.1.limits(),
+        &work,
     )?;
     assert!(!readonly.0.grants().contains(&write));
-    assert!(readonly.0.narrow_with_native_work(
-        Capabilities::new_with_native_work([write.as_str()], &work)?, readonly.0.limits(), &work,
-    ).is_err());
+    assert!(
+        readonly
+            .0
+            .narrow_with_native_work(
+                Capabilities::new_with_native_work([write.as_str()], &work)?,
+                readonly.0.limits(),
+                &work,
+            )
+            .is_err()
+    );
     let mut io = crate::store::history::native_work_io(&work)?;
-    fixture.host.validate_parent_scope_with_work(Some(child), &readonly.0, &mut Some(&mut io)).await?;
+    fixture
+        .host
+        .validate_parent_scope_with_work(Some(child), &readonly.0, &mut Some(&mut io))
+        .await?;
     drop(io);
     drop(readonly);
     drop(inherited);
@@ -1613,35 +2871,82 @@ async fn native_original_proof_cycle_and_foreign_revision_never_seal_access() ->
     for change in 0..4 {
         let mut admission = created.request.child.clone();
         match change {
-            0 => admission.resource_proofs[0].provider = ProviderRef::new("created-controls".into(), "filesystem".into(), "foreign".into(), &mut None)?,
-            1 => admission.resource_proofs[0].evidence = workspace_ref(fixture.filesystem_provider.clone(), "foreign-evidence")?.as_resource().clone(),
+            0 => {
+                admission.resource_proofs[0].provider = ProviderRef::new(
+                    "created-controls".into(),
+                    "filesystem".into(),
+                    "foreign".into(),
+                    &mut None,
+                )?
+            }
+            1 => {
+                admission.resource_proofs[0].evidence =
+                    workspace_ref(fixture.filesystem_provider.clone(), "foreign-evidence")?
+                        .as_resource()
+                        .clone()
+            }
             2 => admission.resource_proofs[0].preparation = TaskId::from_bytes([85; 16]),
             _ => admission.parent = None,
         }
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
-        let input_custody = work.claim(std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+            &cancellation,
+        )
+        .unwrap();
+        let input_custody = work.claim(
+            std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?,
+            0,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
         let mut io = crate::store::history::native_work_io(&work)?;
-        let result = fixture.host.authenticated_scope_with_work(&admission, &mut Some(&mut io)).await;
+        let result = fixture
+            .host
+            .authenticated_scope_with_work(&admission, &mut Some(&mut io))
+            .await;
         assert!(result.is_err());
         assert!(result.as_ref().err().unwrap().is_native_failure());
         drop(result);
         drop(io);
         drop(admission);
         drop(input_custody);
-        assert!(fixture.host.admission_with_work(OperationId::from_bytes(fixture.root.into_bytes()), &mut None).await?.parent.is_none());
+        assert!(
+            fixture
+                .host
+                .admission_with_work(
+                    OperationId::from_bytes(fixture.root.into_bytes()),
+                    &mut None
+                )
+                .await?
+                .parent
+                .is_none()
+        );
     }
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
+    )
+    .unwrap();
     let mut io = crate::store::history::native_work_io(&work)?;
-    let admission = fixture.host.read_retained_admission_counted(created.request.child.operation_id, &mut Some(&mut io)).await.map(|(record, _)| record)?;
+    let admission = fixture
+        .host
+        .read_retained_admission_counted(created.request.child.operation_id, &mut Some(&mut io))
+        .await
+        .map(|(record, _)| record)?;
     let mut visited = Vec::new();
     CoordinatorTaskHost::<MemoryStream>::reserve_proof_slots(&mut visited, &mut Some(&mut io))?;
     visited.push(admission.operation_id);
     let prefix = work.receipt();
-    let error = fixture.host.verify_created_access_with_work(&admission, &mut visited, &mut Some(&mut io)).await;
+    let error = fixture
+        .host
+        .verify_created_access_with_work(&admission, &mut visited, &mut Some(&mut io))
+        .await;
     assert!(matches!(error, Err(Error::NativeBoundary { .. })));
-    assert_eq!(work.receipt().backend_read_operations, prefix.backend_read_operations);
+    assert_eq!(
+        work.receipt().backend_read_operations,
+        prefix.backend_read_operations
+    );
     drop(error);
     drop(visited);
     drop(admission);
@@ -1651,27 +2956,58 @@ async fn native_original_proof_cycle_and_foreign_revision_never_seal_access() ->
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn native_stock_source_provenance_and_cancelled_preparation_are_not_authority() -> Result<()> {
+async fn native_stock_source_provenance_and_cancelled_preparation_are_not_authority() -> Result<()>
+{
     for change in 0..5 {
         let fixture = CreationFixture::new().await?;
         let created = fixture.create_filesystem_child().await?;
         fixture.admit_child(created.request.child.clone()).await?;
-        let claim = workspace_ref(fixture.filesystem_provider.clone(),
-            &format!("fork-allocation-{}", created.private.storage_name(&mut None)?))?;
-        let bytes = fixture.filesystem.read(&claim, None, "/claim.json", 65_536).await?;
-        let mut source: Value = crate::contract::json_from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+        let claim = workspace_ref(
+            fixture.filesystem_provider.clone(),
+            &format!(
+                "fork-allocation-{}",
+                created.private.storage_name(&mut None)?
+            ),
+        )?;
+        let bytes = fixture
+            .filesystem
+            .read(&claim, None, "/claim.json", 65_536)
+            .await?;
+        let mut source: Value = crate::contract::json_from_slice(&bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
         match change {
             0 => source["task_origin"]["owner"]["id"] = serde_json::json!("foreign-owner"),
-            1 => source["task_origin"]["preparation_task"] = serde_json::to_value(TaskId::from_bytes([85; 16])).unwrap(),
-            2 => source["task_origin"]["intended_child"] = serde_json::to_value(TaskId::from_bytes([85; 16])).unwrap(),
+            1 => {
+                source["task_origin"]["preparation_task"] =
+                    serde_json::to_value(TaskId::from_bytes([85; 16])).unwrap()
+            }
+            2 => {
+                source["task_origin"]["intended_child"] =
+                    serde_json::to_value(TaskId::from_bytes([85; 16])).unwrap()
+            }
             3 => source["task_origin"]["request_digest"] = serde_json::to_value([0u8; 32]).unwrap(),
-            _ => source["task_origin"]["admission_digest"] = serde_json::to_value([0u8; 32]).unwrap(),
+            _ => {
+                source["task_origin"]["admission_digest"] = serde_json::to_value([0u8; 32]).unwrap()
+            }
         }
-        fixture.filesystem.apply(&claim, None, &[WorkspaceMutation::PutFile {
-            path: "/claim.json".into(), bytes: crate::contract::canonical_json_bytes(&source)?.into(),
-        }], &IdempotencyKey::new("native-corrupt-source-provenance")?).await?;
+        fixture
+            .filesystem
+            .apply(
+                &claim,
+                None,
+                &[WorkspaceMutation::PutFile {
+                    path: "/claim.json".into(),
+                    bytes: crate::contract::canonical_json_bytes(&source)?.into(),
+                }],
+                &IdempotencyKey::new("native-corrupt-source-provenance")?,
+            )
+            .await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+            &cancellation,
+        )
+        .unwrap();
         let live = work.live_allocation_bytes();
         let error = native_fixture_scope(&fixture, created.request.child.operation_id, &work).await;
         assert!(error.is_err());
@@ -1679,19 +3015,55 @@ async fn native_stock_source_provenance_and_cancelled_preparation_are_not_author
         assert!(work.receipt().backend_read_operations > 0);
         drop(error);
         assert_eq!(work.live_allocation_bytes(), live);
-        assert!(fixture.host.admission_with_work(OperationId::from_bytes(fixture.root.into_bytes()), &mut None).await?.parent.is_none());
+        assert!(
+            fixture
+                .host
+                .admission_with_work(
+                    OperationId::from_bytes(fixture.root.into_bytes()),
+                    &mut None
+                )
+                .await?
+                .parent
+                .is_none()
+        );
     }
     let fixture = CreationFixture::new().await?;
     let created = fixture.create_filesystem_child().await?;
-    fixture.host.cancel(TaskId::from_bytes([83; 16]), None).await?;
+    fixture
+        .host
+        .cancel(TaskId::from_bytes([83; 16]), None)
+        .await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
+    )
+    .unwrap();
     let mut io = crate::store::history::native_work_io(&work)?;
-    let error = fixture.host.authenticated_scope_with_work(&created.request.child, &mut Some(&mut io)).await;
-    assert!(matches!(error, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    let error = fixture
+        .host
+        .authenticated_scope_with_work(&created.request.child, &mut Some(&mut io))
+        .await;
+    assert!(matches!(
+        error,
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     drop(error);
     drop(io);
-    assert!(fixture.host.admission_with_work(OperationId::from_bytes(fixture.root.into_bytes()), &mut None).await?.parent.is_none());
+    assert!(
+        fixture
+            .host
+            .admission_with_work(
+                OperationId::from_bytes(fixture.root.into_bytes()),
+                &mut None
+            )
+            .await?
+            .parent
+            .is_none()
+    );
     Ok(())
 }
 
@@ -1700,27 +3072,57 @@ async fn native_stock_source_provenance_and_cancelled_preparation_are_not_author
 async fn native_declared_original_scope_mac_denial_precedes_admission_io() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let operation = OperationId::from_bytes(fixture.root.into_bytes());
-    let mut declaration = fixture.host.retained_declaration_with_work(operation, &mut None).await?
+    let mut declaration = fixture
+        .host
+        .retained_declaration_with_work(operation, &mut None)
+        .await?
         .expect("genuine previously acknowledged root");
     let foreign = crate::core::AuthorityIssuer::new(
-        "created-controls-foreign", [93; 32], fixture.host.verifier.audience().clone(),
+        "created-controls-foreign",
+        [93; 32],
+        fixture.host.verifier.audience().clone(),
     );
-    declaration.owner_scope = foreign.issue("foreign-declaration", &Capabilities::new(["operation:declare", "operation:observe"]), None, None, &mut None).expect("scope proof");
+    declaration.owner_scope = foreign
+        .issue(
+            "foreign-declaration",
+            &Capabilities::new(["operation:declare", "operation:observe"]),
+            None,
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation)
-        .expect("original finite scope authentication ledger");
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),
+        &cancellation,
+    )
+    .expect("original finite scope authentication ledger");
     let mut io = crate::store::history::native_work_io(&work)?;
     let before = work.receipt();
-    let denial = fixture.host.read_declared_admission_counted(
-        &declaration, &mut Some(&mut io),
-    ).await.map(|(record, _)| record);
+    let denial = fixture
+        .host
+        .read_declared_admission_counted(&declaration, &mut Some(&mut io))
+        .await
+        .map(|(record, _)| record);
     assert!(denial.is_err());
-    assert!(denial.as_ref().err().expect("foreign original Scope MAC").is_native_failure());
-    assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
+    assert!(
+        denial
+            .as_ref()
+            .err()
+            .expect("foreign original Scope MAC")
+            .is_native_failure()
+    );
+    assert_eq!(
+        work.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
     drop(denial);
     drop(io);
-    let (root, custody) = fixture.host.observe_admission_with_native_work(TaskId::from_bytes(operation.into_bytes()), &work).await?;
-    assert!(custody.matches_work(&work));
+    let (root, custody) = fixture
+        .host
+        .observe_admission_with_native_work(TaskId::from_bytes(operation.into_bytes()), &work)
+        .await?;
+    assert!(custody.work().shares_allocation_context(&work));
     assert_eq!(root.parent, None);
     assert!(root.resource_proofs.is_empty());
     Ok(())

@@ -489,11 +489,13 @@ fn allocation_digest(
             input_files: &allocation.input_files,
             limits: allocation.limits,
         };
-        super::task_runtime::observed::digest(
-            &descriptor,
-            io,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-        )
+        crate::executor::with_history_io(io, |work| {
+            crate::contract::canonical_json_digest_with_work(
+                &descriptor,
+                acyclic_stream::MAX_RECORD_BYTES as u64,
+                work,
+            )
+        })
     };
     admission.resource_proofs = proofs;
     digest

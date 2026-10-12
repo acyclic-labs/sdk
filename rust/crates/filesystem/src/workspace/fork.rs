@@ -47,7 +47,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             work.verify(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
             allocations.release(bytes).map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
             let remaining = work.remaining(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
-            let forked = merge_workspace_backend(self.volume.fs.fork_workspace(name.value, &options.generation, options.idempotency_key, options.paths, permit, remaining, cancellation, Some(&mut before_publication)).await, &mut work, 0).map_err(|error| crate::OperationFailure::new(error, work))?;
+            let mut guard = &mut before_publication;
+            let forked = merge_workspace_backend(self.volume.fs.fork_workspace::<_, _, WorkspaceError>(name.value, &options.generation, options.idempotency_key, options.paths, permit, remaining, cancellation, Some(&mut guard)).await, &mut work, 0).map_err(|error| crate::OperationFailure::new(error, work))?;
             work.verify(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
             Ok(crate::OperationReceipt { value: forked.value, work })
         }, budget, cancellation, WorkspaceError::Cancelled(crate::CancellationError), None).await
@@ -71,6 +72,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let name = WorkspaceName::new(destination, original, cancellation).map_err(E::from)?;
         accounting.release_owned(&mut options.allocation, bytes)?;
         let ForkOptions { generation, idempotency_key, paths } = options.value;
-        self.volume.fs.fork_workspace_guarded_with_native_work(name, &generation, idempotency_key, paths, permit, original, cancellation, before_publication).await
+        let mut guard = crate::NativeAuthorityGuard(before_publication.clone());
+        self.volume.fs.fork_workspace(name, &generation, idempotency_key, paths, permit, original, cancellation, Some(&mut guard)).await
     }
 }

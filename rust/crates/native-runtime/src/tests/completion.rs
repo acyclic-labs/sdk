@@ -5,11 +5,10 @@ use super::*;
 fn accepted_callback_cannot_disappear_without_terminal_completion() -> io::Result<()> {
     const MARKER: &str = "ACYCLIC_DROPPED_COMPLETION_CHILD";
     if std::env::var_os(MARKER).is_some() {
-        let state = Arc::new(Mutex::new(CompletionState::<()>::default()));
         eprintln!("dropping accepted native callback");
         let _ = submit_file_io(
             FileCompletion::new(
-                state,
+                Arc::new(Mutex::new(CompletionState::<()>::default())),
                 None,
                 None,
                 None,
@@ -20,17 +19,17 @@ fn accepted_callback_cannot_disappear_without_terminal_completion() -> io::Resul
                 Ok(())
             },
         );
-        return Err(io::Error::other("missing terminal callback was accepted"));
+        return Err(io::Error::other("missing terminal callback"));
     }
     let output = crate::process_output(
         std::process::Command::new(std::env::current_exe()?)
-            .arg("--exact")
-            .arg(
+            .args([
+                "--exact",
                 "tests::completion::accepted_callback_cannot_disappear_without_terminal_completion",
-            )
-            .arg("--nocapture")
+                "--nocapture",
+            ])
             .env(MARKER, "1"),
-        std::time::Duration::from_secs(120),
+        Duration::from_secs(120),
         8 * 1024 * 1024,
     )?;
     assert!(!output.status.success());
@@ -40,116 +39,109 @@ fn accepted_callback_cannot_disappear_without_terminal_completion() -> io::Resul
 
 #[test]
 fn native_file_worker_unwind_is_fail_stop() -> io::Result<()> {
-    const CHILD_MARKER: &str = "ACYCLIC_NATIVE_UNWIND_CHILD_TEST";
-    if std::env::var_os(CHILD_MARKER).is_some() {
-        let directory = tempfile::tempdir()?;
-        let file = NativeFile::from_file(
-            OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(directory.path().join("panic-worker"))?,
+    const MARKER: &str = "ACYCLIC_NATIVE_UNWIND_CHILD_TEST";
+    if std::env::var_os(MARKER).is_some() {
+        let file =
+            NativeFile::from_file(tempfile::tempfile()?, None).map_err(|(error, _)| error)?;
+        let _ = complete(file.control_async(
+            |_, _| {
+                eprintln!("injected native worker unwind");
+                std::panic::resume_unwind(Box::new("injected native worker unwind"));
+            },
             None,
-        )
-        .map_err(|(error, _)| error)?;
-        let _ = complete(
-            file.control_async(
-                |_, _| {
-                    eprintln!("injected native worker unwind");
-                    std::panic::resume_unwind(Box::new("injected native worker unwind"));
-                },
-                None,
-            )
-            .expect("unmetered control construction cannot fail"),
-        );
-        return Err(io::Error::other(
-            "native worker unwind returned to observer",
-        ));
+        )?);
+        return Err(io::Error::other("worker unwind returned"));
     }
     let output = crate::process_output(
         std::process::Command::new(std::env::current_exe()?)
-            .arg("--exact")
-            .arg("tests::completion::native_file_worker_unwind_is_fail_stop")
-            .arg("--nocapture")
-            .env(CHILD_MARKER, "1"),
-        std::time::Duration::from_secs(120),
+            .args([
+                "--exact",
+                "tests::completion::native_file_worker_unwind_is_fail_stop",
+                "--nocapture",
+            ])
+            .env(MARKER, "1"),
+        Duration::from_secs(120),
         8 * 1024 * 1024,
     )?;
-    assert!(
-        !output.status.success(),
-        "native worker unwind escaped fail-stop"
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("injected native worker unwind"),
-        "child did not reach the injected worker panic"
-    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("injected native worker unwind"));
     Ok(())
 }
 
 #[test]
-fn dropped_host_observer_retires_retained_panic_after_actual_read() -> io::Result<()> {
-    initialize_native_io_services()?;
-    let temporary = tempfile::tempdir()?;
-    let path = temporary.path().join("unobserved-panic-prefix");
-    std::fs::write(&path, b"abc")?;
-    let mut file = File::open(path)?;
-    let meter = Arc::new(ReadBudgetMeter::new(1, 3));
-    let body_meter = Arc::clone(&meter);
-    let payload_dropped = Arc::new(AtomicBool::new(false));
-    let body_dropped = Arc::clone(&payload_dropped);
-    struct RetainedHostPanic {
-        dropped: Arc<AtomicBool>,
-    }
-    impl Drop for RetainedHostPanic {
+fn host_task_panic_preserves_payload_and_retires_controls() -> io::Result<()> {
+    struct RetainedPanic(Arc<AtomicBool>);
+    impl Drop for RetainedPanic {
         fn drop(&mut self) {
-            self.dropped.store(true, Ordering::Release);
+            self.0.store(true, Ordering::Release);
         }
     }
-    let (prefix_sender, prefix_receiver) = mpsc::sync_channel(1);
-    let (release_sender, release_receiver) = mpsc::sync_channel(1);
-    let mut task = run_blocking_io(
-        move || -> io::Result<()> {
-            let mut buffer = [0_u8; 3];
-            body_meter.admit_read(buffer.len())?;
-            let completed = file.read(&mut buffer)?;
-            body_meter.record_read(completed)?;
-            assert_eq!(completed, 3);
-            assert_eq!(&buffer, b"abc");
-            prefix_sender.send(()).map_err(io::Error::other)?;
-            release_receiver.recv().map_err(io::Error::other)?;
-            std::panic::panic_any(RetainedHostPanic {
-                dropped: body_dropped,
-            });
-        },
-        Some((meter.clone(), false)),
-    )?;
-    let waker = completion_waker();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        assert!(
-            Pin::new(&mut task)
-                .poll(&mut Context::from_waker(&waker))
-                .is_pending()
-        );
-        match prefix_receiver.try_recv() {
-            Ok(()) => break,
-            Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
-                std::thread::park_timeout(Duration::from_millis(1))
+    initialize_native_io_services()?;
+    for observed in [false, true] {
+        let temporary = tempfile::NamedTempFile::new()?;
+        std::fs::write(temporary.path(), b"abc")?;
+        let mut file = temporary.reopen()?;
+        let meter = Arc::new(ReadBudgetMeter::new(1, 3));
+        let body_meter = meter.clone();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let payload = Box::new(RetainedPanic(dropped.clone()));
+        let address = std::ptr::from_ref(payload.as_ref()) as usize;
+        let (entered_tx, entered) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let mut task = run_blocking_io(
+            move || -> io::Result<()> {
+                let mut buffer = [0; 3];
+                body_meter.admit_read(buffer.len())?;
+                let completed = file.read(&mut buffer)?;
+                body_meter.record_read(completed)?;
+                assert_eq!(completed, 3);
+                assert_eq!(&buffer, b"abc");
+                entered_tx.send(()).map_err(io::Error::other)?;
+                released.recv().map_err(io::Error::other)?;
+                std::panic::resume_unwind(payload);
+            },
+            Some((meter.clone(), observed)),
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(
+                Pin::new(&mut task)
+                    .poll(&mut Context::from_waker(&completion_waker()))
+                    .is_pending()
+            );
+            match entered.try_recv() {
+                Ok(()) => break,
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    std::thread::park_timeout(Duration::from_millis(1))
+                }
+                Err(error) => return Err(io::Error::other(error)),
             }
-            Err(error) => return Err(io::Error::other(error)),
         }
+        if observed {
+            release.send(()).map_err(io::Error::other)?;
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                task.wait(None, std::future::pending(), || {})
+            }))
+            .expect_err("original panic");
+            assert_eq!(
+                std::ptr::from_ref(panic.downcast_ref::<RetainedPanic>().unwrap()) as usize,
+                address
+            );
+            drop(panic);
+        } else {
+            drop(task);
+            release.send(()).map_err(io::Error::other)?;
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while (!dropped.load(Ordering::Acquire) || meter.memory.load(Ordering::Acquire) != 0)
+            && Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        assert_eq!(meter.read.load(Ordering::Acquire), 3);
     }
-    drop(task);
-    release_sender.send(()).map_err(io::Error::other)?;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while (!payload_dropped.load(Ordering::Acquire) || meter.memory.load(Ordering::Acquire) != 0)
-        && Instant::now() < deadline
-    {
-        std::thread::yield_now();
-    }
-    assert!(payload_dropped.load(Ordering::Acquire));
-    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-    assert_eq!(meter.read.load(Ordering::Acquire), 3);
     Ok(())
 }
 
@@ -169,7 +161,7 @@ fn measured_sync_wait_expired_deadline_stops_before_body() -> io::Result<()> {
             deadline_calls += 1;
             meter.cancelled.store(true, Ordering::Release);
         })
-        .expect_err("expired deadline must stop the unsubmitted body");
+        .unwrap_err();
     assert_eq!(deadline_calls, 1);
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     assert!(!called.load(Ordering::Acquire));
@@ -180,68 +172,52 @@ fn measured_sync_wait_expired_deadline_stops_before_body() -> io::Result<()> {
 #[test]
 fn measured_sync_wait_cancellation_wake_drains_real_read_prefix() -> io::Result<()> {
     initialize_native_io_services()?;
-    for expired_deadline in [false, true] {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("sync-cancel-wake");
-        std::fs::write(&path, b"abc")?;
-        let mut file = File::open(path)?;
+    for expired in [false, true] {
+        let temporary = tempfile::NamedTempFile::new()?;
+        std::fs::write(temporary.path(), b"abc")?;
+        let mut file = temporary.reopen()?;
         let meter = Arc::new(ReadBudgetMeter::new(1, 3));
-        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
-        let terminal = Arc::new(AtomicBool::new(false));
-        let body_gate = gate.clone();
-        let body_terminal = terminal.clone();
         let body_meter = meter.clone();
+        let (entered_tx, entered) = mpsc::sync_channel(1);
+        let (release_tx, released) = mpsc::sync_channel(1);
+        let terminal = Arc::new(AtomicBool::new(false));
+        let body_terminal = terminal.clone();
         let mut task = run_blocking_io(
             move || -> io::Result<usize> {
-                let mut buffer = [0_u8; 3];
+                let mut buffer = [0; 3];
                 body_meter.admit_read(buffer.len())?;
-                let completed = file.read(&mut buffer)?;
-                body_meter.record_read(completed)?;
-                let (lock, changed) = &*body_gate;
-                let mut state = lock
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                state.0 = true;
-                changed.notify_all();
-                while !state.1 {
-                    state = changed
-                        .wait(state)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                }
+                let count = file.read(&mut buffer)?;
+                body_meter.record_read(count)?;
+                entered_tx.send(()).map_err(io::Error::other)?;
+                released.recv().map_err(io::Error::other)?;
                 body_terminal.store(true, Ordering::Release);
-                Ok(completed)
+                Ok(count)
             },
             Some((meter.clone(), false)),
         )?;
-        let waker = completion_waker();
-        let mut context = Context::from_waker(&waker);
-        loop {
-            assert!(Pin::new(&mut task).poll(&mut context).is_pending());
-            if task.pending.is_none() {
-                break;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while task.pending.is_some() {
+            assert!(
+                Pin::new(&mut task)
+                    .poll(&mut Context::from_waker(&completion_waker()))
+                    .is_pending()
+            );
+            if Instant::now() >= deadline {
+                return Err(io::ErrorKind::TimedOut.into());
             }
             std::thread::park_timeout(Duration::from_millis(1));
         }
         let release = || {
-            let (lock, changed) = &*gate;
-            let mut state = lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            while !state.0 {
-                state = changed
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
+            entered.recv_timeout(Duration::from_secs(10)).unwrap();
             meter.cancelled.store(true, Ordering::Release);
-            state.1 = true;
-            changed.notify_all();
+            release_tx.send(()).unwrap();
         };
-        let mut first_poll = true;
+        let mut first = true;
         let cancellation = std::future::poll_fn(|context| {
-            if expired_deadline {
+            if expired {
                 return Poll::Pending;
             }
-            if std::mem::take(&mut first_poll) {
+            if std::mem::take(&mut first) {
                 context.waker().wake_by_ref();
                 Poll::Pending
             } else {
@@ -249,34 +225,13 @@ fn measured_sync_wait_cancellation_wake_drains_real_read_prefix() -> io::Result<
                 Poll::Ready(())
             }
         });
-        let completed = task.wait(expired_deadline.then(Instant::now), cancellation, release)??;
+        assert_eq!(
+            task.wait(expired.then(Instant::now), cancellation, release)??,
+            3
+        );
         assert!(terminal.load(Ordering::Acquire));
-        assert_eq!(completed, 3);
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
     }
-    Ok(())
-}
-
-#[test]
-fn observed_host_task_panic_preserves_payload_and_retires_controls() -> io::Result<()> {
-    initialize_native_io_services()?;
-    let meter = Arc::new(ReadBudgetMeter::new(0, 0));
-    let payload: Box<dyn std::any::Any + Send> = Box::new(0x5a5a_u64);
-    let address = payload.as_ref() as *const dyn std::any::Any as *const () as usize;
-    let task = run_blocking_io(
-        move || -> () { std::panic::resume_unwind(payload) },
-        Some((meter.clone(), true)),
-    )?;
-    let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        task.wait(None, std::future::pending(), || {})
-    }))
-    .expect_err("original panic reaches observer");
-    assert_eq!(observed.downcast_ref::<u64>(), Some(&0x5a5a));
-    assert_eq!(
-        observed.as_ref() as *const dyn std::any::Any as *const () as usize,
-        address
-    );
-    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
     Ok(())
 }
