@@ -84,7 +84,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         work.finish(result, &accounting)
     }
 
-    pub(super) async fn create_dirs(
+    pub(crate) async fn create_dirs(
         &mut self,
         path: &str,
         accounting: &mut KernelAccounting<'_>,

@@ -85,8 +85,6 @@ where
                         })
                         .map_err(|_| MountSourceError::Cancelled)
                 },
-                None,
-                |publication, _| publication,
             )
             .await?;
         if installed == Some(super::super::MountPublication::PerMutation) {
