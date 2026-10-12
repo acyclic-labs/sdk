@@ -229,11 +229,10 @@ where
     let history = crate::store::HistoryReader::new(stream, parent.reducer().authority(), verifier.clone())?
         .fork_history(parent.reducer(), request.preparation.inherited_through_sequence, config.history_limits, &mut None).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let mut preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().clone_with_work(&mut None)?, verifier, signed,
-        source.project, stream_provider, resolver)?.with_history_context(history)?;
-    if let Some(source_read) = source_read {
-        preparer = preparer.with_project_source_read_handle(source_read)?;
-    }
+    let preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().clone_with_work(&mut None)?, verifier, signed,
+        source.project, stream_provider, resolver,
+        Some(history), source_read, #[cfg(not(target_arch = "wasm32"))] None,
+    )?;
     Ok(RetainedSourceBinding { preparer: Arc::new(preparer), request })
 }
 
@@ -273,11 +272,10 @@ where
     let history = crate::store::HistoryReader::new(stream, parent.authority(), verifier.clone())?
         .fork_history(parent, request.preparation.inherited_through_sequence, history_limits, &mut None).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let mut preparer = FilesystemForkPreparer::new(filesystem, parent.clone_with_work(&mut None)?, verifier, signed,
-        caller_project, stream_provider, resolver)?.with_history_context(history)?;
-    if let Some(source_read) = source_read {
-        preparer = preparer.with_project_source_read_handle(source_read)?;
-    }
+    let preparer = FilesystemForkPreparer::new(filesystem, parent.clone_with_work(&mut None)?, verifier, signed,
+        caller_project, stream_provider, resolver,
+        Some(history), source_read, #[cfg(not(target_arch = "wasm32"))] None,
+    )?;
     Ok(RetainedSourceBinding { preparer: Arc::new(preparer), request })
 }
 
@@ -352,9 +350,9 @@ where
         None => None,
     };
     let retained = io.owned_bytes()?;
-    let preparer = FilesystemForkPreparer::new_with_native_work(
+    let preparer = FilesystemForkPreparer::new(
         filesystem, parent, owned_verifier, owned_scope, project, provider, resolver,
-        retained_history, selected_read, io.into_native_custody(retained)?, work,
+        Some(retained_history), selected_read, Some((io.into_native_custody(retained)?, work)),
     )?.into_native_shared(work)?;
     Ok((RetainedSourceBinding { preparer, request: request.0 }, request.1))
 }
