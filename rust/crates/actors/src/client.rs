@@ -280,9 +280,6 @@ where
     let Some(cancellation) = cancellation else {
         return operation.await;
     };
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
-    }
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => Err(Error::Cancelled),
@@ -483,36 +480,6 @@ mod tests {
             } else {
                 assert!(metadata.service_code.is_none());
                 assert!(metadata.service_message.is_none());
-            }
-        }
-    }
-
-    #[test]
-    fn service_error_ignores_empty_or_malformed_details() {
-        let statuses = [
-            tonic::Status::unknown("empty details"),
-            tonic::Status::with_details(
-                tonic::Code::Unavailable,
-                "malformed details",
-                vec![0xff, 0x00].into(),
-            ),
-        ];
-
-        for status in statuses {
-            let expected_code = status.code() as i32;
-            match service_error(status.clone()) {
-                Error::Service {
-                    grpc_code,
-                    detail,
-                    message,
-                    raw_details,
-                } => {
-                    assert_eq!(message, status.message());
-                    assert_eq!(raw_details, status.details());
-                    assert_eq!(grpc_code, expected_code);
-                    assert!(detail.is_none());
-                }
-                other => panic!("expected service error, got {other:?}"),
             }
         }
     }

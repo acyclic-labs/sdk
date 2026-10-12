@@ -26,7 +26,9 @@ struct VolumeCallback<P: StreamProvider> {
     custody: NativeAllocation,
 }
 
-pub(crate) trait NativeVolumePublicationGuard: Send + Sync {
+/// Revalidates the original native volume before publication.
+pub trait NativeVolumePublicationGuard: Send + Sync {
+    /// Checks the original owner and volume on its native work.
     fn check<'a>(
         &'a self, work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>>;
@@ -46,14 +48,14 @@ impl NativeTaskContext {
         if owner.task_binding() != (task, fence) {
             return Err(denied("native volume callback differs from the original task and full fence"));
         }
-        owner.require_task_context_binding_with_native_work(context, work)?;
+        owner.require_task_context_binding(context, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
         owner.require_mail_scope_with_native_work(context.scope(), work)?;
-        owner.verify_with_native_work(false, work).await?;
+        owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
 
         let bytes = (std::mem::size_of::<NativeVolumeCallbackGuard<P>>()
             + std::mem::size_of::<(Arc<TaskJournalOwner<P>>, RuntimeScope, NativeAllocation)>()
             - std::mem::size_of::<RuntimeScope>()) as u64;
-        let mut custody = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
+        let mut custody = work.claim(bytes, 0, acyclic_fs::WorkCounters::default()).map_err(native_error)?;
         let (scope, mut scope_custody) = context.scope().clone_with_native_work(work)?;
         if let Err(cause) = custody.absorb(&mut scope_custody) {
             drop(scope);
@@ -67,14 +69,16 @@ impl NativeTaskContext {
 
 impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
     /// Selects one exact canonical preparation volume before any physical IO.
-    pub(crate) fn for_volume(
+    pub fn for_volume(
         &self, owner: &TaskJournalOwner<P>, volume: &VolumeRef, writable: bool,
         work: &NativeMaterializationWork,
     ) -> Result<(Arc<dyn NativeMountCallbackGuard>, Arc<dyn NativeVolumePublicationGuard>)> {
         self.require_volume_with_native_work(owner, volume, writable, work)?;
-        let mut custody = work.claim(std::mem::size_of::<VolumeCallback<P>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
+        let mut custody = work.claim(std::mem::size_of::<VolumeCallback<P>>() as u64, 0, acyclic_fs::WorkCounters::default())
             .map_err(native_error)?;
-        let (volume, mut volume_custody) = volume.clone_with_native_work(work)?;
+        let mut observer = crate::store::history::native_work_io(work)?;
+        let volume = volume.copy(&mut Some(&mut observer))?;
+        let mut volume_custody = observer.into_custody();
         if let Err(cause) = custody.absorb(&mut volume_custody) {
             drop(volume);
             return Err(native_error(cause));
@@ -113,9 +117,9 @@ fn require_volume<P: StreamProvider>(
     {
         return Err(denied("native callback volume policy differs from its original declared scope"));
     }
-    original.0.require_volume_grant_with_native_work(volume, VolumeOperation::Read, work)?;
+    original.0.require_volume_grant(volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
     if writable {
-        original.0.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)?;
+        original.0.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
     }
     Ok(())
 }
@@ -132,14 +136,14 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
             return Err(denied("native callback differs from its original per-volume work view"));
         }
         require_volume(&self.original, &self.volume, self.writable, work)?;
-        self.original.0.verify_with_native_work(false, work).await?;
+        self.original.0.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         require_volume(&self.original, &self.volume, self.writable, work)
     }
 
     fn sdk_check<'a>(
         &'a self, work: &'a NativeMaterializationWork, require_write: bool,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
-        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, || async move {
+        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, move || async move {
             self.verify_with_native_work(work, require_write).await
         })
     }

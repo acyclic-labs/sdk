@@ -150,8 +150,10 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
 
 struct Projection;
 impl ToolProjection for Projection {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(json!({"kind":"json","value":result.value}))
+    fn project(&self, _: &ToolInvocation, result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+        self.supports_native_projection(work)?;
+        Ok((json!({"kind":"json","value":result.value}), None))
     }
 }
 
@@ -225,7 +227,7 @@ pub(super) async fn run<P: StreamProvider>(
             ));
         }
     }
-    let runner = DurableToolRunner::new(tools, journal.clone());
+    let runner = DurableToolRunner::new(&tools, journal.clone(), None)?;
     for _ in 0..if interrupted && !replay { 1 } else { 2 } {
         let result = runner
             .run_with_context(

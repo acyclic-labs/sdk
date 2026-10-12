@@ -5422,7 +5422,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             .wait(|| async { Ok(self.checkout.observe(owner, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())), &CancellationToken::new(), None).await?.generation_id()) })
     }
 
-    /// Records a composing source’s projection change.
+    /// Records a composing sourceâ€™s projection change.
     pub(super) fn record_projection_change(&self, change: &ViewChange<'_>) {
         self.checkout.ledger.record(change, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()), &mut super::view_ledger::ViewLedgerAdmission::default()).expect("unbounded view recording");
     }
@@ -6137,7 +6137,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         Ok((handle, 0))
     }
 
-    /// Resolves a mounted path using the caller’s accounting scope.
+    /// Resolves a mounted path using the callerâ€™s accounting scope.
     pub(super) async fn lookup_async(
         &self,
         path: &MountPath,
@@ -6245,7 +6245,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         })
     }
 
-    /// Checks an authored stamp using the caller’s accounting scope.
+    /// Checks an authored stamp using the callerâ€™s accounting scope.
     pub(super) fn unchanged_since_with_carrier(
         &self,
         path: &MountPath,
@@ -7252,7 +7252,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         paths: &[MountPath],
         expected_root_identity: NativeRootIdentity,
         scope: HostCaptureScope,
-        baseline: Option<Arc<NativeViewBaseline>>,
+        baseline: Option<NativeViewBaseline>,
         native: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError>
     where A: 'static,
@@ -7265,7 +7265,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         )?;
         self.capture_host_with_identity_async(
             &inputs.paths, &inputs.options, scope,
-            baseline.as_deref(), None, native,
+            baseline.as_ref(), None, native,
         ).await.map(|_| ())
     }
 
@@ -7276,7 +7276,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         paths: &[MountPath],
         expected_root_identity: NativeRootIdentity,
         scope: HostCaptureScope,
-        baseline: Arc<NativeViewBaseline>,
+        baseline: NativeViewBaseline,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<u64>, MountSourceError>
@@ -9308,7 +9308,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"actual")?;
         let identity = capture_root_identity(directory.path())?;
-        let baseline = Arc::new(NativeViewBaseline::new(identity));
+        let baseline = NativeViewBaseline::new(identity, false);
         let cancellation = CancellationToken::new();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
         runtime.block_on(async {
@@ -9318,7 +9318,7 @@ mod tests {
             }] {
                 let failure = source.capture_host_with_identity_budgeted(
                     directory.path(), &paths, identity, HostCaptureScope::ExactPaths,
-                    Arc::clone(&baseline), budget, &cancellation,
+                    baseline, budget, &cancellation,
                 ).await.expect_err("finite input denial must not start a worker");
                 assert!(matches!(failure.error, MountSourceError::Work(_)
                     | MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Work(_))));
@@ -9684,7 +9684,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"child")?;
         let identity = capture_root_identity(directory.path())?;
-        let baseline = Arc::new(NativeViewBaseline::new(identity));
+        let baseline = NativeViewBaseline::new(identity, false);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -10074,7 +10074,7 @@ mod tests {
         let data = Box::new(*b"retained");
         let demand = crate::demand::NativeSourceWork::from_native_materialization_work(&job).original_demand_work()
             .allocation_work();
-        assert!(demand.source_execution_view().is_none());
+        assert!(demand.execution.is_none());
         let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(
             job.reserve_work(crate::WorkCounters {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
@@ -12204,7 +12204,7 @@ mod tests {
         let source = source(FilesystemProfile::Windows)?;
         let (initial, pending) = checkout_state(&source);
         assert!(!pending);
-        let name = "exact-α-😀"
+        let name = "exact-Î±-ðŸ˜€"
             .encode_utf16()
             .flat_map(u16::to_le_bytes)
             .collect::<Vec<_>>();
@@ -12229,7 +12229,7 @@ mod tests {
         assert!(!pending);
 
         let host = tempfile::tempdir()?;
-        let captured_text = "captured-β.bin";
+        let captured_text = "captured-Î².bin";
         std::fs::write(host.path().join(captured_text), b"captured")?;
         let captured_name = captured_text
             .encode_utf16()
@@ -12266,9 +12266,9 @@ mod tests {
             Arc::clone(&source) as Arc<dyn MountFilesystem>,
         )?;
 
-        let first_name = "written-α.bin";
-        let second_name = "renamed-β.bin";
-        let linked_name = "linked-γ.bin";
+        let first_name = "written-Î±.bin";
+        let second_name = "renamed-Î².bin";
+        let linked_name = "linked-Î³.bin";
         let write_status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
             .args([
                 "-NoProfile",
@@ -13225,9 +13225,9 @@ fn capture_mount_error(error: crate::CaptureError) -> MountSourceError {
             | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error))) => MountSourceError::Work(error),
         crate::CaptureError::Kernel(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error))) => MountSourceError::Allocation(error),
         crate::CaptureError::Kernel(crate::FsError::NativeKernel(error)) => MountSourceError::NativeWork(error),
+        crate::CaptureError::Kernel(crate::FsError::Cancelled(_)) => MountSourceError::Cancelled,
+        crate::CaptureError::Kernel(crate::FsError::SourceSnapshotStale) => MountSourceError::Stale,
         crate::CaptureError::Kernel(error) => MountSourceError::Filesystem(error),
-        crate::CaptureError::Cancelled => MountSourceError::Cancelled,
-        crate::CaptureError::StaleVersion => MountSourceError::Stale,
         error => engine_error(error),
     }
 }

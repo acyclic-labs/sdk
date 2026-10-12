@@ -144,7 +144,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         io: Option<&'a PreparationIo>,
         publication_lease: Option<&'a Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
         root_allocation: Option<&'a FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> impl std::future::Future<Output = Result<FileRef>> + Send + 'a {
+    ) -> impl std::future::Future<Output = Result<FileRef>> + acyclic_stream::ProviderTask + 'a {
         async move {
         validate_publication(source.path(), bytes, source.descriptor().media_type(), source.display_name(), self.maximum_bytes, io)?;
         let mut history = io.map(PreparationIo::history_io);
@@ -200,7 +200,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         media_type: &'a str, display_name: &'a str, io: Option<&'a PreparationIo>,
         publication_lease: Option<&'a Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
         root_allocation: Option<&'a FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> impl std::future::Future<Output = Result<FileRef>> + Send + 'a {
+    ) -> impl std::future::Future<Output = Result<FileRef>> + acyclic_stream::ProviderTask + 'a {
         async move {
         validate_publication(path, bytes, media_type, display_name, self.maximum_bytes, io)?;
         #[cfg(not(target_arch = "wasm32"))]

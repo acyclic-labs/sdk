@@ -251,7 +251,6 @@ impl MemoryObjects {
         identity: &Option<wire::MutationIdentity>,
         action: impl FnOnce(&mut State) -> Result<R, Error>,
     ) -> Result<R, Error> {
-        request::identity(identity)?;
         let mut guard = self.lock_state()?;
         self.mutate_locked(&mut guard, digest, identity, action)
     }
@@ -309,7 +308,6 @@ impl MemoryObjects {
     ) -> Result<R, E> {
         #[cfg(feature = "local")]
         if let Some(journal) = &self.journal { journal.check()?; }
-        request::identity(identity)?;
         if let Some(identity) = identity
             && let Some(receipt) = guard.receipts.get(identity.idempotency_key.as_str())
         {
@@ -564,7 +562,6 @@ fn check_condition(
     value: &Option<wire::Preconditions>,
     current: Option<&Stored>,
 ) -> Result<(), Error> {
-    request::preconditions(value)?;
     match value.as_ref().and_then(|value| value.condition.as_ref()) {
         Some(wire::preconditions::Condition::IfAbsent(true)) if current.is_some() => {
             Err(PreconditionFailed.into())
@@ -582,7 +579,6 @@ fn read_condition(
     if_match: &str,
     if_none_match: &str,
 ) -> Result<(), Error> {
-    request::read_filters(if_match, if_none_match)?;
     if !if_match.is_empty() && if_match != "*" && if_match != info.etag {
         return Err(PreconditionFailed.into());
     }
@@ -700,7 +696,7 @@ fn get_selected_locked<'a>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn clone_native_text(
+pub(super) fn clone_native_text(
     value: &str,
     meter: &Arc<dyn NativeReadMeter>,
     retained: &mut ReadAllocation,
@@ -1240,8 +1236,6 @@ impl ObjectsProvider for MemoryObjects {
     ) -> Result<wire::DeleteObjectResponse, Error> {
         obs::traced(obs::span!(INFO, "acyclic.objects.delete"), async {
             let name = request::bucket(&query.bucket)?;
-            request::key(&query.object_key)?;
-            request::preconditions(&query.preconditions)?;
             self.mutate(request::delete_digest(&query)?, &query.mutation, |state| {
                 let bucket = state.buckets.get_mut(name).ok_or(Error::from(NotFound))?;
                 check_condition(&query.preconditions, bucket.objects.get(query.object_key.as_str()))?;
@@ -1339,8 +1333,6 @@ impl ObjectsProvider for MemoryObjects {
             obs::span!(INFO, "acyclic.objects.create_multipart"),
             async {
                 let name = request::bucket(&query.bucket)?;
-                request::key(&query.object_key)?;
-                request::metadata(&query.metadata)?;
                 self.mutate(
                     request::create_multipart_digest(&query)?,
                     &query.mutation,
@@ -1448,22 +1440,13 @@ impl ObjectsProvider for MemoryObjects {
             obs::span!(INFO, "acyclic.objects.complete_multipart"),
             async {
                 let name = request::bucket(&query.bucket)?;
-                request::key(&query.object_key)?;
-                request::preconditions(&query.preconditions)?;
-                if query.parts.is_empty() || query.parts.len() > 10_000 {
-                    return Err(InvalidArgument.into());
-                }
                 self.mutate(
                     request::complete_multipart_digest(&query)?,
                     &query.mutation,
                     |state| {
                         let value = upload(state, name, &query.object_key, &query.upload_id)?;
                         let mut size = 0_usize;
-                        let mut previous = 0;
                         for (index, selected) in query.parts.iter().enumerate() {
-                            if selected.part_number <= previous {
-                                return Err(InvalidArgument.into());
-                            }
                             let (receipt, body) = value
                                 .parts
                                 .get(&selected.part_number)
@@ -1476,7 +1459,6 @@ impl ObjectsProvider for MemoryObjects {
                             size = size
                                 .checked_add(body.len())
                                 .ok_or(Error::from(QuotaExceeded))?;
-                            previous = selected.part_number;
                         }
                         if size > self.options.maximum_bytes {
                             return Err(QuotaExceeded.into());

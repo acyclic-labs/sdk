@@ -12,7 +12,7 @@ use crate::{
     AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
     SessionId, TaskId, TurnId,
     conversation::{
-        Attachment, ContentGrant, ContentResidencyVerifier, ConversationMessage, ConversationState, FileDescriptor, FileRef,
+        Attachment, BoundedContentFuture, ContentGrant, ContentIo, ContentResidencyVerifier, ConversationMessage, ConversationState, FileDescriptor, FileRef,
         Limits, ModelContextSelection, ReferencedAttachments, TaskOutcomeRecord, VolumeOperation,
         VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
     },
@@ -40,7 +40,6 @@ use crate::{
     tool::{ToolDefinition, validate_value},
     turn::prepare_turn,
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -594,14 +593,9 @@ struct WasmPrefixReader {
 }
 
 impl crate::conversation::ContentResidencyVerifier for WasmPrefixReader {
-    fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, crate::Result<()>> {
-        Box::pin(async move {
-            ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
-            file.descriptor().verify(&self.files.bytes(file)?)
-        })
-    }
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, crate::Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
+    fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a ContentIo>)
+        -> crate::Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        BoundedContentFuture::new(io, || async move {
             ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
             self.files.bytes(file).map(acyclic_stream::OwnedBytes::from)
         })
@@ -653,23 +647,14 @@ impl WasmProjectionResolver {
 }
 
 impl ContentResidencyVerifier for WasmProjectionResolver {
-    fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, crate::Result<()>> {
-        Box::pin(async { Err(crate::Error::Unsupported("projection-only reader".into())) })
+    fn verify<'a>(&'a self, _file: &'a FileRef, _maximum_bytes: u64, _io: Option<&'a ContentIo>)
+        -> crate::Result<BoundedContentFuture<'a, ()>> {
+        Err(crate::Error::Unsupported("projection-only reader".into()))
     }
 
-    fn load_manifest<'a>(
-        &'a self,
-        manifest: &'a FileRef,
-        item_count: u32,
-    ) -> BoxFuture<'a, crate::Result<Vec<Attachment>>> {
-        Box::pin(async move {
-            let bytes = self.bytes(manifest)?;
-            decode_attachment_manifest(manifest, &bytes, Some(item_count), None)
-        })
-    }
-
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, crate::Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move { self.bytes(file).map(acyclic_stream::OwnedBytes::from) })
+    fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a ContentIo>)
+        -> crate::Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        BoundedContentFuture::new(io, || async move { self.bytes(file).map(acyclic_stream::OwnedBytes::from) })
     }
 }
 
@@ -1317,7 +1302,7 @@ pub fn validate_workflow_admission(
     #[wasm_bindgen(unchecked_param_type = "WasmWorkflowAdmissionWire")] value: JsValue,
 ) -> Result<Ts<WasmWorkflowAdmissionWire>, JsValue> {
     let value: crate::workflow::WorkflowAdmission = from_js(value)?;
-    value.validate().map_err(js_error)?;
+    value.validate(None).map_err(js_error)?;
     WasmWorkflowAdmissionWire {
         operation_id: value.operation_id.to_string(),
         request_digest: value.request_digest.to_vec(),
@@ -1357,7 +1342,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "limits" => {
             let value: Limits = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             let js = to_js(&value)?;
             for (key, bound) in [
                 ("file_bytes", value.file_bytes),
@@ -1375,23 +1360,23 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "volume_ref" => {
             let value: VolumeRef = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "file_ref" => {
             let value: FileRef = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "attachments" => {
             let value: ReferencedAttachments = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "conversation_message" => {
             let value: ConversationMessage = from_js(value)?;
             let limits: Limits = from_js(context)?;
-            limits.validate_message(&value).map_err(js_error)?;
+            limits.validate_message(&value, &mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "task_outcome" => {
@@ -1401,7 +1386,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "execution_placement" => {
             let value: crate::runtime::ExecutionPlacement = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "task_admission" => {
@@ -1412,12 +1397,12 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "machine_identity" => {
             let value: crate::workflow::MachineIdentity = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "workflow_admission" => {
             let value: crate::workflow::WorkflowAdmission = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "durable_batch_request" => {
@@ -1437,22 +1422,22 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "resource_revision" => {
             let value: ResourceRevision = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "fork_request" => {
             let value: ForkRequest = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "fork_report" => {
             let value: ForkReport = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "fork_seed" => {
             let value: ForkSeed = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "reference_grant" => {
@@ -1482,12 +1467,12 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "extension_admission" => {
             let value: ExtensionAdmission = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "interaction_ticket" => {
             let value: InteractionTicket = from_js(value)?;
-            value.validate().map_err(js_error)?;
+            value.validate(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "interaction_resolution" => {
@@ -1555,14 +1540,14 @@ pub fn validate_tool_value(schema: JsValue, value: JsValue) -> Result<JsValue, J
 #[wasm_bindgen(js_name = verifyFileBytes)]
 pub fn verify_file_bytes(file: JsValue, bytes: Vec<u8>) -> Result<(), JsValue> {
     let file: FileRef = from_js(file)?;
-    file.validate().map_err(js_error)?;
-    file.descriptor().verify(&bytes).map_err(js_error)
+    file.validate(&mut None).map_err(js_error)?;
+    file.descriptor().verify(&bytes, &mut None).map_err(js_error)
 }
 
 /// Stages a descriptor with Rust-owned SHA-256, media-type, and safe byte-length rules, projecting its bounded length as a JS Number.
 #[wasm_bindgen(js_name = fileDescriptor)]
 pub fn file_descriptor(bytes: &[u8], media_type: &str) -> Result<JsValue, JsValue> {
-    let descriptor = FileDescriptor::from_bytes(bytes, media_type).map_err(js_error)?;
+    let descriptor = FileDescriptor::from_bytes(bytes, media_type, &mut None).map_err(js_error)?;
     to_js_admitted(&descriptor)
 }
 
@@ -1819,7 +1804,7 @@ impl WasmReducer {
                 )));
             }
         };
-        volume.capability(operation).map_err(js_error)
+        volume.capability(operation, &mut None).map_err(js_error)
     }
 
     /// Computes the exact-version read capability without embedding it in a ref.
@@ -1837,7 +1822,7 @@ impl WasmReducer {
         prefix: String,
     ) -> Result<String, JsValue> {
         let volume: VolumeRef = from_js(volume)?;
-        volume.directory_read_capability(&prefix).map_err(js_error)
+        volume.directory_read_capability(&prefix, &mut None).map_err(js_error)
     }
 
     /// Authenticates an owner-issued read grant for this exact immutable file.
@@ -1860,7 +1845,7 @@ impl WasmReducer {
         limits: JsValue,
     ) -> Result<Vec<u8>, JsValue> {
         let limits: Limits = from_js(limits)?;
-        limits.validate().map_err(js_error)?;
+        limits.validate(&mut None).map_err(js_error)?;
         let files = WasmProjectionResolver::from_js(files)?;
         let total = files
             .files
@@ -1879,7 +1864,7 @@ impl WasmReducer {
             verifier: self.issuer.verifier(&mut None).expect("verifier copy"),
             scope: from_js(scope)?,
         };
-        reader.verifier.verify(&reader.scope).map_err(js_error)?;
+        reader.verifier.verify(&reader.scope, &mut None).map_err(js_error)?;
         let prefix: FileRef = from_js(prefix)?;
         let input: WasmModelRequestInput = from_js(request)?;
         let prepared =
@@ -1904,11 +1889,11 @@ impl WasmReducer {
             &self.issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             &volume,
-            &granted_prefix,
+            &granted_prefix, &mut None,
         )
         .map_err(js_error)?;
         grant
-            .require_directory_path(&volume, &path)
+            .require_directory_path(&volume, &path, None)
             .map_err(js_error)
     }
 
@@ -1916,7 +1901,7 @@ impl WasmReducer {
     #[wasm_bindgen(js_name = verifyScope)]
     pub fn verify_scope(&self, scope: JsValue) -> Result<(), JsValue> {
         let scope: Scope = from_js(scope)?;
-        self.issuer.verifier(&mut None).expect("verifier copy").verify(&scope).map_err(js_error)
+        self.issuer.verifier(&mut None).expect("verifier copy").verify(&scope, &mut None).map_err(js_error)
     }
 
     /// Authenticates a writer against the original private-volume owner.
@@ -1928,7 +1913,7 @@ impl WasmReducer {
             &self.issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             &volume,
-            VolumeOperation::Write,
+            VolumeOperation::Write, u64::MAX, &mut None,
         )
         .map_err(js_error)?;
         Ok(())
@@ -1938,7 +1923,7 @@ impl WasmReducer {
     #[wasm_bindgen(js_name = volumeStorageName)]
     pub fn volume_storage_name(&self, volume: JsValue) -> Result<String, JsValue> {
         let volume: VolumeRef = from_js(volume)?;
-        volume.storage_name().map_err(js_error)
+        volume.storage_name(&mut None).map_err(js_error)
     }
 
     /// Applies configured runtime bounds to one exact file reference.
@@ -1950,7 +1935,7 @@ impl WasmReducer {
     ) -> Result<(), JsValue> {
         let file: FileRef = from_js(file)?;
         let limits: Limits = from_js(limits)?;
-        limits.validate_file(&file).map_err(js_error)
+        limits.validate_file(&file, &mut None).map_err(js_error)
     }
 
     /// Selects logical fork history against this reducer before provider preparation.
@@ -2676,7 +2661,7 @@ pub fn validate_model_messages(
 ) -> Result<(), JsValue> {
     let messages: Vec<ModelMessage> = from_js(messages)?;
     let limits: Limits = from_js(limits)?;
-    limits.validate().map_err(js_error)?;
+    limits.validate(&mut None).map_err(js_error)?;
     if messages.is_empty() || messages.len() > limits.context_messages {
         return Err(JsValue::from_str("model context count is invalid"));
     }
@@ -2743,7 +2728,7 @@ pub fn admit_model_event(
 ) -> Result<JsValue, JsValue> {
     let event: ModelEvent = from_js(event)?;
     let limits: Limits = from_js(limits)?;
-    limits.validate().map_err(js_error)?;
+    limits.validate(&mut None).map_err(js_error)?;
     let state: WasmModelEventAdmissionState = if state.is_null() || state.is_undefined() {
         WasmModelEventAdmissionState::default()
     } else {
