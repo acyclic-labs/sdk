@@ -1854,11 +1854,8 @@ impl Reducer {
         &self.authority
     }
 
-    pub(crate) fn event_verifier(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<AuthorityVerifier> {
-        self.authority_verifier.copy(work)
+    pub(crate) fn event_verifier(&self) -> &AuthorityVerifier {
+        &self.authority_verifier
     }
 
     /// Returns the current gapless revision.

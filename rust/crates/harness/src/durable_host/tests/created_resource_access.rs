@@ -850,9 +850,7 @@ impl CreationFixture {
                 } },
             ], boundary: None,
         };
-        let history = crate::store::HistoryReader::new(
-            &fork_stream, &parent, fork_issuer.verifier(&mut None).expect("verifier copy"),
-        )?.fork_history(
+        let history = crate::store::HistoryReader::new(&fork_stream, &parent, &(fork_issuer.verifier(&mut None).expect("verifier copy")), &mut None)?.fork_history(
             aggregate.reducer(), 0,
             crate::store::HistoryReadLimits { maximum_events:2, maximum_bytes:65_536 },
          &mut None).await?;

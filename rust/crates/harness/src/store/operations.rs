@@ -2116,7 +2116,7 @@ mod native_only_provider_tests {
             idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"native-only-corrupt"))?,
         }).await?, CommitOutcome::Committed(_)));
         let client = Arc::new(NativeOnly(provider));
-        let reader = HistoryReader::new(&client, &authority, issuer.verifier(&mut None).expect("verifier copy"))?;
+        let reader = HistoryReader::new(&client, &authority, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("finite original reader work");

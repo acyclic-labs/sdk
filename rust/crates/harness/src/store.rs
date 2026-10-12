@@ -742,11 +742,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "projection read bounds must be positive".into(),
             ));
         }
-        let reader = match work.as_deref_mut() {
-            Some(work) => HistoryReader::new_with_work(
-                client, &authority, &authority_verifier, Some(work))?,
-            None => HistoryReader::new(client, &authority, authority_verifier.clone())?,
-        };
+        let reader = HistoryReader::new(client, &authority, &authority_verifier, work)?;
         let reader_bytes = if work.is_some() { reader.logical_owned_bytes()? } else { 0 };
         let loaded = match snapshot {
             Some(snapshot) => checkpoints::supplied(client, &authority, snapshot, limits, original_revision, work).await?,
@@ -950,10 +946,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             crate::contract::validate_trusted_json_byte_bound(state, limits.maximum_bytes, work)?;
             return crate::core::native_effect_clone_with_custody(state, work).map(Some);
         }
-        let reader = if work.is_some() {
-            let verifier = self.reducer.event_verifier(work)?;
-            HistoryReader::new_owned(&self.client, self.reducer.authority(), verifier, work)?
-        } else { self.history_reader()? };
+        let reader = HistoryReader::new(&self.client, self.reducer.authority(), self.reducer.event_verifier(), work)?;
         let reader_bytes = if work.is_some() { reader.logical_owned_bytes()? } else { 0 };
         let authority = match work.as_deref_mut() {
             Some(observer) => observer.clone_authority(self.reducer.authority()),
@@ -1067,7 +1060,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         operations::find_operation_bounded_with_work(
             &self.client,
             self.reducer.authority(),
-            &self.reducer.event_verifier(&mut None)?,
+            self.reducer.event_verifier(),
             operation, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut None,
         ).await.map(|(event, _)| event)
     }
@@ -1100,24 +1093,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ) -> Result<Option<(ApplyResult, u64)>> {
         let mut owned = crate::wire_codec::CodecQuota::from_retained(work, 0);
         self.reducer.verify_command_scope_with_work(command, owned.work())?;
-        let verifier = self.reducer.event_verifier(owned.work())?;
-        let verifier_bytes = if owned.work().is_some() { verifier.logical_owned_bytes()? } else { 0 };
-        let read = operations::bounded_operation_with_retained_quota(
-            &self.client, self.reducer.authority(), &verifier,
+        let (event, _) = operations::bounded_operation_with_retained_quota(
+            &self.client, self.reducer.authority(), self.reducer.event_verifier(),
             command.operation_id, maximum_bytes, return_event, owned.work(),
-        ).await;
-        drop(verifier);
-        let released_verifier = match owned.work().as_deref_mut() {
-            Some(work) => work.release_owned(verifier_bytes),
-            None => Ok(()),
-        };
-        let (event, _) = match read {
-            Ok(read) => { released_verifier?; read },
-            Err(error) => {
-                let _ = released_verifier;
-                return Err(error);
-            },
-        };
+        ).await?;
         let Some((event, original_owned)) = event else {
             if self.reducer.operation_revision(command.operation_id).is_some() {
                 return Err(guarded_boundary(owned.work(), crate::wire::ErrorCode::Storage,
@@ -1151,11 +1130,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     /// Opens an archival reader without replaying or cloning the resident event history.
     pub fn history_reader(&self) -> Result<HistoryReader<P>> {
-        HistoryReader::new(
-            &self.client,
-            self.reducer.authority(),
-            self.reducer.event_verifier(&mut None)?,
-        )
+        HistoryReader::new(&self.client, self.reducer.authority(), self.reducer.event_verifier(), &mut None)
     }
 
     /// Resolves one attested event within this projection's committed boundary.
@@ -1175,14 +1150,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         };
         let cursor_bytes = if owned.work().is_some() { cursor.authority.id.capacity() as u64 } else { 0 };
         owned.adopt(cursor_bytes)?;
-        let verifier = self.reducer.event_verifier(owned.work())?;
-        let verifier_bytes = if owned.work().is_some() { verifier.logical_owned_bytes()? } else { 0 };
-        owned.adopt(verifier_bytes)?;
-        let reader = HistoryReader::new_owned(&self.client, self.reducer.authority(), verifier, owned.work())?;
-        if owned.work().is_some() {
-            owned.adopt(reader.logical_owned_bytes()?.checked_sub(verifier_bytes)
-                .ok_or_else(|| Error::Invalid("history reader ownership underflows".into()))?)?;
-        }
+        let reader = HistoryReader::new(&self.client, self.reducer.authority(), self.reducer.event_verifier(), owned.work())?;
+        if owned.work().is_some() { owned.adopt(reader.logical_owned_bytes()?)?; }
         let (page, _, _, retained) = reader.read_page_with_work(&cursor,
             HistoryReadLimits { maximum_events: 1, maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64 },
             false, owned.work().as_mut().map(|work| &mut **work as &mut dyn history::HistoryIo)).await?;
@@ -2158,7 +2127,7 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = provider.clone();
         provider.forbid_writes.store(true, Ordering::SeqCst);
-        let reader = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let reader = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         let cursor = reader.pin(0, None).await?;
         let limits = HistoryReadLimits {
             maximum_events: 1,
@@ -2384,7 +2353,7 @@ mod tests {
         acyclic_stream::Stream::new(std::sync::Arc::clone(&incomplete), authority().stream_path(&mut None)?)?
             .append(encode_event(&authority(), &event, &mut None)?)
             .await?;
-        let incomplete_reader = HistoryReader::new(&incomplete, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let incomplete_reader = HistoryReader::new(&incomplete, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         assert!(matches!(
             incomplete_reader.latest_conversation_message(65_536).await,
             Err(Error::Storage(_))
@@ -2453,7 +2422,7 @@ mod tests {
             }
             writer.execute(next, #[cfg(feature = "filesystem")] None, &mut None).await?;
             if matches!(sequence, 1 | 1_000 | 10_000) {
-                let cold = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+                let cold = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
                 provider.forbid_writes.store(true, Ordering::SeqCst);
                 provider.observation_reads.store(0, Ordering::SeqCst);
                 assert_eq!(
@@ -2956,7 +2925,7 @@ mod tests {
         let mut later = command(2)?;
         later.expected_revision = writer.reducer().revision();
         provider.forbid_writes.store(true, Ordering::SeqCst);
-        let reader = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let reader = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         let cursor = reader.pin(9_997, None).await?;
         assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
         provider.forbid_writes.store(false, Ordering::SeqCst);
@@ -3197,7 +3166,7 @@ mod tests {
                 None,
             )
             .await?;
-        let reader = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let reader = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         assert!(matches!(reader.operation_event(event.operation_id, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event),
             Err(Error::Storage(message)) if message.contains("atomic canonical event")));
         Ok(())
@@ -3224,7 +3193,7 @@ mod tests {
                     None,
                 )
                 .await?;
-            let reader = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+            let reader = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
             let cursor = reader.pin(0, None).await?;
             assert!(
                 reader
@@ -4074,7 +4043,7 @@ mod tests {
         let defaults = default_projection_read_limits();
         let loaded =
             checkpoints::load_with_work(&client, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), defaults, None, &mut None).await?;
-        let suffix = HistoryReader::new(&client, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?
+        let suffix = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?
             .read_page(
                 &HistoryCursor {
                     authority: authority(),
