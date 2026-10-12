@@ -117,8 +117,7 @@ struct ViewObserverRegistry {
 
 enum PendingObserverState {
     Reserved(Weak<dyn ViewObserver>),
-    Ready(Arc<dyn ViewObserver>),
-    Dead,
+    Ready(Option<Arc<dyn ViewObserver>>),
 }
 
 struct PendingObserverDelivery {
@@ -481,6 +480,7 @@ impl ViewEffect {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct ViewLedger {
     latest: AtomicU64,
     everything: AtomicU64,
@@ -658,27 +658,22 @@ impl ViewLedgerAdmissions {
                 reusable = Some(slot);
             }
         }
-        if let Some(slot) = reusable {
+        let slot = if let Some(slot) = reusable {
             let entry = if slot == 0 { self.first.as_mut().expect("first original root") }
                 else { &mut self.more[slot - 1] };
             entry.reconcile(allocations).map_err(super::MountSourceError::Work)?;
-            let admission = ViewLedgerAdmission::shared(allocations, counters, budget)?;
-            let local = admission.alias();
-            *entry = LedgerRegistryAdmission { ledger: identity, admission: Some(admission) };
-            return Ok((slot, local));
-        }
-        if self.first.is_none() {
-            let admission = ViewLedgerAdmission::shared(allocations, counters, budget)?;
-            let local = admission.alias();
-            self.first = Some(LedgerRegistryAdmission { ledger: identity, admission: Some(admission) });
-            return Ok((0, local));
-        }
-        grow_registry(&mut self.more, allocations, counters, budget, 0,
-            "view admission allocation failed")?;
+            slot
+        } else if self.first.is_none() { 0 } else {
+            grow_registry(&mut self.more, allocations, counters, budget, 0,
+                "view admission allocation failed")?;
+            self.more.len() + 1
+        };
         let admission = ViewLedgerAdmission::shared(allocations, counters, budget)?;
         let local = admission.alias();
-        let slot = self.more.len() + 1;
-        self.more.push(LedgerRegistryAdmission { ledger: identity, admission: Some(admission) });
+        let entry = LedgerRegistryAdmission { ledger: identity, admission: Some(admission) };
+        if slot == 0 { self.first = Some(entry); }
+        else if slot <= self.more.len() { self.more[slot - 1] = entry; }
+        else { self.more.push(entry); }
         Ok((slot, local))
     }
 
@@ -702,19 +697,7 @@ impl ViewLedger {
         roots.take(self, allocations, counters, budget)
     }
 
-    pub(super) fn new() -> Self {
-        Self {
-            latest: AtomicU64::new(0),
-            everything: AtomicU64::new(0),
-            unconfirmed: AtomicU64::new(0),
-            bindings: ChangeMap::default(),
-            directories: ChangeMap::default(),
-            nodes: ChangeMap::default(),
-            observers: Mutex::default(),
-            observer_generation: AtomicU64::new(0),
-            _native_allocation: None,
-        }
-    }
+    pub(super) fn new() -> Self { Self::default() }
 
     pub(super) fn new_with_native_work(
         original: &crate::NativeMaterializationWork,
@@ -789,10 +772,7 @@ impl ViewLedger {
                     PendingObserverState::Reserved(observer) => observer.upgrade(),
                     _ => unreachable!("only weak reservations survive the SDK await"),
                 };
-                delivery.observer = match ready {
-                    Some(observer) => PendingObserverState::Ready(observer),
-                    None => PendingObserverState::Dead,
-                };
+                delivery.observer = PendingObserverState::Ready(ready);
             }
             let position = ViewStamp::next();
             position.record_in(&self.everything);
@@ -802,8 +782,8 @@ impl ViewLedger {
         let origin = ViewOrigin::current();
         for delivery in &mut pending.deliveries.entries {
             delivery.visit();
-            if let PendingObserverState::Ready(observer) =
-                std::mem::replace(&mut delivery.observer, PendingObserverState::Dead)
+            if let PendingObserverState::Ready(Some(observer)) =
+                std::mem::replace(&mut delivery.observer, PendingObserverState::Ready(None))
             {
                 delivery.visit();
                 observer.view_changed(position, origin);
@@ -893,13 +873,10 @@ impl ViewLedger {
         let slot = self.nodes.prepare_slot(
             key_of(&file_id), &mut work, &mut ViewLedgerAdmission::default(), AdmittedMap::Nodes, true,
         )?;
-        let items_examined = (observers.0.len() as u64).checked_add(slot.terminal_items() as u64)
+        let mut terminal = slot.terminal_work()?;
+        terminal.items_examined = terminal.items_examined.checked_add(observers.0.len() as u64)
             .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
-        let completion = original.reserve_work(crate::WorkCounters {
-            items_examined,
-            bytes_copied: slot.terminal_copied()?,
-            ..crate::WorkCounters::UNCHARGED
-        }).map_err(super::MountSourceError::NativeWork)?;
+        let completion = original.reserve_work(terminal).map_err(super::MountSourceError::NativeWork)?;
         Ok(PreparedNativeNodeChange { ledger: self, slot, observers, completion })
     }
 
@@ -908,11 +885,7 @@ impl ViewLedger {
     ) -> Result<(), super::MountSourceError> {
         let PreparedNativeNodeChange { ledger, slot, observers, mut completion } = prepared;
         assert!(std::ptr::eq(self, ledger), "original prepared node ledger");
-        let terminal = crate::WorkCounters {
-            items_examined: slot.terminal_items() as u64,
-            bytes_copied: slot.terminal_copied().expect("accepted node copy width"),
-            ..crate::WorkCounters::UNCHARGED
-        };
+        let terminal = slot.terminal_work().expect("accepted node work");
         let position = ViewStamp::next();
         slot.record(position);
         // The slot guard retires before callbacks: observers may query nodes.
@@ -1184,14 +1157,14 @@ struct PreparedChangeMapSlot<'a> {
 }
 
 impl PreparedChangeMapSlot<'_> {
-    fn terminal_items(&self) -> usize {
-        if self.fold { self.positions.slots.len() } else { 0 }
-    }
-
-    fn terminal_copied(&self) -> Result<u64, super::MountSourceError> {
+    fn terminal_work(&self) -> Result<crate::WorkCounters, super::MountSourceError> {
         let cleared = if self.fold { change_map_controls(self.positions.slots.capacity())? } else { 0 };
-        cleared.checked_add(std::mem::size_of::<(u64, u64)>() as u64)
-            .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))
+        Ok(crate::WorkCounters {
+            items_examined: if self.fold { self.positions.slots.len() as u64 } else { 0 },
+            bytes_copied: cleared.checked_add(std::mem::size_of::<(u64, u64)>() as u64)
+                .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?,
+            ..crate::WorkCounters::UNCHARGED
+        })
     }
 
     fn record(self, position: ViewStamp) {
@@ -1348,7 +1321,7 @@ impl ChangeMap {
         owned: &mut ViewLedgerAdmission, kind: AdmittedMap,
     ) -> Result<(), super::MountSourceError> {
         let slot = self.prepare_slot(key, work, owned, kind, false)?;
-        work.charge(crate::WorkCounters { bytes_copied: slot.terminal_copied()?, ..crate::WorkCounters::UNCHARGED })?;
+        work.charge(slot.terminal_work()?)?;
         slot.record(position);
         Ok(())
     }

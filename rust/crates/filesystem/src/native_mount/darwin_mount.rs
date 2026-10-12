@@ -495,22 +495,15 @@ struct IssuedLabel {
     label: u64,
     stamp: CacheStamp,
     binding: Option<u64>,
-    observed: Observed,
-}
-
-struct Observed {
     path: DarwinOwned<MountPath>,
     lookup: MountLookup,
 }
 
-impl Observed {
-    fn matches(&self, lookup: &MountLookup) -> bool {
-        let mut seen = *lookup;
-        seen.metadata.accessed_ns = self.lookup.metadata.accessed_ns;
-        seen == self.lookup
-            && (lookup.node.kind != MountNodeKind::Directory
-                || matches!(lookup.metadata.changed_ns, MetadataField::Value(_)))
-    }
+fn same_attributes(mut current: MountLookup, previous: MountLookup) -> bool {
+    current.metadata.accessed_ns = previous.metadata.accessed_ns;
+    current == previous
+        && (current.node.kind != MountNodeKind::Directory
+            || matches!(current.metadata.changed_ns, MetadataField::Value(_)))
 }
 
 impl ChangeLabels {
@@ -524,7 +517,6 @@ impl ChangeLabels {
 
     fn label(
         &self,
-        file_id: FileId,
         stamp: Option<CacheStamp>,
         binding: Option<u64>,
         path: &MountPath,
@@ -536,6 +528,7 @@ impl ChangeLabels {
         let Some(stamp) = stamp else {
             return Ok(self.next.fetch_add(1, Ordering::Relaxed));
         };
+        let file_id = lookup.node.file_id;
         let mut labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(issued) = labels.get_mut(&file_id, work)?
             && issued.binding == binding
@@ -544,7 +537,7 @@ impl ChangeLabels {
             if unchanged(since)? {
                 return Ok(issued.label);
             }
-            if issued.observed.matches(&lookup) && reported_unchanged(since)? {
+            if same_attributes(lookup, issued.lookup) && reported_unchanged(since)? {
                 issued.stamp = issued.stamp.max(stamp);
                 return Ok(issued.label);
             }
@@ -554,7 +547,6 @@ impl ChangeLabels {
             self.cleared.fetch_add(1, Ordering::AcqRel);
         }
         let path = work.path_with_child(path, None)?;
-        let observed = Observed { path, lookup };
         let label = self.next.fetch_add(1, Ordering::Relaxed);
         labels.insert(
             file_id,
@@ -562,7 +554,8 @@ impl ChangeLabels {
                 label,
                 stamp,
                 binding,
-                observed,
+                path,
+                lookup,
             },
             work,
         )?;
@@ -571,28 +564,26 @@ impl ChangeLabels {
 
     fn issued(
         &self, native: &crate::NativeMaterializationWork,
-    ) -> Result<Option<DarwinOwned<Vec<(FileId, Observed)>>>, NativeMountError> {
+    ) -> Result<Option<DarwinOwned<Vec<(DarwinOwned<MountPath>, MountLookup)>>>, NativeMountError> {
         let work = DarwinCallbackWork::new(native);
         let labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
         if labels.len() > MAXIMUM_VERIFIED_LABELS { return Ok(None); }
         if labels.len() == 0 { return Ok(Some(DarwinOwned::empty(Vec::new()))); }
         let result = (|| {
-            let bytes = labels.len().checked_mul(std::mem::size_of::<(FileId, Observed)>())
+            let bytes = labels.len().checked_mul(std::mem::size_of::<(DarwinOwned<MountPath>, MountLookup)>())
                 .ok_or_else(|| work.native_error(crate::WorkError::Overflow.into()))? as u64;
             let mut rows = work.owned(bytes, || {
                 let mut rows = Vec::new();
                 rows.try_reserve_exact(labels.len())?;
                 Ok(rows)
             })?;
-            for (file_id, issued) in labels.iter() {
+            for (_, issued) in labels.iter() {
                 work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-                let path = work.path_with_child(&issued.observed.path, None)?;
+                let path = work.path_with_child(&issued.path, None)?;
                 let copied = crate::WorkCounters { bytes_copied:
-                    (std::mem::size_of::<FileId>() + std::mem::size_of::<MountLookup>()) as u64,
+                    std::mem::size_of::<MountLookup>() as u64,
                     ..crate::WorkCounters::UNCHARGED };
-                work.copying(copied, || rows.push((*file_id, Observed {
-                    path, lookup: issued.observed.lookup,
-                })))?;
+                work.copying(copied, || rows.push((path, issued.lookup)))?;
             }
             Ok(Some(rows))
         })();
@@ -779,13 +770,13 @@ impl DarwinMountContext {
     ) -> Result<bool, NativeMountError> {
         let cleared = self.changes.cleared.load(Ordering::Acquire);
         let Some(issued) = self.changes.issued(native)? else { return Ok(false); };
-        for (file_id, observed) in issued.iter() {
+        for (path, lookup) in issued.iter() {
             native.charge(crate::WorkCounters {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
             })?;
             let work = DarwinCallbackWork::new(native);
-            match work.finish(self.lookup(&observed.path, &work)) {
-                Ok(current) if current.node.file_id == *file_id && observed.matches(&current) => {}
+            match work.finish(self.lookup(path, &work)) {
+                Ok(current) if same_attributes(current, *lookup) => {}
                 Ok(_) => return Ok(false),
                 Err(error) if darwin_handler_is_fatal(&error) => return Err(error),
                 Err(_) => return Ok(false),
@@ -1047,7 +1038,7 @@ impl DarwinMountContext {
             block_size: 4096,
             flags: u32::try_from(metadata_or(lookup.metadata.posix_flags, 0)).unwrap_or(u32::MAX),
             change: self.changes.label(
-                node.file_id, stamp,
+                stamp,
                 self.source.binding_epoch_with_meter(work.native).map_err(|error| work.native_error(error.into()))?,
                 path, lookup,
                 |stamp| self.unchanged_since(path, Some(node.file_id), stamp, work),
@@ -1728,7 +1719,7 @@ impl DarwinMountSession {
         let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
         let mut host = &materialization;
         let identity = crate::native_host::file_identity_and_length_with_work(&file, &mut host);
-        let (closed, recorded) = cleanup.attempt_recorded(|| {
+        let (closed, recorded) = cleanup.attempt(|| {
             if unsafe { libc::close(fd) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
         });
         let _ = std::mem::ManuallyDrop::into_inner(file).into_raw_fd();
@@ -1846,7 +1837,7 @@ impl DarwinMountSession {
                 self.loop_finished_before_teardown = Some(if self.thread.is_none() {
                     true
                 } else {
-                    detach_observe(meter, Some(&cleanup), || self.events.current().provider_exited)?
+                    darwin_probe_cpu(&meter.work().ok_or(crate::DemandError::Cancelled)?, Some(&cleanup), crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }, || self.events.current().provider_exited)?
                 });
             }
             let unmount = {
@@ -1942,7 +1933,7 @@ impl DarwinMountSession {
         }
         let deadline = Instant::now() + timeout;
         loop {
-            let (exited, failure) = detach_observe(meter, cleanup, || (
+            let (exited, failure) = darwin_probe_cpu(&meter.work().ok_or(crate::DemandError::Cancelled)?, cleanup, crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }, || (
                 self.events.current().exited,
                 self.unmount.state.lock().unwrap_or_else(PoisonError::into_inner).failure.take(),
             ))?;
@@ -2046,15 +2037,6 @@ fn detach_started_read(
         None => darwin_native_attempt(&meter.work().ok_or(crate::DemandError::Cancelled)?, false),
     }
 }
-
-fn detach_observe<T>(
-    meter: &Arc<DetachReadMeter>, cleanup: Option<&crate::materializer::NativeCleanupLoan<'_>>,
-    operation: impl FnOnce() -> T,
-) -> Result<T, NativeMountError> {
-    let delta = crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED };
-    darwin_probe_cpu(&meter.work().ok_or(crate::DemandError::Cancelled)?, cleanup, delta, operation)
-}
-
 
 fn darwin_native_attempt(native: &crate::NativeMaterializationWork, write: bool) -> Result<(), NativeMountError> {
     native.charge(if write {
@@ -2175,7 +2157,7 @@ impl<T> DarwinProbeBuffer<'_, T> {
                 drop(std::mem::take(data));
                 drop(allocation.take());
                 let bytes = count.checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?;
-                *allocation = Some(work.claim(bytes as u64)?);
+                *allocation = Some(work.claim(bytes as u64, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?);
                 data.try_reserve_exact(count).map_err(crate::NativeTreeMaterializationError::AllocationFailed)?;
                 let actual = data.capacity().checked_mul(std::mem::size_of::<T>())
                     .ok_or(crate::WorkError::Overflow)?;
@@ -2234,15 +2216,9 @@ fn normalize_mount_probe(
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         })?)
     } else { DarwinProbeClose::Original(work.reserve_cleanup_write()?) };
-    if let Err(error) = darwin_probe_start(work, cleanup) {
-        if let DarwinProbeClose::Original(close) = close { drop(close); }
-        return Err(error);
-    }
+    darwin_probe_start(work, cleanup)?;
     let fd = unsafe { libc::open(name.as_ptr(), libc::O_EVTONLY | libc::O_CLOEXEC) };
-    if fd < 0 {
-        if let DarwinProbeClose::Original(close) = close { drop(close); }
-        return Err(std::io::Error::last_os_error().into());
-    }
+    if fd < 0 { return Err(std::io::Error::last_os_error().into()); }
     let result = (|| {
         darwin_probe_start(work, cleanup)?;
         let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
@@ -2283,7 +2259,7 @@ fn normalize_mount_probe(
     })();
     let close = match close {
         DarwinProbeClose::Original(close) => {
-            let (status, recorded) = close.attempt_recorded(|| unsafe { libc::close(fd) });
+            let (status, recorded) = close.attempt(|| unsafe { libc::close(fd) });
             recorded.map_err(NativeMountError::from).and_then(|()| if status == 0 { Ok(()) }
                 else { Err(std::io::Error::last_os_error().into()) })
         }
@@ -2567,20 +2543,15 @@ enum DirectUnmountPath {
 }
 
 impl DirectUnmountPath {
-    fn as_ptr(&self) -> *const c_char {
-        match self {
-            Self::Driver(resources) => resources.startup.as_ref().expect("retained native startup")
-                .destination.as_ptr(),
-            Self::Recovery(path) => path.path.as_ptr(),
-        }
-    }
-
     fn unmount(
         self, operation: acyclic_native_runtime::NativeOperationReservation<Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
         original_work: crate::NativeMaterializationWork,
     ) -> std::io::Result<c_int> {
         let mut owned = (self, operation, original_work);
-        let path = owned.0.as_ptr();
+        let path = match &owned.0 {
+            Self::Driver(resources) => resources.startup.as_ref().expect("retained native startup").destination.as_ptr(),
+            Self::Recovery(path) => path.path.as_ptr(),
+        };
         let (result, recorded) = owned.1.attempt(|| {
             // SAFETY: owned retains the terminated path through this syscall.
             let status = unsafe { libc::unmount(path, libc::MNT_FORCE) };
@@ -2639,7 +2610,7 @@ fn prepare_direct_unmount(
         Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
     ).map_err(|error| NativeMountError::from(native.native_read_meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
-    let metadata = original.allocation_work().clone();
+    let metadata = original.allocation_work();
     let meter = new_detach_meter(&metadata)?;
     let path = DirectUnmountPath::Driver(Arc::clone(resources));
     let original_work = original.allocation_work();
@@ -2873,7 +2844,7 @@ fn bounded_unmount(
     }
     let (status, timed_out) = loop {
         let child = state.diskutil.as_mut().expect("owned diskutil process");
-        let status = detach_observe(meter, cleanup, || child.observe(meter))??;
+        let status = darwin_probe_cpu(&meter.work().ok_or(crate::DemandError::Cancelled)?, cleanup, crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }, || child.observe(meter))??;
         let timed_out = Instant::now() >= child.deadline;
         if status.is_some() || timed_out {
             detach_check(meter, cleanup)?;
@@ -5314,9 +5285,9 @@ mod tests {
         let unstamped = ChangeLabels::new();
         let lookup = source.lookup(&first)?.ok_or("file absent")?;
         assert_ne!(
-            context.run_request(false, |work| unstamped.label(lookup.node.file_id, None, None,
+            context.run_request(false, |work| unstamped.label(None, None,
                 &first, lookup, |_| Ok(true), |_| Ok(true), work)).map_err(os)?,
-            context.run_request(false, |work| unstamped.label(lookup.node.file_id, None, None,
+            context.run_request(false, |work| unstamped.label(None, None,
                 &first, lookup, |_| Ok(true), |_| Ok(true), work)).map_err(os)?,
         );
         Ok(())
@@ -5355,7 +5326,7 @@ mod tests {
             .map_err(|_| "labels poisoned")?
             .iter_mut().map(|(_, value)| value)
         {
-            issued.observed.lookup.node.logical_bytes += 1;
+            issued.lookup.node.logical_bytes += 1;
         }
         source.record_projection_change(&ViewChange::Unconfirmed);
         assert!(
@@ -5378,15 +5349,15 @@ mod tests {
         let after = context.run_request(false, |work| context.cache_stamp(work)).map_err(os)?
             .ok_or("checkout has no view stamp")?;
         let written = source.lookup(&path)?.ok_or("file absent")?;
-        let current = context.run_request(false, |work| context.changes.label(file_id,
+        let current = context.run_request(false, |work| context.changes.label(
             Some(after), binding, &path, written,
             |stamp| context.unchanged_since(&path, Some(file_id), stamp, work),
             |stamp| context.reported_unchanged_since(&path, Some(file_id), stamp, work), work)).map_err(os)?;
-        assert_eq!(context.run_request(false, |work| context.changes.label(file_id,
+        assert_eq!(context.run_request(false, |work| context.changes.label(
             Some(after), binding, &path, written,
             |stamp| context.unchanged_since(&path, Some(file_id), stamp, work),
             |stamp| context.reported_unchanged_since(&path, Some(file_id), stamp, work), work)).map_err(os)?, current);
-        assert!(context.run_request(false, |work| context.changes.label(file_id,
+        assert!(context.run_request(false, |work| context.changes.label(
             Some(before), binding, &path, created,
             |stamp| context.unchanged_since(&path, Some(file_id), stamp, work),
             |stamp| context.reported_unchanged_since(&path, Some(file_id), stamp, work), work)).map_err(os)? > current);
