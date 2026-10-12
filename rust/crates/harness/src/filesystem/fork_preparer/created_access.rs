@@ -457,8 +457,8 @@ impl<A, O> FilesystemRootBootstrapAllocation<A, O> {
 #[cfg(not(target_arch = "wasm32"))]
 struct RootCreatedFilesystemAccess<A, O> {
     allocation: Arc<FilesystemRootBootstrapAllocation<A, O>>,
-    reader: FilesystemContentVerifier<A, O>,
-    writer: Option<FilesystemContentPublisher<A, O>>,
+    reader: Arc<FilesystemContentVerifier<A, O>>,
+    writer: Option<Arc<FilesystemContentPublisher<A, O>>>,
     _custody: acyclic_fs::NativeAllocation,
 }
 
@@ -1063,13 +1063,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             io.retain_owned(std::mem::size_of::<RootCreatedFilesystemAccess<A, O>>() as u64)?;
             let custody;
             let writer = if writable {
-                Some(FilesystemContentPublisher::new(self.host.clone(), &allocation.request.volume,
-                    &verifier, &scope, context.original_root().limits.file_bytes, Some(&io))?)
+                Some(FilesystemContentPublisher::new(self.host.clone(), &allocation.request.volume, &verifier, &scope, context.original_root().limits.file_bytes, Some(&io))?)
             } else { None };
             let temporary = verifier.logical_owned_bytes()?.checked_add(scope.logical_owned_bytes()?)
                 .ok_or_else(|| io.invalid("created reader metadata overflows"))?;
-            let reader = FilesystemContentVerifier::new(self.host.clone(), &verifier, &scope,
-                context.original_root().limits.file_bytes, Some(&io))?;
+            let reader = FilesystemContentVerifier::new(self.host.clone(), &verifier, &scope, context.original_root().limits.file_bytes, Some(&io))?;
             drop((verifier, scope));
             io.release(temporary)?;
             let capture = io.owned_bytes()?;
@@ -1140,12 +1138,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let mut observer = io.history_io();
             self.issuer.verifier(&mut Some(&mut observer))?
         } else { self.issuer.verifier(&mut None).expect("verifier copy") };
-        let writer = FilesystemContentPublisher::new(self.host.clone(), &allocation.volume,
-            &verifier, &scope, request.maximum_bytes, io)?;
+        let writer = FilesystemContentPublisher::new(self.host.clone(), &allocation.volume, &verifier, &scope, request.maximum_bytes, io)?;
         let temporary = verifier.logical_owned_bytes()?.checked_add(scope.logical_owned_bytes()?)
             .ok_or_else(|| bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "created reader metadata overflows"))?;
-        let reader = FilesystemContentVerifier::new(self.host.clone(), &verifier, &scope,
-            request.maximum_bytes, io)?;
+        let reader = FilesystemContentVerifier::new(self.host.clone(), &verifier, &scope, request.maximum_bytes, io)?;
         drop((verifier, scope));
         if let Some(io) = io { io.release(temporary)?; }
         let access = Arc::new(CreatedFilesystemAccess {
@@ -1251,8 +1247,8 @@ struct CreatedFilesystemAccess<A, O> {
     generation: GenerationRef,
     prepared_generation: GenerationRef,
     creation_operation: acyclic_fs::OperationId,
-    reader: FilesystemContentVerifier<A, O>,
-    writer: FilesystemContentPublisher<A, O>,
+    reader: Arc<FilesystemContentVerifier<A, O>>,
+    writer: Arc<FilesystemContentPublisher<A, O>>,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
@@ -1291,7 +1287,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CreatedFil
 struct CreatedFilesystemReference<A, O> {
     allocation: Arc<CreatedFilesystemAccess<A, O>>,
     file: FileRef,
-    reader: FilesystemContentVerifier<A, O>,
+    reader: Arc<FilesystemContentVerifier<A, O>>,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CreatedFilesystemReference<A, O> {
@@ -1614,8 +1610,10 @@ mod tests {
             operation_id: OperationId::from_bytes([183; 16]), maximum_work: 1_048_576,
             maximum_bytes: 1_048_576, cancellation: work.cancellation(), created_project_authenticated: false,
         };
-        let denied = bare.verify_with_native_work(context(), &selection, &work);
-        assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+        {
+            let denied = bare.verify_with_native_work(context(), &selection, &work);
+            assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+        }
 
         let bound_owner = bind_genuine_original_root(&fixture, &work).await?;
         let token = creator.protect_root_bootstrap_with_native_work(&bound_owner, &birth.volume, RootBootstrapContentRole::Project,
@@ -1626,8 +1624,10 @@ mod tests {
         let initial_selection = ProjectSourceSnapshot { project: selection.project.clone(),
             generation: GenerationRef::new(fixture.filesystem_provider.clone(),
                 birth.initial_generation.digest().into_bytes().to_vec(), None)?, native_snapshot: None };
-        let denied = policy.verify_with_native_work(context(), &initial_selection, &work);
-        assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+        {
+            let denied = policy.verify_with_native_work(context(), &initial_selection, &work);
+            assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+        }
 
         let journal_io = PreparationIo::for_unmeasured(work.cancellation())?;
         let journal = allocation_ref(&creator.host.provider, &birth.volume, Some(&journal_io))?;
