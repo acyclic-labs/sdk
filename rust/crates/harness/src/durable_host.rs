@@ -5999,6 +5999,19 @@ pub(crate) mod tests {
     };
     use acyclic_stream::{MemoryStream, SystemUnixMillisClock};
 
+    fn test_registries(
+        implementation: Arc<dyn ResumableMachine>, input: Value, output: Value,
+    ) -> Result<(ComponentIdentity, MachineIdentity, TaskRegistry, MachineRegistry)> {
+        let machine = implementation.identity().clone();
+        let definition = TaskDefinition::<Value, Value>::resumable(implementation.clone(), input, output)?;
+        let task = definition.identity().clone();
+        let mut tasks = TaskRegistry::default();
+        tasks.register(definition)?;
+        let mut machines = MachineRegistry::default();
+        machines.register(implementation)?;
+        Ok((task, machine, tasks, machines))
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn test_work(
         budget: acyclic_fs::WorkBudget, cancellation: &acyclic_fs::CancellationToken,
@@ -6201,17 +6214,9 @@ pub(crate) mod tests {
             },
             schema: serde_json::json!({"type":"integer"}),
         });
-        let definition = TaskDefinition::<Value, Value>::resumable(
-            implementation.clone(),
-            serde_json::json!({"type":"integer"}),
-            serde_json::json!({"type":"integer"}),
+        let (task_identity, machine, tasks, machines) = test_registries(
+            implementation, serde_json::json!({"type":"integer"}), serde_json::json!({"type":"integer"}),
         )?;
-        let task_identity = definition.identity().clone();
-        let machine = implementation.identity.clone();
-        let mut tasks = TaskRegistry::default();
-        tasks.register(definition)?;
-        let mut machines = MachineRegistry::default();
-        machines.register(implementation)?;
         let host = CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, payloads.clone()).await?,
             stream.clone(),
@@ -6703,17 +6708,9 @@ pub(crate) mod tests {
             },
             schema: serde_json::json!({"type":"integer"}),
         });
-        let definition = TaskDefinition::<Value, Value>::resumable(
-            implementation.clone(),
-            serde_json::json!({"type":"integer"}),
-            serde_json::json!({"type":"integer"}),
+        let (task_identity, machine, tasks, machines) = test_registries(
+            implementation, serde_json::json!({"type":"integer"}), serde_json::json!({"type":"integer"}),
         )?;
-        let task_identity = definition.identity().clone();
-        let machine = implementation.identity.clone();
-        let mut tasks = TaskRegistry::default();
-        tasks.register(definition)?;
-        let mut machines = MachineRegistry::default();
-        machines.register(implementation)?;
         let host = Arc::new(CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, reader.clone()).await?,
             stream.clone(),

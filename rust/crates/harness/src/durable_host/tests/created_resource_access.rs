@@ -487,15 +487,9 @@ impl CreationFixture {
             },
             schema: schema.clone(),
         });
-        let definition = TaskDefinition::<Value, Value>::resumable(
-            implementation.clone(), schema.clone(), schema.clone(),
+        let (task, machine, tasks, machines) = test_registries(
+            implementation, schema.clone(), schema.clone(),
         )?;
-        let task = definition.identity().clone();
-        let machine = implementation.identity.clone();
-        let mut tasks = TaskRegistry::default();
-        tasks.register(definition)?;
-        let mut machines = MachineRegistry::default();
-        machines.register(implementation)?;
         let creator = Arc::new(SandboxCreator {
             provider: ProviderRef::new("created-controls", "sandbox", "1")?,
             filesystem_provider: filesystem_provider.clone(), filesystem: filesystem.clone(),
@@ -1364,12 +1358,7 @@ fn native_registered_root_input(
 #[tokio::test]
 async fn registered_native_root_keeps_configured_scope_and_same_ack_identity() -> Result<()> {
     let fixture = CreationFixture::new().await?;
-    let machine = Arc::new(CreatedControlMachine {
-        identity: fixture.machine.clone(), schema: fixture.schema.clone(),
-    });
-    let definition = TaskDefinition::<Value, Value>::resumable(
-        machine, fixture.schema.clone(), fixture.schema.clone(),
-    )?;
+    let definition = fixture.host.tasks.get::<Value, Value>("test.created@1")?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
         acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
@@ -1397,10 +1386,7 @@ async fn registered_native_root_keeps_configured_scope_and_same_ack_identity() -
 #[tokio::test]
 async fn registered_native_root_rejects_foreign_input_and_child_without_fence_before_io() -> Result<()> {
     let fixture = CreationFixture::new().await?;
-    let definition = TaskDefinition::<Value, Value>::resumable(
-        Arc::new(CreatedControlMachine { identity: fixture.machine.clone(), schema: fixture.schema.clone() }),
-        fixture.schema.clone(), fixture.schema.clone(),
-    )?;
+    let definition = fixture.host.tasks.get::<Value, Value>("test.created@1")?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
         acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
@@ -1430,12 +1416,7 @@ async fn registered_native_root_rejects_foreign_input_and_child_without_fence_be
 #[tokio::test]
 async fn registered_native_root_cancellation_precedes_metadata_copy_and_io() -> Result<()> {
     let fixture = CreationFixture::new().await?;
-    let definition = TaskDefinition::<Value, Value>::resumable(
-        Arc::new(CreatedControlMachine {
-            identity: fixture.machine.clone(), schema: fixture.schema.clone(),
-        }),
-        fixture.schema.clone(), fixture.schema.clone(),
-    )?;
+    let definition = fixture.host.tasks.get::<Value, Value>("test.created@1")?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
         acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
