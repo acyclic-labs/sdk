@@ -511,7 +511,7 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     let scope = root.native_volume_work(budget)?;
     let original = scope.original_demand_work();
     let resource = Arc::downgrade(scope.resource_allowance().ok_or("birth resource absent")?);
-    let meter = Arc::downgrade(original.meter());
+    let meter = Arc::downgrade(&original.state);
     let recorded = Arc::new(Recorded::default());
     let before = scope.receipt();
     let mut work = NativeSourceWork::from_original_work(&original);
@@ -522,9 +522,9 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     assert!(!watch.is_stopped());
     let delivery = watch.platform.delivery();
     let birth = delivery.original.as_ref().ok_or("original delivery absent")?;
-    assert!(Arc::ptr_eq(birth.meter(), original.meter()));
+    assert!(Arc::ptr_eq(&birth.state, &original.state));
     assert!(Arc::ptr_eq(
-        birth.resource_allowance().ok_or("retained resource absent")?,
+        birth.resource.as_ref().ok_or("retained resource absent")?,
         scope.resource_allowance().ok_or("birth resource absent")?,
     ));
 
@@ -567,11 +567,11 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     assert!(!watch.is_exact());
     assert!(watch.platform.logical_owned_bytes() < native_bytes,
         "terminal retirement releases native variable payload, not the borrowed control Arc");
-    let terminal = birth.meter().with_original_leaf(crate::demand::DemandWork::receipt);
+    let terminal = birth.state.with_original_leaf(crate::demand::DemandWork::receipt);
     terminal.verify(budget)?;
     let callbacks = recorded.take();
     watch.stop_with_cleanup_wait(&crate::CancellationToken::new())?;
-    assert_eq!(birth.meter().with_original_leaf(crate::demand::DemandWork::receipt), terminal);
+    assert_eq!(birth.state.with_original_leaf(crate::demand::DemandWork::receipt), terminal);
     std::fs::write(directory.path().join("after-terminal"), b"not watched")?;
     assert!(recorded.take().is_empty(), "a terminal watch cannot deliver another callback");
     drop(callbacks);
@@ -600,7 +600,7 @@ fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cance
     let scope = root.native_volume_work(budget)?;
     let original = scope.original_demand_work();
     let resource = Arc::downgrade(scope.resource_allowance().ok_or("birth resource absent")?);
-    let meter = Arc::downgrade(original.meter());
+    let meter = Arc::downgrade(&original.state);
     let watch = NativeSourceWatch::start_with_work(
         &host, Arc::new(Recorded::default()), &mut NativeSourceWork::from_original_work(&original),
     )?;
