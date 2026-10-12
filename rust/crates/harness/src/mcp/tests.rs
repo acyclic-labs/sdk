@@ -205,7 +205,7 @@ async fn catalog_installation_requires_signed_namespace_and_exact_complete_appro
         } else {
             assert!(result.is_err());
             assert!(registry.definitions(None)?.is_empty());
-            assert!(registry.get_version("mcp.fixture.a", "1", None)?.is_none());
+            assert!(registry.get("mcp.fixture.a", Some("1"), None)?.is_none());
             if control < 2 {
                 assert_eq!(approval.reads.load(Ordering::SeqCst), reads);
             }
@@ -220,7 +220,7 @@ async fn catalog_installation_requires_signed_namespace_and_exact_complete_appro
     };
     let installer = RuntimeScope::new(scope.capabilities().clone(), Limits::default())?;
     let tool = registry
-        .get("mcp.fixture.a", None)?
+        .get("mcp.fixture.a", None, None)?
         .ok_or_else(|| Error::NotFound("installed tool".into()))?;
     assert!(matches!(
         tool.executor.authorize(Some(&installer), &invocation),
@@ -291,13 +291,13 @@ async fn scoped_replacement_approval_pins_the_exact_previous_catalog() -> Result
                 registry.definitions(None)?,
                 original.model_definitions(8, 8192)?
             );
-            assert!(registry.get_version("mcp.fixture.a", "2", None)?.is_none());
+            assert!(registry.get("mcp.fixture.a", Some("2"), None)?.is_none());
         }
     }
     assert!(registry.definitions(None)?.is_empty());
-    assert!(registry.get_version("mcp.fixture.a", "1", None)?.is_some());
-    assert!(registry.get_version("mcp.fixture.b", "1", None)?.is_some());
-    assert!(registry.get_version("mcp.fixture.a", "2", None)?.is_some());
+    assert!(registry.get("mcp.fixture.a", Some("1"), None)?.is_some());
+    assert!(registry.get("mcp.fixture.b", Some("1"), None)?.is_some());
+    assert!(registry.get("mcp.fixture.a", Some("2"), None)?.is_some());
     Ok(())
 }
 
@@ -348,7 +348,12 @@ impl McpToolTransport for ContextTransport {
 
 async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
     let operation = OperationId::from_bytes([17; 16]);
-    let context = ToolContext::new(std::sync::Arc::new(task.clone()), operation, "provider-call", None)?;
+    let context = ToolContext::new(
+        std::sync::Arc::new(task.clone()),
+        operation,
+        "provider-call",
+        None,
+    )?;
     let invocation = ToolInvocation {
         operation_id: operation,
         call_id: "provider-call".into(),
@@ -370,9 +375,19 @@ async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
     assert_eq!(recovered.value["_meta"], expected);
     let denied = task.scoped(Capabilities::new([] as [String; 0]), Limits::default())?;
     for wrong in [
-        ToolContext::new(std::sync::Arc::new(task.clone()), OperationId::from_bytes([18; 16]), "provider-call", None)?,
+        ToolContext::new(
+            std::sync::Arc::new(task.clone()),
+            OperationId::from_bytes([18; 16]),
+            "provider-call",
+            None,
+        )?,
         ToolContext::new(std::sync::Arc::new(task), operation, "different-call", None)?,
-        ToolContext::new(std::sync::Arc::new(denied), operation, "provider-call", None)?,
+        ToolContext::new(
+            std::sync::Arc::new(denied),
+            operation,
+            "provider-call",
+            None,
+        )?,
     ] {
         assert!(matches!(
             tool.executor
@@ -404,7 +419,7 @@ async fn admitted_mcp_tools_preserve_context_and_reject_identity_or_scope_change
     let mut registry = ToolRegistry::default();
     catalog("1", &["a"]).install(&mut registry, None, &bound, &projection, 8, 8192)?;
     let tool = registry
-        .get("mcp.fixture.a", None)?
+        .get("mcp.fixture.a", None, None)?
         .cloned()
         .ok_or_else(|| Error::NotFound("context fixture".into()))?;
     let definition = TaskDefinition::live("mcp.context", "1", move |task, (): ()| {
@@ -437,7 +452,7 @@ fn catalog_reload_is_atomic_and_retains_pinned_removed_tools() -> Result<()> {
     let old = catalog("1", &["a", "b"]);
     old.install(&mut registry, None, &bound, &projection, 8, 8192)?;
     let pinned = registry
-        .get("mcp.fixture.a", None)?
+        .get("mcp.fixture.a", None, None)?
         .cloned()
         .ok_or_else(|| Error::NotFound("fixture".into()))?;
     let mut invalid = catalog("2", &["a", "a"]);
@@ -451,8 +466,8 @@ fn catalog_reload_is_atomic_and_retains_pinned_removed_tools() -> Result<()> {
     invalid.install(&mut registry, Some(&old), &bound, &projection, 8, 8192)?;
     assert_eq!(registry.definitions(None)?.len(), 1);
     assert_eq!(registry.definitions(None)?[0].revision, "2");
-    assert!(registry.get("mcp.fixture.b", None)?.is_none());
-    assert!(registry.get_version("mcp.fixture.b", "1", None)?.is_some());
+    assert!(registry.get("mcp.fixture.b", None, None)?.is_none());
+    assert!(registry.get("mcp.fixture.b", Some("1"), None)?.is_some());
     assert_eq!(pinned.definition.revision, "1");
     assert_eq!(transport.0.load(Ordering::SeqCst), 0);
     // A stale replacement cannot withdraw a later selection.
@@ -481,7 +496,7 @@ async fn search_grants_no_authority_and_reconciliation_never_dispatches() -> Res
     let mut registry = ToolRegistry::default();
     catalog.install(&mut registry, None, &bound, &projection, 8, 8192)?;
     let tool = registry
-        .get("mcp.fixture.a", None)?
+        .get("mcp.fixture.a", None, None)?
         .ok_or_else(|| Error::NotFound("fixture".into()))?;
     let invocation = ToolInvocation {
         operation_id: OperationId::from_bytes([1; 16]),
@@ -590,7 +605,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
     let old_catalog = catalog("1", &["a"]);
     old_catalog.install(&mut registry, None, &old_transport, &projection, 8, 8192)?;
     let admitted = registry
-        .get("mcp.fixture.a", None)?
+        .get("mcp.fixture.a", None, None)?
         .cloned()
         .ok_or_else(|| Error::NotFound("fixture".into()))?;
     let invocation = ToolInvocation {
@@ -621,7 +636,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
         .map_err(|_| Error::Invalid("fixture dropped".into()))?;
     assert_eq!(call.await?.value["structuredContent"]["value"], 11);
     let next = registry
-        .get("mcp.fixture.a", None)?
+        .get("mcp.fixture.a", None, None)?
         .ok_or_else(|| Error::NotFound("fixture".into()))?;
     assert_eq!(next.definition.revision, "2");
     assert_eq!(
@@ -665,12 +680,12 @@ fn every_selected_exposure_reload_is_atomic_including_empty_visibility() -> Resu
             for name in names {
                 assert!(
                     registry
-                        .get_version(&format!("mcp.fixture.{name}"), "1", None)?
+                        .get(&format!("mcp.fixture.{name}"), Some("1"), None)?
                         .is_some()
                 );
                 assert!(
                     registry
-                        .get_version(&format!("mcp.fixture.{name}"), "2", None)?
+                        .get(&format!("mcp.fixture.{name}"), Some("2"), None)?
                         .is_some()
                 );
             }

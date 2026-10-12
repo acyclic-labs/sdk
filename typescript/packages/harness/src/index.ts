@@ -226,24 +226,14 @@ export class Harness {
     return { version: protocol.version, descriptorDigest: protocol.descriptor_digest };
   }
 
-  /** Issues an explicit root grant from this host. */
-  issueScope(id: string, capabilities: readonly string[]): Scope {
-    return this.#core.issueScope(id, capabilities) as Scope;
+  /** Issues a host grant, optionally bound to an acting agent. */
+  issueScope(id: string, capabilities: readonly string[], agent?: AgentId): Scope {
+    return this.#core.issueScope(id, capabilities, agent) as Scope;
   }
 
-  /** Issues a signed, owner-bound scope for private file writes. */
-  issueScopeForAgent(agent: AgentId, id: string, capabilities: readonly string[]): Scope {
-    return this.#core.issueScopeForAgent(agent, id, capabilities) as Scope;
-  }
-
-  /** Resolves runtime-to-invocation policy layers; grants intersect and deny wins. */
-  issueScopeWithPolicies(id: string, layers: readonly PolicyLayer[]): Scope {
-    return this.#core.issueScopeWithPolicies(id, layers) as Scope;
-  }
-
-  /** Resolves hierarchy policy for one signed acting-agent identity. */
-  issueScopeWithPoliciesForAgent(agent: AgentId, id: string, layers: readonly PolicyLayer[]): Scope {
-    return this.#core.issueScopeWithPoliciesForAgent(agent, id, layers) as Scope;
+  /** Resolves policy layers and issues their effective grant for an optional agent. */
+  issueScopeWithPolicies(id: string, layers: readonly PolicyLayer[], agent?: AgentId): Scope {
+    return this.#core.issueScopeWithPolicies(id, layers, agent) as Scope;
   }
 
   /** Creates a child grant that cannot widen its parent. */

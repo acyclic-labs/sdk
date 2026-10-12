@@ -37,14 +37,17 @@ where
                     .await?;
                 let (status, custody) = if reconciliation_only {
                     effects
-                        .reconcile_task_effect_with_native_work(&owner, command, &plan, work)
+                        .reconcile_task_effect(&owner, command, &plan, Some(work))
                         .await?
                 } else {
                     effects
-                        .run_task_effect_with_native_work(&owner, command, &plan, work)
+                        .run_task_effect(&owner, command, &plan, Some(work))
                         .await?
                 };
-                io.absorb_native_custody(custody)?;
+                io.absorb_native_custody(custody.ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native effect result has no original custody",
+                })?)?;
                 break 'status status;
             }
             let owner = self
@@ -54,10 +57,10 @@ where
                 .await?;
             let status = if reconciliation_only {
                 effects
-                    .reconcile_task_effect(&owner, command, &plan)
-                    .await?
+                    .reconcile_task_effect(&owner, command, &plan, None)
+                    .await.map(|result| result.0)?
             } else {
-                effects.run_task_effect(&owner, command, plan).await?
+                effects.run_task_effect(&owner, command, &plan, None).await.map(|result| result.0)?
             };
             break 'status status;
         };

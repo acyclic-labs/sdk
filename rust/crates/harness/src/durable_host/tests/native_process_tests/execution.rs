@@ -29,7 +29,7 @@ async fn approved_commands_preserve_arguments_environment_stdin_and_selected_vol
         let process = fixture.provider(work).await?;
         let effects = fixture.effects(process)?;
         let outcome = effects
-            .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, work)
+            .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(work))
             .await?;
         let output = output(&fixture, &outcome.0).await?;
         match mode {
@@ -72,12 +72,7 @@ async fn approved_commands_preserve_arguments_environment_stdin_and_selected_vol
                 let path = fixture.view.manifest().options.root.join("dst/output.txt");
                 std::fs::remove_file(&path).map_err(|error| Error::Storage(error.to_string()))?;
                 let replay = effects
-                    .run_task_effect_with_native_work(
-                        &fixture.owner,
-                        fixture.command,
-                        &fixture.plan,
-                        work,
-                    )
+                    .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(work))
                     .await?;
                 assert_eq!(replay.0, outcome.0);
                 assert!(!path.exists());
@@ -114,7 +109,7 @@ async fn timeout_and_output_overflow_retain_cleanup_failure_without_publication(
         let process = fixture.provider(work).await?;
         let effects = fixture.effects(process)?;
         let outcome = effects
-            .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, work)
+            .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(work))
             .await?;
         let output = output(&fixture, &outcome.0).await?;
         assert!(!output.success);
@@ -131,7 +126,7 @@ async fn timeout_and_output_overflow_retain_cleanup_failure_without_publication(
                 .is_err()
         );
         let replay = effects
-            .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, work)
+            .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(work))
             .await?;
         assert_eq!(replay.0, outcome.0);
         if mode == "timeout" {
@@ -168,7 +163,7 @@ async fn bash_source_mutation_preserves_sdk_sources_and_rejects_all_publication(
     let process = fixture.provider(work).await?;
     let effects = fixture.effects(process.clone())?;
     let error = effects
-        .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, work)
+        .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(work))
         .await
         .expect_err("source mutation denies publication");
     let Error::NativePublication { failure, .. } = error else {
@@ -200,7 +195,7 @@ async fn bash_source_mutation_preserves_sdk_sources_and_rejects_all_publication(
     let path = fixture.view.manifest().options.root.join("dst/output.txt");
     std::fs::remove_file(&path).map_err(|error| Error::Storage(error.to_string()))?;
     let replay = effects
-        .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, work)
+        .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(work))
         .await?;
     assert_eq!(replay.0, EffectStatus::Indeterminate);
     assert!(!path.exists());
@@ -272,7 +267,7 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
     assert!(process.receipt(attempt, work, None).await?.is_none());
     let effects = fixture.effects(process.clone())?;
     let outcome = effects
-        .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, work)
+        .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(work))
         .await?;
     let output = output(&fixture, &outcome.0).await?;
     assert!(output.success);
@@ -431,7 +426,7 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
     std::fs::remove_file(&path).map_err(|error| Error::Storage(error.to_string()))?;
     let replay = fixture
         .effects(fixture.provider(work).await?)?
-        .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, work)
+        .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(work))
         .await?;
     assert_eq!(replay.0, outcome.0);
     assert!(!path.exists());
@@ -452,7 +447,7 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
     let original = work.clone();
     let dispatch = tokio::spawn(async move {
         effects
-            .run_task_effect_with_native_work(&owner, command, &plan, &original)
+            .run_task_effect(&owner, command, &plan, Some(&original))
             .await
     });
     let root = &fixture.view.manifest().options.root;
@@ -531,12 +526,7 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
     );
     let effects = fixture.effects(recovered.clone())?;
     let known = effects
-        .reconcile_task_effect_with_native_work(
-            &fixture.owner,
-            fixture.command,
-            &fixture.plan,
-            work,
-        )
+        .reconcile_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(work))
         .await?;
     assert_eq!(known.0, EffectStatus::Succeeded { result: captured.0 });
     let reopened = recovered.receipt(attempt, work, None).await?.unwrap();
