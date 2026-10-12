@@ -253,14 +253,14 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let (disk, issuer, signed) = journal(root.path(), true).await?;
         let provider = ProviderRef::new("mcp-fault".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(root.path().join("fs"))).await.map_err(|error| Error::Storage(error.to_string()))?, provider.clone())?);
+        let host = FilesystemHost::new(acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(root.path().join("fs"))).await.map_err(|error| Error::Storage(error.to_string()))?, &provider, None)?;
         let volume = VolumeRef::new(provider, "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes([41;16])))?;
         let mut grants = vec!["model:generate".into(), "context:build".into(), "interaction:route".into()];
         if granted { grants.extend([volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?]); }
         let scope = RuntimeScope::new(Capabilities::new(grants), Limits::default())?;
         let content = ContentBindings {
-            reader: Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?),
-            writer: Some(Arc::new(FilesystemContentPublisher::new(host, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?)),
+            reader: FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?,
+            writer: Some(FilesystemContentPublisher::new(host, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?),
         };
         let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), Some(content)).await?;
         let operation = OperationId::from_bytes([86;16]);

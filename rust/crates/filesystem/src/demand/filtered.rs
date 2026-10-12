@@ -1,7 +1,5 @@
 use super::*;
 /// A composable source view that hides exact subtrees before they enter lazy
-/// observation state. This is the SDK boundary used for host-private entries
-/// such as a physical checkout's `.git` directory.
 #[derive(Clone)]
 pub struct FilteredDemandSource<D> {
     inner: D,
@@ -38,7 +36,6 @@ impl<D> FilteredDemandSource<D> {
 }
 
 /// Forwards changes outside a filtered source's excluded subtrees, which no
-/// view of it can hold facts about.
 struct FilteredChangeSink {
     excluded: std::sync::Arc<Vec<NamespacePath>>,
     sink: std::sync::Arc<dyn SourceChangeSink>,

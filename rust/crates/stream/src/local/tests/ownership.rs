@@ -5,7 +5,7 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
 -> Result<(), Box<dyn std::error::Error>> {
     use tracing::instrument::WithSubscriber as _;
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::test_support::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -36,12 +36,8 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
         }
         let opening = tokio::spawn(
             async move {
-                LocalStream::open_with_ownership_anchor(
-                    root,
-                    LocalStreamLimits::default(),
-                    anchor,
-                )
-                .await
+                LocalStream::open_with_ownership_anchor(root, LocalStreamLimits::default(), anchor)
+                    .await
             }
             .with_subscriber(dispatch),
         );
@@ -86,7 +82,7 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     use tracing::instrument::WithSubscriber as _;
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::test_support::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -160,10 +156,13 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
 #[test]
 fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
 -> Result<(), Box<dyn std::error::Error>> {
-    let _serial = PERSIST_BLOCKER_TESTS.lock()
+    let _serial = PERSIST_BLOCKER_TESTS
+        .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2).enable_all().build()?;
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
     runtime.block_on(async {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
@@ -176,7 +175,9 @@ fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
         let inner_identity = Arc::as_ptr(&provider.inner) as usize;
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
-        *JOURNAL_PERSIST_BLOCKER.lock().map_err(|_| "journal-persist hook was poisoned")? =
+        *JOURNAL_PERSIST_BLOCKER
+            .lock()
+            .map_err(|_| "journal-persist hook was poisoned")? =
             Some((inner_identity, started_tx, release_rx));
         let caller = tokio::spawn({
             let provider = provider.clone();
@@ -187,7 +188,8 @@ fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
         });
         tokio::task::spawn_blocking(move || {
             started_rx.recv_timeout(std::time::Duration::from_secs(5))
-        }).await??;
+        })
+        .await??;
         caller.abort();
         let cancelled = caller.await.is_err_and(|error| error.is_cancelled());
         let owned_during_drain = meter.held.load(Ordering::SeqCst);
@@ -195,15 +197,25 @@ fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
         release_tx.send(())?;
         assert!(cancelled);
         assert!(owned_during_drain >= input_bytes as u64);
-        assert_eq!(provider.tail(StreamPath::new("native-detached-input")?).await?, 1);
-        let accepted = provider.inspect_idempotency(key.clone()).await?
+        assert_eq!(
+            provider
+                .tail(StreamPath::new("native-detached-input")?)
+                .await?,
+            1
+        );
+        let accepted = provider
+            .inspect_idempotency(key.clone())
+            .await?
             .ok_or("detached native operation lost its identity")?;
         let terminal = Arc::downgrade(&provider.inner);
         drop(provider);
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while terminal.upgrade().is_some() { tokio::task::yield_now().await; }
-        }).await?;
-            let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+            while terminal.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         assert_eq!(reopened.inspect_idempotency(key).await?, Some(accepted));
         meter.assert_refunded();
         assert_eq!(meter.held.load(Ordering::SeqCst), 0);
@@ -223,8 +235,7 @@ fn a_cancelled_mutation_is_invisible_until_its_frame_is_durable()
         .build()?;
     runtime.block_on(async move {
         let directory = tempfile::tempdir()?;
-        let provider =
-            LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let inner_identity = Arc::as_ptr(&provider.inner) as usize;
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
@@ -274,8 +285,7 @@ fn mutations_on_other_paths_write_while_a_flush_is_under_way()
         .build()?;
     runtime.block_on(async move {
         let directory = tempfile::tempdir()?;
-        let provider =
-            LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let inner_identity = Arc::as_ptr(&provider.inner) as usize;
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
@@ -317,10 +327,13 @@ fn mutations_on_other_paths_write_while_a_flush_is_under_way()
 #[test]
 fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
 -> Result<(), Box<dyn std::error::Error>> {
-    let _serial = PERSIST_BLOCKER_TESTS.lock()
+    let _serial = PERSIST_BLOCKER_TESTS
+        .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2).enable_all().build()?;
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
     runtime.block_on(async {
         let directory = tempfile::tempdir()?;
         let limits = LocalStreamLimits::default();
@@ -333,24 +346,32 @@ fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
         let weak = Arc::downgrade(&lease);
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
-        *JOURNAL_PERSIST_BLOCKER.lock().map_err(|_| "journal-persist hook was poisoned")? =
-            Some((Arc::as_ptr(&provider.inner) as usize, started_tx, release_rx));
+        *JOURNAL_PERSIST_BLOCKER
+            .lock()
+            .map_err(|_| "journal-persist hook was poisoned")? = Some((
+            Arc::as_ptr(&provider.inner) as usize,
+            started_tx,
+            release_rx,
+        ));
         let caller = tokio::spawn({
             let provider = provider.clone();
             let meter = Arc::clone(&meter);
             async move {
-                provider.native_commit_guarded(request, None, meter.original(), move || {
-                    let lease = Arc::clone(&lease);
-                    async move {
-                        let _original_lease = lease;
-                        Ok::<(), NativeGuardFailure>(())
-                    }
-                }).await
+                provider
+                    .native_commit_guarded(request, None, meter.original(), move || {
+                        let lease = Arc::clone(&lease);
+                        async move {
+                            let _original_lease = lease;
+                            Ok::<(), NativeGuardFailure>(())
+                        }
+                    })
+                    .await
             }
         });
         tokio::task::spawn_blocking(move || {
             started_rx.recv_timeout(std::time::Duration::from_secs(5))
-        }).await??;
+        })
+        .await??;
         caller.abort();
         let cancelled = caller.await.is_err_and(|error| error.is_cancelled());
         let retained = weak.upgrade().is_some();
@@ -361,12 +382,20 @@ fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
         assert!(cancelled && retained);
         assert!(completed_bytes > 0);
         assert_eq!(syncs_before_release, 0);
-        assert_eq!(provider.tail(StreamPath::new("guard-owned-drain")?).await?, 1);
+        assert_eq!(
+            provider.tail(StreamPath::new("guard-owned-drain")?).await?,
+            1
+        );
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while weak.upgrade().is_some() { tokio::task::yield_now().await; }
-        }).await?;
+            while weak.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
         assert_eq!(released.load(Ordering::SeqCst), 1);
-            let accepted = provider.inspect_idempotency(key.clone()).await?
+        let accepted = provider
+            .inspect_idempotency(key.clone())
+            .await?
             .ok_or("owned guarded commit lost its original identity")?;
         drop(provider);
         let reopened = LocalStream::open(directory.path(), limits).await?;

@@ -1,5 +1,5 @@
-use crate::async_storage::AsyncObjectStore;
 use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::{FileKind, NameEncoding, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
@@ -26,11 +26,17 @@ async fn put_page(
     page: &TreePage,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = tree_page_id(page, 16)?;
-    AsyncObjectStore::put(
-        store,
-        id,
+    {
+        let __object_args = (
+            id,
         OwnedBytes::from(encode_tree_page(page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(id)
 }
 

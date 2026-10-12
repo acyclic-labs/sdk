@@ -1,6 +1,6 @@
 use super::*;
 use crate::kernel::allocation::AllocationLedger;
-use crate::materializer::{NativeResourceAllowance, NativeResourceCredit};
+use crate::materializer::NativeResourceAllowance;
 use std::sync::{Arc, Weak};
 
 /// Source accounting on the shared kernel allocation ledger.

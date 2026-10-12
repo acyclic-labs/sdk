@@ -1,13 +1,19 @@
-#![allow(clippy::indexing_slicing, reason = "fixture offsets and fields are assertion inputs")]
+#![allow(
+    clippy::indexing_slicing,
+    reason = "fixture offsets and fields are assertion inputs"
+)]
 use super::*;
+use crate::{
+    conformance,
+    test_meter::{Meter, NativeDenial},
+};
 use futures::TryStreamExt as _;
-use crate::{conformance, test_meter::{Meter, NativeDenial}};
 use std::sync::atomic::AtomicU64;
+mod compaction;
 mod native;
+mod observation;
 mod ownership;
 mod recovery;
-mod compaction;
-mod observation;
 
 #[derive(Debug)]
 pub(super) enum NativeGuardFailure {
@@ -17,7 +23,9 @@ pub(super) enum NativeGuardFailure {
 }
 
 impl From<StreamError> for NativeGuardFailure {
-    fn from(error: StreamError) -> Self { Self::Provider(error) }
+    fn from(error: StreamError) -> Self {
+        Self::Provider(error)
+    }
 }
 
 impl std::fmt::Display for NativeGuardFailure {
@@ -43,11 +51,15 @@ impl std::error::Error for NativeGuardFailure {
 pub(super) struct GuardLeaseWitness(pub(super) Arc<AtomicU64>);
 
 impl Drop for GuardLeaseWitness {
-    fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); }
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 pub(super) fn assert_original_denial(error: &std::io::Error, expected: &'static str) {
-    let cause = error.get_ref().and_then(|cause| cause.downcast_ref::<NativeDenial>());
+    let cause = error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<NativeDenial>());
     assert_eq!(cause.map(|cause| cause.0), Some(expected));
 }
 
@@ -56,37 +68,53 @@ pub(super) fn keyed_append(path: &str, tail: u64) -> Result<AppendRequest, Strea
         path: StreamPath::new(path)?,
         records: vec![OwnedBytes::from_static(b"native-append-record")],
         if_tail: Some(tail),
-        idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(format!("{path}@{tail}")))?),
+        idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(format!(
+            "{path}@{tail}"
+        )))?),
     })
 }
 
 pub(super) fn request_control_capacity(request: &CommitRequest) -> usize {
     request.conditions.capacity() * std::mem::size_of::<crate::CommitCondition>()
         + request.mutations.capacity() * std::mem::size_of::<crate::CommitMutation>()
-        + request.mutations.iter().map(|mutation| {
-            let records = match mutation {
-                crate::CommitMutation::Append { records, .. }
-                | crate::CommitMutation::Fork { records, .. } => records,
-            };
-            records.capacity() * std::mem::size_of::<OwnedBytes>()
-        }).sum::<usize>()
+        + request
+            .mutations
+            .iter()
+            .map(|mutation| {
+                let records = match mutation {
+                    crate::CommitMutation::Append { records, .. }
+                    | crate::CommitMutation::Fork { records, .. } => records,
+                };
+                records.capacity() * std::mem::size_of::<OwnedBytes>()
+            })
+            .sum::<usize>()
 }
 
 pub(super) async fn prepared_fixture(provider: &LocalStream) -> Result<CommitRequest, StreamError> {
     for path in ["prepared/owner", "prepared/target"] {
-        provider.append(AppendRequest {
-            path: StreamPath::new(path)?,
-            records: vec![OwnedBytes::from_static(b"seed")],
-            if_tail: Some(0), idempotency_key: None,
-        }).await?;
+        provider
+            .append(AppendRequest {
+                path: StreamPath::new(path)?,
+                records: vec![OwnedBytes::from_static(b"seed")],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?;
     }
     Ok(CommitRequest {
         conditions: vec![
-            crate::CommitCondition::Tail { path: StreamPath::new("prepared/owner")?, expected: 1 },
-            crate::CommitCondition::Tail { path: StreamPath::new("prepared/target")?, expected: 1 },
+            crate::CommitCondition::Tail {
+                path: StreamPath::new("prepared/owner")?,
+                expected: 1,
+            },
+            crate::CommitCondition::Tail {
+                path: StreamPath::new("prepared/target")?,
+                expected: 1,
+            },
         ],
         mutations: vec![crate::CommitMutation::Append {
-            path: StreamPath::new("prepared/target")?, records: vec![OwnedBytes::new()],
+            path: StreamPath::new("prepared/target")?,
+            records: vec![OwnedBytes::new()],
         }],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"original-prepared-key"))?,
     })
@@ -121,11 +149,15 @@ pub(super) async fn a_poisoned_store_fails_waits_for_frames_already_durable()
     provider.commit(keyed_commit("durable", 0)?).await?;
     let required = provider.inner.required()?;
     assert_eq!(required, 1);
-    provider.await_durable(required, None, None).await
+    provider
+        .await_durable(required, None, None)
+        .await
         .map_err(ordinary_failure)?;
     provider.inner.poison();
     assert_eq!(
-        provider.await_durable(required, None, None).await
+        provider
+            .await_durable(required, None, None)
+            .await
             .map_err(ordinary_failure),
         Err(StreamError::Unavailable)
     );
@@ -222,7 +254,8 @@ pub(super) async fn concurrent_commits_on_distinct_paths_replay_after_reopen()
                 limit: 100,
             })
             .await?
-            .try_collect::<Vec<_>>().await?;
+            .try_collect::<Vec<_>>()
+            .await?;
         for (tail, record) in (0..).zip(&records) {
             assert_eq!(record.value, OwnedBytes::from(format!("{path}-{tail}")));
         }
@@ -237,8 +270,8 @@ pub(super) async fn concurrent_commits_on_distinct_paths_replay_after_reopen()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-pub(super) async fn deferred_mutations_wait_for_the_next_flush() -> Result<(), Box<dyn std::error::Error>>
-{
+pub(super) async fn deferred_mutations_wait_for_the_next_flush()
+-> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
     let unflushed = |provider: &LocalStream| -> Result<bool, Box<dyn std::error::Error>> {
@@ -318,7 +351,9 @@ pub(super) async fn append_keyed(
             path: StreamPath::new("compacted")?,
             records: vec![OwnedBytes::copy_from_slice(&index.to_le_bytes())],
             if_tail: Some(index),
-            idempotency_key: Some(IdempotencyKey::new(OwnedBytes::copy_from_slice(&index.to_le_bytes(),))?),
+            idempotency_key: Some(IdempotencyKey::new(OwnedBytes::copy_from_slice(
+                &index.to_le_bytes(),
+            ))?),
         })
         .await?)
 }

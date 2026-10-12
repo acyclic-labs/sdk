@@ -1,5 +1,5 @@
 use super::*;
-use crate::materializer::{NativeResourceAllowance, NativeResourceCredit};
+use crate::materializer::NativeResourceCredit;
 use acyclic_native_runtime::NativeOperationKind;
 
 impl DemandWork {
@@ -29,7 +29,7 @@ impl DemandWork {
         self.roots.pending = pending;
         self.budget = budget;
         self.resource()
-            .map_or(Ok(()), |resource| resource.refund_work(unused))
+            .map_or(Ok(()), |resource| resource.refund(unused, None))
     }
     pub(crate) fn record_native_work(&mut self, actual: WorkCounters) -> Result<(), DemandError> {
         let refund = self.refund_native_work(actual);

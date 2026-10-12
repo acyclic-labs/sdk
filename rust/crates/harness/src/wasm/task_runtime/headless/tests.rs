@@ -49,8 +49,8 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
     runtime.initialize_volume().await?;
     let write = ContentGrant::verify(&runtime.verifier, &runtime.scope, &volume, VolumeOperation::Write).map_err(js_error)?;
     let file = runtime.filesystem.put_content(&volume, &write, "selected/read.txt", b"selected bytes", "text/plain", "read.txt",
-        65536, &crate::IdempotencyKey::new("headless-file").map_err(js_error)?).await.map_err(js_error)?;
-    let generation = runtime.filesystem.file_generation(&file).map_err(js_error)?;
+        65536, &crate::IdempotencyKey::new("headless-file").map_err(js_error)?, None, None).await.map_err(js_error)?;
+    let generation = runtime.filesystem.file_generation(&file, None).map_err(js_error)?;
     let operation = OperationId::new();
     let admitted = runtime.admit(operation.to_string(), "test.headless".into(), "1".into(), to_js(&serde_json::json!({}))?, None).await?;
     let task = field(&admitted, "task_id").as_string().unwrap();

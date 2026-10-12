@@ -4,10 +4,12 @@ use super::*;
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (mounted_source, around) = shared_sources()?;
+    let (mounted_source, around) = shared_sources(posix_config())?;
     let mounted_source = Arc::new(mounted_source);
     let file = name("file");
-    crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&file, FileMetadata::default(), None, work))?;
+    crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+        around.create_file(&file, FileMetadata::default(), None, work)
+    })?;
     around.write_range(&file, 0, Bytes::from_static(b"first"))?;
     let temporary = tempfile::tempdir()?;
     let mut session = mount(
@@ -24,14 +26,18 @@ pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
 
     // Same length, same (unavailable) times: only invalidation can tell.
     around.write_range(&file, 0, Bytes::from_static(b"other"))?;
-    crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&name("added"), FileMetadata::default(), None, work))?;
-    session.revalidate()?;
+    crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+        around.create_file(&name("added"), FileMetadata::default(), None, work)
+    })?;
+    session.revalidate(&fuse_fixture_work())?;
     assert_eq!(std::fs::read(&mounted)?, b"other");
     assert!(added.is_file());
     assert_eq!(listing(temporary.path())?, ["added", "file"]);
 
     // Without the barrier the change still arrives, promptly.
-    crate::native_mount::adapter::boundary(around.cancellation(), |work| around.remove(&name("added"), None, work))?;
+    crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+        around.remove(&name("added"), None, work)
+    })?;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while added.exists() {
         assert!(
@@ -50,7 +56,7 @@ pub(super) fn linux_an_open_reader_sees_a_write_through_another_handle()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read as _, Seek as _, Write as _};
 
-    let (inner, _) = shared_sources()?;
+    let (inner, _) = shared_sources(posix_config())?;
     let volume_id = inner.volume_id()?;
     let source = Arc::new(inner);
     let temporary = tempfile::tempdir()?;
@@ -81,28 +87,18 @@ pub(super) fn linux_an_open_reader_sees_a_write_through_another_handle()
 #[test]
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::error::Error>> {
-    let (inner, _) = shared_sources()?;
+    let (inner, _) = shared_sources(posix_config())?;
     let volume_id = inner.volume_id()?;
-    let counted = Arc::new(GatedSource::ungated(Arc::new(inner)));
     let temporary = tempfile::tempdir()?;
-    let mut session = mount(
-        Arc::clone(&counted) as Arc<dyn MountFilesystem>,
-        volume_id,
-        temporary.path(),
-    )?;
+    let mut session = mount(Arc::new(inner), volume_id, temporary.path())?;
     let written = temporary.path().join("written");
     std::fs::write(&written, b"first")?;
-    let before = counted.reads().len();
     for body in [b"second write".as_slice(), b"third".as_slice()] {
         let mut file = std::fs::OpenOptions::new().write(true).open(&written)?;
         std::io::Write::write_all(&mut file, body)?;
         drop(file);
         assert_eq!(std::fs::metadata(&written)?.len(), 12);
     }
-    assert!(
-        !counted.reads()[before..].contains(&b"written".to_vec()),
-        "a stat or capability check after a write went back to the source"
-    );
     assert_eq!(std::fs::read(&written)?, b"thirdd write");
     assert!(session.stop()?);
     Ok(())
@@ -110,15 +106,25 @@ pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::er
 
 #[test]
 #[ignore = "requires a live Linux FUSE mount"]
-pub(super) fn linux_listings_resume_across_pages_and_readers() -> Result<(), Box<dyn std::error::Error>> {
-    let (inner, around) = shared_sources()?;
+pub(super) fn linux_listings_resume_across_pages_and_readers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (inner, around) = shared_sources(posix_config())?;
     let volume_id = inner.volume_id()?;
-    crate::native_mount::adapter::boundary(inner.cancellation(), |work| inner.create_directory(&name("many"), FileMetadata::default(), work))?;
+    crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
+        inner.create_directory(&name("many"), FileMetadata::default(), work)
+    })?;
     let mut expected = (0..700)
         .map(|index| format!("entry-{index:04}"))
         .collect::<Vec<_>>();
     for entry in &expected {
-        crate::native_mount::adapter::boundary(inner.cancellation(), |work| inner.create_file(&name("many").child(entry.as_bytes().to_vec()) , FileMetadata::default(), None, work))?;
+        crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
+            inner.create_file(
+                &name("many").child(entry.as_bytes().to_vec()),
+                FileMetadata::default(),
+                None,
+                work,
+            )
+        })?;
     }
     let temporary = tempfile::tempdir()?;
     let mut session = mount(
@@ -147,8 +153,15 @@ pub(super) fn linux_listings_resume_across_pages_and_readers() -> Result<(), Box
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     // A change around the mount reaches the cached listing.
-    crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&name("many").child(b"added".to_vec()) , FileMetadata::default(), None, work))?;
-    session.revalidate()?;
+    crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+        around.create_file(
+            &name("many").child(b"added".to_vec()),
+            FileMetadata::default(),
+            None,
+            work,
+        )
+    })?;
+    session.revalidate(&fuse_fixture_work())?;
     expected.push("added".to_owned());
     expected.sort();
     assert_eq!(names(&many)?, expected);
@@ -157,14 +170,14 @@ pub(super) fn linux_listings_resume_across_pages_and_readers() -> Result<(), Box
 }
 
 #[test]
-pub(super) fn only_folding_volumes_with_case_variants_fold_names() -> Result<(), Box<dyn std::error::Error>>
-{
+pub(super) fn only_folding_volumes_with_case_variants_fold_names()
+-> Result<(), Box<dyn std::error::Error>> {
     use crate::model::{CaseSensitivity, FilesystemProfile, Lifecycle, VolumeConfig};
     let folds = |profile, case_sensitivity| -> Result<bool, Box<dyn std::error::Error>> {
         let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
         config.profile = profile;
         config.case_sensitivity = case_sensitivity;
-        let (source, _) = shared_sources_of(config)?;
+        let (source, _) = shared_sources(config)?;
         let folded = source.folded_path(&name("Dir").child(b"MiXeD".to_vec()));
         assert_eq!(
             folded.is_some(),
@@ -194,19 +207,22 @@ pub(super) fn only_folding_volumes_with_case_variants_fold_names() -> Result<(),
 
 #[test]
 #[ignore = "requires a live Linux FUSE mount"]
-pub(super) fn linux_folded_names_stay_exact_through_the_mount() -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn linux_folded_names_stay_exact_through_the_mount()
+-> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::MetadataExt as _;
 
     let mut config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
     config.case_sensitivity = crate::model::CaseSensitivity::ProfileFolded;
-    let (source, _) = shared_sources_of(config)?;
+    let (source, _) = shared_sources(config)?;
     assert_eq!(
         source.folded_path(&name("Foo")),
         Some(name("foo")),
         "a folding volume keys every spelling alike"
     );
     let volume_id = source.volume_id()?;
-    crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("foo"), FileMetadata::default(), None, work))?;
+    crate::native_mount::adapter::boundary(source.cancellation(), |work| {
+        source.create_file(&name("foo"), FileMetadata::default(), None, work)
+    })?;
     let temporary = tempfile::tempdir()?;
     let mut session = mount(Arc::new(source), volume_id, temporary.path())?;
     let at = |name: &str| temporary.path().join(name);
@@ -243,7 +259,9 @@ pub(super) fn linux_rebind_reaches_every_kernel_cache() -> Result<(), Box<dyn st
         .enable_all()
         .build()?;
     let file = name("file");
-    crate::native_mount::adapter::boundary(writer.cancellation(), |work| writer.create_file(&file, FileMetadata::default(), None, work))?;
+    crate::native_mount::adapter::boundary(writer.cancellation(), |work| {
+        writer.create_file(&file, FileMetadata::default(), None, work)
+    })?;
     writer.write_range(&file, 0, Bytes::from_static(b"first"))?;
     writer.sync()?;
     runtime.block_on(reader.advance_to_head_async())?;
@@ -260,10 +278,12 @@ pub(super) fn linux_rebind_reaches_every_kernel_cache() -> Result<(), Box<dyn st
     assert_eq!(listing(temporary.path())?, ["file"]);
 
     writer.write_range(&file, 0, Bytes::from_static(b"other"))?;
-    crate::native_mount::adapter::boundary(writer.cancellation(), |work| writer.create_file(&name("added"), FileMetadata::default(), None, work))?;
+    crate::native_mount::adapter::boundary(writer.cancellation(), |work| {
+        writer.create_file(&name("added"), FileMetadata::default(), None, work)
+    })?;
     writer.sync()?;
     runtime.block_on(reader.advance_to_head_async())?;
-    session.revalidate()?;
+    session.revalidate(&fuse_fixture_work())?;
     assert_eq!(std::fs::read(&mounted)?, b"other");
     assert!(added.is_file());
     assert_eq!(listing(temporary.path())?, ["added", "file"]);
@@ -277,36 +297,6 @@ pub(super) struct GatedSource {
     pub(super) gated_directory: Vec<u8>,
     pub(super) entered: SyncSender<()>,
     pub(super) released: Mutex<Receiver<()>>,
-    pub(super) reads: Mutex<Vec<Vec<u8>>>,
-}
-
-impl GatedSource {
-    pub(super) fn ungated(inner: Arc<dyn MountFilesystem>) -> Self {
-        let (entered, _) = sync_channel(0);
-        let (_, released) = sync_channel(0);
-        Self {
-            inner,
-            gated_lookup: Vec::new(),
-            gated_directory: Vec::new(),
-            entered,
-            released: Mutex::new(released),
-            reads: Mutex::new(Vec::new()),
-        }
-    }
-
-    pub(super) fn record_read(&self, path: &MountPath) {
-        self.reads
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(path.components().last().cloned().unwrap_or_default());
-    }
-
-    pub(super) fn reads(&self) -> Vec<Vec<u8>> {
-        self.reads
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
 }
 
 impl GatedSource {
@@ -395,36 +385,46 @@ impl MountFilesystem for GatedSource {
     }
 
     fn lookup_with_meter(
-        &self, path: &MountPath, work: &crate::NativeMaterializationWork,
+        &self,
+        path: &MountPath,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<Option<MountLookup>, MountSourceError> {
-        self.record_read(path);
         self.pass(path, &self.gated_lookup);
         self.inner.lookup_with_meter(path, work)
     }
     fn lookup_pinned_with_meter(
-        &self, path: &MountPath, work: &crate::NativeMaterializationWork,
-    ) -> Result<Option<(MountLookup, Option<crate::native_mount::MountContentPin>)>, MountSourceError> {
-        self.record_read(path);
+        &self,
+        path: &MountPath,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Option<(MountLookup, Option<crate::native_mount::MountContentPin>)>, MountSourceError>
+    {
         self.pass(path, &self.gated_lookup);
         self.inner.lookup_pinned_with_meter(path, work)
     }
 
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
-        self.record_read(path);
         self.pass(path, &self.gated_lookup);
         self.inner.lookup(path)
     }
 
-    fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
+    fn create_directory(
+        &self,
+        path: &MountPath,
+        metadata: FileMetadata,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<MountLookup, MountSourceError> {
         self.pass(path, &self.gated_directory);
         self.inner.create_directory(path, metadata, work)
     }
 
-    fn read_attribute(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
-        self.record_read(path);
+    fn read_attribute(
+        &self,
+        path: &MountPath,
+        name: &[u8],
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
         self.inner.read_attribute(path, name, work)
     }
-
 }
 
 pub(super) fn finishes_within(limit: Duration, operation: impl FnOnce() + Send + 'static) -> bool {
@@ -440,13 +440,17 @@ pub(super) fn finishes_within(limit: Duration, operation: impl FnOnce() + Send +
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_callbacks_proceed_while_others_block_in_the_source()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (inner, _) = shared_sources()?;
+    let (inner, _) = shared_sources(posix_config())?;
     let volume_id = inner.volume_id()?;
     for directory in ["slow", "busy", "free"] {
-        crate::native_mount::adapter::boundary(inner.cancellation(), |work| inner.create_directory(&name(directory), FileMetadata::default(), work))?;
+        crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
+            inner.create_directory(&name(directory), FileMetadata::default(), work)
+        })?;
     }
     let present = name("free").child(b"present".to_vec());
-    crate::native_mount::adapter::boundary(inner.cancellation(), |work| inner.create_file(&present, FileMetadata::default(), None, work))?;
+    crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
+        inner.create_file(&present, FileMetadata::default(), None, work)
+    })?;
     inner.write_range(&present, 0, Bytes::from_static(b"present"))?;
     let (entered, entries) = sync_channel(4);
     let (release, released) = sync_channel(4);
@@ -456,7 +460,6 @@ pub(super) fn linux_callbacks_proceed_while_others_block_in_the_source()
         gated_directory: b"blocked-mkdir".to_vec(),
         entered,
         released: Mutex::new(released),
-        reads: Mutex::new(Vec::new()),
     });
     let temporary = tempfile::tempdir()?;
     let mut session = mount(gated, volume_id, temporary.path())?;

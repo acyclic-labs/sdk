@@ -1,9 +1,14 @@
-use super::io::*;
 use super::driver::{submit_read, submit_write};
+use super::io::*;
 use crate::{NativeFilePayload, OwnedRead, OwnedWrite};
 use bytes::Bytes;
-use std::{fs::OpenOptions, io::{self, Seek as _, SeekFrom, Write as _}, sync::{Arc, mpsc}, time::Duration};
 use std::os::windows::fs::OpenOptionsExt as _;
+use std::{
+    fs::OpenOptions,
+    io::{self, Seek as _, SeekFrom, Write as _},
+    sync::{Arc, mpsc},
+    time::Duration,
+};
 use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 
 #[test]
@@ -42,7 +47,10 @@ fn positional_batches_complete_without_changing_source_cursor() -> io::Result<()
         .open(directory.path().join("positional"))?;
     file.write_all(b"abcdefghijklmnop")?;
     file.seek(SeekFrom::Start(13))?;
-    let file = Arc::new(NativeFilePayload::unmetered(file));
+    let file = Arc::new(NativeFilePayload {
+        file,
+        _allocation: None,
+    });
     let (sender, receiver) = mpsc::sync_channel(1);
     submit_write(
         Arc::clone(&file),

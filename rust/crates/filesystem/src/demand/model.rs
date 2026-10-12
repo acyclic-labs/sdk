@@ -35,7 +35,6 @@ pub enum SourceNodeKind {
 }
 
 /// Scalar host metadata. `None` means the provider did not make that fact
-/// available; it does not mean a numeric zero.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SourceMetadata {
     /// POSIX permission and kind bits, when available.

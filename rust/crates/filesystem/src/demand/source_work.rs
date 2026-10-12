@@ -19,7 +19,7 @@ impl<'a> NativeSourceWork<'a> {
     /// Borrows the invocation's existing accounting state.
     pub fn from_native_materialization_work(work: &'a crate::NativeMaterializationWork) -> Self {
         Self {
-            original: work.native_read_meter(),
+            original: &work.state,
             context: Some(work),
         }
     }
@@ -82,7 +82,12 @@ pub(crate) trait SourceDemandReadWork:
     fn claim_allocation(&mut self, bytes: u64, operations: u64) -> Result<(), DemandError> {
         self.check()?;
         self.with_original_leaf(|work| {
-            work.claim_native_owned(bytes, operations, WorkCounters::UNCHARGED, &None)
+            work.claim_native_owned(
+                bytes,
+                operations,
+                WorkCounters::UNCHARGED,
+                &work.capture_custody(),
+            )
         })
     }
     fn allocate(&mut self, bytes: u64) -> Result<(), DemandError> {

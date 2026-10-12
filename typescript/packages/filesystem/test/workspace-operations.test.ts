@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { MergeConflictSelection, WasmRawWorkspace } from "../src/contracts.js";
+import type { MergeConflictSelection } from "../src/contracts.js";
+import type { WasmRawWorkspace } from "../src/binding-types.js";
 import { adaptJoinPlan } from "../src/workspace-operations.js";
 import { createFilesystemAdapter } from "../src/filesystem-adapter.js";
 

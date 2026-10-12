@@ -201,7 +201,7 @@ impl ViewGateReadAdmissions {
             let mut replacement = Vec::new();
             if replacement.try_reserve_exact(count).is_err() {
                 allocations.release(bytes).map_err(gate_allocation_error)?;
-                return Err(MountSourceError::Engine("view admission allocation failed".into()));
+                return Err(MountSourceError::Engine(std::borrow::Cow::Owned("view admission allocation failed".into())));
             }
             let old_bytes = (self.more.capacity() * std::mem::size_of::<ReadAdmission>()) as u64;
             replacement.append(&mut self.more);
@@ -666,7 +666,7 @@ impl ViewGate {
             let mut replacement = Vec::new();
             if replacement.try_reserve_exact(capacity).is_err() {
                 allocations.release(bytes).map_err(gate_allocation_error)?;
-                return Err(MountSourceError::Engine("view reader allocation failed".into()));
+                return Err(MountSourceError::Engine(std::borrow::Cow::Owned("view reader allocation failed".into())));
             }
             replacement.append(&mut state.reader_slots);
             state.reader_slots = replacement;

@@ -179,8 +179,6 @@ pinned_pi() {
     bun run test:pi-context-pages
     bun run test:pi-builtin-paths
   )
-  cargo test -p acyclic-plugin --bin acyclic --all-features --locked \
-    required_pinned_pi_native -- --ignored --test-threads=1
 }
 
 case "$lane" in

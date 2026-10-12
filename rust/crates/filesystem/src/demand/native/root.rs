@@ -93,12 +93,10 @@ impl Drop for CursorLease<'_> {
 }
 
 /// One native root. Opening it does not enumerate any descendants.
-/// Filesystem calls currently run on Tokio blocking workers on every host.
 #[derive(Clone)]
 pub struct NativeDemandSource {
     inner: Arc<NativeDemandInner>,
     /// Whether a test let this source be watched, so tests cover the path
-    /// taken by roots the host cannot watch.
     #[cfg(test)]
     watchable: bool,
 }
@@ -107,8 +105,6 @@ struct NativeDemandInner {
     path: PathBuf,
     root: HostRoot,
     /// Whether host I/O beneath the root may block a native callback
-    /// thread: only on a local filesystem, which cannot stall it past
-    /// the callback's timeout.
     inline: bool,
     identity: [u8; 16],
     epoch: AtomicU64,
@@ -119,8 +115,6 @@ struct NativeDemandInner {
     requests: Arc<Semaphore>,
     observer: Option<Arc<dyn DemandDirectoryObserver>>,
     /// Live change watches: on Linux, inotify admits directories to them
-    /// one by one; on Windows, each holds the root open (see
-    /// [`Self::root_named_while_watched`]).
     #[cfg(any(target_os = "linux", windows))]
     watches: std::sync::RwLock<Vec<std::sync::Weak<crate::source_watch::NativeSourceWatch>>>,
 }
@@ -219,11 +213,6 @@ impl NativeDemandSource {
     }
 
     /// Opens a lazy native source whose demanded directories are admitted
-    /// to an external observer before any corresponding filesystem read.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same bounded native admission failures as [`Self::open`].
     pub async fn open_with_observer(
         path: impl AsRef<Path>,
         profile: FilesystemProfile,
@@ -244,9 +233,6 @@ impl NativeDemandSource {
     }
 
     /// Reopens only the root directory using a durable provider identity.
-    ///
-    /// Adapters persist this opaque reference beside the lazy workspace;
-    /// reopening never enumerates descendants or reads file contents.
     pub async fn open_with_reference(
         path: impl AsRef<Path>,
         profile: FilesystemProfile,
@@ -257,12 +243,6 @@ impl NativeDemandSource {
     }
 
     /// Reopens a durably identified lazy source with demand-driven
-    /// directory observation.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same bounded native admission failures as
-    /// [`Self::open_with_reference`].
     pub async fn open_with_reference_and_observer(
         path: impl AsRef<Path>,
         profile: FilesystemProfile,
@@ -324,7 +304,6 @@ impl NativeDemandSource {
     }
 
     /// This source, reporting no changes as a root the host cannot watch
-    /// would. The live tests that run both ways mount through FUSE or NFS.
     #[cfg(all(test, unix, feature = "native-mount"))]
     pub(crate) fn unwatched(self) -> Self {
         Self {
@@ -334,7 +313,6 @@ impl NativeDemandSource {
     }
 
     /// This source as if its root were not local, so tests cover the
-    /// path host I/O beneath a remote root takes.
     #[cfg(test)]
     pub(crate) fn remote(mut self) -> Self {
         if let Some(inner) = Arc::get_mut(&mut self.inner) {
@@ -352,9 +330,6 @@ impl NativeDemandSource {
     }
 
     /// Watches `directory`, and every directory on the way to it, before
-    /// anything beneath it is read; returns whether a watch began
-    /// watching `directory` itself only now, after which a fact about it
-    /// read before must be read again.
     #[cfg(target_os = "linux")]
     fn admit_to_watches(&self, directory: &NamespacePath) -> Result<bool, DemandError> {
         let live = self
@@ -401,10 +376,6 @@ impl NativeDemandSource {
         if cancellation.is_cancelled() {
             return Err(OperationFailure::before_work(DemandError::Cancelled));
         }
-        // A native callback thread blocks only its own request: run a
-        // local job there rather than hop to a pooled worker and back.
-        // A remote one stays on a worker, where the callback's timeout
-        // still bounds it.
         if self.inner.inline && acyclic_native_runtime::inline_blocking_allowed() {
             return job(self.clone(), cancellation.clone());
         }
@@ -438,7 +409,6 @@ impl NativeDemandSource {
     }
 
     /// Invalidates prior source references and directory cursors without
-    /// reading any descendant. Watch overflow and broad hints use this.
     pub fn invalidate(&self) -> SourceReference {
         let epoch = self.inner.epoch.fetch_add(1, Ordering::AcqRel) + 1;
         if let Ok(mut cursors) = self.inner.cursors.lock() {
@@ -464,8 +434,6 @@ impl NativeDemandSource {
         if self.root_named_while_watched() {
             return Ok(());
         }
-        // The held root answers for the source only while its path still
-        // names it. Comparing identities never reopens the root.
         if crate::NativeRootIdentity::of_root_path(&self.inner.path).ok()
             != Some(self.inner.root.identity())
         {
@@ -475,9 +443,6 @@ impl NativeDemandSource {
     }
 
     /// Whether a live watch proves the root's path still names the held
-    /// root. A Windows watch holds the root open without sharing its
-    /// deletion, so while it lives neither the root nor any ancestor can
-    /// be renamed or removed.
     #[cfg(windows)]
     fn root_named_while_watched(&self) -> bool {
         self.inner
@@ -595,8 +560,6 @@ impl NativeDemandSource {
     }
 
     /// Converts one enumerated entry into the node a lookup reports,
-    /// stat'ing the name only where enumeration could not report it.
-    /// `None` means the entry vanished after enumeration.
     fn next_entry(
         &self,
         directory: &Path,

@@ -14,7 +14,9 @@ impl Journal {
         bytes: &mut Vec<u8>,
         publication: &mut Publication,
     ) -> Result<StoredBody, NativeObjectsError> {
-        if !unpersisted(body) { return Ok(body.clone()); }
+        if !unpersisted(body) {
+            return Ok(body.clone());
+        }
         match body {
             StoredBody::Memory(value) if value.len() <= LIMIT => {
                 let offset = u64::MAX
@@ -22,7 +24,8 @@ impl Journal {
                     .ok_or(Error::from(QuotaExceeded))?;
                 publication.reserve(bytes, value.len())?;
                 publication.codec(0, value.len(), 0, || bytes.extend_from_slice(value))?;
-                let digest = publication.codec(0, 0, value.len(), || *blake3::hash(value).as_bytes())?;
+                let digest =
+                    publication.codec(0, 0, value.len(), || *blake3::hash(value).as_bytes())?;
                 Ok(StoredBody::Local {
                     root: Arc::clone(&self.root),
                     digest,
@@ -81,14 +84,20 @@ impl Journal {
                     if !batch.holds(&digest) {
                         // Compaction closes this handle before journal replacement.
                         let bytes = match &publication.native {
-                            Some((meter, _)) => futures::executor::block_on(
-                                crate::physical::read_body_at(
-                                    &self.root, &digest, length,
+                            Some((meter, _)) => {
+                                futures::executor::block_on(crate::physical::read_body_at(
+                                    &self.root,
+                                    &digest,
+                                    length,
                                     &LocalBodyLocation::Journal { offset },
-                                    0, length, BodyReadMode::Native(Arc::clone(meter)),
-                                ),
-                            )?,
-                            None => self.root.read_journal_body(offset, &digest, length)
+                                    0,
+                                    length,
+                                    BodyReadMode::Native(Arc::clone(meter)),
+                                ))?
+                            }
+                            None => self
+                                .root
+                                .read_journal_body(offset, &digest, length)
                                 .map_err(|_| Error::from(Unavailable))?,
                         };
                         batch.add(digest, bytes, &mut publication)?;
@@ -107,12 +116,20 @@ impl Journal {
                 }
                 obs::record!("items" = items, "bytes" = moved, "segments" = segments);
                 crate::physical::sync_segment_directory(
-                    &self.root.path, self.limits.durability, &mut publication,
+                    &self.root.path,
+                    self.limits.durability,
+                    &mut publication,
                 )?;
                 for (name, _) in &state.buckets.clone() {
-                    let bucket = state.buckets.get_mut(name).ok_or(Error::from(Unavailable))?;
+                    let bucket = state
+                        .buckets
+                        .get_mut(name)
+                        .ok_or(Error::from(Unavailable))?;
                     for (key, _) in &bucket.objects.clone() {
-                        let object = bucket.objects.get_mut(key).ok_or(Error::from(Unavailable))?;
+                        let object = bucket
+                            .objects
+                            .get_mut(key)
+                            .ok_or(Error::from(Unavailable))?;
                         if let Some(body) = publication.relocated(&object.body, &moves)? {
                             object.body = body;
                         }
@@ -121,7 +138,10 @@ impl Journal {
                 for (id, _) in &state.uploads.clone() {
                     let upload = state.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
                     for (number, _) in &upload.parts.clone() {
-                        let (_, body) = upload.parts.get_mut(number).ok_or(Error::from(Unavailable))?;
+                        let (_, body) = upload
+                            .parts
+                            .get_mut(number)
+                            .ok_or(Error::from(Unavailable))?;
                         if let Some(moved) = publication.relocated(body, &moves)? {
                             *body = moved;
                         }
@@ -139,13 +159,17 @@ impl Journal {
         publication: &mut Publication,
     ) -> Result<(), NativeObjectsError> {
         let (id, offsets) = crate::physical::write_segment(
-            &self.root.path, &batch.bodies, self.limits.durability, publication,
+            &self.root.path,
+            &batch.bodies,
+            self.limits.durability,
+            publication,
         )?;
         for (offset, digest) in batch.carried.drain(..) {
             let index = *batch.index.get(&digest).ok_or(Error::from(Unavailable))?;
-            publication.retain(
-                std::mem::size_of::<((LocalBodyLocation, [u8; 32]), LocalBodyLocation)>(),
-            )?;
+            publication.retain(std::mem::size_of::<(
+                (LocalBodyLocation, [u8; 32]),
+                LocalBodyLocation,
+            )>())?;
             moves.insert(
                 (LocalBodyLocation::Journal { offset }, digest),
                 LocalBodyLocation::Segment {
@@ -156,7 +180,9 @@ impl Journal {
         }
         // Retain array capacity claims while clearing body owners.
         batch.bodies.clear();
-        let index_bytes = batch.index.len()
+        let index_bytes = batch
+            .index
+            .len()
             .checked_mul(std::mem::size_of::<([u8; 32], usize)>())
             .ok_or(Error::from(QuotaExceeded))?;
         batch.index.clear();
@@ -234,7 +260,12 @@ fn records(delta: &Delta) -> impl Iterator<Item = &BodyRecord> {
         .chain(delta.parts.iter().flat_map(|part| &part.bodies))
 }
 
-pub(super) fn place(delta: &mut Delta, state: &mut State, frame: u64, publication: &mut Publication) -> Result<(), NativeObjectsError> {
+pub(super) fn place(
+    delta: &mut Delta,
+    state: &mut State,
+    frame: u64,
+    publication: &mut Publication,
+) -> Result<(), NativeObjectsError> {
     let encoded = publication.encode(delta)?;
     if !encoded.ends_with(&delta.inline_data) {
         return Err(Error::from(Unavailable).into());
@@ -254,11 +285,19 @@ pub(super) fn place(delta: &mut Delta, state: &mut State, frame: u64, publicatio
                 .checked_add(u64::MAX - body.offset)
                 .ok_or(Error::from(QuotaExceeded))?;
             let key = (
-                LocalBodyLocation::Journal { offset: body.offset },
-                body.digest.as_slice().try_into().map_err(|_| Error::from(Unavailable))?,
+                LocalBodyLocation::Journal {
+                    offset: body.offset,
+                },
+                body.digest
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| Error::from(Unavailable))?,
             );
             if !moves.contains_key(&key) {
-                publication.retain(std::mem::size_of::<((LocalBodyLocation, [u8; 32]), LocalBodyLocation)>())?;
+                publication.retain(std::mem::size_of::<(
+                    (LocalBodyLocation, [u8; 32]),
+                    LocalBodyLocation,
+                )>())?;
             }
             moves.insert(key, LocalBodyLocation::Journal { offset });
             body.offset = offset;
@@ -276,9 +315,12 @@ pub(super) fn place(delta: &mut Delta, state: &mut State, frame: u64, publicatio
         }
     }
     for (id, _) in &state.uploads.clone() {
-                    let upload = state.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
+        let upload = state.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
         for (number, _) in &upload.parts.clone() {
-                        let (_, body) = upload.parts.get_mut(number).ok_or(Error::from(Unavailable))?;
+            let (_, body) = upload
+                .parts
+                .get_mut(number)
+                .ok_or(Error::from(Unavailable))?;
             if let Some(moved) = publication.relocated(body, &moves)? {
                 *body = moved;
             }

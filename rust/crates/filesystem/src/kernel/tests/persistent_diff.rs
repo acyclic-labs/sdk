@@ -1,5 +1,3 @@
-use crate::{OperationFailure, WorkBudget};
-use crate::storage::ObjectStoreError;
 use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
@@ -9,9 +7,11 @@ use crate::kernel::{
     file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectKind, };
+use crate::storage::ObjectKind;
+use crate::storage::ObjectStoreError;
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
+use crate::{OperationFailure, WorkBudget};
 use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
@@ -33,11 +33,17 @@ fn entry(value: &str, id: u8) -> Result<TreeEntry, Box<dyn std::error::Error>> {
 
 async fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = tree_page_id(page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        id,
+    {
+        let __object_args = (
+            id,
         OwnedBytes::from(encode_tree_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(id)
 }
 
@@ -59,11 +65,17 @@ async fn put_file_table(
     page: &FileTablePage,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = file_table_page_id(page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        id,
+    {
+        let __object_args = (
+            id,
         OwnedBytes::from(encode_file_table_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(id)
 }
 
@@ -509,7 +521,19 @@ async fn diff_preserves_storage_and_decode_failures_after_admitted_work()
         kind: ObjectKind::TreePage,
         digest: crate::storage::object_digest(ObjectKind::TreePage, &malformed_bytes),
     };
-    AsyncObjectStore::put(&store, malformed, malformed_bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            malformed,
+            malformed_bytes,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     let failure = diff(
         &store,
         Some(valid),

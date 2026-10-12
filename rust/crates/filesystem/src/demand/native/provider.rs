@@ -8,8 +8,6 @@ impl DemandSource for NativeDemandSource {
     }
 
     /// Watches a root on a local file system, whose changes all pass
-    /// through this kernel and so are all reported; a network or
-    /// user-space file system changes out of its sight.
     fn watch(
         &self,
         sink: Arc<dyn SourceChangeSink>,
@@ -55,8 +53,6 @@ impl DemandSource for NativeDemandSource {
                 provider.observe_parent(&path)?;
                 work.source_path_components = path.depth() as u64;
                 let mut node = provider.metadata(&path)?.as_ref().map(Self::node);
-                // A directory's own facts (its listing's times and link
-                // count) are reported only once it is watched itself.
                 if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)
                     && provider.admit_to_watches(&path)?
                 {

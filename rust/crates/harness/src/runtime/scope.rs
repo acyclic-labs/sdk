@@ -226,9 +226,7 @@ impl RuntimeScope {
         crate::core::copy_vector(proofs, quota, |proof, quota| {
             quota.work().as_deref_mut().expect("proof vector copy observer")
                 .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-            let (copied, retained) = crate::core::resource_creation_proof_clone_with_custody(
-                proof, quota.work(),
-            )?;
+            let (copied, retained) = proof.copy(quota.work())?;
             quota.adopt(retained)?;
             Ok(copied)
         })
@@ -251,7 +249,7 @@ impl RuntimeScope {
             None => None,
         };
         let extensions = match &self.extensions {
-            Some(extensions) => Some(extensions.copy(&mut Some(&mut io))?),
+            Some(extensions) => Some(extensions.copy(&mut Some(&mut io))?.0),
             None => None,
         };
         let resource_proofs = {
@@ -310,7 +308,7 @@ impl RuntimeScope {
 
     /// Pins one committed agent selection for this scope and all descendants.
     pub fn with_extensions_from(self, agent: &Reducer) -> Result<Self> {
-        self.with_original_extensions(agent.original_extension_binding()?)
+        self.with_original_extensions((agent.extension_admission()?, agent.schemas().clone()))
     }
 
     pub(crate) fn with_original_extensions(
@@ -475,7 +473,11 @@ impl RuntimeScope {
         let proofs = access.as_ref().map_or(self.resource_proofs.as_slice(), |access| access.proofs.as_slice());
         let resource_proofs = Self::copy_resource_proofs(proofs, &mut quota)?;
         let extensions = admission.extensions.as_ref()
-            .map(|extensions| extensions.copy_with_quota(&mut quota)).transpose()?;
+            .map(|extensions| {
+                let (copied, retained) = extensions.copy(quota.work())?;
+                quota.adopt(retained)?;
+                Ok::<_, Error>(copied)
+            }).transpose()?;
         let extension_schemas = self.extension_schemas.as_ref()
             .map(|schemas| schemas.copy(quota.work())).transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

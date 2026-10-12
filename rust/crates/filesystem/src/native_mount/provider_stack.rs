@@ -439,8 +439,8 @@ mod tests {
             })));
             assert_eq!(work.receipt().allocation_operations, 1, "only the actual accounting state was allocated");
             assert_eq!(work.receipt().backend_write_operations, 0, "no fiber SDK creation entered");
-            assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), payload);
-            assert_eq!(work.native_read_meter().lock().budget, budget, "unused mandatory cleanup admission was cancelled");
+            assert_eq!((&work.state).lock().live_allocation_bytes(), payload);
+            assert_eq!((&work.state).lock().budget, budget, "unused mandatory cleanup admission was cancelled");
             super::PROVIDER_FIBER.with(|slot| assert!(slot.borrow().is_none()));
         });
     }
@@ -467,8 +467,8 @@ mod tests {
             assert_eq!(work.receipt().backend_write_operations, 4);
             assert_eq!(work.receipt().allocation_operations, 2);
             assert_eq!(work.receipt().peak_allocation_bytes, payload + exchange);
-            assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), payload);
-            assert_eq!(work.native_read_meter().lock().budget, budget);
+            assert_eq!((&work.state).lock().live_allocation_bytes(), payload);
+            assert_eq!((&work.state).lock().budget, budget);
             // SAFETY: the actual conversion cleanup has returned this thread.
             assert!(!unsafe { IsThreadAFiber() }.as_bool());
             super::PROVIDER_FIBER.with(|slot| assert!(slot.borrow().is_none()));
@@ -488,8 +488,8 @@ mod tests {
                 counter: "backend_write_operations", ..
             })));
             assert_eq!(work.receipt().backend_write_operations, 2, "real create and mandatory delete, no conversion");
-            assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-            assert_eq!(work.native_read_meter().lock().budget, budget);
+            assert_eq!((&work.state).lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
+            assert_eq!((&work.state).lock().budget, budget);
             // SAFETY: conversion was never entered.
             assert!(!unsafe { IsThreadAFiber() }.as_bool());
             super::PROVIDER_FIBER.with(|slot| assert!(slot.borrow().is_none()));
@@ -507,7 +507,7 @@ mod tests {
             assert!(matches!(work.admit(crate::WorkCounters::UNCHARGED),
                 Err(crate::NativeTreeMaterializationError::Cancelled)), "the original token remains active");
             assert_eq!(work.receipt().backend_write_operations, 4, "both actual cleanup calls survived cancellation");
-            assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
+            assert_eq!((&work.state).lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
             // SAFETY: conversion cleanup still ran.
             assert!(!unsafe { IsThreadAFiber() }.as_bool());
             super::PROVIDER_FIBER.with(|slot| assert!(slot.borrow().is_none()));
@@ -532,7 +532,7 @@ mod tests {
             assert_eq!(work.receipt().backend_write_operations, 2, "actual thread conversion and cleanup only");
             assert_eq!(work.receipt().allocation_operations, 1);
             assert_eq!(work.receipt().peak_allocation_bytes, payload);
-            assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), payload);
+            assert_eq!((&work.state).lock().live_allocation_bytes(), payload);
             super::PROVIDER_FIBER.with(|slot| {
                 assert!(slot.borrow().as_ref().expect("original cached fiber").owned.is_none());
             });

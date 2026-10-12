@@ -425,7 +425,7 @@ impl WasmReducer {
             key_bytes(issuer_key)?,
             snapshot.authority.clone(),
         );
-        let reducer = Reducer::restore(snapshot, issuer.verifier(&mut None).expect("verifier copy"), schema_registry(schemas)?)
+        let reducer = Reducer::restore(snapshot, issuer.verifier(&mut None).expect("verifier copy"), schema_registry(schemas)?, &mut None)
             .map_err(js_error)?;
         Ok(Self { reducer, issuer })
     }

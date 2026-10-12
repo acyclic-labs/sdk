@@ -121,7 +121,7 @@ fn source_json<T: serde::Serialize>(
     canonical_json_bytes_bounded(value, bounds, None, &mut |charge| io.codec_charge(charge, true)).map(Into::into)
 }
 
-fn source_budget(maximum_work: u64, maximum_bytes: u64) -> Result<WorkBudget> {
+pub(super) fn source_budget(maximum_work: u64, maximum_bytes: u64) -> Result<WorkBudget> {
     if maximum_work == 0 || maximum_work == u64::MAX || maximum_bytes == 0 || maximum_bytes == u64::MAX {
         return Err(Error::Invalid("project source requires finite positive admission".into()));
     }

@@ -1,5 +1,4 @@
 /// A byte range admitted for one native read: at most one MiB long and
-/// addressable without overflow.
 #[derive(Clone, Copy)]
 struct ReadRange {
     offset: u64,
@@ -16,11 +15,6 @@ impl ReadRange {
 }
 
 /// A regular source file held open after its version was proven against
-/// the opened file itself. The type cannot exist without that proof.
-///
-/// Reads use the held file and then prove, exactly as a path-based read does, that
-/// the file is unmodified, that its source path still names it, and that
-/// the source root and reference are still current.
 #[derive(Clone)]
 struct NativeDemandFile {
     provider: NativeDemandSource,
@@ -35,20 +29,14 @@ struct NativeDemandFile {
 }
 
 /// A source file held for reading. On Windows it gives way to whoever
-/// renames or deletes it, as an editor saving over it does, instead of
-/// making that fail while it is read.
 #[cfg(windows)]
 type SourceFile = crate::native_host::YieldingFile;
 #[cfg(not(windows))]
 type SourceFile = std::fs::File;
 
 /// How long a read of a file under a root that is not local may take
-/// before its caller is answered, well inside a native callback's own
-/// deadline: a callback thread runs the read and cannot be interrupted.
 const REMOTE_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
 /// Most reads of files under roots that are not local that may be
-/// blocked at once: a hung share holds one thread per read until the host
-/// gives up, and beyond this every such read fails at once.
 const MAXIMUM_BLOCKED_REMOTE_READS: usize = 16;
 static BLOCKED_REMOTE_READS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
@@ -116,9 +104,6 @@ impl NativeDemandFile {
         let result = self.read_once(&file, range, cancellation, work);
         #[cfg(windows)]
         if matches!(result, Err(DemandError::StaleVersion)) && file.was_yielded() {
-            // A benign opener can break a handle oplock too. Reopen only
-            // at the exact expected version; a save that replaced the
-            // file still reports stale to the caller.
             let reopened = Arc::new(self.reopen(cancellation)?);
             let current = {
                 let mut held = self
@@ -181,9 +166,6 @@ impl NativeDemandFile {
     }
 
     /// What the file's name holds now. It is only compared with the file
-    /// held beneath the root, which nothing a name resolves elsewhere can
-    /// match, so one lookup through the root's path serves, where a walk
-    /// held beneath the root costs several.
     #[cfg(not(windows))]
     fn named_stat(&self) -> std::io::Result<crate::native_host::HostStat> {
         std::fs::symlink_metadata(self.provider.inner.path.join(&self.relative))
@@ -197,8 +179,6 @@ impl NativeDemandFile {
     }
 
     /// Proves the bytes just read belong to the opened version: the held
-    /// file is unmodified (in-place writes), the source path still names
-    /// it (replacement by rename), and the root and reference are current.
     fn prove_current(
         &self,
         file: &SourceFile,
@@ -225,8 +205,6 @@ impl DemandFile for NativeDemandFile {
         cancellation: &CancellationToken,
     ) -> DemandResult<Bytes> {
         let range = ReadRange::new(offset, length).map_err(OperationFailure::before_work)?;
-        // A local root answers promptly, so its read runs in place; any
-        // other runs on a thread of its own, bounded by a deadline.
         if self.provider.inner.inline {
             return measured(|work| self.read(range, cancellation, work));
         }

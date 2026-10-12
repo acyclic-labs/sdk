@@ -99,50 +99,84 @@ impl From<NamespacePathError> for DemandError {
 pub type DemandResult<T> = Result<OperationReceipt<T>, OperationFailure<DemandError>>;
 
 /// One change a source reports having happened to it outside every view of
-/// it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SourceChange {
     /// This name may bind another entry, or none, and so may everything
-    /// reached through it.
     Name(NamespacePath),
     /// The entry this name binds may have changed in place: its content or
-    /// attributes. The name, and everything reached through it, still binds
-    /// what it did.
     Entry(NamespacePath),
     /// The node with this [`SourceNode::file_identity`] may have changed,
-    /// under every name bound to it.
     Node([u8; 32]),
     /// Changes may have gone unreported: anything may have changed.
     Everything,
     /// Changes may not all have been reported yet, though none is known to
-    /// have been lost: every fact read before is verified against the
-    /// source at its next use, and kept where it still holds.
     Unconfirmed,
 }
 
 /// Receives the changes one watched source reports.
 pub trait SourceChangeSink: Send + Sync {
+    /// SDK payload retained by this sink, excluding caller-owned data.
+    fn logical_owned_bytes(&self) -> u64 {
+        0
+    }
+
     /// One batch of changes, in the order the host reported them. Called on
-    /// the source's notification thread, which holds no lock a source
-    /// request waits on; the sink must not wait on a later notification.
-    fn source_changed(&self, changes: &[SourceChange]);
+    fn source_changed(
+        &self,
+        changes: &[SourceChange],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> DemandResult<()>;
+
+    /// Projects this batch against its original native grant and cancellation.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn source_changed_with_native_work(
+        &self,
+        _changes: &[SourceChange],
+        work: NativeSourceWork<'_>,
+    ) -> Result<(), DemandError> {
+        crate::native_host::NativeHostWork::check(&work)?;
+        Err(DemandError::NativeWorkUnavailable)
+    }
 }
 
 /// Live observation of every change made to one source outside every view
-/// of it. Dropping it stops the notifications.
 pub trait SourceWatch: Send + Sync {
-    /// Returns once every change that completed before the call has reached
-    /// the sink.
-    ///
-    /// # Errors
-    ///
-    /// Fails only when the host cannot be read; the watch is then inexact.
-    fn fence(&self) -> Result<(), DemandError>;
+    /// Delivers preceding changes within the accounting allowance.
+    fn fence(
+        &self,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), DemandError>;
+
+    /// Quiesces this subscription within the accounting allowance.
+    fn stop(&self, accounting: &mut crate::kernel::KernelAccounting<'_>)
+    -> Result<(), DemandError>;
+
+    /// Retires this owned subscription against its original birth-paid cleanup.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stop_with_cleanup_wait(&self, wait: &CancellationToken) -> Result<(), DemandError> {
+        wait.check().map_err(|_| DemandError::Cancelled)?;
+        Err(DemandError::NativeWorkUnavailable)
+    }
+
+    /// Completes only the already-accepted native physical retirement plan,
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+        Err(DemandError::NativeWorkUnavailable)
+    }
+
+    /// True only after this provider has observed physical watch quiescence.
+    fn is_stopped(&self) -> bool {
+        false
+    }
+
+    /// SDK logical payload retained by this returned owner. Existing borrowed
+    fn logical_owned_bytes(&self) -> u64;
+
+    /// Only this call's newly created registration backing, not a preexisting
+    fn allocation_custody(&self) -> Option<std::sync::Arc<SourceWatchAllocationCustody>>;
 
     /// Whether every change still reaches the sink. False once the host
-    /// stopped reporting changes exactly, after the sink last received
-    /// [`SourceChange::Everything`]; from then on a view reads the source
-    /// afresh.
     fn is_exact(&self) -> bool;
 }
 
@@ -157,135 +191,215 @@ pub(super) fn measured<T>(
 }
 
 /// Provider contract for exact lookup, bounded pages, ranges, and metadata.
-/// Implementations must validate the reference and version for each request.
-/// Async methods do not by themselves guarantee kernel completion I/O; each
-/// provider must document its execution mechanism separately.
-#[async_trait::async_trait]
 pub trait DemandSource: Send + Sync {
     /// Current opaque source reference.
     fn reference(&self) -> SourceReference;
 
     /// Resolve only the requested path. `None` is known absence.
-    async fn lookup(
+    fn lookup<W: crate::facade::FsWork + Send>(
         &self,
         source: SourceReference,
         path: &NamespacePath,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> DemandResult<Option<SourceNode>>;
+    ) -> impl Future<Output = W::Output<Option<SourceNode>, DemandError>> + Send;
 
     /// Continue one directory enumeration by at most `maximum_entries`.
-    async fn list_page(
+    fn list_page<W: crate::facade::FsWork + Send>(
         &self,
         source: SourceReference,
         directory: &NamespacePath,
         cursor: Option<SourceCursor>,
         maximum_entries: u32,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> DemandResult<SourceDirectoryPage>;
+    ) -> impl Future<Output = W::Output<SourceDirectoryPage, DemandError>> + Send;
 
     /// Read at most `length` bytes at `offset`, using exact version evidence.
-    async fn read_range(
+    fn read_range<W: crate::facade::FsWork + Send>(
         &self,
         source: SourceReference,
         path: &NamespacePath,
         expected: SourceVersion,
         offset: u64,
         length: u64,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> DemandResult<Bytes>;
+    ) -> impl Future<Output = W::Output<crate::kernel::OwnedSourceChunk, DemandError>> + Send;
 
     /// Opens one regular file at exactly `expected` for repeated range reads.
-    async fn open_file(
+    fn open_file<W: crate::facade::FsWork + Send>(
         &self,
         source: SourceReference,
         path: &NamespacePath,
         expected: SourceVersion,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> DemandResult<Box<dyn DemandFile>>;
+    ) -> impl Future<Output = W::Output<Box<dyn DemandFile>, DemandError>> + Send;
 
     /// Reads one symbolic link's exact opaque target without following it.
-    async fn read_link(
+    fn read_link<W: crate::facade::FsWork + Send>(
         &self,
         source: SourceReference,
         path: &NamespacePath,
         expected: SourceVersion,
+        maximum_bytes: u64,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> DemandResult<Bytes>;
+    ) -> impl Future<Output = W::Output<crate::kernel::OwnedSourceChunk, DemandError>> + Send;
 
     /// Starts reporting every change made to this source outside every view
-    /// of it to `sink`, when the host reports such changes exactly: `None`
-    /// when it cannot, and every view of the source then reads it afresh.
-    /// The answer holds for the source, not per request.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the host refuses a watch it would otherwise provide.
-    fn watch(
+    fn watch<W: crate::facade::FsWork + Send>(
         &self,
-        sink: std::sync::Arc<dyn SourceChangeSink>,
-    ) -> Result<Option<Box<dyn SourceWatch>>, DemandError> {
-        let _ = sink;
-        Ok(None)
+        _sink: std::sync::Arc<dyn SourceChangeSink>,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Option<Box<dyn SourceWatch>>, DemandError> {
+        let accounting = work.accounting(cancellation);
+        let result = (|| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                crate::native_host::NativeHostWork::check(
+                    &NativeSourceWork::from_native_materialization_work(original),
+                )?;
+                return Err(DemandError::NativeWorkUnavailable);
+            }
+            cancellation.check().map_err(|_| DemandError::Cancelled)?;
+            Ok(None)
+        })();
+        work.finish(result, &accounting)
     }
 
     /// Read metadata without reading a file body.
-    async fn read_metadata(
+    fn read_metadata<W: crate::facade::FsWork + Send>(
         &self,
         source: SourceReference,
         path: &NamespacePath,
         expected: Option<SourceVersion>,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> DemandResult<Option<SourceNode>> {
-        let answer = self.lookup(source, path, cancellation).await?;
-        if let Some(expected) = expected {
-            match answer.value {
-                Some(node) if node.version == expected => {}
-                _ => {
-                    return Err(OperationFailure::new(
-                        DemandError::StaleVersion,
-                        answer.work,
-                    ));
-                }
-            }
+    ) -> impl Future<Output = W::Output<Option<SourceNode>, DemandError>> + Send {
+        async move {
+            let mut accounting = work.accounting(cancellation);
+            let result =
+                read_source_metadata(self, source, path, expected, &mut accounting, cancellation)
+                    .await;
+            work.finish(result, &accounting)
         }
-        Ok(answer)
     }
 }
 
 /// A regular source file opened at one exact version.
-///
-/// Reads block the calling thread like a native file read, so they belong on
-/// threads that may block, such as native mount callback threads. Every read
-/// proves that the opened version is still current before returning bytes.
 pub trait DemandFile: Send + Sync {
-    /// Reads at most `length` bytes at `offset`; a range past the end of the
-    /// file is shortened, never padded.
-    ///
-    /// # Errors
-    ///
-    /// Fails with the same typed evidence as [`DemandSource::read_range`]
-    /// once the file, its path, or its source is no longer the opened one.
+    /// SDK-owned payload retained by this opened file, including its box;
+    fn logical_owned_bytes(&self) -> u64;
+
+    /// Reads a bounded range at the file's pinned version.
     fn read_range(
         &self,
         offset: u64,
         length: u64,
-        cancellation: &CancellationToken,
-    ) -> DemandResult<Bytes>;
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<crate::kernel::OwnedSourceChunk, DemandError>;
 }
 
 /// Synchronous admission hook for directories reached by a native lazy source.
-///
-/// Implementations normally install one non-recursive native notification
-/// subscription. The hook runs before the corresponding filesystem read, so a
-/// change cannot race between first observation and watcher admission. It must
-/// inspect only the named directory and its ancestors; recursive enumeration
-/// would violate the lazy-source contract.
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub trait DemandDirectoryObserver: Send + Sync {
     /// Admits one exact directory for observation.
-    ///
-    /// # Errors
-    ///
-    /// Fails closed when the directory cannot be observed exactly.
-    fn observe_directory(&self, directory: &NamespacePath) -> Result<(), DemandError>;
+    fn observe_directory(
+        &self,
+        directory: &NamespacePath,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> DemandResult<()>;
+
+    /// Observes one directory using the caller's exact original invocation.
+    fn observe_directory_with_native_work(
+        &self,
+        _directory: &NamespacePath,
+        work: NativeSourceWork<'_>,
+    ) -> Result<(), DemandError> {
+        crate::native_host::NativeHostWork::check(&work)?;
+        Err(DemandError::NativeWorkUnavailable)
+    }
+}
+
+pub(crate) fn ordinary_source_budget(
+    accounting: &crate::kernel::KernelAccounting<'_>,
+) -> Result<WorkBudget, DemandError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = accounting.native_work() {
+        crate::native_host::NativeHostWork::check(
+            &NativeSourceWork::from_native_materialization_work(original),
+        )?;
+        return Err(DemandError::NativeWorkUnavailable);
+    }
+    accounting
+        .remaining()
+        .map_err(SourceCursor::cursor_accounting_error)
+}
+
+pub(crate) fn accept_source_result<T>(
+    answer: DemandResult<T>,
+    accounting: &mut crate::kernel::KernelAccounting<'_>,
+) -> Result<T, DemandError> {
+    let (result, completed) = match answer {
+        Ok(receipt) => (Ok(receipt.value), receipt.work),
+        Err(failure) => (Err(failure.error), *failure.work),
+    };
+    let (allocations, work, budget, _) = accounting
+        .standalone_parts()
+        .ok_or(DemandError::NativeWorkUnavailable)?;
+    *work = work.with_backend(completed, allocations.live_bytes())?;
+    work.verify(budget)?;
+    result
+}
+
+async fn read_source_metadata<D: DemandSource + ?Sized>(
+    provider: &D,
+    source: SourceReference,
+    path: &NamespacePath,
+    expected: Option<SourceVersion>,
+    accounting: &mut crate::kernel::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<Option<SourceNode>, DemandError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = accounting.native_work() {
+        let mut node = provider
+            .lookup(source, path, original, cancellation)
+            .await?;
+        crate::native_host::NativeHostWork::check(
+            &NativeSourceWork::from_native_materialization_work(original),
+        )?;
+        if let Some(expected) = expected
+            && node.as_ref().map(|node| node.version) != Some(expected)
+        {
+            return Err(DemandError::StaleVersion);
+        }
+        if let Some(node) = &mut node
+            && node.kind == SourceNodeKind::RegularFile
+        {
+            node.link_count = None;
+        }
+        return Ok(node);
+    }
+    let budget = accounting
+        .remaining()
+        .map_err(SourceCursor::cursor_accounting_error)?;
+    let answer = provider.lookup(source, path, budget, cancellation).await;
+    let node = accept_source_result(answer, accounting)?;
+    cancellation.check().map_err(|_| DemandError::Cancelled)?;
+    if let Some(expected) = expected {
+        accounting
+            .charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(SourceCursor::cursor_accounting_error)?;
+        if node.as_ref().map(|node| node.version) != Some(expected) {
+            return Err(DemandError::StaleVersion);
+        }
+    }
+    Ok(node)
 }

@@ -5,7 +5,8 @@ use acyclic_fs::demand::{
     DemandDirectoryObserver, DemandError, DemandResult, DemandSource, FilteredDemandSource,
     SourceReference, native::NativeDemandSource,
 };
-use acyclic_fs::kernel::{LogicalName, NameEncoding, NamespacePath};
+use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, LogicalName, NameEncoding, NamespacePath};
+use acyclic_fs::facade::FsWork;
 use acyclic_fs::model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
 use acyclic_fs::{
     CancellationToken, Fs, IdempotencyKey, LazyOverlay, LazyOverlayId, LazyShadow, LazyShadowId,
@@ -145,105 +146,45 @@ impl FaultingCompanion {
         }
     }
 
-    fn finish<T>(&self, stage: usize, receipt: OperationReceipt<T>)
-        -> Result<OperationReceipt<T>, LazyWorkspaceError>
-    {
+    fn finish<T>(&self, stage: usize, value: T) -> Result<T, LazyWorkspaceError> {
         if stage != 0 && self.fault.compare_exchange(stage, 0, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-            return Err(LazyWorkspaceError::SpentWork(Box::new(OperationFailure::new(
-                LazyWorkspaceError::Store("lost real companion acknowledgement".to_owned()),
-                receipt.work,
-            ))));
+            return Err(LazyWorkspaceError::Store("lost real companion acknowledgement".to_owned()));
         }
-        Ok(receipt)
+        Ok(value)
     }
 }
 
 impl LazyWorkspaceStore for FaultingCompanion {
-    type Error = LazyWorkspaceError;
-
-    async fn load_lazy_workspace(&self, id: WorkspaceId)
-        -> Result<Option<LazyWorkspaceState>, Self::Error>
+    async fn load_lazy_workspace(&self, id: WorkspaceId, accounting: &mut KernelAccounting<'_>)
+        -> Result<Option<LazyWorkspaceState>, LazyWorkspaceError>
     {
-        Ok(self.load_lazy_workspace_measured(id, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value)
+        self.finish(1, self.inner.load_lazy_workspace(id, accounting).await?)
     }
-
-    async fn load_lazy_workspace_measured(
-        &self, id: WorkspaceId, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<Option<LazyWorkspaceState>>, LazyWorkspaceError> {
-        let receipt = self.inner.load_lazy_workspace_measured(id, budget, cancellation).await?;
-        self.finish(1, receipt)
-    }
-
-    async fn compare_and_swap_lazy_workspace(
-        &self, id: WorkspaceId, revision: u64, replacement: LazyWorkspaceState,
-    ) -> Result<bool, Self::Error> {
-        Ok(self.compare_and_swap_lazy_workspace_measured(
-            id, revision, replacement, WorkBudget::UNBOUNDED, &CancellationToken::new(),
-        ).await?.value)
-    }
-
-    async fn compare_and_swap_lazy_workspace_measured(
-        &self, id: WorkspaceId, revision: u64, replacement: LazyWorkspaceState,
-        budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<bool>, LazyWorkspaceError> {
-        let receipt = self.inner.compare_and_swap_lazy_workspace_measured(
-            id, revision, replacement, budget, cancellation,
-        ).await?;
-        self.finish(4, receipt)
-    }
-
-    async fn load_lazy_overlay(&self, id: LazyOverlayId)
-        -> Result<Option<LazyOverlay>, Self::Error>
+    async fn compare_and_swap_lazy_workspace(&self, id: WorkspaceId, revision: u64,
+        replacement: LazyWorkspaceState, accounting: &mut KernelAccounting<'_>)
+        -> Result<bool, LazyWorkspaceError>
     {
-        Ok(self.load_lazy_overlay_measured(id, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value)
+        self.finish(4, self.inner.compare_and_swap_lazy_workspace(id, revision, replacement, accounting).await?)
     }
-
-    async fn load_lazy_overlay_measured(
-        &self, id: LazyOverlayId, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<Option<LazyOverlay>>, LazyWorkspaceError> {
-        let receipt = self.inner.load_lazy_overlay_measured(id, budget, cancellation).await?;
-        self.finish(0, receipt)
-    }
-
-    async fn put_lazy_overlay(&self, id: LazyOverlayId, value: LazyOverlay)
-        -> Result<(), Self::Error>
+    async fn load_lazy_overlay(&self, id: LazyOverlayId, accounting: &mut KernelAccounting<'_>)
+        -> Result<Option<(LazyOverlay, KernelOwnedAllocation)>, LazyWorkspaceError>
     {
-        self.put_lazy_overlay_measured(id, value, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
-        Ok(())
+        self.inner.load_lazy_overlay(id, accounting).await
     }
-
-    async fn put_lazy_overlay_measured(
-        &self, id: LazyOverlayId, value: LazyOverlay, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<()>, LazyWorkspaceError> {
-        let receipt = self.inner.put_lazy_overlay_measured(id, value, budget, cancellation).await?;
-        self.finish(2, receipt)
-    }
-
-    async fn load_lazy_shadow(&self, id: LazyShadowId)
-        -> Result<Option<LazyShadow>, Self::Error>
+    async fn put_lazy_overlay(&self, id: LazyOverlayId, value: (LazyOverlay, KernelOwnedAllocation),
+        accounting: &mut KernelAccounting<'_>) -> Result<(), LazyWorkspaceError>
     {
-        Ok(self.load_lazy_shadow_measured(id, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value)
+        self.finish(2, self.inner.put_lazy_overlay(id, value, accounting).await?)
     }
-
-    async fn load_lazy_shadow_measured(
-        &self, id: LazyShadowId, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<Option<LazyShadow>>, LazyWorkspaceError> {
-        let receipt = self.inner.load_lazy_shadow_measured(id, budget, cancellation).await?;
-        self.finish(0, receipt)
-    }
-
-    async fn put_lazy_shadow(&self, id: LazyShadowId, value: LazyShadow)
-        -> Result<(), Self::Error>
+    async fn load_lazy_shadow(&self, id: LazyShadowId, accounting: &mut KernelAccounting<'_>)
+        -> Result<Option<(LazyShadow, KernelOwnedAllocation)>, LazyWorkspaceError>
     {
-        self.put_lazy_shadow_measured(id, value, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
-        Ok(())
+        self.inner.load_lazy_shadow(id, accounting).await
     }
-
-    async fn put_lazy_shadow_measured(
-        &self, id: LazyShadowId, value: LazyShadow, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<()>, LazyWorkspaceError> {
-        let receipt = self.inner.put_lazy_shadow_measured(id, value, budget, cancellation).await?;
-        self.finish(3, receipt)
+    async fn put_lazy_shadow(&self, id: LazyShadowId, value: (LazyShadow, KernelOwnedAllocation),
+        accounting: &mut KernelAccounting<'_>) -> Result<(), LazyWorkspaceError>
+    {
+        self.finish(3, self.inner.put_lazy_shadow(id, value, accounting).await?)
     }
 }
 
@@ -268,10 +209,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         ).await?;
         let fs = Fs::memory();
         let store = FaultingCompanion::new(stage);
-        let failure = LazyWorkspace::attach_with_operation_measured(
-            &fs, "companion-fault", source.clone(), store.clone(), config, operation,
-            budget, &CancellationToken::new(),
-        ).await.err().ok_or("real companion fault did not fail attachment")?;
+        let failure = async { let cancellation = &CancellationToken::new(); let budget = budget; let mut accounting = budget.accounting(cancellation); let result = LazyWorkspace::attach(&fs, "companion-fault", source.clone(), store.clone(), config, operation, &mut accounting).await; budget.finish(result, &accounting) }.await.err().ok_or("real companion fault did not fail attachment")?;
         assert!(matches!(failure.error.semantic_error(), LazyWorkspaceError::Store(_)));
         failure.work.verify(budget)?;
         let workspace = fs.open_workspace("companion-fault", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -282,10 +220,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         workspace.write_text("/later.txt", "later authored head").await?;
         let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         assert_ne!(head, initial.id());
-        let recovered = LazyWorkspace::attach_with_operation_measured(
-            &fs, "companion-fault", source.clone(), store.clone(), config, operation,
-            budget, &CancellationToken::new(),
-        ).await?;
+        let recovered = async { let cancellation = &CancellationToken::new(); let budget = budget; let mut accounting = budget.accounting(cancellation); let result = LazyWorkspace::attach(&fs, "companion-fault", source.clone(), store.clone(), config, operation, &mut accounting).await; budget.finish(result, &accounting) }.await?;
         recovered.work.verify(budget)?;
         let (lazy, original) = recovered.value;
         assert_eq!(original.id(), initial.id());
@@ -323,10 +258,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     let store = FaultingCompanion::new(0);
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let operation = OperationId::new();
-    let created = LazyWorkspace::attach_with_operation_measured(
-        &fs, "epoch-attachment", source.clone(), store.clone(), config, operation,
-        budget, &cancellation,
-    ).await?;
+    let created = async { let cancellation = &cancellation; let budget = budget; let mut accounting = budget.accounting(cancellation); let result = LazyWorkspace::attach(&fs, "epoch-attachment", source.clone(), store.clone(), config, operation, &mut accounting).await; budget.finish(result, &accounting) }.await?;
     created.work.verify(budget)?;
     let (lazy, original) = created.value;
     let initial = lazy.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
@@ -357,10 +289,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         std::borrow::Cow::Owned(directory.path().to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(),
         Some(advanced), Some(observer.clone()), budget, &cancellation,
     ).await?.value);
-    let recovered = LazyWorkspace::attach_with_operation_measured(
-        &fs, "epoch-attachment", reopened_source, store.clone(), config, operation,
-        budget, &cancellation,
-    ).await?;
+    let recovered = async { let cancellation = &cancellation; let budget = budget; let mut accounting = budget.accounting(cancellation); let result = LazyWorkspace::attach(&fs, "epoch-attachment", reopened_source, store.clone(), config, operation, &mut accounting).await; budget.finish(result, &accounting) }.await?;
     recovered.work.verify(budget)?;
     assert_eq!(recovered.value.1.id(), original_id);
     assert_eq!(recovered.value.1.workspace_id(), workspace_id);
@@ -372,10 +301,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         std::borrow::Cow::Owned(directory.path().to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(),
         Some(SourceReference { identity: [52; 16], epoch: advanced.epoch }), None, budget, &cancellation,
     ).await?.value);
-    let rejected = LazyWorkspace::attach_with_operation_measured(
-        &fs, "epoch-attachment", foreign_source, store.clone(), config, operation,
-        budget, &cancellation,
-    ).await.err().ok_or("foreign source adopted an original binding")?;
+    let rejected = async { let cancellation = &cancellation; let budget = budget; let mut accounting = budget.accounting(cancellation); let result = LazyWorkspace::attach(&fs, "epoch-attachment", foreign_source, store.clone(), config, operation, &mut accounting).await; budget.finish(result, &accounting) }.await.err().ok_or("foreign source adopted an original binding")?;
     assert!(matches!(rejected.error.semantic_error(), LazyWorkspaceError::StaleSource));
     rejected.work.verify(budget)?;
     assert_eq!(store.load_lazy_workspace(workspace_id).await?.as_ref(), Some(rebound.value.as_state()));

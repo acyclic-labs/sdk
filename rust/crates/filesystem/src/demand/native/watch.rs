@@ -12,9 +12,6 @@ impl SourceWatch for NativeWatch {
 }
 
 /// Turns host reports into source changes: each path into its name in
-/// the source's namespace and, where the host still names a node there,
-/// that node. It refers to the source weakly, as the sink does to its
-/// view: nothing a host keeps after the watch stops may hold the source.
 struct NativeChanges {
     inner: std::sync::Weak<NativeDemandInner>,
     sink: Arc<dyn SourceChangeSink>,
@@ -22,8 +19,6 @@ struct NativeChanges {
 
 impl NativeDemandInner {
     /// The longest prefix of `relative` the source can name, and whether
-    /// that is all of it: a name it cannot represent was never read
-    /// through it, but its directory changed with it.
     fn name(&self, relative: &Path) -> (NamespacePath, bool) {
         let limits = self.limits;
         let mut components = Vec::new();
@@ -75,16 +70,11 @@ impl crate::source_watch::HostChangeSink for NativeChanges {
                 )),
                 HostChange::Rebound(relative) | HostChange::Altered(relative) => {
                     let (name, exact) = inner.name(relative);
-                    // The name identifies its node only while it still
-                    // binds it; NTFS reports the node itself as well.
                     let node = inner
                         .root
                         .stat(relative)
                         .ok()
                         .map(|metadata| file_identity(&metadata));
-                    // An entry altered in place that can no longer be
-                    // found may have been replaced meanwhile; the held
-                    // root cannot be.
                     let altered = matches!(change, HostChange::Altered(_))
                         && exact
                         && (node.is_some() || name.is_root());

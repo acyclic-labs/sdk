@@ -11,7 +11,7 @@ use crate::kernel::{
 use crate::model::{CheckoutMode, GenerationSelector};
 use crate::path::PortablePath;
 use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, Checkout, CheckoutCommitOutcome,
+    AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, Checkout, LivePublicationObservation,
     ConflictKey, ConflictKind, ConflictSide, ConflictValue, FsError, GenerationDiff, MergeConflict,
     MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
     MergeResolutionCache, UnpublishedMergeCandidate, Volume, resolve_merge_plan,
@@ -62,7 +62,7 @@ pub use retention::{WorkspaceDelete};
 pub use transaction::{Transaction};
 
 pub(crate) use accounting::{workspace_owned_strings_bytes, workspace_vec_bytes, workspace_remaining};
-use accounting::{merge_workspace_backend, workspace_allocation_error};
+use accounting::{merge_workspace_backend, workspace_allocation_error, workspace_allocation};
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 use accounting::merge_workspace_work;
 pub(crate) use paths::{customer_path, customer_path_with_accounting};

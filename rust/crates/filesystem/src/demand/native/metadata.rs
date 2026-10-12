@@ -67,9 +67,6 @@ fn version(metadata: &HostStat) -> SourceVersion {
 }
 
 /// A file's identity: its device and inode, and its birth time, which
-/// tells a new file apart from a removed one whose inode the host reused.
-/// Every name of one file shares it. A file system that records no birth
-/// time (a few do not) cannot tell reuse apart by identity alone.
 #[cfg(unix)]
 fn file_identity(metadata: &HostStat) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
@@ -95,7 +92,6 @@ fn file_identity(metadata: &HostStat) -> [u8; 32] {
 }
 
 /// The identity of the file with host index `index` on the volume whose
-/// serial number is `volume`, as a lookup of it reports it.
 #[cfg(windows)]
 fn windows_file_identity(volume: u64, index: u64) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
@@ -110,8 +106,6 @@ fn link_count(metadata: &HostStat) -> Option<u64> {
     {
         Some(metadata.nlink())
     }
-    // Every Windows stat reads the file record, which counts every
-    // name, so a listed node and a lookup report the same count.
     #[cfg(not(unix))]
     {
         metadata.number_of_links().map(u64::from)

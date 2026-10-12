@@ -8,9 +8,9 @@ use super::search::{binary_search_with_accounting, partition_point_with_accounti
 use super::{
     CanonicalDecodeError, DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentPage,
 };
+use crate::FsError;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::FsError;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
@@ -724,7 +724,9 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
         ).await?;
         let before = match &self.accounting {
             KernelAccounting::Standalone { allocations, .. } => Some(allocations.live_bytes()),
-            KernelAccounting::BorrowedStandalone { allocations, .. } => Some(allocations.live_bytes()),
+            KernelAccounting::BorrowedStandalone { allocations, .. } => {
+                Some(allocations.live_bytes())
+            }
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => None,
         };
@@ -734,7 +736,9 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
                 KernelAccounting::Standalone { allocations, .. } => &mut *allocations,
                 KernelAccounting::BorrowedStandalone { allocations, .. } => &mut **allocations,
                 #[cfg(not(target_arch = "wasm32"))]
-                KernelAccounting::NativeOriginal { .. } => unreachable!("standalone decoder custody"),
+                KernelAccounting::NativeOriginal { .. } => {
+                    unreachable!("standalone decoder custody")
+                }
             };
             ledger.release(ledger.live_bytes().checked_sub(before).ok_or(WorkError::Overflow)?)
                 .map_err(extent_allocation_error)?;
@@ -787,13 +791,20 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
         let mut encoded = encoded;
         let allocation = match &mut encoded.allocation {
             super::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => allocation,
-            super::allocation::KernelOwnedAllocation::Standalone => return Err(extent_error(ExtentMutationError::AllocationFailed)),
+            super::allocation::KernelOwnedAllocation::Standalone => {
+                return Err(extent_error(ExtentMutationError::AllocationFailed));
+            }
         };
         let hashed = HashedObject::from_native_vec(kind, &mut encoded.value, allocation, original, cancellation)?;
         let object = hashed.object_id();
         accounting.charge(WorkCounters { page_writes: u64::from(kind != ObjectKind::BlobChunk), ..WorkCounters::UNCHARGED })?;
-        store.put_hashed_with_native_work(hashed, original, cancellation).await
-            .map_err(super::file_read::read_store_error)?;
+        {
+            let __object_args = (hashed, original, cancellation);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+            let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
+            __object_result
+        }
+        .map_err(super::file_read::read_store_error)?;
         return Ok(object);
     }
     let hashing = WorkCounters {
@@ -806,7 +817,12 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
     accounting.charge(hashing)?;
     accounting.charge(WorkCounters { page_writes: u64::from(kind != ObjectKind::BlobChunk), ..WorkCounters::UNCHARGED })?;
     let object = hashed.object_id();
-    let receipt = store.put_hashed(hashed, accounting.remaining()?, cancellation).await;
+    let receipt = {
+        let __object_args = (hashed, accounting.remaining()?, cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    };
     let spent = match &receipt { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
     super::file_read::complete_standalone_backend(accounting, spent, 0)?;
     retire_allocation(allocation, bytes, accounting)?;
