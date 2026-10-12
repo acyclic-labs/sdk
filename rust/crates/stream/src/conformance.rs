@@ -1,6 +1,5 @@
 //! Reusable black-box qualification of the complete public Stream contract.
 
-use bytes::Bytes;
 use crate::OwnedBytes;
 use futures::StreamExt as _;
 
@@ -457,7 +456,7 @@ fn path(value: &str) -> Result<StreamPath, String> {
 }
 
 fn key(value: &'static [u8]) -> Result<IdempotencyKey, String> {
-    IdempotencyKey::new(Bytes::from_static(value)).map_err(|err| error(&err))
+    IdempotencyKey::new(OwnedBytes::from_static(value)).map_err(|err| error(&err))
 }
 
 fn error(error: &impl ToString) -> String {

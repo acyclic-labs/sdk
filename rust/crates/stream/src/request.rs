@@ -5,7 +5,8 @@ use crate::{AppendRequest, CommitRequest, ForkRequest, StreamError, memory};
 pub fn append_digest(request: &AppendRequest) -> Result<[u8; 32], StreamError> {
     memory::validate_records(&request.records)?;
     memory::validate_append_size(request)?;
-    Ok(memory::append_digest(request))
+    Ok(memory::append_digest(request, &memory::MemoryObserver::default())
+        .expect("ordinary hashing has no fallible observer"))
 }
 
 /// Validates a fork and returns its canonical retry digest.
@@ -27,7 +28,8 @@ pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamErro
 /// Computes the canonical digest of a pre-normalized, caller-validated request.
 #[must_use]
 pub fn normalized_commit_digest(request: &CommitRequest) -> [u8; 32] {
-    memory::commit_digest(request)
+    memory::commit_digest(request, &memory::MemoryObserver::default())
+        .expect("ordinary hashing has no fallible observer")
 }
 
 #[cfg(test)]

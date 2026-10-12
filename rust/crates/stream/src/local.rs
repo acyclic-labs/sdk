@@ -512,7 +512,7 @@ impl PreparedLocalWork {
                 .and_then(|length| u32::try_from(length).ok())
                 .ok_or(LocalCompletionError::Stream(StreamError::Capacity))?;
             let frame_length = 4 + command_length as usize + FRAME_CHECKSUM_BYTES;
-            self.persist.operation.frame.write_wire_with_work(
+            self.persist.operation.frame.write_wire(
                 &wire, committed_at, encoded_length, command_length.to_le_bytes(), frame_length, &mut work,
             ).map_err(publication_error)?;
             self.stream.inner.journal.journal.lock()
@@ -761,20 +761,7 @@ impl LocalStream {
         }
     }
 
-    /// Encodes the command and pins its recorded commit timestamp.
-    fn prepare(&self, command: CommandRef<'_>) -> Result<PreparedFrame, StreamError> {
-        self.prepare_observed(command, None).map_err(LocalCompletionError::ordinary)
-    }
-
-    fn prepare_observed(
-        &self,
-        command: CommandRef<'_>,
-        meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> LocalCompletion<PreparedFrame> {
-        self.prepare_observed_with_pin(command, meter, true).map(|(frame, _)| frame)
-    }
-
-    fn prepare_observed_with_pin(
+    fn prepare(
         &self,
         command: CommandRef<'_>,
         meter: Option<&Arc<dyn NativeReadMeter>>,
@@ -784,9 +771,9 @@ impl LocalStream {
         if let Some(meter) = meter {
             let length = match command {
                 CommandRef::Append(request) =>
-                    Some(crate::memory::append_encoded_len_observed(request, Some(meter))?),
+                    Some(crate::memory::append_encoded_len(request, &crate::memory::MemoryObserver { meter: Some(Arc::clone(meter)) })?),
                 CommandRef::Commit(request) =>
-                    Some(crate::memory::commit_encoded_len_observed(request, Some(meter))?),
+                    Some(crate::memory::commit_encoded_len(request, &crate::memory::MemoryObserver { meter: Some(Arc::clone(meter)) })?),
                 CommandRef::Fork(_) => None,
             };
             if let Some(length) = length {
@@ -1033,7 +1020,7 @@ impl LocalStream {
         T: Send + 'static,
         F: Future<Output = Result<T, StreamError>> + Send + 'static,
     {
-        self.exclusive_observed(span, None, move |stream| async move {
+        self.exclusive_observed(span, None, MutationVisibility::BeforeMutation, move |stream| async move {
             let (result, value) = match mutation(stream).await {
                 Ok(value) => (Ok(()), Some(value)),
                 Err(error) => (Err(LocalCompletionError::Stream(error)), None),
@@ -1050,21 +1037,6 @@ impl LocalStream {
     }
 
     async fn exclusive_observed<T, F>(
-        &self,
-        span: &obs::OwnedSpan,
-        meter: Option<Arc<dyn NativeReadMeter>>,
-        mutation: impl FnOnce(Self) -> F + Send + 'static,
-    ) -> LocalCompletion<T>
-    where
-        T: Send + 'static,
-        F: Future<Output = MutationCompletion<T>> + Send + 'static,
-    {
-        self.exclusive_observed_with_visibility(
-            span, meter, MutationVisibility::BeforeMutation, mutation,
-        ).await
-    }
-
-    async fn exclusive_observed_with_visibility<T, F>(
         &self,
         span: &obs::OwnedSpan,
         meter: Option<Arc<dyn NativeReadMeter>>,
@@ -1221,7 +1193,7 @@ impl LocalStream {
         });
         let operation = span.clone();
         let observer = meter.clone();
-        span.scope(self.exclusive_observed_with_visibility(&span, meter, visibility, move |stream| async move {
+        span.scope(self.exclusive_observed(&span, meter, visibility, move |stream| async move {
             let mut accepted_flush = None;
             let mut accepted_input = None;
             let mut accepted_visibility = None;
@@ -1232,7 +1204,7 @@ impl LocalStream {
                     MutationInput::Commit(input) => CommandRef::Commit(&input.request),
                     MutationInput::Append(input) => CommandRef::Append(&input.request),
                 };
-                let (frame, committed_at) = stream.prepare_observed_with_pin(
+                let (frame, committed_at) = stream.prepare(
                     command, observer.as_ref(),
                     matches!(visibility, MutationVisibility::BeforeMutation),
                 )?;
@@ -1456,7 +1428,7 @@ impl StreamProvider for LocalStream {
         ));
         span.scope(async {
             self.exclusive(&span, |stream| async move {
-                let frame = stream.prepare(CommandRef::Fork(&request))?;
+                let frame = stream.prepare(CommandRef::Fork(&request), None, true).map(|(frame, _)| frame).map_err(LocalCompletionError::ordinary)?;
                 let outcome = stream.inner.provider.fork(request).await?;
                 stream.persist(frame).await?;
                 Ok(outcome)
@@ -1997,7 +1969,8 @@ impl PreparedFrame {
             .and_then(|value| value.checked_add(FRAME_CHECKSUM_BYTES))
             .ok_or(LocalStreamError::InvalidLimits)?;
         let mut frame = Self::allocate_buffer(capacity, meter)?;
-        frame.write_wire_observed(journal, committed_at_millis, encoded_length, length, capacity, meter)?;
+        frame.write_wire(journal, committed_at_millis, encoded_length, length, capacity,
+            &mut FrameWork { meter, accepted: false, late: Ok(()) })?;
         Ok(frame)
     }
 
@@ -2014,21 +1987,7 @@ impl PreparedFrame {
         Ok(Self { encoded, bytes: 0, _allocation: allocation })
     }
 
-    /// Encodes only into already owned storage; the closed capacity bound is checked before any copy and never silently grows a prepared frame.
-    fn write_wire_observed(
-        &mut self,
-        journal: &crate::wire_codec::CanonicalWire<'_>,
-        committed_at_millis: u64,
-        encoded_length: usize,
-        length: [u8; 4],
-        capacity: usize,
-        meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> Result<(), LocalStreamError> {
-        let mut work = FrameWork { meter, accepted: false, late: Ok(()) };
-        self.write_wire_with_work(journal, committed_at_millis, encoded_length, length, capacity, &mut work)
-    }
-
-    fn write_wire_with_work(
+    fn write_wire(
         &mut self,
         journal: &crate::wire_codec::CanonicalWire<'_>,
         committed_at_millis: u64,
@@ -2381,7 +2340,7 @@ impl Journal {
         let total_length = length;
         while valid_length < total_length {
             let frame_start = valid_length;
-            let Some(frame) = read_frame(&mut self.file, total_length - frame_start)? else {
+            let Some(frame) = read_frame(&mut self.file, total_length - frame_start, None)? else {
                 // Repair is deferred until semantic replay has accepted every prefix frame.
                 self.torn_tail = Some(frame_start);
                 break;
@@ -2613,11 +2572,6 @@ struct JournalFrame {
 }
 
 /// Reads the frame at the file's cursor, `remaining` bytes before its end, or `None` when it is invalid.
-fn read_frame(file: &mut File, remaining: u64) -> Result<Option<JournalFrame>, LocalStreamError> {
-    read_frame_observed(file, remaining, None)
-}
-
-/// The meter owns the original allocator failure; no denial is reboxed here.
 fn frame_buffer(
     capacity: usize,
     meter: Option<&Arc<dyn NativeReadMeter>>,
@@ -2631,7 +2585,7 @@ fn frame_buffer(
     Ok(value)
 }
 
-fn read_frame_observed(
+fn read_frame(
     file: &mut impl Read,
     remaining: u64,
     meter: Option<&Arc<dyn NativeReadMeter>>,
@@ -3010,9 +2964,7 @@ mod tests {
         cancel_on_durability: AtomicBool,
         expire_after_hash: Mutex<Option<(Arc<TestClock>, u64)>>,
         memory: AtomicU64,
-        peak: AtomicU64,
         allocations: AtomicU64,
-        pending_allocations: parking_lot::Mutex<(u64, u64)>,
         read_operations: AtomicU64,
         write_operations: AtomicU64,
         durability_operations: AtomicU64,
@@ -3034,8 +2986,7 @@ mod tests {
         }
 
         fn retain(&self, bytes: u64) {
-            let current = self.memory.fetch_add(bytes, Ordering::SeqCst) + bytes;
-            self.peak.fetch_max(current, Ordering::SeqCst);
+            self.memory.fetch_add(bytes, Ordering::SeqCst);
         }
 
         fn kind(kind: NativeOperationKind) -> usize {
@@ -3058,7 +3009,6 @@ mod tests {
             for held in &self.held_operations { assert_eq!(held.load(Ordering::SeqCst), 0); }
             for held in &self.held_bytes { assert_eq!(held.load(Ordering::SeqCst), 0); }
             assert_eq!(self.held_cleanup.load(Ordering::SeqCst), 0);
-            assert_eq!(*self.pending_allocations.lock(), (0, 0));
         }
     }
 
@@ -3121,39 +3071,9 @@ mod tests {
             self.retain(bytes);
             Ok(())
         }
-        fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
-            let mut pending = self.pending_allocations.lock();
-            self.check()?;
-            if self.deny_allocation.load(Ordering::SeqCst) {
-                return Err(Self::denial("allocation"));
-            }
-            let operations = pending.0.checked_add(1)
-                .ok_or_else(|| Self::denial("allocation credit overflow"))?;
-            let held_bytes = pending.1.checked_add(bytes)
-                .ok_or_else(|| Self::denial("allocation byte credit overflow"))?;
-            self.allocations.load(Ordering::SeqCst).checked_add(operations)
-                .ok_or_else(|| Self::denial("allocation operation overflow"))?;
-            self.memory.load(Ordering::SeqCst).checked_add(held_bytes)
-                .ok_or_else(|| Self::denial("allocation memory overflow"))?;
-            *pending = (operations, held_bytes);
-            Ok(())
-        }
-        fn cancel_reserved_allocation(&self, bytes: u64) {
-            let mut pending = self.pending_allocations.lock();
-            pending.0 = pending.0.checked_sub(1).expect("refund owns one allocation credit");
-            pending.1 = pending.1.checked_sub(bytes).expect("refund owns its allocation byte credit");
-        }
-        fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> {
-            let mut pending = self.pending_allocations.lock();
-            let operations = pending.0.checked_sub(1)
-                .ok_or_else(|| Self::denial("missing original allocation credit"))?;
-            let held_bytes = pending.1.checked_sub(bytes)
-                .ok_or_else(|| Self::denial("missing original allocation byte credit"))?;
-            *pending = (operations, held_bytes);
-            self.allocations.fetch_add(1, Ordering::SeqCst);
-            self.retain(bytes);
-            Ok(())
-        }
+        fn reserve_allocation(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
+        fn cancel_reserved_allocation(&self, _: u64) {}
+        fn record_reserved_allocation(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
         fn allocation_failed(&self, error: std::collections::TryReserveError) -> std::io::Error {
             std::io::Error::new(std::io::ErrorKind::OutOfMemory, error)
         }

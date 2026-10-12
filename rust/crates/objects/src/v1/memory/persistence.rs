@@ -407,7 +407,8 @@ impl MemoryObjects {
         let mut state = self.lock_state()?;
         let journal = self.journal.as_ref().ok_or(Error::from(Unavailable))?;
         if !journal.maintenance_due()? { return Ok(()); }
-        let mut next = clone_state_measured(&state, &meter)?;
+        meter.check()?;
+        let mut next = state.clone();
         journal.materialize_inline_with(&mut next, Some(Arc::clone(&meter)))?;
         journal.compact_with(&next, Some(meter))?;
         *state = next;
@@ -746,7 +747,8 @@ impl Journal {
                 // persisted: the committed state holds none. Walking just those keeps a
                 // commit proportional to its change rather than to the store, and leaves
                 // every other subtree shared with `before`, so `difference` skips it too.
-                for (name, bucket) in &mut next.buckets {
+                for (name, _) in &next.buckets.clone() {
+                    let bucket = next.buckets.get_mut(name).ok_or(Error::from(Unavailable))?;
                     let keys = changed_keys_with(before.buckets.get(name), bucket, &mut publication)?;
                     for key in keys {
                         let object = bucket
@@ -759,8 +761,10 @@ impl Journal {
                         object.body = self.prepare_inline_with(&object.body, &mut inline_data, &mut publication)?;
                     }
                 }
-                for upload in next.uploads.values_mut() {
-                    for (_, body) in upload.parts.values_mut() {
+                for (id, _) in &next.uploads.clone() {
+                    let upload = next.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
+                    for (number, _) in &upload.parts.clone() {
+                        let (_, body) = upload.parts.get_mut(number).ok_or(Error::from(Unavailable))?;
                         *body = self.prepare_inline_with(body, &mut inline_data, &mut publication)?;
                     }
                 }
@@ -899,7 +903,7 @@ fn bodies_with(body: &StoredBody, publication: &mut Publication) -> Result<Vec<B
 }
 
 /// Keys of `next`'s objects that are new or differ from `before`'s, in key order.
-fn changed_keys_with(before: Option<&Bucket>, next: &Bucket, publication: &mut Publication) -> Result<Vec<SharedText>, NativeObjectsError> {
+fn changed_keys_with(before: Option<&Bucket>, next: &Bucket, publication: &mut Publication) -> Result<Vec<SharedInfo<String>>, NativeObjectsError> {
     let mut output = Vec::new();
     if let Some(before) = before {
         for item in before.objects.diff(&next.objects) {
@@ -986,7 +990,7 @@ fn difference_with(before: &State, next: &State, ordinal: u64, publication: &mut
     for (id, upload) in &next.uploads {
         let old = before.uploads.get(id);
         if old.is_none() {
-            let metadata = upload.metadata.as_ref().map(|value| publication.metadata(value)).transpose()?;
+            let metadata = upload.metadata.as_ref().as_ref().map(|value| publication.metadata(value)).transpose()?;
             let change = UploadChange {
                 id: publication.text(id)?,
                 bucket: publication.text(&upload.bucket)?,
@@ -1095,19 +1099,19 @@ fn apply(
                 },
             )
             .map_err(corrupt)?;
-            if next.buckets.contains_key(&value.name) {
+            if next.buckets.contains_key(value.name.as_str()) {
                 return Err(LocalOpenError::Corrupt);
             }
             next.buckets.insert(
-                value.name,
+                value.name.into(),
                 Bucket {
-                    info,
+                    info: info.into(),
                     objects: OrdMap::new(),
                 },
             );
         } else if next
             .buckets
-            .remove(&value.name)
+            .remove(value.name.as_str())
             .is_none_or(|bucket| !bucket.objects.is_empty())
         {
             return Err(LocalOpenError::Corrupt);
@@ -1121,7 +1125,7 @@ fn apply(
         }
         let bucket = next
             .buckets
-            .get_mut(&value.bucket)
+            .get_mut(value.bucket.as_str())
             .ok_or(LocalOpenError::Corrupt)?;
         if let Some(info) = value.info {
             response::object_info(&info).map_err(corrupt)?;
@@ -1153,23 +1157,23 @@ fn apply_uploads(next: &mut State, changes: Vec<UploadChange>) -> Result<(), Loc
             if !value.bucket.is_empty()
                 || !value.key.is_empty()
                 || value.metadata.is_some()
-                || next.uploads.remove(&value.id).is_none()
+                || next.uploads.remove(value.id.as_str()).is_none()
             {
                 return Err(LocalOpenError::Corrupt);
             }
         } else {
             request::key(&value.key).map_err(corrupt)?;
             request::metadata(&value.metadata).map_err(corrupt)?;
-            if !next.buckets.contains_key(&value.bucket) || next.uploads.contains_key(&value.id) {
+            if !next.buckets.contains_key(value.bucket.as_str()) || next.uploads.contains_key(value.id.as_str()) {
                 return Err(LocalOpenError::Corrupt);
             }
             next.uploads.insert(
-                value.id,
+                value.id.into(),
                 Upload {
-                    bucket: value.bucket,
-                    key: value.key,
-                    metadata: value.metadata,
-                    parts: BTreeMap::new(),
+                    bucket: value.bucket.into(),
+                    key: value.key.into(),
+                    metadata: value.metadata.into(),
+                    parts: OrdMap::new(),
                 },
             );
         }
@@ -1190,14 +1194,14 @@ fn apply_parts(
         }
         let upload = next
             .uploads
-            .get_mut(&value.upload)
+            .get_mut(value.upload.as_str())
             .ok_or(LocalOpenError::Corrupt)?;
         let receipt = value.receipt.ok_or(LocalOpenError::Corrupt)?;
         let query = wire::UploadPartHeader {
             bucket: Some(wire::BucketRef {
-                name: upload.bucket.clone(),
+                name: upload.bucket.to_string(),
             }),
-            object_key: upload.key.clone(),
+            object_key: upload.key.to_string(),
             upload_id: value.upload,
             part_number: value.number,
             mutation: None,
@@ -1213,7 +1217,7 @@ fn apply_parts(
             return Err(LocalOpenError::Corrupt);
         }
         let body = restore_body(value.bodies, root, receipt.size)?;
-        upload.parts.insert(value.number, (receipt, body));
+        upload.parts.insert(value.number, (receipt.into(), body));
     }
     Ok(())
 }
@@ -1253,7 +1257,7 @@ fn validate_state(
         || next
             .uploads
             .values()
-            .any(|upload| !next.buckets.contains_key(&upload.bucket))
+            .any(|upload| !next.buckets.contains_key(upload.bucket.as_str()))
     {
         return Err(LocalOpenError::Corrupt);
     }

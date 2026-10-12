@@ -116,7 +116,8 @@ impl Journal {
                 crate::physical::sync_segment_directory_measured(
                     &self.root.path, self.limits.durability, &mut publication,
                 )?;
-                for bucket in state.buckets.values_mut() {
+                for (name, _) in &state.buckets.clone() {
+                    let bucket = state.buckets.get_mut(name).ok_or(Error::from(Unavailable))?;
                     let mut relocation = Publication::new(publication.meter.clone());
                     let mut relocated = Vec::new();
                     for (key, object) in bucket.objects.iter() {
@@ -134,8 +135,10 @@ impl Journal {
                             .body = body;
                     }
                 }
-                for upload in state.uploads.values_mut() {
-                    for (_, body) in upload.parts.values_mut() {
+                for (id, _) in &state.uploads.clone() {
+                    let upload = state.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
+                    for (number, _) in &upload.parts.clone() {
+                        let (_, body) = upload.parts.get_mut(number).ok_or(Error::from(Unavailable))?;
                         if let Some(moved) = relocated_publication(body, &moves, &publication)? {
                             *body = moved;
                         }
@@ -284,15 +287,17 @@ pub(super) fn place_with(delta: &mut Delta, state: &mut State, frame: u64, publi
     for change in delta.objects.iter().filter(|change| change.info.is_some()) {
         let object = state
             .buckets
-            .get_mut(&change.bucket)
+            .get_mut(change.bucket.as_str())
             .and_then(|bucket| bucket.objects.get_mut(change.key.as_str()))
             .ok_or(Error::from(Unavailable))?;
         if let Some(body) = relocated_publication(&object.body, &moves, publication)? {
             object.body = body;
         }
     }
-    for upload in state.uploads.values_mut() {
-        for (_, body) in upload.parts.values_mut() {
+    for (id, _) in &state.uploads.clone() {
+                    let upload = state.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
+        for (number, _) in &upload.parts.clone() {
+                        let (_, body) = upload.parts.get_mut(number).ok_or(Error::from(Unavailable))?;
             if let Some(moved) = relocated_publication(body, &moves, publication)? {
                 *body = moved;
             }

@@ -26,13 +26,13 @@ pub fn append(
     if request.if_tail.is_some_and(|expected| expected != start) {
         return Ok((AppendOutcome::TailConflict { actual_tail: start }, None));
     }
-    let fact = append_fact(
-        request.path.clone(),
+    let fact = provider_result(append_fact(
+        &request.path,
         start,
         request.records.clone(),
         commit_id,
-        committed_at_micros,
-    )?;
+        committed_at_micros, &MemoryObserver::default(),
+    ))?.value;
     let receipt = AppendReceipt {
         start: fact.start,
         end: fact.end,
@@ -93,19 +93,7 @@ pub(crate) fn fork_cut(
     Ok(cut)
 }
 
-pub(crate) fn append_fact(
-    path: StreamPath,
-    start: u64,
-    bodies: Vec<OwnedBytes>,
-    commit_id: CommitId,
-    committed_at_micros: u64,
-) -> Result<CommittedAppend, StreamError> {
-    provider_result(append_fact_with_observer(
-        &path, start, bodies, commit_id, committed_at_micros, &MemoryObserver::default(),
-    )).map(|output| output.value)
-}
-
-pub(crate) fn append_fact_with_observer<I>(
+pub(crate) fn append_fact<I>(
     path: &StreamPath,
     start: u64,
     bodies: I,
@@ -145,7 +133,7 @@ pub(crate) fn single_append_template(request: &CommitRequest) -> Result<(&Stream
     Ok((path, start))
 }
 
-/// Rebinds only scalar metadata and an immutable body alias in the real fact vector allocated by `mutations_with_observer`.
+/// Rebinds only scalar metadata and an immutable body alias in the real fact vector allocated by `mutations`.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn fill_single_append(
     envelope: &mut CommittedEnvelope,
@@ -200,26 +188,18 @@ pub fn commit(
         }
     }
     let tail = |path: &StreamPath| observed.get(path).copied().flatten();
-    let conflicts = conditions(&request.conditions, tail);
+    let conflicts = provider_result(conditions(&request.conditions, tail, &MemoryObserver::default()))?.value;
     if !conflicts.is_empty() {
         return Ok(CommitOutcome::Conflict(conflicts));
     }
-    authority(request, tail)?;
+    provider_result(authority(request, tail, &MemoryObserver::default()))?;
     Ok(CommitOutcome::Committed(CommittedEnvelope {
         commit_id,
-        mutations: mutations(&request.mutations, tail, commit_id, committed_at_micros)?,
+        mutations: provider_result(mutations(&request.mutations, tail, commit_id, committed_at_micros, &MemoryObserver::default()))?.value,
     }))
 }
 
 pub(crate) fn conditions(
-    conditions: &[CommitCondition],
-    tail: impl Fn(&StreamPath) -> Option<u64>,
-) -> Vec<CommitConflict> {
-    provider_result(conditions_with_observer(conditions, tail, &MemoryObserver::default()))
-        .expect("ordinary condition inspection has no fallible observer").value
-}
-
-pub(crate) fn conditions_with_observer(
     conditions: &[CommitCondition],
     tail: impl Fn(&StreamPath) -> Option<u64>,
     observer: &MemoryObserver,
@@ -260,13 +240,6 @@ pub(crate) fn conditions_with_observer(
 pub(crate) fn authority(
     request: &CommitRequest,
     tail: impl Fn(&StreamPath) -> Option<u64>,
-) -> Result<(), StreamError> {
-    provider_result(authority_with_observer(request, tail, &MemoryObserver::default()))
-}
-
-pub(crate) fn authority_with_observer(
-    request: &CommitRequest,
-    tail: impl Fn(&StreamPath) -> Option<u64>,
     observer: &MemoryObserver,
 ) -> MemoryResult<()> {
     for mutation in &request.mutations {
@@ -285,18 +258,6 @@ pub(crate) fn authority_with_observer(
 }
 
 pub(crate) fn mutations(
-    mutations: &[CommitMutation],
-    tail: impl Fn(&StreamPath) -> Option<u64>,
-    commit_id: CommitId,
-    committed_at_micros: u64,
-) -> Result<Vec<CommittedMutation>, StreamError> {
-    provider_result(mutations_with_observer(
-        mutations, tail, commit_id, committed_at_micros, &MemoryObserver::default(),
-    )).map(|output| output.value)
-}
-
-/// One physical mutation-fact builder; an observer never changes its authority algebra or creates a second work root.
-pub(crate) fn mutations_with_observer(
     mutations: &[CommitMutation],
     tail: impl Fn(&StreamPath) -> Option<u64>,
     commit_id: CommitId,

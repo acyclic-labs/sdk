@@ -153,7 +153,7 @@ fn encode_observed(state: &State, meter: WireMeter<'_>) -> std::io::Result<Obser
             writer.message(&CanonicalWire::Observation(key, &replay.digest, &replay.result))?;
         }
         if let Some(envelope) = commit {
-            writer.message(&CanonicalWire::Envelope(envelope))?;
+            writer.message(&CanonicalWire::Envelope(envelope.envelope().expect("a commit index contains an envelope")))?;
         }
     }
     Ok(writer.funding.finish(writer.out))
@@ -332,7 +332,7 @@ fn validate_inventory(state: &State) -> Option<()> {
         let Some(commit) = retained.commit else {
             continue;
         };
-        let envelope = state.commits.get(&commit)?;
+        let envelope = state.commits.get(&commit)?.envelope()?;
         let mut pending = Vec::with_capacity(envelope.mutations.len());
         for mutation in &envelope.mutations {
             let (path, records, parent) = match mutation {
@@ -529,44 +529,30 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
         if flags == 0 || flags & !(RETAINS_REPLAY | RETAINS_COMMIT) != 0 {
             return None;
         }
-        let replay = if flags & RETAINS_REPLAY == 0 {
-            None
-        } else {
-            let bytes = input.bytes()?;
-            let observation =
-                crate::persistence::decode_observation(bytes, retained_fact_bound()?).ok()?;
-            let key = observation.idempotency_key.0.clone();
-            if state.replays.contains_key(&key) {
-                return None;
-            }
-            state.replays.insert(
-                key.clone(),
-                Replay {
-                    digest: observation.request_digest,
-                    result: observation.outcome,
-                    _allocation: super::MemoryAllocation::default(),
-                },
-            );
-            Some(key)
+        let observation = if flags & RETAINS_REPLAY == 0 { None } else {
+            Some(crate::persistence::decode_observation(input.bytes()?, retained_fact_bound()?).ok()?)
         };
-        let commit = if flags & RETAINS_COMMIT == 0 {
-            None
-        } else {
-            let bytes = input.bytes()?;
-            let envelope =
-                crate::persistence::decode_envelope(bytes, retained_fact_bound()?).ok()?;
-            let commit_id = envelope.commit_id;
-            if state.commits.insert(commit_id, envelope).is_some() {
-                return None;
-            }
-            Some(commit_id)
+        let envelope = if flags & RETAINS_COMMIT == 0 { None } else {
+            Some(crate::persistence::decode_envelope(input.bytes()?, retained_fact_bound()?).ok()?)
         };
+        let commit = envelope.as_ref().map(|envelope| envelope.commit_id);
+        let (replay, digest, result, envelope) = match observation {
+            Some(observation) => {
+                let envelope = if let crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(canonical)) = &observation.outcome {
+                    if envelope.as_ref() != Some(canonical) { return None; }
+                    None
+                } else { envelope };
+                (Some(observation.idempotency_key.0), observation.request_digest, observation.outcome, envelope)
+            }
+            None => (None, [0; 32], crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(envelope?)), None),
+        };
+        let cached = Arc::new(Replay { digest, result, envelope, _allocation: super::MemoryAllocation::default() });
+        if let Some(commit_id) = commit {
+            if state.commits.insert(commit_id, Arc::clone(&cached)).is_some() { return None; }
+        }
         if let Some(key) = &replay {
-            let result = &state.replays.get(key)?.result;
-            let result_commit = replay_commit_id(state, result)?;
-            if result_commit != commit {
-                return None;
-            }
+            if replay_commit_id(state, &cached.result)? != commit { return None; }
+            if state.replays.insert(key.clone(), cached).is_some() { return None; }
         }
         state.retained.push_back(Retained {
             replay, commit, _allocation: super::MemoryAllocation::default(),
@@ -578,7 +564,7 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
 fn replay_commit_id(state: &State, result: &crate::IdempotencyOutcome) -> Option<Option<CommitId>> {
     let commit = match result {
         crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) => {
-            let envelope = state.commits.get(&receipt.commit_id)?;
+            let envelope = state.commits.get(&receipt.commit_id)?.envelope()?;
             let [crate::CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
                 return None;
             };
@@ -589,7 +575,7 @@ fn replay_commit_id(state: &State, result: &crate::IdempotencyOutcome) -> Option
             Some(receipt.commit_id)
         }
         crate::IdempotencyOutcome::Fork(receipt) => {
-            let envelope = state.commits.get(&receipt.commit_id)?;
+            let envelope = state.commits.get(&receipt.commit_id)?.envelope()?;
             let [crate::CommittedMutation::Fork(fork)] = envelope.mutations.as_slice() else {
                 return None;
             };
@@ -604,7 +590,7 @@ fn replay_commit_id(state: &State, result: &crate::IdempotencyOutcome) -> Option
             Some(receipt.commit_id)
         }
         crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(envelope)) => {
-            if state.commits.get(&envelope.commit_id) != Some(envelope) {
+            if state.commits.get(&envelope.commit_id).and_then(|cached| cached.envelope()) != Some(envelope) {
                 return None;
             }
             Some(envelope.commit_id)
@@ -1056,9 +1042,15 @@ mod tests {
             })
             .await?;
         let mut state = stream.state.write().await;
+        let cached = state.replays.get_mut(key.as_bytes()).ok_or(StreamError::Unavailable)?;
+        *cached = Arc::new(Replay {
+            digest: cached.digest, result: cached.result.clone(), envelope: cached.envelope.clone(),
+            _allocation: crate::memory::MemoryAllocation::default(),
+        });
         let replay = state
             .replays
             .get_mut(key.as_bytes())
+            .and_then(Arc::get_mut)
             .ok_or(StreamError::Unavailable)?;
         let original_result = replay.result.clone();
         let crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) =
@@ -1071,11 +1063,13 @@ mod tests {
         state
             .replays
             .get_mut(key.as_bytes())
+            .and_then(Arc::get_mut)
             .ok_or(StreamError::Unavailable)?
             .result = original_result.clone();
         let replay = state
             .replays
             .get_mut(key.as_bytes())
+            .and_then(Arc::get_mut)
             .ok_or(StreamError::Unavailable)?;
         let crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) =
             &mut replay.result
@@ -1089,6 +1083,7 @@ mod tests {
         state
             .replays
             .get_mut(key.as_bytes())
+            .and_then(Arc::get_mut)
             .ok_or(StreamError::Unavailable)?
             .result = original_result;
         let commit_id = *state
@@ -1099,6 +1094,7 @@ mod tests {
         let envelope = state
             .commits
             .get_mut(&commit_id)
+            .and_then(Arc::get_mut).and_then(Replay::envelope_mut)
             .ok_or(StreamError::Unavailable)?;
         let Some(crate::CommittedMutation::Append(append)) = envelope.mutations.first_mut() else {
             return Err(StreamError::Unavailable);
@@ -1109,6 +1105,7 @@ mod tests {
         let envelope = state
             .commits
             .get_mut(&commit_id)
+            .and_then(Arc::get_mut).and_then(Replay::envelope_mut)
             .ok_or(StreamError::Unavailable)?;
         let Some(crate::CommittedMutation::Append(append)) = envelope.mutations.first_mut() else {
             return Err(StreamError::Unavailable);
@@ -1156,6 +1153,7 @@ mod tests {
         let envelope = state
             .commits
             .get_mut(&receipt.commit_id)
+            .and_then(Arc::get_mut).and_then(Replay::envelope_mut)
             .ok_or(StreamError::Unavailable)?;
         let Some(crate::CommittedMutation::Fork(fork)) = envelope.mutations.first_mut() else {
             return Err(StreamError::Unavailable);

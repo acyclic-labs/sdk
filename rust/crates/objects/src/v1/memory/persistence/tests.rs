@@ -612,7 +612,7 @@ fn view(state: &State) -> Result<View, Error> {
         for (key, value) in &bucket.objects {
             objects.push((key.to_string(), value.info.as_ref().clone(), bodies(&value.body)?));
         }
-        buckets.push((name.clone(), bucket.info.clone(), objects));
+        buckets.push((name.to_string(), bucket.info.as_ref().clone(), objects));
     }
     let receipts = state
         .receipts
@@ -640,8 +640,8 @@ fn naive_changes(
         let old = before.buckets.get(name);
         if old.is_none_or(|old| old.info != bucket.info) {
             buckets.push(BucketChange {
-                name: name.clone(),
-                info: Some(bucket.info.clone()),
+                name: name.to_string(),
+                info: Some(bucket.info.as_ref().clone()),
             });
         }
         for (key, value) in &bucket.objects {
@@ -652,7 +652,7 @@ fn naive_changes(
             };
             if !unchanged {
                 objects.push(ObjectChange {
-                    bucket: name.clone(),
+                    bucket: name.to_string(),
                     key: key.to_string(),
                     info: Some(value.info.as_ref().clone()),
                     bodies: refs,
@@ -662,7 +662,7 @@ fn naive_changes(
         for key in old.iter().flat_map(|old| old.objects.keys()) {
             if !bucket.objects.contains_key(key) {
                 removed.push(ObjectChange {
-                    bucket: name.clone(),
+                    bucket: name.to_string(),
                     key: key.to_string(),
                     ..Default::default()
                 });
@@ -676,7 +676,7 @@ fn naive_changes(
         .filter(|name| !next.buckets.contains_key(*name))
     {
         buckets.push(BucketChange {
-            name: name.clone(),
+            name: name.to_string(),
             info: None,
         });
     }
