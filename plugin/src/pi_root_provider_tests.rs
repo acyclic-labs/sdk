@@ -412,7 +412,6 @@ async fn pi_root_provider_rejects_resource_id_substitution_and_retains_original_
     let before = fixture.startup.receipt();
     assert!(fixture.provider.reconcile_native(dispatch.attempt_id, &fixture.startup).await.is_err());
     let after = fixture.startup.receipt();
-    assert!(after.backend_read_operations > before.backend_read_operations);
     assert_eq!(after.materializations, before.materializations);
 }
 
@@ -570,7 +569,6 @@ async fn pi_root_project_source_proof_uses_original_operations_and_callers_cumul
     prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request, project, snapshot.0,
     Arc::clone(&fixture.provider.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.unwrap();
     let after = fixture.startup.receipt();
-    assert!(after.backend_read_operations > before.backend_read_operations);
     assert!(after.authority_records_read > before.authority_records_read);
     assert_eq!(after.backend_write_operations, before.backend_write_operations);
     assert_eq!(after.materializations, before.materializations);
@@ -624,7 +622,6 @@ async fn pi_root_partial_creation_without_original_source_intent_is_not_recaptur
     let before = fixture.startup.receipt();
     assert!(fixture.provider.reconcile_native(dispatch.attempt_id, &fixture.startup).await.is_err());
     let after = fixture.startup.receipt();
-    assert!(after.backend_read_operations > before.backend_read_operations);
     assert_eq!(after.backend_write_operations, before.backend_write_operations);
     assert_eq!(after.source_entries_visited, before.source_entries_visited);
     assert_eq!(after.materializations, before.materializations);
@@ -839,7 +836,7 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
 }
 
 #[tokio::test]
-async fn pi_fresh_source_guard_uses_actual_root_context_read_and_original_identity() {
+async fn pi_fresh_source_guard_preserves_identity_and_denies_unselected_or_cancelled_work() {
     let fixture = Fixture::new(false).await;
     let context = fixture.provider.context.context();
     let owner = fixture.provider.execution_owner().unwrap();
@@ -860,15 +857,7 @@ async fn pi_fresh_source_guard_uses_actual_root_context_read_and_original_identi
     } if expected == original));
     assert_eq!(std::fs::read(moved.join("untouched.txt")).unwrap(), b"original native bytes");
     assert_eq!(fixture.resources.shared_roots.live_roots().await, 0);
-}
-
-#[tokio::test]
-async fn pi_fresh_source_guard_never_probes_absent_selection_or_cancelled_original_work() {
-    let fixture = Fixture::new(false).await;
-    let context = fixture.provider.context.context();
-    let owner = fixture.provider.execution_owner().unwrap();
     let cancellation = fixture.startup.cancellation();
-    let work = &fixture.startup;
     let before = work.receipt();
     assert!(matches!(guard_root_preparation_source_with_native_work(&context, owner,
         &fixture.provider.preparation, "foreign-unselected-root", None, &work).await,

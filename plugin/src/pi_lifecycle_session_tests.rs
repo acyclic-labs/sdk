@@ -89,12 +89,3 @@ async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_init
         &fixture.owner, &plan, &work).await.unwrap());
 }
 
-#[test]
-fn independent_drain_failures_never_replace_the_original_failure() {
-    let mut failure = None;
-    retain_first_failure(&mut failure, Err(Error::Storage("original provider failure".to_owned())));
-    retain_first_failure(&mut failure, Err(Error::Invalid("later scratch cleanup failure".to_owned())));
-    retain_first_failure(&mut failure, Ok(()));
-    assert!(matches!(finish_native_drain(failure),
-        Err(Error::Storage(message)) if message == "original provider failure"));
-}

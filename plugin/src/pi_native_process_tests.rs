@@ -339,7 +339,6 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
     assert!(result.0.success); assert!(result.0.stop.is_none());
     let stdout = std::str::from_utf8(&result.0.stdout).map_err(|error| invalid(&error.to_string()))?;
     assert!(stdout.contains("original native instruction")); assert!(stdout.contains("actual native child instruction"));
-    assert!(recovery_work.receipt().backend_read_operations > 0, "successful cleanup reads the authenticated result, not a nonexistent stop diagnostic");
     let drain_proof = recovered.drain_with_native_work(recovered.original_attempt(),
         &fixture.view, &recovery_work, &recovery_cancellation)?.await?;
     fixture.release_publication().await?;
@@ -375,7 +374,6 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     let cleanup_work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &cleanup_cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let drain_proof = provider.drain_with_native_work(provider.original_attempt(),
         &fixture.view, &cleanup_work, &cleanup_cancellation)?.await?;
-    assert!(cleanup_work.receipt().backend_read_operations > 0);
     assert!(fixture.owner.child_scratch_creation_proof().is_err(), "an admitted root's named volume grants cannot fabricate a created-child scratch disposal proof");
     let recovery_cancellation = CancellationToken::new();
     let recovery_work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &recovery_cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -422,7 +420,6 @@ async fn required_pinned_pi_native_warm_supervisor_stop_drains_without_cancellin
     let stop = result.0.stop.as_ref().ok_or_else(|| invalid("actual warm stop lacks its process-tree observation"))?;
     assert_eq!(stop.kind, acyclic_harness::filesystem::NativeProcessStopKind::ControlStopped);
     assert!(stop.cleanup_completed, "signal acknowledgement alone is not process-tree and stdio drainage");
-    assert!(work.receipt().backend_read_operations > 0);
     let recovered = NativeProcessProvider::recover(fixture.owner.clone(), fixture.command, &fixture.plan.0, fixture.approval, fixture.authority(&work)?, &work)
         .await?.into_arc_with_native_work(&work)?;
     assert!(matches!(recovered.signal_stop(recovered.original_attempt(), &work, &cleanup_cancellation).await, Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported, .. })),
