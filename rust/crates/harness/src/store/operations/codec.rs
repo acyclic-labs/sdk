@@ -77,113 +77,39 @@ pub(in crate::store) fn validate_canonical_json_with_work(
     maximum_bytes: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    if work.is_none() {
+    let Some(observer) = work.as_deref_mut() else {
         let _: serde_json::Value = crate::executor::decode_json(bytes, None)?.0;
         return Ok(());
-    }
-    let mut items = 0u64;
-    let mut reservation = 0;
-    let diagnostic_bytes = crate::executor::json::audited_serde_diagnostic_bytes(
-        bytes.len() as u64,
-        [
-            "Value", "sequence", "map", "string", "number", "boolean", "null",
-        ]
-        .iter()
-        .map(|label| label.len() as u64 + 4)
-        .sum(),
-    )?;
-    let mut observed_failure = false;
-    let parsed = {
-        let observer = work.as_deref_mut().expect("observed canonical validation");
-        let native = original_native_decode_mode(observer);
-        decode_preclaimed_json_with_mode::<serde_json::Value, _>(
-            bytes,
-            crate::executor::json::JsonBounds {
-                maximum_bytes,
-                maximum_items: maximum_bytes,
-                maximum_depth: 256,
-            },
-            0, // The sealed Value witness owns its strings; codec scratch is additional.
-            crate::wire::ErrorCode::Storage,
-            native,
-            crate::executor::json::JsonValueSchema::Root,
-            &mut |charge| {
-                let charged = match charge {
-                    crate::executor::json::JsonCodecCharge::Work { items: visited, .. } => {
-                        items = items.checked_add(visited).ok_or_else(|| {
-                            Error::Invalid("index JSON item count overflows".into())
-                        })?;
-                        observer.codec_charge(charge)
-                    }
-                    crate::executor::json::JsonCodecCharge::Admission {
-                        maximum_owned_bytes,
-                        value_shape,
-                    } => {
-                        let planned = crate::executor::json::json_value_decode_owned_bytes(value_shape)?
-                            .checked_add(maximum_owned_bytes)
-                            .and_then(|owned| owned.checked_add(diagnostic_bytes))
-                            .ok_or_else(|| {
-                                Error::Invalid("index JSON reservation overflows".into())
-                            })?;
-                        observer.retain_owned(planned)?;
-                        reservation = planned;
-                        Ok(())
-                    }
-                    _ => observer.codec_charge(charge),
-                };
-                if charged.is_err() {
-                    observed_failure = true;
-                }
-                charged
-            },
-        )
     };
-    let parsed = retain_original_decode_error(
-        parsed,
-        &mut reservation,
-        work.as_deref_mut().expect("observed canonical validation"),
-    );
-    let parsed = parsed.map_err(|error| {
-        if observed_failure {
-            error
-        } else {
-            match error {
-                Error::Invalid(message) => {
-                    Error::Storage(format!("execution journal JSON is invalid: {message}"))
-                }
-                other => other,
-            }
-        }
-    });
-    let result = match parsed {
-        Ok(parsed) => {
-            let encoded =
-                crate::store::history::canonical_bytes_with_work(&parsed, maximum_bytes, work);
-            drop(parsed);
-            match encoded {
-                Ok(encoded) => {
-                    let identical = encoded == bytes;
-                    let capacity = encoded.capacity() as u64;
-                    drop(encoded);
-                    if let Some(observer) = work.as_deref_mut() {
-                        observer.release_owned(capacity)?;
-                    }
-                    if identical {
-                        Ok(())
-                    } else {
-                        Err(crate::store::guarded_boundary(
-                            work,
-                            crate::wire::ErrorCode::Storage,
-                            "execution journal JSON is not canonical",
-                        ))
-                    }
-                }
-                Err(error) => Err(error),
-            }
+    if bytes.len() as u64 > maximum_bytes {
+        return Err(crate::store::guarded_boundary(
+            work,
+            crate::wire::ErrorCode::Storage,
+            "index JSON exceeds its byte bound",
+        ));
+    }
+    let (parsed, retained) = observer.decode_json_value(bytes)?;
+    let encoded = crate::store::history::canonical_bytes_with_work(&parsed, maximum_bytes, work);
+    drop(parsed);
+    let result = match encoded {
+        Ok(encoded) => {
+            let identical = encoded == bytes;
+            let capacity = encoded.capacity() as u64;
+            drop(encoded);
+            let verified = if identical {
+                Ok(())
+            } else {
+                Err(crate::store::guarded_boundary(
+                    work,
+                    crate::wire::ErrorCode::Storage,
+                    "execution journal JSON is not canonical",
+                ))
+            };
+            release_owned_after_drop(verified, capacity, work)
         }
         Err(error) => Err(error),
     };
-    release_owned_after_drop(result, reservation, work)
+    release_owned_after_drop(result, retained, work)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

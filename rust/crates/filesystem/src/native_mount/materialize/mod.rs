@@ -4,7 +4,7 @@
 use crate::ObjectId;
 #[cfg(test)]
 use crate::demand::NativeDemandReadMeter;
-use crate::demand::{DemandError, NativeSourceWork, SourceDemandReadWork};
+use crate::demand::{DemandError, SourceDemandReadWork};
 use crate::heap_future::in_heap;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, NameEncoding, NamespacePath,

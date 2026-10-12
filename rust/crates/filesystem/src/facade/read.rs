@@ -152,17 +152,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::Output<FileRangeRead, FsError> {
-        let span = crate::obs::span!(
-            DEBUG,
-            "acyclic.fs.pinned.read_file_range",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty
-        );
         let mut accounting = budget.accounting(cancellation);
-        let result = crate::obs::in_span(&span, async {
+        let result = async {
             if range.length > self.volume.config.limits.maximum_read_bytes {
                 return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
             }
@@ -171,14 +162,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 .await?;
             self.read_range_record(record, range, &mut accounting, cancellation)
                 .await
-        })
+        }
         .await;
-        let observed = result
-            .map(|value| (value, accounting.spent()))
-            .map_err(|error| (error, accounting.spent()));
-        let result = crate::obs::measured_inline_on(&span, observed, |(_, work)| work)
-            .map(|(value, _)| value)
-            .map_err(|(error, _)| error);
         budget.finish(result, &accounting)
     }
 

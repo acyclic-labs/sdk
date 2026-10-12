@@ -81,7 +81,12 @@ impl AgentHarness {
             .ok_or_else(|| Error::Unsupported("durable task spawner is not bound".into()))?;
         let value =
             serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
-        crate::executor::validate_json_schema_value(&definition.input_schema, &value, "task input", &mut None)?;
+        crate::executor::validate_json_schema_value(
+            &definition.input_schema,
+            &value,
+            "task input",
+            &mut None,
+        )?;
         let mut expected = TaskAdmissionRecord::from_parts(
             operation_id,
             &definition.identity.name,
@@ -142,7 +147,6 @@ impl AgentHarness {
     }
 
     /// Reconstructs a pinned task context after the host resumes its state machine.
-
     pub async fn durable_context(
         self: &Arc<Self>,
         task_id: TaskId,
@@ -330,12 +334,8 @@ impl AgentHarness {
             owned_mailbox,
             output_content: None,
             model_steps,
-            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            native_root_output: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
-            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            working_view: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         };
@@ -423,5 +423,18 @@ impl AgentHarness {
             });
         }
         Ok(())
+    }
+}
+
+impl TaskContext {
+    pub(super) fn preparation_io(&self) -> Result<Option<crate::executor::PreparationIo>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if self.native_metadata_source.is_some()
+            || self.native_custody.is_some()
+            || self.model_steps.1.is_some()
+        {
+            return crate::executor::PreparationIo::from_native_work(self.native_work()?).map(Some);
+        }
+        Ok(None)
     }
 }

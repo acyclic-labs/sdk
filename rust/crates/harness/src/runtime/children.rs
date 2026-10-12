@@ -25,7 +25,6 @@ pub(crate) fn validate_children_page(
 }
 
 /// Bounds one direct-child page request of a task or operation hierarchy.
-
 pub(crate) fn validate_child_page_request(
     label: &str,
     parent: [u8; 16],
@@ -42,7 +41,6 @@ pub(crate) fn validate_child_page_request(
 }
 
 /// Validates a pinned child page against its requested cursor and bounds.
-
 pub(crate) fn validate_child_page<'a>(
     label: &str,
     (revision, next_after): (u64, Option<&str>),

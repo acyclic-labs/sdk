@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::{Authority, Event};
+use crate::core::Authority;
 
 /// Observes only a protected completion accepted under pre-action custody.
 pub(crate) struct AcceptedCompletionIo {
@@ -18,7 +18,9 @@ impl AcceptedCompletionIo {
         reservation: NativeWorkReservation,
         custody: NativeAllocation,
     ) -> Result<Self> {
-        if !reservation.work().shares_allocation_context(original) || !custody.work().shares_allocation_context(original) {
+        if !reservation.work().shares_allocation_context(original)
+            || !custody.work().shares_allocation_context(original)
+        {
             return Err(Error::NativeWork {
                 cause: NativeTreeMaterializationError::InvalidLayout,
                 custody: Some(custody),

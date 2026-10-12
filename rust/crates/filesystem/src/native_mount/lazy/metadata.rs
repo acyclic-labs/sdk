@@ -36,7 +36,7 @@ pub(super) async fn file_id<A, O, D, S>(
     lazy: &LazyWorkspace<A, O, D, S>,
     path: &str,
     lookup: &LazyLookup,
-    original: Option<&crate::NativeMaterializationWork>,
+    work: &crate::NativeMaterializationWork,
 ) -> Result<FileId, MountSourceError>
 where
     A: AsyncAuthorityStore + Send + Sync,
@@ -44,16 +44,13 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    let cancellation = CancellationToken::new();
-    let mut work = match original {
-        Some(original) => {
-            crate::kernel::KernelAccounting::native(original, original.cancellation())
-        }
-        None => crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
-    };
-    lazy.stable_file_id_for_lookup(path, lookup, &mut work)
-        .await
-        .map_err(lazy_error)
+    lazy.stable_file_id_for_lookup(
+        path,
+        lookup,
+        &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+    )
+    .await
+    .map_err(lazy_error)
 }
 
 pub(super) fn mount_lookup(lookup: LazyLookup, file_id: FileId) -> MountLookup {

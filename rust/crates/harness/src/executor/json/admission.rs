@@ -295,8 +295,8 @@ fn value(
                         bytes = checked(bytes.checked_add(1), "JSON byte count overflow")?;
                         Ok(byte)
                     });
-                    let mut reader: &mut Input<'_> = &mut decoded;
-                    let mut reader = reader.by_ref().peekable();
+                    let reader: &mut Input<'_> = &mut decoded;
+                    let mut reader = Iterator::peekable(reader);
                     let (mut selected, valid) = value(&mut reader, &ROOT, depth + 1, true, charge)?;
                     let ended = space(&mut reader)?.is_none();
                     while next(&mut reader)?.is_some() {}
@@ -456,8 +456,8 @@ pub(super) fn source(
         lexical.byte(*byte, bounds, code, &charge)?;
         Ok(*byte)
     });
-    let mut reader: &mut Input<'_> = &mut source;
-    let mut reader = reader.by_ref().peekable();
+    let reader: &mut Input<'_> = &mut source;
+    let mut reader = Iterator::peekable(reader);
     let descriptor = schema.map_or(&UNKNOWN, JsonValueSchema::descriptor);
     let (mut branches, valid) = value(&mut reader, descriptor, 0, false, &charge)?;
     let ended = space(&mut reader)?.is_none();

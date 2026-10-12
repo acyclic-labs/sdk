@@ -28,18 +28,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Checkout<A, O>, FsError> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.checkout",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty,
-            volume_id = crate::obs::hex(&self.id.into_bytes())
-        );
         let mut accounting = budget.accounting(cancellation);
-        let result = crate::obs::in_span(&span, async {
+        let result = async {
             accounting.check()?;
             validate_checkout(mode, self.config).map_err(|failure| failure.error)?;
             let (generation_root, mut authority_head) = self
@@ -199,12 +189,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 proof_owned_bytes,
                 mode,
             })
-        })
+        }
         .await;
-        let result = measured(result, &accounting)
-            .observe_on(&span, "checkout")
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error);
         budget.finish(result, &accounting)
     }
 }

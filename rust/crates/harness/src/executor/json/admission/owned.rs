@@ -63,8 +63,8 @@ fn tree(
                         charge.borrow_mut()(JsonCodecCharge::Inspect { items: 1 })?;
                         Ok(byte)
                     });
-                    let mut reader: &mut Input<'_> = &mut source;
-                    let mut reader = reader.by_ref().peekable();
+                    let reader: &mut Input<'_> = &mut source;
+                    let mut reader = Iterator::peekable(reader);
                     let (mut selected, valid) =
                         super::value(&mut reader, &ROOT, depth + 1, true, charge)?;
                     let ended = space(&mut reader)?.is_none();

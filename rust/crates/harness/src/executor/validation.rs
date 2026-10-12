@@ -1,6 +1,7 @@
 //! Schema admission and diagnostic formatting on the invocation ledger.
 use crate::executor::json::{
     JsonBounds, JsonCodecCharge, JsonValueSchema, json_owned_value_shape_bounded,
+    json_value_decode_owned_bytes,
 };
 use crate::store::history::HistoryIo;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
