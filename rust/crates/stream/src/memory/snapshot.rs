@@ -35,7 +35,7 @@ impl MemoryStream {
         let state = self.state.read().await;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(meter) = meter { meter.check()?; }
-        encode_observed(&state, meter)
+        encode(&state, meter)
     }
 
     /// Replaces the whole state with one [`Self::encode_state`] encoded.
@@ -55,12 +55,7 @@ impl MemoryStream {
     }
 }
 
-fn encode(state: &State) -> Vec<u8> {
-    encode_observed(state, None)
-        .expect("unmetered canonical snapshot encoding cannot fail").value
-}
-
-fn encode_observed(state: &State, meter: WireMeter<'_>) -> std::io::Result<ObservedWire<Vec<u8>>> {
+fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<ObservedWire<Vec<u8>>> {
     let mut writer = SnapshotWriter { out: Vec::new(), funding: WireFunding::new(meter) };
     writer.write(MAGIC)?;
     writer.u64(state.decision)?;
@@ -134,8 +129,6 @@ fn encode_observed(state: &State, meter: WireMeter<'_>) -> std::io::Result<Obser
     let node_bytes = nodes.capacity() * std::mem::size_of::<Arc<History>>();
     drop(nodes);
     writer.funding.retire(node_bytes)?;
-    // Only the actual standard-vector capacity is claimed. Allocator
-    // bookkeeping, opaque headers, and process RSS are not inferred.
     let index_bytes = indices.capacity() * std::mem::size_of::<(*const History, usize)>();
     drop(indices);
     writer.funding.retire(index_bytes)?;
@@ -252,8 +245,6 @@ fn decode(encoded: &[u8]) -> Option<State> {
     let nodes = decode_nodes(&mut input)?;
     let (paths, path_bytes) = decode_paths(&mut input, &nodes.0)?;
     let mut state = State::default();
-    // A restored snapshot creates a fresh prepared-capacity identity. Existing
-    // prepared requests cannot reserve or edit a replacement state by alias.
     state.paths = paths;
     state.path_bytes = path_bytes;
     state.decision = decision;
@@ -263,9 +254,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
     if !input.0.is_empty() {
         return None;
     }
-    // The first-party codec has one canonical encoding. This also rejects
-    // unknown protobuf fields, duplicate fields, reordered paths, and unused nodes.
-    if encode(&state) != encoded {
+    if encode(&state, None).expect("unmetered encoding cannot fail").value != encoded {
         return None;
     }
     for path in state.paths.keys() {
@@ -284,20 +273,14 @@ fn decode(encoded: &[u8]) -> Option<State> {
     }) {
         return None;
     }
-    // Every successful current operation retains one immutable envelope; no
-    // expiry, trim or deletion can make the decision counter diverge.
     if state.decision != u64::try_from(state.commits.len()).ok()? {
         return None;
     }
     validate_inventory(&state)?;
-    recount(&mut state);
+    recount(&mut state, &super::MemoryObserver::default()).expect("unmetered recount cannot fail");
     Some(state)
 }
 
-// Index each path's own immutable nodes once, stopping at its fork Prefix.
-// Match envelopes in retained publication order against these facts. Forks
-// capture pre-commit source heads; all destination updates publish together.
-// This checks chronology and inventory without re-executing commands.
 fn validate_inventory(state: &State) -> Option<()> {
     let mut batches = BTreeMap::new();
     let mut prefixes = BTreeMap::new();
@@ -400,8 +383,6 @@ fn reference(nodes: &[Arc<History>], index: usize) -> Option<Option<Arc<History>
     }
 }
 
-// Release decoder-owned nodes from children to parents, including on failure.
-// Otherwise a malformed long chain can recurse through Arc destruction.
 struct DecodedNodes(Vec<Arc<History>>);
 
 impl Drop for DecodedNodes {
@@ -505,13 +486,6 @@ fn decode_paths(
     Some((paths, path_bytes))
 }
 
-// A current command is bounded by MAX_COMMAND_BYTES and each protobuf bytes
-// record costs at least two command bytes. Its retained record adds fewer than
-// 96 bytes of IDs, timestamps, sequence and framing, so 64x command bytes is
-// conservative even for empty records. Each mutation/conflict additionally
-// receives two maximum paths and 128 bytes of framing/range metadata. The
-// outer observation adds its maximum key and 128 bytes of digest/framing.
-// This is a writer-derived bound, independent of configured memory capacity.
 fn retained_fact_bound() -> Option<usize> {
     crate::MAX_COMMAND_BYTES
         .checked_mul(64)?
@@ -1059,7 +1033,7 @@ mod tests {
             return Err(StreamError::Unavailable);
         };
         receipt.start = receipt.end;
-        assert!(decode(&encode(&state)).is_none());
+        assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         state
             .replays
             .get_mut(key.as_bytes())
@@ -1079,7 +1053,7 @@ mod tests {
         receipt.start = 1;
         receipt.end = 2;
         receipt.tail = 2;
-        assert!(decode(&encode(&state)).is_none());
+        assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         state
             .replays
             .get_mut(key.as_bytes())
@@ -1101,7 +1075,7 @@ mod tests {
         };
         let record = append.records.first_mut().ok_or(StreamError::Unavailable)?;
         record.sequence = 9;
-        assert!(decode(&encode(&state)).is_none());
+        assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         let envelope = state
             .commits
             .get_mut(&commit_id)
@@ -1113,7 +1087,7 @@ mod tests {
         let record = append.records.first_mut().ok_or(StreamError::Unavailable)?;
         record.sequence = 0;
         record.value = OwnedBytes::from_static(b"phantom payload absent from immutable history");
-        assert!(decode(&encode(&state)).is_none());
+        assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         Ok(())
     }
 
@@ -1159,7 +1133,7 @@ mod tests {
             return Err(StreamError::Unavailable);
         };
         fork.source = later;
-        assert!(decode(&encode(&state)).is_none());
+        assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         Ok(())
     }
 
@@ -1201,7 +1175,7 @@ mod tests {
             tail: 1,
             _allocation: super::super::MemoryAllocation::default(),
         }));
-        assert!(decode(&encode(&state)).is_none());
+        assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         Ok(())
     }
 

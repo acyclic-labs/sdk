@@ -639,7 +639,7 @@ impl AsRef<[u8]> for ForkBytes {
 pub(crate) enum ForkRecord {
     Standalone(acyclic_stream::Record),
     #[cfg(not(target_arch = "wasm32"))]
-    Native(acyclic_stream::NativeObservedRecord),
+    Native(acyclic_stream::NativeStreamOutput<acyclic_stream::Record>),
 }
 
 impl std::ops::Deref for ForkRecord {

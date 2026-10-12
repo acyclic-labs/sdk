@@ -29,9 +29,9 @@ use tracing::instrument::WithSubscriber as _;
 
 use crate::obs;
 use crate::wire_codec::{
-    append_from_wire, append_outcome_from_wire, append_outcome_wire, commit_from_wire,
-    commit_id, commit_outcome_from_wire, commit_outcome_wire, condition_wire, envelope_from_wire,
-    envelope_wire, fork_receipt_to_wire, mutation_wire, observation_from_wire, observation_wire,
+    append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
+    commit_id, commit_outcome_from_wire, commit_outcome_to_wire, condition_wire, envelope_from_wire,
+    envelope_to_wire, fork_receipt_to_wire, mutation_wire, observation_from_wire, observation_wire,
     optional_key, path, read_response_records, read_response_wire, record, record_wire,
 };
 use crate::{
@@ -189,12 +189,7 @@ impl Client {
         bearer_token: impl AsRef<str>,
         certificate_pem: impl AsRef<[u8]>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_endpoints_with_ca_certificate(
-            [endpoint],
-            bearer_token,
-            certificate_pem.as_ref(),
-        )
-        .await
+        Self::connect_with_tls([endpoint], bearer_token, Some(certificate_pem.as_ref()))
     }
 
     /// Connects eagerly through TLS and HTTP/2, retaining the resulting channel for later operations.
@@ -213,19 +208,6 @@ impl Client {
     ) -> Result<Self, ConnectError> {
         Self::connect_eager_endpoints([endpoint], bearer_token, Some(certificate_pem.as_ref()))
             .await
-    }
-
-    /// Connects to independent endpoints trusting exclusively the caller-pinned private CA.
-    pub async fn connect_endpoints_with_ca_certificate<I, S>(
-        endpoints: I,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: impl AsRef<[u8]>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        Self::connect_with_tls(endpoints, bearer_token, Some(certificate_pem.as_ref()))
     }
 
     fn connect_with_tls<I, S>(
@@ -748,10 +730,6 @@ fn retryable(error: &Status) -> bool {
     if matches!(error.code(), Code::Unavailable | Code::DeadlineExceeded) {
         return true;
     }
-    // Missing final trailers become Unknown without a retained transport cause.
-    // Treat that outcome as ambiguous, never successful: every mutation retains
-    // its idempotency key and every resumed read retains its cursor/deadline.
-    // An explicit peer Unknown is indistinguishable and gets the same bounded retry.
     if error.code() == Code::Unknown && std::error::Error::source(error).is_none() {
         return true;
     }
@@ -760,8 +738,6 @@ fn retryable(error: &Status) -> bool {
     }
     let mut cause = std::error::Error::source(error);
     while let Some(current) = cause {
-        // Hyper cancels queued dispatch when its connection driver disappears. This is
-        // transport uncertainty, unlike a peer's application-level Cancelled status.
         if error.code() == Code::Cancelled
             && current
                 .downcast_ref::<hyper::Error>()
@@ -852,8 +828,6 @@ impl StreamProvider for Client {
             || Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             |key| Bytes::copy_from_slice(key.as_bytes()),
         );
-        // This is the ordinary provider API. Ready immutable wire aliases keep
-        // each canonical payload's custody; no native operation meter is inferred.
         let records = request.records.into_iter().map(Bytes::from_owner).collect();
         let response = self
             .unary(
@@ -1106,7 +1080,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .append(append_from_wire(request).map_err(|error| error_status(&error))?)
                     .await
                     .map_err(|error| error_status(&error))?;
-                Ok(Response::new(append_outcome_wire(outcome)))
+                Ok(Response::new(append_outcome_to_wire(outcome)))
             })
             .await;
         finish_served(&mut completion, result, false)
@@ -1375,7 +1349,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     self.provider.commit(request).await
                 }
                 .map_err(|error| error_status(&error))?;
-                Ok(Response::new(commit_outcome_wire(outcome)))
+                Ok(Response::new(commit_outcome_to_wire(outcome)))
             })
             .await;
         finish_served(&mut completion, result, false)
@@ -1402,7 +1376,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .read_commit(commit_id)
                     .await
                     .map_err(|error| error_status(&error))?;
-                Ok(Response::new(envelope_wire(envelope)))
+                Ok(Response::new(envelope_to_wire(envelope)))
             })
             .await;
         finish_served(&mut completion, result, false)
@@ -1889,9 +1863,6 @@ mod tests {
                 let _child = tracing::info_span!("body_child");
                 Poll::Ready(Some(Ok::<_, Status>(1_u8)))
             });
-            // Enabled spans supply their original dispatch even if the guard is
-            // constructed under another subscriber. Disabled spans retain the
-            // dispatch at operation creation because they carry no subscriber.
             let mut body = if filtered {
                 tracing::dispatcher::with_default(&dispatch, || observe_body(&span, source))
             } else {
@@ -2021,7 +1992,6 @@ mod tests {
         inner: MemoryStream,
         follows: AtomicUsize,
         tail_delay: std::time::Duration,
-        /// `Some(n)`: Follow yields the first `n` records, then a denied credential; `Some(0)` denies the Follow when it opens.
         denial: Option<usize>,
     }
 
@@ -2133,7 +2103,6 @@ mod tests {
         Ok(())
     }
 
-    /// Regroups every Read frame into batches of three records that alternate between Zstandard and uncompressed frames.
     #[derive(Clone)]
     struct MixedFrames(Service<MemoryStream>, Option<&'static str>, Option<Arc<AckFixture>>);
 
@@ -3237,8 +3206,6 @@ mod tests {
             hyper_util::rt::TokioIo::new(client_io),
         )
         .await?;
-        // Losing the driver closes Hyper's dispatch queue, independently of a peer status.
-        // No background task or network listener is needed to reproduce this transport error.
         drop(connection);
         let request = tonic::codegen::http::Request::new(tonic::body::Body::empty());
         let error = tokio::time::timeout(
@@ -3417,7 +3384,7 @@ mod tests {
             idempotency_key: Bytes::from_static(b"other"),
             request_digest: Bytes::from_static(&[7; 32]),
             outcome: Some(wire::idempotency_observation::Outcome::Append(
-                append_outcome_wire(AppendOutcome::TailConflict { actual_tail: 3 }),
+                append_outcome_to_wire(AppendOutcome::TailConflict { actual_tail: 3 }),
             )),
         };
         assert_eq!(

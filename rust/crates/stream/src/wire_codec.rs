@@ -450,14 +450,6 @@ pub(crate) fn optional_key(value: Option<Bytes>) -> Result<Option<IdempotencyKey
     value.map(IdempotencyKey::new).transpose()
 }
 
-#[cfg(feature = "grpc")]
-/// Converts an optional wire idempotency key, rejecting an omitted key.
-pub fn required_key(value: Option<Bytes>) -> Result<IdempotencyKey, StreamError> {
-    value
-        .ok_or(StreamError::InvalidArgument)
-        .and_then(IdempotencyKey::new)
-}
-
 pub(crate) fn condition_wire(value: CommitCondition) -> wire::CommitCondition {
     let condition = match value {
         CommitCondition::Tail { path, expected } => {
@@ -578,13 +570,13 @@ pub(crate) fn observation_from_wire(
 pub fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObservation {
     let outcome = match value.outcome {
         IdempotencyOutcome::Append(value) => {
-            wire::idempotency_observation::Outcome::Append(append_outcome_wire(value))
+            wire::idempotency_observation::Outcome::Append(append_outcome_to_wire(value))
         }
         IdempotencyOutcome::Fork(value) => {
-            wire::idempotency_observation::Outcome::Fork(fork_receipt_wire(&value))
+            wire::idempotency_observation::Outcome::Fork(fork_receipt_to_wire(&value))
         }
         IdempotencyOutcome::Commit(value) => {
-            wire::idempotency_observation::Outcome::Commit(commit_outcome_wire(value))
+            wire::idempotency_observation::Outcome::Commit(commit_outcome_to_wire(value))
         }
     };
     wire::IdempotencyObservation {
@@ -607,7 +599,8 @@ pub(crate) fn append_outcome_from_wire(
     }
 }
 
-pub(crate) fn append_outcome_wire(value: AppendOutcome) -> wire::AppendResponse {
+/// Converts the domain value to its wire representation.
+pub fn append_outcome_to_wire(value: AppendOutcome) -> wire::AppendResponse {
     let outcome = match value {
         AppendOutcome::Committed(receipt) => {
             wire::append_response::Outcome::Committed(append_receipt_wire(&receipt))
@@ -638,10 +631,11 @@ pub(crate) fn commit_outcome_from_wire(
     }
 }
 
-pub(crate) fn commit_outcome_wire(value: CommitOutcome) -> wire::CommitResponse {
+/// Converts the domain value to its wire representation.
+pub fn commit_outcome_to_wire(value: CommitOutcome) -> wire::CommitResponse {
     let outcome = match value {
         CommitOutcome::Committed(envelope) => {
-            wire::commit_response::Outcome::Committed(envelope_wire(envelope))
+            wire::commit_response::Outcome::Committed(envelope_to_wire(envelope))
         }
         CommitOutcome::Conflict(conflicts) => {
             wire::commit_response::Outcome::Conflict(wire::CommitConflicts {
@@ -697,7 +691,8 @@ pub(crate) fn append_receipt_wire(value: &AppendReceipt) -> wire::AppendReceipt 
     }
 }
 
-pub(crate) fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
+/// Converts the domain value to its wire representation.
+pub fn fork_receipt_to_wire(value: &ForkReceipt) -> wire::ForkReceipt {
     wire::ForkReceipt {
         source: value.source.to_string(),
         destination: value.destination.to_string(),
@@ -857,23 +852,7 @@ pub(crate) fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitReques
     }
 }
 
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-/// Converts an append outcome into its generated wire representation.
-pub fn append_outcome_to_wire(value: crate::AppendOutcome) -> wire::AppendResponse {
-    append_outcome_wire(value)
-}
 
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-/// Converts a fork receipt into its generated wire representation.
-pub fn fork_receipt_to_wire(value: &crate::ForkReceipt) -> wire::ForkReceipt {
-    fork_receipt_wire(value)
-}
 pub(crate) fn envelope_from_wire(
     value: wire::CommittedEnvelope,
 ) -> Result<CommittedEnvelope, StreamError> {
@@ -887,7 +866,8 @@ pub(crate) fn envelope_from_wire(
     })
 }
 
-pub(crate) fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope {
+/// Converts the domain value to its wire representation.
+pub fn envelope_to_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope {
     wire::CommittedEnvelope {
         commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
         mutations: value
@@ -898,23 +878,7 @@ pub(crate) fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope
     }
 }
 
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-/// Converts a commit outcome into its generated wire representation.
-pub fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitResponse {
-    commit_outcome_wire(value)
-}
 
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-/// Converts a committed envelope into its generated wire representation.
-pub fn envelope_to_wire(value: crate::CommittedEnvelope) -> wire::CommittedEnvelope {
-    envelope_wire(value)
-}
 
 pub(crate) fn committed_mutation(
     value: wire::CommittedMutation,

@@ -14633,7 +14633,7 @@ pub(crate) fn native_publication_evidence_with_native_work(
         .map_err(|failure| -> crate::FsError { match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+                =>
                 crate::NativeTreeMaterializationError::InvalidLayout.into(),
         } })?;
     Ok((context, bytes))
@@ -14763,7 +14763,7 @@ fn lazy_write_original_bytes(
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) =>
                         native_filesystem_error(original.runtime_error(error).into()),
                     acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                    | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+                    =>
                         native_filesystem_error(crate::NativeTreeMaterializationError::InvalidLayout.into()),
                 })
         }

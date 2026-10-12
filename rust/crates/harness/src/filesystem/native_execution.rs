@@ -4146,7 +4146,7 @@ fn native_owned_bytes_failure(
     match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => native_root_error(work.runtime_error(error)),
         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-        | acyclic_stream::PreparedOwnedBytesError::NotUnique => Error::NativeBoundary {
+        => Error::NativeBoundary {
             code: crate::wire::ErrorCode::Storage,
             reason: "native owned byte buffer violated its fixed initialized ownership invariant",
         },

@@ -1096,7 +1096,7 @@ async fn native_records_with_work<P: StreamProvider>(
     count: u32,
     original: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<std::result::Result<ObservedRecords, SdkCallError>> {
-    let result = client.native_read(acyclic_stream::ReadRequest {
+    let result = client.provider.native_read(acyclic_stream::ReadRequest {
         path: path.clone(), from, limit: count,
     }, original.runtime_meter_owner()).await;
     match crate::distributed::native_call_result(original, result)? {
@@ -1129,7 +1129,7 @@ pub(crate) async fn bounds_with_work<P: StreamProvider>(
 ) -> Result<std::result::Result<acyclic_stream::StreamBounds, SdkCallError>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
-        let result = client.native_bounds(path.clone(), original.runtime_meter_owner()).await;
+        let result = client.provider.native_bounds(path.clone(), original.runtime_meter_owner()).await;
         return crate::distributed::native_call_result(original, result)
             .map(|result| result.map(|output| *output.value()));
     }
@@ -1157,7 +1157,7 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
 ) -> Result<Option<u64>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
-        let result = client.native_tail(path.clone(), original.runtime_meter_owner()).await;
+        let result = client.provider.native_tail(path.clone(), original.runtime_meter_owner()).await;
         let result = crate::distributed::native_call_result(original, result)?;
         return match result {
             Ok(output) => Ok(Some(*output.value())),
@@ -1825,7 +1825,7 @@ mod native_publication_custody_tests {
         let message_id = uuid::Uuid::from_bytes([11; 16]);
         let path = message_path(&authority, message_id)?;
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
-        let outcome = client.commit(CommitRequest {
+        let outcome = client.provider.commit(CommitRequest {
             conditions: vec![CommitCondition::Absent { path: path.clone() }],
             mutations: vec![CommitMutation::Append {
                 path, records: vec![OwnedBytes::from_static(b"{{")],
@@ -1878,7 +1878,7 @@ mod native_publication_custody_tests {
             sequence: 1,
         };
         let path = message_path(&authority, missing_id)?;
-        client.commit(CommitRequest {
+        client.provider.commit(CommitRequest {
             conditions: vec![CommitCondition::Absent { path: path.clone() }],
             mutations: vec![CommitMutation::Append {
                 path,
@@ -1949,7 +1949,7 @@ mod native_publication_custody_tests {
         };
         drop(bytes);
         assert_eq!(io.remaining()?.peak_allocation_bytes, allowance.peak_allocation_bytes - capacity);
-        let acyclic_stream::CommitOutcome::Committed(ack) = client.commit(request).await? else {
+        let acyclic_stream::CommitOutcome::Committed(ack) = client.provider.commit(request).await? else {
             panic!("ordinary source publication");
         };
         let CommittedMutation::Append(append) = &ack.mutations[0] else {
@@ -2050,12 +2050,12 @@ mod native_publication_custody_tests {
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
         let request = publication.request(&client,
             IdempotencyKey::new(OwnedBytes::from_static(b"publication-custody"))?).await?;
-        let acyclic_stream::CommitOutcome::Committed(mut envelope) = client.commit(request).await? else {
+        let acyclic_stream::CommitOutcome::Committed(mut envelope) = client.provider.commit(request).await? else {
             panic!("original absent/Tail atomic publication");
         };
         let retry = publication.request(&client,
             IdempotencyKey::new(OwnedBytes::from_static(b"publication-custody"))?).await?;
-        let acyclic_stream::CommitOutcome::Committed(retried) = client.commit(retry).await? else {
+        let acyclic_stream::CommitOutcome::Committed(retried) = client.provider.commit(retry).await? else {
             panic!("same original request is an idempotent publication");
         };
         assert_eq!(retried.commit_id, envelope.commit_id);

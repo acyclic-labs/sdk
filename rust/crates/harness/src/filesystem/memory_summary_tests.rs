@@ -874,7 +874,7 @@ impl acyclic_stream::StreamProvider for ColdSummaryStream {
         &self,
         commit: acyclic_stream::CommitId,
     ) -> std::result::Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError> {
-        self.client.read_commit(commit).await
+        self.client.provider.read_commit(commit).await
     }
     async fn append(
         &self,

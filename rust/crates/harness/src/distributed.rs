@@ -2922,7 +2922,7 @@ async fn append_once_with_work<P: StreamProvider>(
     if let Some(original) = work.as_deref()
         .and_then(|observer| observer.original_native_work()).cloned()
     {
-        let result = native_call_result(&original, client.native_append(
+        let result = native_call_result(&original, client.provider.native_append(
             acyclic_stream::AppendRequest {
                 path: stream.path().clone(), records, if_tail, idempotency_key: Some(key),
             },
@@ -3216,7 +3216,7 @@ impl PreparedMaterializationCommit {
         completion.sdk_custody = Some(custody);
         let prepared = match native_call_result(
             &original,
-            client.native_prepare_commit(request, maximum, original.runtime_meter_owner()).await,
+            client.provider.native_prepare_commit(request, maximum, original.runtime_meter_owner()).await,
         ) {
             Ok(Ok(prepared)) => prepared,
             Ok(Err(error)) => return Err(completion.into_error(sdk_error(error, &None))),
@@ -3473,7 +3473,7 @@ pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
                 drop(key);
                 recovery.await
             }
-            None => client.native_inspect_idempotency(key, original.runtime_meter_owner()).await,
+            None => client.provider.native_inspect_idempotency(key, original.runtime_meter_owner()).await,
         })?;
         let output = match inspected {
             Ok(output) => output,
@@ -3510,7 +3510,7 @@ pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
         return Ok(Ok(Some((observation, retained))));
     }
     if let Some(work) = custody.work().as_deref_mut() { work.begin_call()?; }
-    let inspected = client.inspect_idempotency(key).await;
+    let inspected = client.provider.inspect_idempotency(key).await;
     match inspected {
         Err(source) => Ok(Err(SdkCallError::Ok(source))),
         Ok(None) => Ok(Ok(None)),
@@ -3661,7 +3661,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
                     drop(request);
                     prepared.finish(record).await
                 }
-                None => client.native_commit(request, original.runtime_meter_owner()).await,
+                None => client.provider.native_commit(request, original.runtime_meter_owner()).await,
             };
             self.phase = match &committed {
                 Ok(Ok(output)) => match output.value() {
@@ -3700,7 +3700,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
             received.transfer();
             return Ok(Ok((outcome, retained)));
         }
-        let committed = client.commit(request).await;
+        let committed = client.provider.commit(request).await;
         self.phase = match &committed {
             Ok(acyclic_stream::CommitOutcome::Committed(_)) => CommitPhase::Committed,
             Ok(acyclic_stream::CommitOutcome::Conflict(_)) => CommitPhase::Conflict,
@@ -6589,7 +6589,7 @@ mod tests {
                         Some(execution)
                     );
                     let outcome = client
-                        .commit(acyclic_stream::CommitRequest {
+                        .provider.commit(acyclic_stream::CommitRequest {
                             conditions: vec![
                                 acyclic_stream::CommitCondition::Tail {
                                     path: acyclic_stream::StreamPath::new(COORDINATOR_PATH)?,
@@ -7088,7 +7088,7 @@ mod tests {
         let winner_id = winner.operation_id();
         let digest = *blake3::hash(&crate::contract::canonical_json_bytes(winner)?).as_bytes();
         let receipt = client
-            .inspect_idempotency(stream_key_with_work(key, &mut None).map(|(key, _)| key)?)
+            .provider.inspect_idempotency(stream_key_with_work(key, &mut None).map(|(key, _)| key)?)
             .await
             .map_err(|error| Error::Storage(error.to_string()))?
             .ok_or_else(|| Error::NotFound("winning budget receipt".into()))?;

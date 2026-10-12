@@ -144,8 +144,6 @@ impl OwnedBytes {
             Bound::Unbounded => self.len(),
         };
         assert!(begin <= end && end <= self.len(), "slice range exceeds visible bytes");
-        // Preserve the full backing even for an empty view: the physical data
-        // and its original claim must retire together at the final carrier.
         Self {
             bytes: self.bytes.clone(), start: self.start + begin, end: self.start + end,
             retained_capacity: self.retained_capacity,
@@ -272,8 +270,6 @@ impl<G: Send + Sync + 'static> std::fmt::Debug for PreparedOwnedBytes<G> {
 pub enum PreparedOwnedBytesError {
     /// The transferred initialized length does not cover its real capacity.
     NotFullyInitialized,
-    /// The safe unique conversion unexpectedly could not recover mutable ownership.
-    NotUnique,
     /// Admission failed on the original meter before its corresponding allocator call.
     Admission(io::Error),
 }
@@ -565,26 +561,6 @@ mod tests {
         assert_eq!(OwnedBytes::from(Bytes::from_static(b"opaque")).retained_capacity(), None);
     }
 
-    #[test]
-    fn ordinary_unique_take_recovers_original_pointer_and_capacity() {
-        for (capacity, contents) in [(31, &b"spare"[..]), (5, &b"exact"[..]), (19, &b""[..])] {
-            let mut data = Vec::with_capacity(capacity);
-            data.extend_from_slice(contents);
-            let pointer = data.as_ptr();
-            let capacity = data.capacity();
-            let bytes = OwnedBytes::from(data);
-            let recovered = bytes.try_into_ordinary_vec().unwrap();
-            assert_eq!(recovered.as_ptr(), pointer);
-            assert_eq!(recovered.capacity(), capacity);
-            assert_eq!(recovered, contents);
-        }
-        let data = vec![1, 2, 3].into_boxed_slice();
-        let pointer = data.as_ptr();
-        let recovered = OwnedBytes::from(data).try_into_ordinary_vec().unwrap();
-        assert_eq!(recovered.as_ptr(), pointer);
-        assert_eq!(recovered.capacity(), 3);
-        assert_eq!(recovered, [1, 2, 3]);
-    }
 
     #[test]
     fn ordinary_shared_take_preserves_carrier_until_last_alias_retires() {

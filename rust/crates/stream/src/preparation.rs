@@ -317,8 +317,6 @@ where
         .ok_or(StreamError::LimitExceeded)?;
     let mut output = observer.vec(count)?;
     for index in 0..count {
-        // A borrowed iterator clones its immutable alias only after admission;
-        // an owned Vec iterator simply transfers it, without an avoidable clone.
         observer.admit_item()?;
         let value = bodies.next().ok_or(StreamError::Unavailable)?;
         output.value.push(Record {

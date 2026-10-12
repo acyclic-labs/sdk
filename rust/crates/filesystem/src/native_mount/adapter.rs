@@ -556,7 +556,7 @@ impl NativeDemandCarrier<'_> {
                 MountSourceError::NativeWork(original.runtime_error(error))
             }
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+            => {
                 MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout)
             }
         })?;
@@ -6339,7 +6339,7 @@ where
                     .map_err(|error| MountSourceError::NativeWork(match error.into_error() {
                         acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
                         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                        | acyclic_stream::PreparedOwnedBytesError::NotUnique => crate::NativeTreeMaterializationError::InvalidLayout,
+                        => crate::NativeTreeMaterializationError::InvalidLayout,
                     }))?;
                 return Ok(crate::kernel::OwnedSourceChunk::intrinsic(data, capacity));
             }
@@ -6594,7 +6594,7 @@ where
                 .map_err(|error| MountSourceError::NativeWork(match error.into_error() {
                         acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
                         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                        | acyclic_stream::PreparedOwnedBytesError::NotUnique => crate::NativeTreeMaterializationError::InvalidLayout,
+                        => crate::NativeTreeMaterializationError::InvalidLayout,
                     }))?;
             return self.attached.write_range_with_meter(
                 offset, crate::kernel::OwnedSourceChunk::intrinsic(data, capacity), &work,

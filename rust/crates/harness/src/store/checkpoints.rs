@@ -336,7 +336,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
                 observer.begin_write()?;
             }
             let request_owned = retained - path_owned;
-            let outcome = client.commit(request).await.map_err(Error::from);
+            let outcome = client.provider.commit(request).await.map_err(Error::from);
             let outcome = operations::release_owned_after_drop(outcome, request_owned, work);
             retained -= request_owned;
             (outcome?, 0)

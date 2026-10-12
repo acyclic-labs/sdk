@@ -8,7 +8,7 @@ use futures::StreamExt as _;
 
 enum ReceiptRecord {
     Ordinary(acyclic_stream::Record),
-    Original(acyclic_stream::NativeObservedRecord),
+    Original(acyclic_stream::NativeStreamOutput<acyclic_stream::Record>),
 }
 
 impl ReceiptRecord {
@@ -244,7 +244,7 @@ pub(super) async fn read<P: StreamProvider>(
     check(work)?;
     let native_meter = work.map(NativeMaterializationWork::runtime_meter_owner);
     let bounds = if let (Some(original), Some(meter)) = (work, &native_meter) {
-        match client.native_bounds(path.clone(), meter.clone()).await
+        match client.provider.native_bounds(path.clone(), meter.clone()).await
             .map_err(|error| NativeReceiptError::Native(original.runtime_error(error)))? {
             Ok(bounds) => *bounds.value(),
             Err(StreamError::NotFound) => return Ok(None),
@@ -262,7 +262,7 @@ pub(super) async fn read<P: StreamProvider>(
     if !(1..=2).contains(&bounds.tail) { return Err(NativeReceiptError::Record("invalid native receipt length")); }
     let limit = bounds.tail as u32;
     let mut records = if let (Some(original), Some(meter)) = (work, native_meter) {
-        let records = client.native_read(acyclic_stream::ReadRequest {
+        let records = client.provider.native_read(acyclic_stream::ReadRequest {
             path: path.clone(), from: 0, limit,
         }, meter).await.map_err(|error| NativeReceiptError::Native(original.runtime_error(error)))??;
         ReceiptRecords::Original { records, work: original }

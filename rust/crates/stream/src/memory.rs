@@ -21,7 +21,7 @@ use acyclic_native_runtime::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
-    NativeObservedRecord, NativeProviderFuture, NativeRecordStream, NativeStreamOutput,
+    NativeProviderFuture, NativeRecordStream, NativeStreamOutput,
     NativeStreamFailure, NativeStreamResult,
 };
 
@@ -525,9 +525,9 @@ impl MemoryStream {
         C: Send,
     {
         observer.check()?;
-        normalize_commit_with_observer(request, observer)?;
-        validate_commit_shape_with_observer(request, observer)?;
-        let digest = commit_digest(request, observer)?;
+        normalize_commit(request, observer)?;
+        validate_commit_shape(request, observer)?;
+        let digest = commit_digest(request, &mut CommitDigestWork::Live(observer))?;
         let bytes = request.mutations.iter().map(|mutation| match mutation {
             CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
                 records.iter().map(OwnedBytes::len).sum::<usize>()
@@ -643,7 +643,7 @@ impl MemoryStream {
             }, observer)?;
             let missing = missing_observed_paths(state, request.mutations.iter().map(mutation_path), observer)?;
             if reserve_coordinated(state, request, &missing.value, self.limits).is_err() {
-                recount_observed(state, observer)?;
+                recount(state, observer)?;
                 reserve_coordinated(state, request, &missing.value, self.limits)?;
             }
             let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
@@ -718,7 +718,7 @@ impl MemoryStream {
         observer: &MemoryObserver,
     ) -> MemoryResult<MemoryCompletion<MemoryOutput<AppendOutcome>>> {
         observer.check()?;
-        validate_records_with_observer(&request.records, observer)?;
+        validate_records(&request.records, observer)?;
         let encoded_len = append_encoded_len(request, observer)?;
         if encoded_len > MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded.into());
@@ -757,7 +757,7 @@ impl MemoryStream {
             } else {
                 let missing = missing_observed_paths(&state, std::iter::once(&request.path), observer)?;
                 if reserve_append(&state, &missing.value, &request.records, self.limits).is_err() {
-                    recount_observed(&mut state, observer)?;
+                    recount(&mut state, observer)?;
                     reserve_append(&state, &missing.value, &request.records, self.limits)?;
                 }
                 let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
@@ -817,8 +817,8 @@ impl MemoryStream {
         let result: MemoryResult<NativeMemoryPreparedCommit> = async {
             observer.check()?;
             if maximum > MAX_RECORD_BYTES { return Err(StreamError::LimitExceeded.into()); }
-            normalize_commit_with_observer(request, &observer)?;
-            validate_commit_shape_with_observer(request, &observer)?;
+            normalize_commit(request, &observer)?;
+            validate_commit_shape(request, &observer)?;
             let (path, start) = crate::preparation::single_append_template(request)?;
             let mut command_bytes = wire_bytes_len(request.idempotency_key.as_bytes().len());
             for condition in &request.conditions {
@@ -1074,7 +1074,7 @@ impl MemoryStream {
             if !unchanged { return prepared_failure(late, StreamError::InvalidArgument); }
         }
         // Record prepaid work without fresh admission.
-        let digest = commit_digest_with_work(request, &mut CommitDigestWork::Prepared {
+        let digest = commit_digest(request, &mut CommitDigestWork::Prepared {
             meter: &meter, late: &mut late,
         }).expect("the prepared writer retains late causes instead of abandoning settlement");
         let ((), recorded) = prepared.write_operation.attempt(|| ());
@@ -1704,7 +1704,7 @@ struct NativeMemoryRecordCursor {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl futures::Stream for NativeMemoryRecordCursor {
-    type Item = std::io::Result<Result<NativeObservedRecord, NativeStreamFailure>>;
+    type Item = std::io::Result<Result<NativeStreamOutput<Record>, NativeStreamFailure>>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -2186,11 +2186,7 @@ pub(crate) fn validate_limit(limit: u32) -> Result<(), StreamError> {
     }
 }
 
-pub(crate) fn validate_records(records: &[OwnedBytes]) -> Result<(), StreamError> {
-    provider_result(validate_records_with_observer(records, &MemoryObserver::default()))
-}
-
-fn validate_records_with_observer(records: &[OwnedBytes], observer: &MemoryObserver) -> MemoryResult<()> {
+pub(crate) fn validate_records(records: &[OwnedBytes], observer: &MemoryObserver) -> MemoryResult<()> {
     if records.is_empty() || records.len() > MAX_ITEMS {
         return Err(StreamError::LimitExceeded.into());
     }
@@ -2551,12 +2547,7 @@ fn is_direct_child(parent: &StreamPath, candidate: &StreamPath) -> bool {
 }
 
 /// Counts exactly the records and payload bytes the live paths retain, each shared history once.
-fn recount(state: &mut State) {
-    recount_observed(state, &MemoryObserver::default())
-        .expect("ordinary recount has no fallible observer");
-}
-
-fn recount_observed(state: &mut State, observer: &MemoryObserver) -> MemoryResult<()> {
+fn recount(state: &mut State, observer: &MemoryObserver) -> MemoryResult<()> {
     let mut seen = MemoryOutput {
         value: HashSet::new(),
         allocation: observer.allocate(0)?,
@@ -2726,7 +2717,7 @@ fn hash_records_observed(hash: &mut Sha256, records: &[OwnedBytes], observer: &M
     Ok(())
 }
 
-enum CommitDigestWork<'a> {
+pub(crate) enum CommitDigestWork<'a> {
     Live(&'a MemoryObserver),
     #[cfg(not(target_arch = "wasm32"))]
     Prepared {
@@ -2784,12 +2775,8 @@ impl CommitDigestWork<'_> {
     }
 }
 
-pub(crate) fn commit_digest(request: &CommitRequest, observer: &MemoryObserver) -> std::io::Result<[u8; 32]> {
-    commit_digest_with_work(request, &mut CommitDigestWork::Live(observer))
-}
-
 /// One canonical Commit writer.
-fn commit_digest_with_work(request: &CommitRequest, work: &mut CommitDigestWork<'_>) -> std::io::Result<[u8; 32]> {
+pub(crate) fn commit_digest(request: &CommitRequest, work: &mut CommitDigestWork<'_>) -> std::io::Result<[u8; 32]> {
     let mut hash = Sha256::new();
     work.update(&mut hash, b"acyclic.stream.request.v1\0")?;
     work.update(&mut hash, b"commit")?;
@@ -2854,11 +2841,7 @@ fn mutation_path(mutation: &CommitMutation) -> &StreamPath {
     }
 }
 
-pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
-    provider_result(normalize_commit_with_observer(request, &MemoryObserver::default()))
-}
-
-fn normalize_commit_with_observer(request: &mut CommitRequest, observer: &MemoryObserver) -> MemoryResult<()> {
+pub(crate) fn normalize_commit(request: &mut CommitRequest, observer: &MemoryObserver) -> MemoryResult<()> {
     if request.conditions.is_empty()
         || request.conditions.len() > MAX_ITEMS
         || request.mutations.is_empty()
@@ -2869,9 +2852,9 @@ fn normalize_commit_with_observer(request: &mut CommitRequest, observer: &Memory
     for mutation in &request.mutations {
         observer.admit_item()?;
         match mutation {
-            CommitMutation::Append { records, .. } => validate_records_with_observer(records, observer)?,
+            CommitMutation::Append { records, .. } => validate_records(records, observer)?,
             CommitMutation::Fork { records, .. } if !records.is_empty() => {
-                validate_records_with_observer(records, observer)?;
+                validate_records(records, observer)?;
             }
             CommitMutation::Fork { .. } => {}
         }
@@ -2958,11 +2941,7 @@ fn wire_uint_len(value: u64) -> usize {
     if value == 0 { 0 } else { 1 + wire_varint_len(value) }
 }
 
-pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
-    provider_result(validate_commit_shape_with_observer(request, &MemoryObserver::default()))
-}
-
-fn validate_commit_shape_with_observer(request: &CommitRequest, observer: &MemoryObserver) -> MemoryResult<()> {
+pub(crate) fn validate_commit_shape(request: &CommitRequest, observer: &MemoryObserver) -> MemoryResult<()> {
     // Every caller normalizes first, so a binary search avoids a temporary tree.
     let condition = |path: &StreamPath| {
         request.conditions
@@ -3579,7 +3558,7 @@ mod tests {
             }, Arc::clone(&original)).map_err(|failure| match failure.into_error() {
                 crate::PreparedOwnedBytesError::Admission(error) => ControlFailure::Observer(error),
                 crate::PreparedOwnedBytesError::NotFullyInitialized
-                    | crate::PreparedOwnedBytesError::NotUnique => ControlFailure::Provider(StreamError::InvalidArgument),
+                    => ControlFailure::Provider(StreamError::InvalidArgument),
             })?;
             let issued = provider.native_prepare_commit(request, 64, original).await??;
             let (mut issued, packet_guard) = issued.into_parts();
@@ -3717,7 +3696,7 @@ mod tests {
             ).await?, Err(StreamError::IdempotencyMismatch)));
             assert_eq!(meter.allocations.load(Ordering::SeqCst), allocation_count);
             assert_eq!(provider.state.read().await.replays.get(request.idempotency_key.as_bytes())
-                .ok_or(StreamError::Unavailable)?.digest, commit_digest(&request, &MemoryObserver::default())?);
+                .ok_or(StreamError::Unavailable)?.digest, commit_digest(&request, &mut CommitDigestWork::Live(&MemoryObserver::default()))?);
             assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
             assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
             drop(replay);
@@ -4247,32 +4226,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    #[ignore = "bounded scaling benchmark; run with --ignored --nocapture"]
-    async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
-        for count in [1_000_u64, 10_000] {
-            let provider = MemoryStream::default();
-            let stream = path("bench/follow")?;
-            for index in 0..count {
-                provider
-                    .append(AppendRequest {
-                        path: stream.clone(),
-                        records: vec![OwnedBytes::from_static(b"x")],
-                        if_tail: Some(index),
-                        idempotency_key: None,
-                    })
-                    .await?;
-            }
-            let started = std::time::Instant::now();
-            let mut follow = provider.follow(stream, 0).await?;
-            for expected in 0..count {
-                let record = follow.next().await.ok_or(StreamError::Unavailable)??;
-                assert_eq!(record.sequence, expected);
-            }
-            eprintln!("follow history={count} read={:?}", started.elapsed());
-        }
-        Ok(())
-    }
 
     #[tokio::test]
     #[allow(
@@ -4416,8 +4369,6 @@ mod tests {
                 u64::try_from(records.len()).map_err(|_| StreamError::LimitExceeded)?,
                 cut
             );
-            // A window across the cut reads the source prefix, then the
-            // destination's own suffix, never the source's later records.
             provider
                 .append(AppendRequest {
                     path: destination.clone(),
@@ -4482,7 +4433,6 @@ mod tests {
         assert!(StreamPath::new("runs/run_42/agents/researcher").is_ok());
     }
 
-    /// Time cannot free a retry identity for reuse, including at u64 exhaustion.
     #[tokio::test]
     async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), StreamError> {
         let clock = Arc::new(TestClock::default());
@@ -4553,7 +4503,6 @@ mod tests {
             ..proptest::prelude::ProptestConfig::with_cases(64)
         })]
 
-        /// Record and child pages concatenate to exactly the full, ordered set: no page skips or repeats an entry, whatever its bound.
         #[test]
         fn pages_neither_skip_nor_repeat(
             names in proptest::collection::btree_set("[a-c]{1,2}(/[a-c])?", 1..12),

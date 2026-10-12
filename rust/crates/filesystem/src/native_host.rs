@@ -3925,7 +3925,7 @@ fn prepare_source_link_buffer<W: crate::demand::SourceDemandReadWork>(
                 crate::native_name::original_name_error(original.runtime_error(error))
             }
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique => DemandError::InvalidRequest,
+            => DemandError::InvalidRequest,
         })
 }
 
