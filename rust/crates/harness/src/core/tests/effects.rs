@@ -1,4 +1,3 @@
-//! tests effects semantics.
 use super::*;
 #[test]
 fn effect_guarantees_and_attestations_control_retry() -> Result<()> {

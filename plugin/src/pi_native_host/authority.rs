@@ -349,14 +349,14 @@ impl PiNativeCommandHost {
 
     pub(super) async fn bind_recovery(
         &self,
-        shared: Arc<NativeTaskContext>,
+        shared: Arc<TaskContext>,
         input: &PiTaskInput,
         owner: Arc<TaskJournalOwner<LocalStream>>,
         command: OperationId,
         effect: &acyclic_harness::core::EffectState,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<BoundEffect>> {
-        let context = shared.context();
+        let context = shared.as_ref();
         let borrowed = BorrowedEffectPlan {
             provider: &effect.provider,
             guarantee: &effect.guarantee,

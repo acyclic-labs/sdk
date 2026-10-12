@@ -353,6 +353,7 @@ where
                 cancellation,
             )
             .await?;
+            candidate.operation = Some(operation);
             if self
                 .authored
                 .shared_checkout()
@@ -381,8 +382,6 @@ where
                             })
                             .map_err(|_| MountSourceError::Cancelled)
                     },
-                    Some(operation),
-                    |_, state| state.retained_operation_id(),
                 )
                 .await?
                 .is_none()

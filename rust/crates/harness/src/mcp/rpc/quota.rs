@@ -15,8 +15,8 @@ pub(super) fn dto_quota(
         ));
     }
     let typed_slot = size_of::<super::McpInitializeResult>()
-        + size_of::<super::McpToolDefinition>()
-        + size_of::<super::McpToolsPage>()
+        + size_of::<super::super::McpToolDefinition>()
+        + size_of::<super::super::McpToolsPage>()
         + size_of::<rmcp::model::Resource>()
         + size_of::<rmcp::model::ResourceTemplate>()
         + size_of::<rmcp::model::Prompt>()
