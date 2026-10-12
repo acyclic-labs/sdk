@@ -169,7 +169,10 @@ pub struct Client {
     inner: crate::grpc::Client,
     #[cfg(target_arch = "wasm32")]
     inner: wire::actors_service_client::ActorsServiceClient<
-        tonic::codegen::InterceptedService<tonic_web_wasm_client::Client, acyclic_workers::BearerAuth>,
+        tonic::codegen::InterceptedService<
+            tonic_web_wasm_client::Client,
+            acyclic_workers::BearerAuth,
+        >,
     >,
 }
 
@@ -177,35 +180,38 @@ impl Client {
     /// Returns `grpc` for native transport and `grpc-web` for browser transport.
     #[must_use]
     pub const fn transport(&self) -> &'static str {
-        if cfg!(target_arch = "wasm32") { "grpc-web" } else { "grpc" }
+        if cfg!(target_arch = "wasm32") {
+            "grpc-web"
+        } else {
+            "grpc"
+        }
     }
 }
 
 /// Connect trusting exclusively the supplied PEM CA on native targets, or platform roots if absent.
-pub async fn connect(
-    endpoint: &str,
-    token: &str,
-    ca: Option<&[u8]>,
-) -> Result<Client, Error> {
+pub async fn connect(endpoint: &str, token: &str, ca: Option<&[u8]>) -> Result<Client, Error> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let inner = crate::grpc::connect(endpoint, token, ca)
-            .await
-            .map_err(|error| match error {
-                crate::grpc::ConnectError::InsecureEndpoint => {
-                    Error::Configuration("Actors endpoints must use https".into())
-                }
-                crate::grpc::ConnectError::InvalidCredential => {
-                    Error::Configuration("invalid Actors bearer credential".into())
-                }
-                crate::grpc::ConnectError::InvalidCaCertificate => {
-                    Error::Configuration("invalid Actors private CA certificate".into())
-                }
-                crate::grpc::ConnectError::PlatformVerifier(error) => {
-                    Error::Transport(error.to_string())
-                }
-                crate::grpc::ConnectError::Transport(error) => Error::Transport(format!("{error:?}")),
-            })?;
+        let inner =
+            crate::grpc::connect(endpoint, token, ca)
+                .await
+                .map_err(|error| match error {
+                    crate::grpc::ConnectError::InsecureEndpoint => {
+                        Error::Configuration("Actors endpoints must use https".into())
+                    }
+                    crate::grpc::ConnectError::InvalidCredential => {
+                        Error::Configuration("invalid Actors bearer credential".into())
+                    }
+                    crate::grpc::ConnectError::InvalidCaCertificate => {
+                        Error::Configuration("invalid Actors private CA certificate".into())
+                    }
+                    crate::grpc::ConnectError::PlatformVerifier(error) => {
+                        Error::Transport(error.to_string())
+                    }
+                    crate::grpc::ConnectError::Transport(error) => {
+                        Error::Transport(format!("{error:?}"))
+                    }
+                })?;
         Ok(Client { inner })
     }
 
