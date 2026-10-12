@@ -861,7 +861,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let name = std::str::from_utf8(journal.as_resource().key())
             .map_err(|_| bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "fork journal name is not UTF-8"))?;
         let creation_key = IdempotencyKey::new(crate::contract::preparation_format(format_args!("fork:{}:journal", request.operation_id), self.io.as_ref())?)?;
-        bounded_io::create(&self.preparer.host, name, &creation_key, self.io.as_ref(), true, self.task_preparation,
+        bounded_io::create(&self.preparer.host, name, &creation_key, self.io.as_ref(), self.task_preparation,
             #[cfg(not(target_arch = "wasm32"))]
             self.native_creation_guard.as_ref(),
         ).await?;
@@ -997,8 +997,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 _ => None,
             })
             .ok_or_else(|| bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "fork has no project selection"))?;
-        let request_bytes = encode(&request, self.journal_limit(MAX_REQUEST_BYTES), self.io.as_ref())?;
-        let request_digest = bounded_io::digest(&request_bytes, self.io.as_ref())?;
+        let request_digest = blake3::Hash::from(record_digest(&request, self.journal_limit(MAX_REQUEST_BYTES), self.io.as_ref())?);
         for (volume, role) in creation_volumes(&request) {
             self.verify_task_lease(false).await?;
             self.preparer.host
@@ -1496,12 +1495,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let request_digest = crate::contract::canonical_json_digest_with_work(
                 &request, request.maximum_bytes, &mut Some(&mut io.history_io()),
             )?;
-            let encoded_hold;
-            let encoded = io.encode(&fork.0, MAX_REQUEST_BYTES.min(request.maximum_bytes), false)?;
-            encoded_hold = io.guard_bytes(&encoded)?;
-            let preparation_digest = *bounded_io::digest(&encoded, Some(&io))?.as_bytes();
-            drop(encoded);
-            drop(encoded_hold);
+            let preparation_digest = record_digest(&fork.0, MAX_REQUEST_BYTES.min(request.maximum_bytes), Some(&io))?;
 
             let journal_hold;
             let before = io.owned_bytes()?;
@@ -1657,7 +1651,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let creation_key = IdempotencyKey::new(crate::contract::preparation_format(
             format_args!("fork:{}:allocation-journal", claim.operation_id), io,
         )?)?;
-        bounded_io::create(self, name, &creation_key, io, true, preparation,
+        bounded_io::create(self, name, &creation_key, io, preparation,
             #[cfg(not(target_arch = "wasm32"))]
             native_creation_guard,
         ).await?;
@@ -1747,8 +1741,12 @@ fn allocation_ref(provider: &ProviderRef, volume: &VolumeRef, io: Option<&Prepar
 fn seed_digest(seed: &ForkSeed, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
     let mut history = io.map(PreparationIo::history_io);
     seed.validate(&mut history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo))?;
+    record_digest(seed, maximum_bytes, io)
+}
+
+fn record_digest<T: Serialize>(value: &T, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
     let encoded_hold;
-    let encoded = encode(seed, maximum_bytes, io)?;
+    let encoded = encode(value, maximum_bytes, io)?;
     encoded_hold = io.map(|io| io.guard_bytes(&encoded)).transpose()?.flatten();
     let digest = *bounded_io::digest(&encoded, io)?.as_bytes();
     drop(encoded);
