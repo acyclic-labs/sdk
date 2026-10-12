@@ -8,7 +8,7 @@ async fn served_body_completion_stays_with_its_origin() -> Result<(), Box<dyn st
             .into_iter()
             .map(move |scenario| (filtered, scenario))
     }) {
-        let captured = acyclic_grpc_observability::test_support::Capture::default();
+        let captured = acyclic_grpc_observability::tests::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default()
                 .with(captured.clone())
@@ -93,7 +93,7 @@ async fn served_body_completion_stays_with_its_origin() -> Result<(), Box<dyn st
             "acyclic.stream.grpc.serve.read"
         };
         assert!(!captured.fields(operation).contains_key("outcome"));
-        let other = acyclic_grpc_observability::test_support::Capture::default();
+        let other = acyclic_grpc_observability::tests::Capture::default();
         let _polling = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(other.clone()),
         );
@@ -164,7 +164,7 @@ async fn served_body_completion_stays_with_its_origin() -> Result<(), Box<dyn st
 async fn observed_body_terminal_and_drop_close_real_parent_under_origin() {
     use tracing_subscriber::layer::SubscriberExt as _;
     for scenario in ["pending", "error", "eof"] {
-        let captured = acyclic_grpc_observability::test_support::Capture::default();
+        let captured = acyclic_grpc_observability::tests::Capture::default();
         let mut body = tracing::subscriber::with_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
@@ -184,7 +184,7 @@ async fn observed_body_terminal_and_drop_close_real_parent_under_origin() {
                 observe_body(&span, source)
             },
         );
-        let other = acyclic_grpc_observability::test_support::Capture::default();
+        let other = acyclic_grpc_observability::tests::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(other.clone()),
         );
@@ -228,7 +228,7 @@ async fn cancelled_server_handler_records_owned_rpc_and_closes_origin_parent() {
         tail_delay: std::time::Duration::from_secs(60),
         denial: None,
     }));
-    let captured = acyclic_grpc_observability::test_support::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let future = tracing::subscriber::with_default(
         tracing_subscriber::Registry::default().with(captured.clone()),
         || {
@@ -248,7 +248,7 @@ async fn cancelled_server_handler_records_owned_rpc_and_closes_origin_parent() {
             .fields("acyclic.stream.grpc.serve.tail")
             .contains_key("outcome")
     );
-    let other = acyclic_grpc_observability::test_support::Capture::default();
+    let other = acyclic_grpc_observability::tests::Capture::default();
     let _default = tracing::subscriber::set_default(
         tracing_subscriber::Registry::default().with(other.clone()),
     );
@@ -277,7 +277,7 @@ async fn client_body_completion_observes_decode_trailers_and_drop()
             .into_iter()
             .map(move |scenario| (filtered, scenario))
     }) {
-        let captured = acyclic_grpc_observability::test_support::Capture::default();
+        let captured = acyclic_grpc_observability::tests::Capture::default();
         let dispatch = tracing::Dispatch::new(
             tracing_subscriber::Registry::default()
                 .with(captured.clone())
@@ -309,7 +309,7 @@ async fn client_body_completion_observes_decode_trailers_and_drop()
             captured.all("acyclic.stream.grpc.call").is_empty(),
             "creating a lazy cursor performs no RPC"
         );
-        let other = acyclic_grpc_observability::test_support::Capture::default();
+        let other = acyclic_grpc_observability::tests::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(other.clone()),
         );
@@ -409,7 +409,7 @@ async fn client_body_completion_observes_decode_trailers_and_drop()
 async fn eager_children_semantic_decode_failure_keeps_rpc_trailers_unobserved()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::test_support::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let _default = tracing::subscriber::set_default(
         tracing_subscriber::Registry::default().with(captured.clone()),
     );
@@ -441,7 +441,7 @@ async fn eager_children_semantic_decode_failure_keeps_rpc_trailers_unobserved()
 async fn client_follow_reconnects_close_rpc_spans_without_closing_cursor()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::test_support::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let _default = tracing::subscriber::set_default(
         tracing_subscriber::Registry::default().with(captured.clone()),
     );
@@ -518,7 +518,7 @@ async fn client_follow_reconnects_close_rpc_spans_without_closing_cursor()
 async fn unary_retry_attempts_finish_independently()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::test_support::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let _default = tracing::subscriber::set_default(
         tracing_subscriber::Registry::default().with(captured.clone()),
     );
@@ -553,7 +553,7 @@ async fn unary_retry_attempts_finish_independently()
 async fn unary_headers_wait_for_decode_and_cancel_pending_requests()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::test_support::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let _default = tracing::subscriber::set_default(
         tracing_subscriber::Registry::default().with(captured.clone()),
     );

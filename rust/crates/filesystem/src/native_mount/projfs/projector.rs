@@ -52,23 +52,18 @@ impl Projector {
             .map_or(1, usize::from)
             .min(MATERIALIZE_WORKERS);
         let queue = MaterializeQueue::new(directories);
-        let shared = SharedProjection(projection);
         std::thread::scope(|scope| {
             for _ in 1..workers {
-                scope.spawn(|| self.materialize_from(&shared, &queue));
+                scope.spawn(|| self.materialize_from(&projection, &queue));
             }
-            self.materialize_from(&shared, &queue);
+            self.materialize_from(&projection, &queue);
         });
         queue.finish()
     }
 
-    pub(super) fn materialize_from(
-        &self,
-        projection: &SharedProjection<'_>,
-        queue: &MaterializeQueue,
-    ) {
+    pub(super) fn materialize_from(&self, projection: &Projection<'_>, queue: &MaterializeQueue) {
         while let Some(directory) = queue.next() {
-            let written = self.materialize_directory(projection.0, directory);
+            let written = self.materialize_directory(*projection, directory);
             queue.done(written);
         }
     }

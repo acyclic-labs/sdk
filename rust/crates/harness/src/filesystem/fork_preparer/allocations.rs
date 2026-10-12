@@ -176,7 +176,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .ok_or_else(|| Error::Invalid("fork parent has no conversation state".into()))?;
         if let Some(file) = seed.inherited_context.first() {
             let bytes = self
-                .read_pinned(file, file.descriptor().byte_length())
+                .read_pinned_io(file, file.descriptor().byte_length(), None)
                 .await?;
             let actual: InheritedConversationPrefix = crate::contract::json_from_slice(&bytes)
                 .map_err(|_| Error::Invalid("inherited conversation is malformed".into()))?;

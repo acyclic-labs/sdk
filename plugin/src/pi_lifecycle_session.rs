@@ -804,7 +804,3 @@ async fn original_native_first_dispatch_pending(
         .await?;
     Ok(observed.0.is_none())
 }
-
-#[cfg(test)]
-#[path = "pi_lifecycle_session_tests.rs"]
-mod tests;

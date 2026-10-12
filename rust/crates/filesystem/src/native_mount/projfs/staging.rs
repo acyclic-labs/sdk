@@ -114,7 +114,7 @@ pub(super) fn delete_link(path: &std::path::Path, digest: u64) -> std::io::Resul
         .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
         .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
         .open(path)?;
-    let target = reparse_data(&link)?.and_then(|data| symbolic_link_target(&data));
+    let target = reparse_data(&link, symbolic_link_target)?.flatten();
     if target.is_none_or(|target| link_digest(target) != digest) {
         return Ok(false);
     }

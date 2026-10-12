@@ -4,7 +4,7 @@ use super::*;
 #[tokio::test]
 async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Some((pem, key, unrelated, mode)) =
-        acyclic_grpc_observability::test_support::tls_fixture(module_path!())?
+        acyclic_grpc_observability::tests::tls_fixture(module_path!())?
     else {
         return Ok(());
     };

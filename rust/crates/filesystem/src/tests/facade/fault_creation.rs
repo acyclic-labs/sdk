@@ -87,7 +87,7 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {
-                crate::FsResult::Ok(crate::FsReceipt {
+                crate::FsResult::Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
                 })
@@ -115,11 +115,11 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
     control.disable();
     let committed = committed.ok_or("commit never passed the complete authority cut sweep")?;
     let committed_generation = match committed.value {
-        CheckoutCommitOutcome::Committed { generation_id, .. }
-        | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => generation_id,
-        CheckoutCommitOutcome::Conflict { .. }
-        | CheckoutCommitOutcome::Fenced { .. }
-        | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+        LivePublicationObservation::Committed { generation_id, .. }
+        | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => generation_id,
+        LivePublicationObservation::Conflict { .. }
+        | LivePublicationObservation::Fenced { .. }
+        | LivePublicationObservation::IdempotencyConflict { .. } => {
             return Err("exact retry returned a semantic authority conflict".into());
         }
     };

@@ -59,7 +59,7 @@ async fn filesystem(
     AuthorityIssuer,
 )> {
     let provider = ProviderRef::new(name.into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let private = VolumeRef::new(
         provider,
         "scratch".into(),

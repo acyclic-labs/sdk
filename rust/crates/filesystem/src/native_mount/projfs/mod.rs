@@ -14,7 +14,8 @@ use super::{
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
-use crate::native_host::HostRoot;
+use crate::materializer::NativeResourceCredit::{ReadOperations, WriteOperations};
+use crate::native_host::{HostRoot, NativeHostWork};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;

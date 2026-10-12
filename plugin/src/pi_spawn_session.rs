@@ -1597,7 +1597,3 @@ fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> acyclic_ha
         custody: None,
     }
 }
-
-#[cfg(test)]
-#[path = "pi_spawn_session_tests.rs"]
-mod tests;

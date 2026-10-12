@@ -320,7 +320,7 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
             WorkBudget::UNBOUNDED,
             &cancelled_token,
             |_| async {
-                crate::FsResult::Ok(crate::FsReceipt {
+                crate::FsResult::Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
                 })

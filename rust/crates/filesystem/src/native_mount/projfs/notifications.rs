@@ -238,14 +238,11 @@ pub(super) unsafe fn notification(
                 || baseline.links != host.links
                 || baseline.size != host.size
             {
-                lock_recover(projection.as_ref())
-                    .bindings
-                    .remove(&capture_path);
+                lock_recover(projection.as_ref()).remove(&capture_path);
                 defer_host_capture(operation_failures.as_ref(), capture_path);
                 return Ok(());
             }
             let cached_binding = lock_recover(projection.as_ref())
-                .bindings
                 .get(&capture_path)
                 .copied();
             if !metadata_changed_since_open(baseline, host)
@@ -286,7 +283,11 @@ pub(super) unsafe fn notification(
                         && !has_pending_capture(operation_failures.as_ref(), &capture_path)
                         && host.links == Some(1)
                     {
-                        lock_recover(projection.as_ref()).remember_binding(
+                        let mut bindings = lock_recover(projection.as_ref());
+                        if bindings.len() >= MAXIMUM_CACHED_BINDINGS {
+                            bindings.clear();
+                        }
+                        bindings.insert(
                             capture_path,
                             ReadOnlyBinding {
                                 host,
@@ -298,9 +299,7 @@ pub(super) unsafe fn notification(
                     Ok(())
                 }
                 Ok(None) => {
-                    lock_recover(projection.as_ref())
-                        .bindings
-                        .remove(&capture_path);
+                    lock_recover(projection.as_ref()).remove(&capture_path);
                     defer_host_capture(operation_failures.as_ref(), capture_path);
                     Ok(())
                 }

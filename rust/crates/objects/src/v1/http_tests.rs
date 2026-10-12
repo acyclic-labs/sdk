@@ -464,7 +464,7 @@ fn customer_credentials_and_endpoint_configuration_are_bounded() {
 )]
 async fn http_download_trace_requires_validated_eof_and_records_cancellation()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use acyclic_grpc_observability::test_support::Capture;
+    use acyclic_grpc_observability::tests::Capture;
     use futures::StreamExt;
     use tracing_subscriber::prelude::*;
 
@@ -608,7 +608,7 @@ async fn http_download_trace_requires_validated_eof_and_records_cancellation()
 )]
 async fn http_unary_trace_waits_for_delayed_body_and_json_decode()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use acyclic_grpc_observability::test_support::Capture;
+    use acyclic_grpc_observability::tests::Capture;
     use tracing_subscriber::prelude::*;
 
     let gate = Arc::new(tokio::sync::Semaphore::new(0));

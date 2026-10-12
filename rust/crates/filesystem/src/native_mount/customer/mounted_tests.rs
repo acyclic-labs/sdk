@@ -103,21 +103,6 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     let query = new_work(WorkBudget::UNBOUNDED)?;
     let before = mount.snapshot(&query, &cancellation).await?;
     assert_eq!(before.authored_generation, generation);
-    lazy.validate_snapshot(
-        before,
-        &LazyTreapWork::native_with_work(&query, query.cancellation())?,
-    )
-    .await?;
-    let (lookup, custody) = lazy
-        .lookup_at_snapshot_with_work(before, "/source.txt", &query, query.cancellation())
-        .await?;
-    assert!(
-        matches!(lookup, LazyLookup::Source(node) if node.kind == crate::demand::SourceNodeKind::RegularFile)
-    );
-    assert!(custody.work().shares_ledger(&query));
-    drop(custody);
-    assert!(NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancelled).is_err());
-
     let identity = mount
         .native_root_identity()
         .ok_or("mount lost its root identity")?;

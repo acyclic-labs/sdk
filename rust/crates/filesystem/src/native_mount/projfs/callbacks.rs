@@ -11,7 +11,7 @@ pub(super) struct Runtime {
     pub(super) staging: Mutex<Option<(cap_std::fs::Dir, crate::NativeWorkReservation)>>,
     pub(super) writable: bool,
     pub(super) metadata_baselines: Arc<Mutex<HashMap<u128, OpenMetadataState>>>,
-    pub(super) projection: Arc<Mutex<ProjectionCache>>,
+    pub(super) projection: Arc<Mutex<HashMap<MountPath, ReadOnlyBinding>>>,
     pub(super) projector: Arc<Projector>,
     pub(super) metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
     pub(super) metadata_edits: Arc<FileLocks>,

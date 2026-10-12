@@ -2431,13 +2431,9 @@ impl acyclic_native_runtime::NativeReadMeter for ScopedSourceReadMeter<'_> {
         complete release(bytes: u64) -> ();
         admit admit_bytes(maximum: usize) -> io::Result<()>;
         admit admit_read(maximum: usize) -> io::Result<()>;
-        admit admit_operations(additional: u64) -> io::Result<()>;
-        complete record_operations(completed: u64) -> io::Result<()>;
         complete record_read(bytes: usize) -> io::Result<()>;
         admit admit_write(maximum: usize) -> io::Result<()>;
         complete record_write(bytes: usize) -> io::Result<()>;
-        admit admit_write_operations(additional: u64) -> io::Result<()>;
-        complete record_write_operations(completed: u64) -> io::Result<()>;
         admit admit_durability() -> io::Result<()>;
         admit reserve_cleanup_write() -> io::Result<u64>;
         complete cancel_cleanup_write(reservation: u64) -> ();
@@ -10921,12 +10917,8 @@ mod native_io_meter {
             record_examination(items: u64, bytes_copied: u64) => record { items_examined: items, bytes_copied: bytes_copied };
             examine(items: u64, bytes_copied: u64) => charge { items_examined: items, bytes_copied: bytes_copied };
             admit_bytes(maximum: usize) => admit { source_bytes_read: maximum as u64 };
-            admit_operations(additional: u64) => admit { backend_read_operations: additional };
-            record_operations(completed: u64) => record { backend_read_operations: completed };
             record_read(bytes: usize) => record { source_bytes_read: bytes as u64 };
             record_write(bytes: usize) => record { output_bytes: bytes as u64 };
-            admit_write_operations(additional: u64) => admit { backend_write_operations: additional };
-            record_write_operations(completed: u64) => record { backend_write_operations: completed };
             admit_durability() => charge { durability_operations: 1 };
         }
         fn reserve_operations(

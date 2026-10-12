@@ -255,12 +255,12 @@ async fn bind_conversation(
 
 async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, AuthorityIssuer, Scope)> {
     let provider = ProviderRef::new("mcp-fault".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(
+    let host = FilesystemHost::new(
         Fs::local(LocalOptions::new(root.join("fs")))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        provider.clone(),
-    )?);
+        &provider, None,
+    )?;
     let agent = AgentId::from_bytes([41; 16]);
     let private = VolumeRef::new(
         provider,
