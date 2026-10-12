@@ -220,10 +220,9 @@ impl NativeObjectsError {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeTransportErrors {
     pub(crate) meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    error: std::sync::Mutex<Option<NativeObjectsError>>,
+    state: std::sync::Mutex<(Option<NativeObjectsError>, acyclic_native_runtime::ReadAllocation)>,
     #[cfg(feature = "grpc")]
     codec_status: std::sync::Mutex<Option<tonic::Status>>,
-    wire_allocation: std::sync::Mutex<Option<acyclic_native_runtime::ReadAllocation>>,
     _allocation: acyclic_native_runtime::ReadAllocation,
 }
 
@@ -236,33 +235,26 @@ impl NativeTransportErrors {
         let allocation = acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<Self>())?;
         Ok(std::sync::Arc::new(Self {
             meter: std::sync::Arc::clone(meter),
-            error: std::sync::Mutex::new(None),
+            state: std::sync::Mutex::new((None, acyclic_native_runtime::ReadAllocation::empty(meter))),
             #[cfg(feature = "grpc")]
             codec_status: std::sync::Mutex::new(None),
-            wire_allocation: std::sync::Mutex::new(None),
             _allocation: allocation,
         }))
     }
 
     pub(crate) fn record(&self, error: NativeObjectsError) {
-        let mut slot = self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if slot.is_none() { *slot = Some(error); }
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.0.is_none() { state.0 = Some(error); }
     }
     pub(crate) fn take(&self) -> Option<NativeObjectsError> {
-        self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.take()
     }
 
     pub(crate) fn retain_wire(
-        &self, allocation: acyclic_native_runtime::ReadAllocation,
+        &self, mut allocation: acyclic_native_runtime::ReadAllocation,
     ) -> Result<(), NativeObjectsError> {
-        if !std::sync::Arc::ptr_eq(self._allocation.meter(), allocation.meter()) {
-            return Err(NativeObjectsError::from(NativeObjectsCause::Admission(std::io::ErrorKind::InvalidInput.into())));
-        }
-        let mut slot = self.wire_allocation.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        match slot.as_mut() {
-            Some(current) => current.absorb(&mut { allocation })?,
-            None => *slot = Some(allocation),
-        }
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.1.absorb(&mut allocation)?;
         Ok(())
     }
 
@@ -270,10 +262,8 @@ impl NativeTransportErrors {
     pub(crate) fn take_wire(
         &self, bytes: usize,
     ) -> Result<acyclic_native_runtime::ReadAllocation, NativeObjectsError> {
-        let mut slot = self.wire_allocation.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        slot.as_mut().ok_or_else(|| NativeObjectsError::from(NativeObjectsCause::Admission(
-            std::io::ErrorKind::InvalidData.into(),
-        )))?.split(bytes).map_err(NativeObjectsError::from)
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.1.split(bytes).map_err(NativeObjectsError::from)
     }
 
     #[cfg(feature = "grpc")]
@@ -522,7 +512,6 @@ impl From<futures::stream::BoxStream<'static, Result<OwnedBytes, Error>>> for Up
 pub(crate) struct PreparedNativeDownload {
     bytes: Option<acyclic_stream::PreparedOwnedBytes<acyclic_native_runtime::ReadAllocation>>,
     maximum_bytes: usize,
-    meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     header_allocation: Option<acyclic_native_runtime::ReadAllocation>,
     errors: std::sync::Arc<NativeTransportErrors>,
 }
@@ -576,7 +565,7 @@ impl Download {
             Some(crate::body::prepare_native_bytes(maximum_bytes, &meter)?)
         };
         let errors = NativeTransportErrors::new(&meter)?;
-        Ok(PreparedNativeDownload { bytes, maximum_bytes, meter, header_allocation: None, errors })
+        Ok(PreparedNativeDownload { bytes, maximum_bytes, header_allocation: None, errors })
     }
 
     /// Collects into storage prepared before this download's physical request.
@@ -598,17 +587,17 @@ impl Download {
             let Some(end) = filled.checked_add(chunk.len()).filter(|end| *end <= prepared.maximum_bytes) else {
                 return Err(prepared.fail(Error::from(wire::ErrorCode::QuotaExceeded).into(), self.header, filled, Some(chunk)));
             };
-            if let Err(error) = prepared.meter.check() {
+            if let Err(error) = prepared.errors.meter.check() {
                 return Err(prepared.fail(error.into(), self.header, filled, Some(chunk)));
             }
             if !chunk.is_empty() {
-                if let Err(error) = prepared.meter.admit_codec(0, chunk.len() as u64, 0) {
+                if let Err(error) = prepared.errors.meter.admit_codec(0, chunk.len() as u64, 0) {
                     return Err(prepared.fail(error.into(), self.header, filled, Some(chunk)));
                 }
                 prepared.bytes.as_mut().expect("nonempty bounded chunk has prepared storage")
                     .writable()[filled..end].copy_from_slice(&chunk);
                 filled = end;
-                if let Err(error) = prepared.meter.record_codec(0, chunk.len() as u64, 0) {
+                if let Err(error) = prepared.errors.meter.record_codec(0, chunk.len() as u64, 0) {
                     return Err(prepared.fail(error.into(), self.header, filled, Some(chunk)));
                 }
             }
