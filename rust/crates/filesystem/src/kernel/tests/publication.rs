@@ -1,24 +1,26 @@
 use super::*;
-use crate::foundation::{ProposedCommit, Sequence};
-use crate::kernel::{
-    Extent, ExtentKind, ExtentPage, GenerationExportManifestError, LogicalName, NameEncoding,
-    prove_generation_closure,
-    PublicationEvidenceError, TreeEntry, decode_generation_publication_evidence,
-    encode_extent_page, encode_generation_export_manifest, encode_generation_publication_evidence,
-};
-use crate::model::{Lifecycle, VolumeConfig};
 use crate::GuardedAppend;
-use sha2::{Digest as _, Sha256};
+use crate::async_storage::AsyncAuthorityStore;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::FileId;
+use crate::foundation::{ProposedCommit, Sequence};
 use crate::kernel::{
     DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot,
     MetadataField, TreePage, encode_file_metadata, encode_file_table_page, encode_generation_root,
     encode_tree_page,
 };
-use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
-use crate::storage::{
-    AuthorityStore, FenceOutcome, ObjectKind, ObjectStore, ObjectStoreError, object_digest,
+use crate::kernel::{
+    Extent, ExtentKind, ExtentPage, GenerationExportManifestError, LogicalName, NameEncoding,
+    PublicationEvidenceError, TreeEntry, decode_generation_publication_evidence,
+    encode_extent_page, encode_generation_export_manifest, encode_generation_publication_evidence,
+    prove_generation_closure,
 };
+use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
+use crate::model::{Lifecycle, VolumeConfig};
+use crate::storage::{
+    FenceOutcome, ObjectKind, ObjectStoreError, object_digest,
+};
+use sha2::{Digest as _, Sha256};
 
 fn metadata() -> FileMetadata {
     FileMetadata {
@@ -37,7 +39,7 @@ fn metadata() -> FileMetadata {
     }
 }
 
-fn put(
+async fn put(
     store: &MemoryObjectStore,
     kind: ObjectKind,
     bytes: Vec<u8>,
@@ -46,39 +48,48 @@ fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    store.put(object, acyclic_stream::OwnedBytes::from(bytes), WorkBudget::UNBOUNDED)?;
+    {
+        let __object_args = (
+            object,
+            acyclic_stream::OwnedBytes::from(bytes),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object)
 }
 
-fn fixture(
+async fn fixture(
     objects: &MemoryObjectStore,
     volume_id: VolumeId,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let metadata = put(
         objects,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
-    )?;
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let tree = put(
         objects,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_file_id = FileId::from_bytes([3; 16]);
     let table = put(
         objects,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![FileRecord {
+        encode_file_table_page(&FileTablePage::Leaf(vec![FileRecord {
                 file_id: root_file_id,
                 kind: FileKind::Directory,
                 link_count: 1,
                 metadata,
                 payload: FilePayload::Directory { entries: tree },
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     put(
         objects,
         ObjectKind::GenerationRoot,
@@ -88,8 +99,8 @@ fn fixture(
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
-    )
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await
 }
 
 fn limits() -> ClosureLimits {
@@ -105,14 +116,13 @@ fn limits() -> ClosureLimits {
     }
 }
 
-#[test]
-fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std::error::Error>> {
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([2; 16]);
     let authority_id = volume_authority_id(volume_id);
-    let head = authority
-        .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED)?
+    let head = ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = authority.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
         .value;
     let head = match head {
         crate::storage::CreateAuthorityOutcome::Created(head) => head,
@@ -124,7 +134,7 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         epoch: Epoch::GENESIS,
         expected: head,
         operation_id: OperationId::from_bytes([4; 16]),
-        generation_root: fixture(&objects, volume_id)?,
+        generation_root: fixture(&objects, volume_id).await?,
     };
     let first = publish_generation(
         &objects,
@@ -132,7 +142,8 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         request,
         limits(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(&first.outcome, AppendOutcome::Committed(_)));
     let retry = publish_generation(
         &objects,
@@ -140,7 +151,8 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         request,
         limits(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(retry.outcome, AppendOutcome::AlreadyCommitted(_)));
     assert!(retry.work.authority_records_read > 0);
     let conflicting_expected_epoch = publish_generation(
@@ -155,7 +167,8 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         },
         limits(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(
         conflicting_expected_epoch.outcome,
         AppendOutcome::IdempotencyConflict { .. }
@@ -169,8 +182,7 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         _ => return Err("first publication was not committed".into()),
     };
     assert!(matches!(
-        authority
-            .fence(authority_id, committed_head, WorkBudget::UNBOUNDED)?
+        ({ let __authority_args = (authority_id, committed_head, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = authority.fence(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?
             .value,
         FenceOutcome::Advanced(_)
     ));
@@ -180,7 +192,8 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         request,
         limits(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(
         post_fence_retry.outcome,
         AppendOutcome::AlreadyCommitted(_)
@@ -197,7 +210,8 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         },
         limits(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(
         post_fence_altered.outcome,
         AppendOutcome::IdempotencyConflict { .. }
@@ -211,7 +225,8 @@ fn complete_generation_publishes_and_retries_exactly() -> Result<(), Box<dyn std
         },
         limits(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(
         post_fence_fresh.outcome,
         AppendOutcome::Fenced { .. }
@@ -231,15 +246,17 @@ fn publication_payload_is_canonical_bounded_and_decodable() -> Result<(), Box<dy
     };
     let encoded = encode_publication_payload(value.volume_id, value.generation_root);
     assert_eq!(
-        decode_published_generation(&encoded, u64::try_from(encoded.len()).unwrap_or(u64::MAX),)?,
+        decode_published_generation(&encoded, u64::try_from(encoded.len()).unwrap_or(u64::MAX), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         value
     );
 
     let too_small = u64::try_from(encoded.len().saturating_sub(1)).unwrap_or(0);
-    assert!(decode_published_generation(&encoded, too_small).is_err());
+    assert!(decode_published_generation(&encoded, too_small, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(())).is_err());
     let mut trailing = encoded;
     trailing.push(0);
-    assert!(decode_published_generation(&trailing, u64::MAX).is_err());
+    assert!(decode_published_generation(&trailing, u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(())).is_err());
     Ok(())
 }
 
@@ -256,7 +273,8 @@ fn publication_payload_rejects_unknown_and_non_generation_object_kinds() {
     let mut wrong_kind = encoded.clone();
     wrong_kind[kind_offset] = ObjectKind::Blob.canonical_tag();
     assert!(matches!(
-        decode_published_generation(&wrong_kind, u64::MAX),
+        decode_published_generation(&wrong_kind, u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(())),
         Err(CanonicalDecodeError::Invariant(crate::kernel::codec::CanonicalInvariant::Static(
             "publication object is not a generation root",
         )))
@@ -265,21 +283,21 @@ fn publication_payload_rejects_unknown_and_non_generation_object_kinds() {
     let mut unknown_kind = encoded;
     unknown_kind[kind_offset] = u8::MAX;
     assert!(matches!(
-        decode_published_generation(&unknown_kind, u64::MAX),
+        decode_published_generation(&unknown_kind, u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(())),
         Err(CanonicalDecodeError::Invariant(crate::kernel::codec::CanonicalInvariant::Static(
             "unknown publication object kind",
         )))
     ));
 }
 
-#[test]
-fn invalid_closure_never_touches_authority() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn invalid_closure_never_touches_authority() -> Result<(), Box<dyn std::error::Error>> {
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([6; 16]);
     let authority_id = volume_authority_id(volume_id);
-    let head = match authority
-        .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED)?
+    let head = match ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = authority.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
         .value
     {
         crate::storage::CreateAuthorityOutcome::Created(head) => head,
@@ -301,7 +319,8 @@ fn invalid_closure_never_touches_authority() -> Result<(), Box<dyn std::error::E
         },
         limits(),
         WorkBudget::UNBOUNDED,
-    );
+        &CancellationToken::new(),
+    ).await;
     assert!(matches!(
         result,
         Err(OperationFailure {
@@ -310,8 +329,7 @@ fn invalid_closure_never_touches_authority() -> Result<(), Box<dyn std::error::E
         })
     ));
     assert_eq!(
-        authority
-            .head(authority_id, WorkBudget::UNBOUNDED)?
+        ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?
             .value
             .sequence,
         head.sequence
@@ -319,8 +337,8 @@ fn invalid_closure_never_touches_authority() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-#[test]
-fn mismatched_authority_rejects_before_closure_or_authority_work()
+#[tokio::test]
+async fn mismatched_authority_rejects_before_closure_or_authority_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
@@ -341,7 +359,8 @@ fn mismatched_authority_rejects_before_closure_or_authority_work()
         },
         limits(),
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("mismatched authority unexpectedly published")?;
     assert!(matches!(
@@ -352,21 +371,20 @@ fn mismatched_authority_rejects_before_closure_or_authority_work()
     Ok(())
 }
 
-#[test]
-fn authenticated_foreign_volume_never_reaches_authority_mutation()
+#[tokio::test]
+async fn authenticated_foreign_volume_never_reaches_authority_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
     let requested_volume = VolumeId::from_bytes([51; 16]);
     let actual_volume = VolumeId::from_bytes([52; 16]);
     let authority_id = volume_authority_id(requested_volume);
-    let crate::storage::CreateAuthorityOutcome::Created(head) = authority
-        .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED)?
+    let crate::storage::CreateAuthorityOutcome::Created(head) = ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = authority.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
         .value
     else {
         return Err("authority existed".into());
     };
-    let root = fixture(&objects, actual_volume)?;
+    let root = fixture(&objects, actual_volume).await?;
     let failure = publish_generation(
         &objects,
         &authority,
@@ -380,7 +398,8 @@ fn authenticated_foreign_volume_never_reaches_authority_mutation()
         },
         limits(),
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("foreign-volume generation published")?;
     assert!(matches!(
@@ -391,28 +410,27 @@ fn authenticated_foreign_volume_never_reaches_authority_mutation()
     assert!(failure.work.backend_read_operations > 0);
     assert_eq!(failure.work.authority_records_appended, 0);
     assert_eq!(
-        authority.head(authority_id, WorkBudget::UNBOUNDED)?.value,
+        ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?.value,
         head
     );
     Ok(())
 }
 
-#[test]
-fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutation()
+#[tokio::test]
+async fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([45; 16]);
     let authority_id = volume_authority_id(volume_id);
-    let crate::storage::CreateAuthorityOutcome::Created(head) = authority
-        .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED)?
+    let crate::storage::CreateAuthorityOutcome::Created(head) = ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = authority.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
         .value
     else {
         return Err("authority existed".into());
     };
-    let generation_root = fixture(&objects, volume_id)?;
+    let generation_root = fixture(&objects, volume_id).await?;
     let closure =
-        prove_generation_closure(&objects, generation_root, limits(), WorkBudget::UNBOUNDED)?;
+        prove_generation_closure(&objects, generation_root, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     let request = PublishGenerationRequest {
         authority_id,
         volume_id,
@@ -448,84 +466,55 @@ fn publication_encoding_copy_and_hash_are_admitted_before_authority_mutation()
             }
             _ => return Err("unknown test counter".into()),
         }
-        let failure = publish_generation(&objects, &authority, request, limits(), budget)
+        let failure = publish_generation(&objects, &authority, request, limits(), budget, &CancellationToken::new()).await
             .err()
             .ok_or("unadmitted publication succeeded")?;
         assert!(matches!(failure.error, PublicationError::Work(_)
             | PublicationError::Closure(ClosureError::Work(_))));
         assert_eq!(
-            authority.head(authority_id, WorkBudget::UNBOUNDED)?.value,
+            ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?.value,
             head
         );
     }
     Ok(())
 }
 
-#[test]
-fn async_and_sync_publication_are_identical_and_pre_cancel_is_inert()
+#[tokio::test]
+async fn pre_cancelled_publication_is_inert()
 -> Result<(), Box<dyn std::error::Error>> {
-    let sync_objects = MemoryObjectStore::default();
     let async_objects = MemoryObjectStore::default();
-    let sync_authority = MemoryAuthorityStore::default();
     let async_authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([22; 16]);
     let authority_id = volume_authority_id(volume_id);
-    let sync_head = sync_authority
-        .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED)?
+    let async_head = ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = async_authority.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
         .value;
-    let async_head = async_authority
-        .create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED)?
-        .value;
-    assert_eq!(sync_head, async_head);
-    let crate::storage::CreateAuthorityOutcome::Created(head) = sync_head else {
+    let crate::storage::CreateAuthorityOutcome::Created(head) = async_head else {
         return Err("authority unexpectedly existed".into());
     };
-    let sync_root = fixture(&sync_objects, volume_id)?;
-    let async_root = fixture(&async_objects, volume_id)?;
-    assert_eq!(sync_root, async_root);
+    let async_root = fixture(&async_objects, volume_id).await?;
     let request = PublishGenerationRequest {
         authority_id,
         volume_id,
         epoch: Epoch::GENESIS,
         expected: head,
         operation_id: OperationId::from_bytes([23; 16]),
-        generation_root: sync_root,
+        generation_root: async_root,
     };
-    let synchronous = publish_generation(
-        &sync_objects,
-        &sync_authority,
-        request,
-        limits(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = crate::async_storage::poll_ready(publish_generation_async(
-        &async_objects,
-        &async_authority,
-        request,
-        limits(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous publication unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
-
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = crate::async_storage::poll_ready(publish_generation_async(
+    let failure = (publish_generation(
         &async_objects,
         &async_authority,
         PublishGenerationRequest {
             operation_id: OperationId::from_bytes([24; 16]),
-            expected: async_authority
-                .head(authority_id, WorkBudget::UNBOUNDED)?
+            expected: ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = async_authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?
                 .value,
             ..request
         },
         limits(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("cancelled asynchronous publication unexpectedly blocked")?
+    )).await
     .err()
     .ok_or("cancelled asynchronous publication unexpectedly succeeded")?;
     assert!(matches!(
@@ -536,9 +525,7 @@ fn async_and_sync_publication_are_identical_and_pre_cancel_is_inert()
     Ok(())
 }
 
-/// Two distinct sparse files share one extent object. Their logical total
-/// exceeds u64 without allocating or reading their holes.
-fn evidence_fixture() -> Result<
+async fn evidence_fixture() -> Result<
     (PublishGenerationRequest, GenerationProof, GuardedAppend, VolumeConfig),
     Box<dyn std::error::Error>,
 > {
@@ -547,24 +534,20 @@ fn evidence_fixture() -> Result<
     let root_file_id = FileId::from_bytes([1; 16]);
     let first_file_id = FileId::from_bytes([2; 16]);
     let second_file_id = FileId::from_bytes([3; 16]);
-    let metadata = put(&objects, ObjectKind::Metadata, encode_file_metadata(metadata())?)?;
+    let metadata = put(&objects, ObjectKind::Metadata, encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?).await?;
     let extents = put(
         &objects,
         ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Leaf(vec![Extent {
+        encode_extent_page(&ExtentPage::Leaf(vec![Extent {
                 offset: 0,
                 length: u64::MAX,
                 kind: ExtentKind::Hole,
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let tree = put(
         &objects,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![
+        encode_tree_page(&TreePage::Leaf(vec![
                 TreeEntry {
                     name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
                     file_id: first_file_id,
@@ -575,15 +558,12 @@ fn evidence_fixture() -> Result<
                     file_id: second_file_id,
                     kind: FileKind::Regular,
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let table = put(
         &objects,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![
+        encode_file_table_page(&FileTablePage::Leaf(vec![
                 FileRecord {
                     file_id: root_file_id,
                     kind: FileKind::Directory,
@@ -605,10 +585,8 @@ fn evidence_fixture() -> Result<
                     metadata,
                     payload: FilePayload::Regular { logical_bytes: u64::MAX, extents },
                 },
-            ]),
-            8,
-        )?,
-    )?;
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root = put(
         &objects,
         ObjectKind::GenerationRoot,
@@ -618,8 +596,8 @@ fn evidence_fixture() -> Result<
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
-    )?;
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let request = PublishGenerationRequest {
         authority_id: volume_authority_id(volume_id),
         volume_id,
@@ -632,7 +610,7 @@ fn evidence_fixture() -> Result<
         operation_id: OperationId::from_bytes([63; 16]),
         generation_root: root,
     };
-    let proof = prove_generation_closure(&objects, root, limits(), WorkBudget::UNBOUNDED)?;
+    let proof = prove_generation_closure(&objects, root, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     let mut expected_objects = vec![metadata, extents, tree, table, root];
     expected_objects.sort_unstable();
     assert_eq!(proof.objects, expected_objects);
@@ -655,10 +633,10 @@ fn evidence_fixture() -> Result<
     Ok((request, proof, append, config))
 }
 
-#[test]
-fn publication_evidence_preserves_original_complete_closure_and_every_permit()
+#[tokio::test]
+async fn publication_evidence_preserves_original_complete_closure_and_every_permit()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (request, proof, mut append, config) = evidence_fixture()?;
+    let (request, proof, mut append, config) = evidence_fixture().await?;
     for permit in [
         PublicationPermit::Unrestricted,
         PublicationPermit::Lease {
@@ -705,10 +683,10 @@ fn publication_evidence_preserves_original_complete_closure_and_every_permit()
     Ok(())
 }
 
-#[test]
-fn publication_evidence_rejects_tampering_and_byte_and_object_bounds()
+#[tokio::test]
+async fn publication_evidence_rejects_tampering_and_byte_and_object_bounds()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (request, proof, append, config) = evidence_fixture()?;
+    let (request, proof, append, config) = evidence_fixture().await?;
     let encoded =
         encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
     let mut digest = encoded.sha256;
@@ -761,10 +739,10 @@ fn publication_evidence_rejects_tampering_and_byte_and_object_bounds()
     Ok(())
 }
 
-#[test]
-fn publication_evidence_rejects_disagreeing_request_proof_and_exact_append()
+#[tokio::test]
+async fn publication_evidence_rejects_disagreeing_request_proof_and_exact_append()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (request, proof, append, config) = evidence_fixture()?;
+    let (request, proof, append, config) = evidence_fixture().await?;
     for changed in [
         PublishGenerationRequest { authority_id: AuthorityId::from_bytes([81; 16]), ..request },
         PublishGenerationRequest { volume_id: VolumeId::from_bytes([81; 16]), ..request },
@@ -824,10 +802,10 @@ fn publication_evidence_rejects_disagreeing_request_proof_and_exact_append()
     Ok(())
 }
 
-#[test]
-fn publication_evidence_rejects_noncanonical_manifest_and_trailing_data_with_fresh_digests()
+#[tokio::test]
+async fn publication_evidence_rejects_noncanonical_manifest_and_trailing_data_with_fresh_digests()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (request, proof, append, config) = evidence_fixture()?;
+    let (request, proof, append, config) = evidence_fixture().await?;
     let encoded =
         encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
     let mut reversed_proof = proof.clone();
@@ -892,7 +870,7 @@ enum NativePublicationTestError {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_fixture(
+async fn native_fixture(
     objects: &MemoryObjectStore,
     volume_id: VolumeId,
 ) -> Result<(ObjectId, Vec<ObjectId>), Box<dyn std::error::Error>> {
@@ -900,23 +878,23 @@ fn native_fixture(
         BlobChunkRef, BlobNode, BlobPage, Extent, ExtentKind, ExtentPage, LogicalName,
         NameEncoding, TreeEntry, encode_blob_page, encode_extent_page,
     };
-    let metadata = put(objects, ObjectKind::Metadata, encode_file_metadata(metadata())?)?;
-    let chunk = put(objects, ObjectKind::BlobChunk, b"original closure content".to_vec())?;
+    let metadata = put(objects, ObjectKind::Metadata, encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?).await?;
+    let chunk = put(objects, ObjectKind::BlobChunk, b"original closure content".to_vec()).await?;
     let logical_bytes = b"original closure content".len() as u64;
     let blob = put(objects, ObjectKind::Blob, encode_blob_page(&BlobPage {
         first_offset: 0, end_offset: logical_bytes,
         node: BlobNode::Leaf(vec![BlobChunkRef { first_offset: 0, end_offset: logical_bytes, chunk }]),
-    }, 8)?)?;
+    }, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?).await?;
     let extents = put(objects, ObjectKind::ExtentPage, encode_extent_page(&ExtentPage::Leaf(vec![Extent {
         offset: 0, length: logical_bytes,
         kind: ExtentKind::Content { object: blob, object_offset: 0 },
-    }]), 8)?)?;
+    }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?).await?;
     let root_file_id = FileId::from_bytes([1; 16]);
     let child_file_id = FileId::from_bytes([2; 16]);
     let tree = put(objects, ObjectKind::TreePage, encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
         name: LogicalName::new(NameEncoding::Utf8, b"content".to_vec(), 255)?,
         file_id: child_file_id, kind: FileKind::Regular,
-    }]), 8)?)?;
+    }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?).await?;
     let table = put(objects, ObjectKind::FileTablePage, encode_file_table_page(&FileTablePage::Leaf(vec![
         FileRecord {
             file_id: root_file_id, kind: FileKind::Directory, link_count: 1, metadata,
@@ -926,24 +904,26 @@ fn native_fixture(
             file_id: child_file_id, kind: FileKind::Regular, link_count: 1, metadata,
             payload: FilePayload::Regular { logical_bytes, extents },
         },
-    ]), 8)?)?;
+    ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?).await?;
     let generation = put(objects, ObjectKind::GenerationRoot, encode_generation_root(&GenerationRoot {
         volume_id, root_file_id, file_table: table,
         parents: vec![crate::GenerationId::new(Digest::from_bytes([7; 32]))],
         required_features: 0,
-    })?)?;
+    }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?).await?;
     let mut expected = vec![generation, table, tree, metadata, extents, blob, chunk];
-    expected.sort_unstable_by(|left, right| left.kind.canonical_tag().cmp(&right.kind.canonical_tag())
-        .then_with(|| left.digest.as_bytes().cmp(right.digest.as_bytes())));
+    expected.sort_unstable_by(|left, right| {
+        left.kind.canonical_tag().cmp(&right.kind.canonical_tag())
+        .then_with(|| left.digest.as_bytes().cmp(right.digest.as_bytes()))
+    });
     Ok((generation, expected))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_request(
+async fn native_request(
     authority: &MemoryAuthorityStore, volume_id: VolumeId, generation_root: ObjectId,
 ) -> Result<PublishGenerationRequest, Box<dyn std::error::Error>> {
     let authority_id = volume_authority_id(volume_id);
-    let created = authority.create_authority(authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED)?;
+    let created = ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = authority.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?;
     let crate::storage::CreateAuthorityOutcome::Created(expected) = created.value else {
         return Err("native publication fixture authority already existed".into());
     };
@@ -961,8 +941,8 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas()
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([32; 16]);
-    let (root, _) = native_fixture(&objects, volume_id)?;
-    let request = native_request(&authority, volume_id, root)?;
+    let (root, _) = native_fixture(&objects, volume_id).await?;
+    let request = native_request(&authority, volume_id, root).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
@@ -1002,7 +982,7 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas()
         },
     );
     assert!(matches!(result, Err(NativePublicationTestError::OwnerStale)));
-    assert_eq!(authority.head(request.authority_id, WorkBudget::UNBOUNDED)?.value, request.expected);
+    assert_eq!(({ let __authority_args = (request.authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?.value, request.expected);
     assert_eq!(original.receipt().authority_records_appended, 0);
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
@@ -1015,8 +995,8 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([33; 16]);
-    let (root, _) = native_fixture(&objects, volume_id)?;
-    let request = native_request(&authority, volume_id, root)?;
+    let (root, _) = native_fixture(&objects, volume_id).await?;
+    let request = native_request(&authority, volume_id, root).await?;
     let cancellation = CancellationToken::new();
     for early_allocation in [true, false] {
         let mut budget = WorkBudget::UNBOUNDED;
@@ -1049,7 +1029,7 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(original.receipt().authority_records_appended, 0);
         assert_eq!(original.live_allocation_bytes(), baseline);
-        assert_eq!(authority.head(request.authority_id, WorkBudget::UNBOUNDED)?.value, request.expected);
+        assert_eq!(({ let __authority_args = (request.authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?.value, request.expected);
     }
     Ok(())
 }
@@ -1062,9 +1042,9 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([34; 16]);
-    let (root, _) = native_fixture(&objects, volume_id)?;
-    let changed_root = fixture(&objects, volume_id)?;
-    let request = native_request(&authority, volume_id, root)?;
+    let (root, _) = native_fixture(&objects, volume_id).await?;
+    let changed_root = fixture(&objects, volume_id).await?;
+    let request = native_request(&authority, volume_id, root).await?;
     let simulation = Simulation::wrap(authority, objects, SimulationOptions::default())?;
     let (authority, objects) = simulation.stores();
     simulation.schedule_next(SimulationOperation::AuthorityAppend, SimulationFault::AmbiguousAuthorityAppend)?;
@@ -1072,11 +1052,13 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let (data, custody) = original.copy_bytes(b"immutable original operation data")?;
-    let evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter_owner())
+    let evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter())
         .expect("fresh evidence has fully initialized unique backing");
     let intent = PublicationIntent::unrestricted(Some(Digest::from_bytes([59; 32])))
         .with_original_evidence(Some(evidence));
-    let mut guard = |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), NativePublicationTestError>(()));
+    let mut guard = |_: &crate::NativeMaterializationWork| {
+        std::future::ready(Ok::<(), NativePublicationTestError>(()))
+    };
     let failure = publish_generation_async_guarded_with_native_work(
         &objects, &authority, request, intent.clone(),
         limits(), &original, &cancellation, &mut guard, None, None,
@@ -1085,10 +1067,9 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     assert_eq!(original.receipt().authority_records_appended, 1);
     let reopened = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let resolved = crate::AsyncAuthorityStore::find_operation_with_native_work(
-        &authority, request.authority_id, request.operation_id, &reopened, &cancellation,
-    ).await?;
-    let commit = resolved.0.ok_or("lost acknowledgement operation was not durable")?;
+    let resolved =({ let __authority_args = (request.authority_id, request.operation_id, &reopened, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result =  crate::AsyncAuthorityStore::find_operation(&authority, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result })?;
+    let commit = resolved.0
+        .ok_or("lost acknowledgement operation was not durable")?;
     let predecessor = Head {
         epoch: commit.epoch,
         sequence: crate::Sequence::new(commit.sequence.get().checked_sub(1).ok_or("invalid committed sequence")?),
@@ -1130,7 +1111,8 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     if let AppendOutcome::AlreadyCommitted(recovered) = &publication.0.outcome {
         assert_eq!(recovered.operation_id, request.operation_id);
         assert_eq!(recovered.previous_digest, request.expected.digest);
-        assert_eq!(decode_published_generation(&recovered.payload, 4_096)?.generation_root, root);
+        assert_eq!(decode_published_generation(&recovered.payload, 4_096, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+            >(()))?.generation_root, root);
     }
     assert_eq!(seals.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(reopened.receipt().authority_records_appended, 0);
@@ -1138,49 +1120,154 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     Ok(())
 }
 
-/// Uses production immutable reads and durability, but intentionally has no
-/// native custody capability. The generic default must reject, never skip it.
 #[cfg(not(target_arch = "wasm32"))]
 struct NativeMissingCustody<'a>(&'a MemoryObjectStore);
 
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::AsyncObjectStore for NativeMissingCustody<'_> {
     async fn put(
-        &self, object: ObjectId, bytes: acyclic_stream::OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<()> {
-        crate::AsyncObjectStore::put(self.0, object, bytes, budget, cancellation).await
+        &self, object: ObjectId, bytes: acyclic_stream::OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object, bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = crate::AsyncObjectStore::put(self.0,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read(
-        &self, object: ObjectId, maximum: u64, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {
-        crate::AsyncObjectStore::read(self.0, object, maximum, budget, cancellation).await
+        &self, object: ObjectId, maximum: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                {
+                    let __object_args = (object, maximum, original, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                    let __object_result = crate::AsyncObjectStore::read(
+                        self.0,
+                        __object_args.0,
+                        __object_args.1,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_result
+                }
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object, maximum, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = crate::AsyncObjectStore::read(self.0,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read_many(
-        &self, requests: &[crate::storage::ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<Vec<crate::storage::ObjectRead>> {
-        crate::AsyncObjectStore::read_many(self.0, requests, budget, cancellation).await
+        &self, requests: &[crate::storage::ObjectReadRequest],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (requests, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    crate::AsyncObjectStore::read_many(self.0, __object_args.0, &mut __object_work)
+                        .await
+                        .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result).map(|values| (values, None))
     }
 
     async fn contains(
-        &self, object: ObjectId, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<bool> {
-        crate::AsyncObjectStore::contains(self.0, object, budget, cancellation).await
+        &self, object: ObjectId,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    crate::AsyncObjectStore::contains(self.0, __object_args.0, &mut __object_work)
+                        .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
-    async fn read_with_native_work(
-        &self, object: ObjectId, maximum: u64, original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
-        crate::AsyncObjectStore::read_with_native_work(self.0, object, maximum, original, cancellation).await
-    }
-
-    async fn flush_before_publish_with_native_work(
-        &self, scope: crate::PublicationScope<'_>, original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<crate::PublicationHold, ObjectStoreError> {
-        crate::AsyncObjectStore::flush_before_publish_with_native_work(self.0, scope, original, cancellation).await
+    async fn flush_before_publish(
+        &self, scope: crate::PublicationScope<'_>,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::PublicationHold, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                {
+                    let __object_args = (scope, original, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = crate::AsyncObjectStore::flush_before_publish(
+                        self.0,
+                        __object_args.0,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_result
+                }
+            }
+            .await;
+        }
+        Ok(crate::PublicationHold::none())
     }
 }
 
@@ -1191,8 +1278,8 @@ async fn native_publication_missing_custody_capability_rejects_after_real_proof_
     let objects = MemoryObjectStore::default();
     let authority = MemoryAuthorityStore::default();
     let volume_id = VolumeId::from_bytes([35; 16]);
-    let (root, _) = native_fixture(&objects, volume_id)?;
-    let request = native_request(&authority, volume_id, root)?;
+    let (root, _) = native_fixture(&objects, volume_id).await?;
+    let request = native_request(&authority, volume_id, root).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
@@ -1212,7 +1299,7 @@ async fn native_publication_missing_custody_capability_rejects_after_real_proof_
     assert_eq!(original.receipt().authority_records_appended, 0);
     assert_eq!(original.live_allocation_bytes(), baseline);
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert_eq!(authority.head(request.authority_id, WorkBudget::UNBOUNDED)?.value, request.expected);
+    assert_eq!(({ let __authority_args = (request.authority_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?.value, request.expected);
     Ok(())
 }
 
@@ -1224,43 +1311,52 @@ fn publication_evidence_v2_validates_complete_frame_before_legacy_projection()
     let evidence = b"immutable original operation data";
     let mut bytes = Vec::new();
     write_publication_payload_with_evidence(&mut bytes, volume_id, root, Some((evidence, original_evidence_digest(evidence))));
-    let decoded = decode_publication_evidence_with_steps::<CanonicalDecodeError>(&bytes, bytes.len() as u64, |_| Ok(()))?;
+    let decoded = decode_publication_evidence::<CanonicalDecodeError>(&bytes, bytes.len() as u64, |_| Ok(()))?;
     assert_eq!(decoded.publication, PublishedGeneration { volume_id, generation_root: root });
     assert_eq!(decoded.original_evidence, Some(evidence.as_slice()));
     assert_eq!(decoded.evidence_digest, Some(original_evidence_digest(evidence)));
     assert_eq!(decoded.original_evidence.ok_or("missing original data")?.as_ptr(),
         bytes[publication_payload_length() + 4..].as_ptr());
-    assert_eq!(decode_published_generation(&bytes, bytes.len() as u64)?, decoded.publication);
-    assert!(matches!(decode_published_generation(&bytes, bytes.len() as u64 - 1),
+    assert_eq!(decode_published_generation(&bytes, bytes.len() as u64, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(()))?, decoded.publication);
+    assert!(matches!(decode_published_generation(&bytes, bytes.len() as u64 - 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(())),
         Err(CanonicalDecodeError::ObjectTooLarge { .. })));
     for offset in [PAYLOAD_DOMAIN.len(), PAYLOAD_DOMAIN.len() + 2 + 16, publication_payload_length() + 4, bytes.len() - 1] {
         let mut malformed = bytes.clone();
         malformed[offset] = u8::MAX;
-        assert!(decode_published_generation(&malformed, u64::MAX).is_err());
+        assert!(decode_published_generation(&malformed, u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+            >(())).is_err());
     }
     for length in [0_u32, u32::MAX] {
         let mut malformed = bytes.clone();
         let offset = publication_payload_length();
         malformed[offset..offset + 4].copy_from_slice(&length.to_le_bytes());
-        assert!(decode_published_generation(&malformed, bytes.len() as u64).is_err());
+        assert!(decode_published_generation(&malformed, bytes.len() as u64, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+            >(())).is_err());
     }
     let mut suffixed = bytes.clone();
     suffixed.push(0);
-    assert!(matches!(decode_published_generation(&suffixed, u64::MAX), Err(CanonicalDecodeError::TrailingBytes)));
-    assert!(decode_published_generation(&bytes[..bytes.len() - 1], u64::MAX).is_err());
+    assert!(matches!(decode_published_generation(&suffixed, u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(())), Err(CanonicalDecodeError::TrailingBytes)));
+    assert!(decode_published_generation(&bytes[..bytes.len() - 1], u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(())).is_err());
     let legacy = encode_publication_payload(volume_id, root);
-    let decoded = decode_publication_evidence_with_steps::<CanonicalDecodeError>(&legacy, u64::MAX, |_| Ok(()))?;
+    let decoded = decode_publication_evidence::<CanonicalDecodeError>(&legacy, u64::MAX, |_| Ok(()))?;
     assert_eq!(decoded.original_evidence, None);
     assert_eq!(decoded.evidence_digest, None);
     assert_eq!(decoded.publication, PublishedGeneration { volume_id, generation_root: root });
     let mut suffixed = legacy.clone();
     suffixed.extend_from_slice(evidence);
-    assert!(matches!(decode_published_generation(&suffixed, u64::MAX), Err(CanonicalDecodeError::TrailingBytes)));
+    assert!(matches!(decode_published_generation(&suffixed, u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(())), Err(CanonicalDecodeError::TrailingBytes)));
     let large_evidence = vec![7; 4_096];
     let mut large = Vec::new();
     write_publication_payload_with_evidence(&mut large, volume_id, root,
         Some((&large_evidence, original_evidence_digest(&large_evidence))));
-    assert!(matches!(decode_published_generation(&large, 4_096), Err(CanonicalDecodeError::ObjectTooLarge { .. })));
-    assert_eq!(decode_published_generation(&large, large.len() as u64)?, decoded.publication);
+    assert!(matches!(decode_published_generation(&large, 4_096, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(())), Err(CanonicalDecodeError::ObjectTooLarge { .. })));
+    assert_eq!(decode_published_generation(&large, large.len() as u64, |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(()))?, decoded.publication);
     Ok(())
 }

@@ -21,7 +21,6 @@ use std::{collections::BTreeMap, sync::Arc};
 /// One signed parent binding.
 pub struct FilesystemProjectWorkspaces<A, O> {
     host: Arc<FilesystemHost<A, O>>,
-    parent: Authority,
     project: VolumeRef,
     verifier: AuthorityVerifier,
     scope: Scope,
@@ -31,7 +30,6 @@ impl<A, O> Clone for FilesystemProjectWorkspaces<A, O> {
     fn clone(&self) -> Self {
         Self {
             host: Arc::clone(&self.host),
-            parent: self.parent.clone(),
             project: self.project.clone(),
             verifier: self.verifier.clone(),
             scope: self.scope.clone(),
@@ -49,10 +47,9 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
         project: VolumeRef,
     ) -> Result<Self> {
         let controller =
-            ParentProjectController::new(host.as_ref(), parent, verifier, scope, project)?;
+            ParentProjectController::new(host.as_ref(), parent, verifier, scope, &project, None)?;
         Ok(Self {
             host: Arc::clone(host),
-            parent: controller.parent,
             project: controller.project,
             verifier: controller.verifier,
             scope: controller.scope,
@@ -62,7 +59,6 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
     fn controller(&self) -> ParentProjectController<'_, A, O> {
         ParentProjectController {
             host: &self.host,
-            parent: self.parent.clone(),
             project: self.project.clone(),
             verifier: self.verifier.clone(),
             scope: self.scope.clone(),
@@ -72,7 +68,7 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
     }
 
     fn require_scope(&self, scope: &Scope) -> Result<()> {
-        self.verifier.verify(scope)?;
+        self.verifier.verify(scope, &mut None)?;
         if scope != &self.scope {
             return Err(Error::Unauthorized(
                 "project operation belongs to another parent scope".into(),
@@ -122,7 +118,7 @@ where
     ) -> BoxFuture<'a, Result<Box<dyn ProjectJoinPlan>>> {
         Box::pin(async move {
             self.require_scope(scope)?;
-            if destination.authority() != &self.parent
+            if destination.authority() != self.verifier.audience()
                 || destination.conversation().and_then(|state| state.agent) != scope.agent()
                 || source.kind != crate::core::AggregateKind::Conversation
             {
@@ -130,10 +126,10 @@ where
                     "import is outside the bound destination conversation".into(),
                 ));
             }
-            source.stream_path()?;
+            source.stream_path(&mut None)?;
             let plan = self
                 .controller()
-                .prepare_project_import(source_project, source_generation)
+                .prepare_project_import(source_project, source_generation, None)
                 .await?;
             let source_generation = self.host.generation_ref_id(plan.source_head())?;
             let target = self.host.generation_ref_id(plan.target_head())?;
@@ -184,53 +180,45 @@ where
                     "project join child is not a conversation".into(),
                 ));
             }
-            child.stream_path()?;
+            child.stream_path(&mut None)?;
             if &self.child != child {
                 return Err(Error::Unauthorized(
                     "project join child is not the inspected fork".into(),
                 ));
             }
-            notice.validate()?;
+            notice.validate(&mut None)?;
             if notice.kind != crate::conversation::MessageKind::Merge {
                 return Err(Error::Invalid("project join notice is not a merge".into()));
             }
             let controller = self.binding.controller();
-            let outcome = if selections.is_empty() {
-                controller
-                    .apply_project_merge(&self.plan, operation_id)
-                    .await?
-            } else {
-                let mut sides = BTreeMap::new();
-                for selection in selections {
-                    selection.conflict.validate()?;
-                    if selection.conflict.provider != *self.binding.provider() {
-                        return Err(Error::Unauthorized(
-                            "conflict belongs to another provider".into(),
-                        ));
-                    }
-                    let conflict = decode_conflict(&selection.conflict.key, None)?;
-                    let side = match selection.side {
-                        ProjectConflictSide::Base => ConflictSide::Base,
-                        ProjectConflictSide::Target => ConflictSide::Ours,
-                        ProjectConflictSide::Source => ConflictSide::Theirs,
-                    };
-                    if sides.insert(conflict, side).is_some() {
-                        return Err(Error::Invalid("conflict side was selected twice".into()));
-                    }
+            let mut sides = BTreeMap::new();
+            for selection in selections {
+                selection.conflict.validate()?;
+                if selection.conflict.provider != *self.binding.provider() {
+                    return Err(Error::Unauthorized(
+                        "conflict belongs to another provider".into(),
+                    ));
                 }
-                controller
-                    .apply_project_merge_sides(&self.plan, operation_id, sides)
-                    .await?
-            };
+                let conflict = decode_conflict(&selection.conflict.key, None)?;
+                let side = match selection.side {
+                    ProjectConflictSide::Base => ConflictSide::Base,
+                    ProjectConflictSide::Target => ConflictSide::Ours,
+                    ProjectConflictSide::Source => ConflictSide::Theirs,
+                };
+                if sides.insert(conflict, side).is_some() {
+                    return Err(Error::Invalid("conflict side was selected twice".into()));
+                }
+            }
+            let outcome = controller.apply_project_merge(&self.plan, operation_id, sides).await?.0;
             match &outcome {
                 JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) => {
                     let receipt = controller.merge_receipt(
                         &self.plan,
                         &outcome,
-                        child.clone(),
+                        child,
                         operation_id,
-                        notice.clone(),
-                    )?;
+                        &notice,
+                    )?.0;
                     Ok(if matches!(&outcome, JoinOutcome::AlreadyApplied(_)) {
                         ProjectJoinOutcome::AlreadyApplied(receipt)
                     } else {
@@ -238,10 +226,10 @@ where
                     })
                 }
                 JoinOutcome::NoChanges(generation) => Ok(ProjectJoinOutcome::NoChanges(
-                    self.binding.host.generation_ref(generation)?,
+                    self.binding.host.generation_ref_id(generation.id())?,
                 )),
                 JoinOutcome::StaleTarget(generation) => Ok(ProjectJoinOutcome::StaleTarget(
-                    self.binding.host.generation_ref(generation)?,
+                    self.binding.host.generation_ref_id(generation.id())?,
                 )),
                 JoinOutcome::Conflicted {
                     conflicts,
@@ -285,7 +273,7 @@ pub(super) fn encode_conflict(conflict: &MergeConflict) -> Vec<u8> {
 }
 
 pub(super) fn decode_conflict(key: &[u8], io: Option<&super::PreparationIo>) -> Result<MergeConflict> {
-    let invalid = |message| super::fork_preparer_io::invalid(io, message);
+    let invalid = |message| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, message);
     if let Some(io) = io { io.retain_owned(std::mem::size_of::<MergeConflict>() as u64)?; }
     let (tag, rest) = key.split_first().ok_or_else(|| invalid("empty conflict key"))?;
     let id_bytes: [u8; 16] = rest.get(..16).ok_or_else(|| invalid("short conflict key"))?

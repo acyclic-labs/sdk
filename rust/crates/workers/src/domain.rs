@@ -23,7 +23,6 @@ impl From<std::convert::Infallible> for DomainError {
 
 /// Known `JobState` values; raw shadows retain unknown protobuf integers.
 #[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownJobState)]
-
 #[derive(TS)]
 #[ts(export_to = "workers/JobState.ts", repr(enum))]
 pub enum JobState {
@@ -42,7 +41,6 @@ pub enum JobState {
 }
 /// Known `ErrorCode` values; raw shadows retain unknown protobuf integers.
 #[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownErrorCode)]
-
 #[derive(TS)]
 #[ts(export_to = "workers/ErrorCode.ts", repr(enum))]
 pub enum ErrorCode {
@@ -113,7 +111,6 @@ pub mod job_target {
 
 /// A digest identifies exact immutable JavaScript module bytes.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/CodeVersion.ts", rename_all = "camelCase")]
 pub struct CodeVersion {
@@ -129,7 +126,6 @@ pub struct CodeVersion {
 
 /// A deployment alias may change; revision increases on every selection.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Deployment.ts", rename_all = "camelCase")]
 pub struct Deployment {
@@ -148,7 +144,6 @@ pub struct Deployment {
 
 /// Publish exact module bytes with their expected SHA-256 and idempotency key.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile, post = PublishVersionRequest::validate_from_proto)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
     export_to = "workers/PublishVersionRequest.ts",
@@ -204,7 +199,6 @@ impl PublishVersionRequest {
 
 /// The immutable version accepted by module publication.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
     export_to = "workers/PublishVersionResponse.ts",
@@ -219,7 +213,6 @@ pub struct PublishVersionResponse {
 
 /// Select an immutable version for a deployment alias using revision preconditions.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile, post = SelectDeploymentRequest::validate_from_proto)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
     export_to = "workers/SelectDeploymentRequest.ts",
@@ -236,7 +229,6 @@ pub struct SelectDeploymentRequest {
     #[wire(tag = 3, uint64)]
     #[ts(optional)]
     /// Omitted means create only if absent. A present positive value selects only
-    /// when it matches the current revision; every successful selection advances it.
     expected_revision: Option<u64>,
     #[wire(tag = 4)]
     /// Caller-provided key for idempotent admission.
@@ -273,7 +265,6 @@ impl SelectDeploymentRequest {
         &self.version_sha256
     }
     /// Omitted means create only if absent. A present positive value selects only
-    /// when it matches the current revision; every successful selection advances it.
     #[must_use]
     pub fn expected_revision(&self) -> &Option<u64> {
         &self.expected_revision
@@ -287,7 +278,6 @@ impl SelectDeploymentRequest {
 
 /// The deployment selected by the alias mutation.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
     export_to = "workers/SelectDeploymentResponse.ts",
@@ -301,9 +291,7 @@ pub struct SelectDeploymentResponse {
 }
 
 /// Logical S3 object selected and privately retained at durable job acceptance.
-/// Retries read the same retained bytes even if this public key is replaced.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/ObjectRef.ts", rename_all = "camelCase")]
 pub struct ObjectRef {
@@ -317,7 +305,6 @@ pub struct ObjectRef {
 
 /// Durable job input selected from inline bytes or a retained logical object.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Payload.ts", rename_all = "camelCase")]
 pub struct Payload {
@@ -327,9 +314,7 @@ pub struct Payload {
 }
 
 /// Exact accepted job output, bounded by `JobLimits.output_bytes`. Storage and
-/// retention are service-owned; no replaceable public Object pointer is exposed.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobResult.ts", rename_all = "camelCase")]
 pub struct JobResult {
@@ -341,7 +326,6 @@ pub struct JobResult {
 
 /// Resource budgets applied to the accepted durable job.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobLimits.ts", rename_all = "camelCase")]
 pub struct JobLimits {
@@ -361,7 +345,6 @@ pub struct JobLimits {
 
 /// Bounded attempts and retry delay for the accepted durable job.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/RetryPolicy.ts", rename_all = "camelCase")]
 pub struct RetryPolicy {
@@ -376,7 +359,6 @@ pub struct RetryPolicy {
 
 /// Resolve a deployment alias or select an exact immutable version at job acceptance.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobTarget.ts", rename_all = "camelCase")]
 pub struct JobTarget {
@@ -386,9 +368,7 @@ pub struct JobTarget {
 }
 
 /// Accepted input is delivered to `default.run`, never to `default.fetch`.
-/// The same job ID and input recur on retry; attempt numbering starts at one.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile, post = SubmitJobRequest::validate_from_proto)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/SubmitJobRequest.ts", rename_all = "camelCase")]
 pub struct SubmitJobRequest {
@@ -459,7 +439,6 @@ impl SubmitJobRequest {
 
 /// The durable job observation returned at acceptance.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/SubmitJobResponse.ts", rename_all = "camelCase")]
 pub struct SubmitJobResponse {
@@ -471,7 +450,6 @@ pub struct SubmitJobResponse {
 
 /// Current execution state, resolved version and result of a durable job.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/JobObservation.ts", rename_all = "camelCase")]
 pub struct JobObservation {
@@ -502,7 +480,6 @@ pub struct JobObservation {
 
 /// Inspect the current observation of an accepted durable job.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/InspectJobRequest.ts", rename_all = "camelCase")]
 pub struct InspectJobRequest {
@@ -513,7 +490,6 @@ pub struct InspectJobRequest {
 
 /// The durable job observation returned by inspection.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/InspectJobResponse.ts", rename_all = "camelCase")]
 pub struct InspectJobResponse {
@@ -525,7 +501,6 @@ pub struct InspectJobResponse {
 
 /// Request cancellation of an accepted job with an idempotency key.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/CancelJobRequest.ts", rename_all = "camelCase")]
 pub struct CancelJobRequest {
@@ -539,7 +514,6 @@ pub struct CancelJobRequest {
 
 /// The durable job observation returned after requesting cancellation.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/CancelJobResponse.ts", rename_all = "camelCase")]
 pub struct CancelJobResponse {
@@ -551,7 +525,6 @@ pub struct CancelJobResponse {
 
 /// A name and value carried by the ordinary HTTP invocation.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Header.ts", rename_all = "camelCase")]
 pub struct Header {
@@ -565,7 +538,6 @@ pub struct Header {
 
 /// Invocation is ordinary HTTP work, not durable job acceptance.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
     export_to = "workers/InvokeVersionRequest.ts",
@@ -593,7 +565,6 @@ pub struct InvokeVersionRequest {
 
 /// Resolve a deployment alias for an ordinary HTTP invocation.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(
     export_to = "workers/InvokeDeploymentRequest.ts",
@@ -620,7 +591,6 @@ pub struct InvokeDeploymentRequest {
 
 /// HTTP response and the immutable version resolved for the invocation.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/InvokeResponse.ts", rename_all = "camelCase")]
 pub struct InvokeResponse {
@@ -646,7 +616,6 @@ pub struct InvokeResponse {
 
 /// Workers service rejection with its known code and original message.
 #[acyclic_contract_derive::message(error = DomainError, file = WorkersFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "workers/Error.ts", rename_all = "camelCase")]
 pub struct Error {
@@ -665,14 +634,20 @@ pub fn export_typescript(path: impl AsRef<std::path::Path>) -> Result<(), Export
 /// Exported TypeScript identifiers and their compiler-linked protobuf identities.
 pub type TypeScriptMetadata = (Vec<String>, Vec<(String, String)>);
 /// Export actual declarations and compiler-linked wire/TS identities from one root registry.
-pub fn export_typescript_with_metadata(path: impl AsRef<std::path::Path>, additional: Vec<(String, std::path::PathBuf)>) -> Result<TypeScriptMetadata, ExportError> {
+pub fn export_typescript_with_metadata(
+    path: impl AsRef<std::path::Path>,
+    additional: Vec<(String, std::path::PathBuf)>,
+) -> Result<TypeScriptMetadata, ExportError> {
     let config = Config::default()
         .with_out_dir(path.as_ref())
         .with_import_extension(Some("js"));
     let mut exports = additional;
     let mut messages = Vec::new();
     fn paired<D, W>(config: &Config) -> (String, String)
-    where D: TS + TryFrom<W>, W: prost::Name + prost::Message + From<D> {
+    where
+        D: TS + TryFrom<W>,
+        W: prost::Name + prost::Message + From<D>,
+    {
         (W::full_name(), D::ident(config))
     }
     macro_rules! export_roots {
@@ -713,12 +688,7 @@ pub fn export_typescript_with_metadata(path: impl AsRef<std::path::Path>, additi
         InvokeResponse,
         Error
     );
-    export_roots!(
-        JobState,
-        ErrorCode,
-        payload::Source,
-        job_target::Target
-    );
+    export_roots!(JobState, ErrorCode, payload::Source, job_target::Target);
     std::fs::write(
         path.as_ref().join("workers/JobState.ts"),
         format!(
@@ -765,5 +735,8 @@ pub fn export_typescript_with_metadata(path: impl AsRef<std::path::Path>, additi
             "// Generated from Rust ts-rs metadata. Do not edit.\nimport type * as Semantic from \"./index.js\";\nimport type {{ ReadonlySemantic }} from \"../../readonly.js\";\n{aliases}\n"
         ),
     )?;
-    Ok((exports.into_iter().map(|(name, _)| name).collect(), messages))
+    Ok((
+        exports.into_iter().map(|(name, _)| name).collect(),
+        messages,
+    ))
 }

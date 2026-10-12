@@ -1,14 +1,9 @@
 //! Shared JSON-RPC response boundary for HTTP and approved stdio.
 use super::McpToolResult;
-use crate::{Error, OperationId, Result};
+use crate::{Error, NativeWork, OperationId, Result};
 use rmcp::model::{JsonRpcRequest, RequestId};
 use serde::Deserialize;
 use serde_json::{Map, Value};
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) type NativeWork<'a> = Option<&'a acyclic_fs::NativeMaterializationWork>;
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-pub(super) type NativeWork<'a> = Option<&'a ()>;
 
 pub(super) fn rpc_result(
     mut value: Value, operation: OperationId, work: NativeWork<'_>,
@@ -93,7 +88,7 @@ pub(super) fn check_dto(dto: Dto, value: &Value, work: NativeWork<'_>) -> Result
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let custody = if let Some(work) = work {
         let quota = dto_quota(value, work, 0)?;
-        Some(work.retain_owned(quota).map_err(native_work_error)?)
+        Some(work.claim(quota, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?)
     } else { None };
     macro_rules! check {
         ($ty:ty) => { <$ty>::deserialize(value).map(drop) };
@@ -266,7 +261,7 @@ mod tests {
     #[test]
     fn malformed_typed_cause_keeps_original_quota_until_error_drop() {
         let work = native_work(1 << 20, 1000);
-        let original = work.retain_owned(0).expect("original ledger witness");
+        let original = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("original ledger witness");
         let baseline = work.remaining().expect("remaining").peak_allocation_bytes;
         let before = work.receipt();
         let live_before = work.live_allocation_bytes();
@@ -274,7 +269,7 @@ mod tests {
             "messages":[{"role":"untrusted\u{1}role","content":{"type":"text","text":"external"}}]
         }), Some(&work)).expect_err("invalid role");
         match &failure {
-            Error::NativeDecode { source, custody: Some(custody) } => {
+            Error::NativeDecode { source, custody: Some(custody), .. } => {
                 assert!(source.is_data());
                 assert!(custody.bytes() > 0);
                 assert!(custody.shares_ledger(&original));

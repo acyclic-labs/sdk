@@ -4,7 +4,7 @@ use acyclic_harness::{
     Error, Result,
     context::ContextPipeline,
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
-    model::{Model, ModelAttempt, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelEvent, ModelProvider, PreparedModelRequest},
     tool::ToolRegistry,
 };
 use futures::{
@@ -57,18 +57,16 @@ impl ModelProvider for MockModel {
         })]))
     }
 
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 fn main() -> Result<()> {
     let _executor: Box<dyn Executor> = Box::new(CustomExecutor(
         StockExecutor::new(
-            Model::new("example", "mock", "1", Value::Null)?,
+            Model::new("example".into(), "mock".into(), "1".into(), Value::Null)?,
             Arc::new(MockModel),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled),
     ));

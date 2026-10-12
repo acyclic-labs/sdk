@@ -13,11 +13,7 @@ import {
   SharedVolumeOperation as WireVolumeOperation,
 } from "../generated/proto/harness/v2/harness_pb.js";
 
-type WireNames<Wire extends object> = Exclude<keyof Wire, "UNSPECIFIED"> & string;
-type SnakeCase<Value extends string> = Value extends `${infer Head}_${infer Tail}`
-  ? `${Lowercase<Head>}_${SnakeCase<Tail>}`
-  : Lowercase<Value>;
-type PublicEnum<Wire extends object> = SnakeCase<WireNames<Wire>>;
+type PublicEnum<Wire extends object> = Lowercase<Exclude<keyof Wire, "UNSPECIFIED"> & string>;
 type AssertNever<Value extends never> = Value;
 /** Members present in only one of two unions; `never` when they match exactly. */
 type Mismatch<Actual, Expected> = Exclude<Actual, Expected> | Exclude<Expected, Actual>;
@@ -63,9 +59,3 @@ export function decodeAggregateKind(value: number): AggregateKind {
   if (decoded === undefined) throw new TypeError(`unknown aggregate kind enum value: ${value}`);
   return decoded;
 }
-
-/** Stable object values retained by the existing GroupPolicies API. */
-export const groupPolicies = Object.freeze({
-  collectAll: Object.freeze({ kind: "collect-all" } as const),
-  cancelOnFailure: Object.freeze({ kind: "cancel-on-failure" } as const),
-});

@@ -33,13 +33,8 @@ pub(super) fn copy_generation(
         .version()
         .map(|value| crate::core::copy_text(value, &mut quota))
         .transpose()?;
-    let reference = crate::resources::ResourceRef::new_with_work(
-        source.kind(),
-        provider,
-        key,
-        version,
-        quota.work(),
-    )?;
+    let reference =
+        crate::resources::ResourceRef::new(source.kind(), provider, key, version, quota.work())?;
     let generation = GenerationRef::from_resource_with_work(reference, quota.work())?;
     quota.transfer();
     Ok(generation)
@@ -89,13 +84,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             .as_deref()
             .and_then(|io| io.original_native_work())
             .cloned();
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let current_private = match native.as_ref() {
-            Some(native) => scope.current_created_private_volume_with_native_work(native)?,
-            None => scope.current_created_private_volume()?,
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let current_private = scope.current_created_private_volume()?;
+        let current_private = scope.current_created_private_volume(quota.work())?;
         let Some(current_private) = current_private else {
             return Ok((Vec::new(), 0));
         };
@@ -120,7 +109,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 .iter()
                 .find(|provider| provider.provider() == &proof.provider)
                 .ok_or_else(|| {
-                    Self::admission_boundary(
+                    admission_boundary(
                         quota.work(),
                         crate::wire::ErrorCode::Unsupported,
                         "resource proof verifier is not bound",
@@ -132,9 +121,9 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                     let (receipt, custody) = provider
                         .verify_with_native_work(&request, proof, native)?
                         .await?;
-                    if !custody.matches_work(native) {
+                    if !custody.work().shares_allocation_context(native) {
                         drop(receipt);
-                        return Err(Self::admission_boundary(
+                        return Err(admission_boundary(
                             quota.work(),
                             crate::wire::ErrorCode::Unauthorized,
                             "volume receipt has foreign native custody",
@@ -149,7 +138,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             let receipt = provider.verify(&request, proof).await?;
             if receipt.resource != proof.resource || receipt.evidence != proof.evidence {
-                return Err(Self::admission_boundary(
+                return Err(admission_boundary(
                     quota.work(),
                     crate::wire::ErrorCode::Unauthorized,
                     "volume receipt differs from admitted proof",
@@ -182,7 +171,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 let origin = receipt.origin.intended_child;
                 if content.default_writer && &content.volume == current_private {
                     if current_origin.is_some_and(|current| current != origin) {
-                        return Err(Self::admission_boundary(
+                        return Err(admission_boundary(
                             quota.work(),
                             crate::wire::ErrorCode::Unauthorized,
                             "current actor allocation origin is ambiguous",
@@ -190,7 +179,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                     }
                     current_origin = Some(origin);
                 }
-                let volume = content.volume.clone_with_work(quota.work())?;
+                let volume = content.volume.copy(quota.work())?;
                 quota.adopt(volume.logical_owned_bytes()?)?;
                 let generation = copy_generation(&receipt.allocation_generation, quota.work())?;
                 quota.adopt(generation.logical_owned_bytes()?)?;
@@ -203,7 +192,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
         }
         let origin = current_origin.ok_or_else(|| {
-            Self::admission_boundary(
+            admission_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Unauthorized,
                 "current actor allocation receipt is absent",
@@ -227,7 +216,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                         bytes.checked_add(snapshot.generation.logical_owned_bytes().ok()?)
                     })
                     .ok_or_else(|| {
-                        Self::admission_boundary(
+                        admission_boundary(
                             quota.work(),
                             crate::wire::ErrorCode::Invalid,
                             "volume snapshot output custody overflows",

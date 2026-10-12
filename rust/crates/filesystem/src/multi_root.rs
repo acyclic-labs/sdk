@@ -5,7 +5,7 @@
 //! decision, then rolls all roots forward idempotently. A changed target after
 //! the decision pauses recovery instead of overwriting external work.
 
-use crate::async_storage::StorageFuture;
+use acyclic_stream::ProviderTask;
 use crate::record_store::{MemoryRecords, next_revision};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ConflictKey,
@@ -30,8 +30,7 @@ pub(crate) const MULTI_ROOT_VERSION: u32 = 1;
 pub struct MultiRootMergeRoot {
     /// Workspace whose pinned generation is being published.
     pub source_workspace_id: WorkspaceId,
-    /// Optional filtered compatibility fork authenticated as a direct child of
-    /// `source_workspace_id`. Ordinary filesystem joins leave this absent.
+    /// Optional filtered compatibility fork authenticated as a direct child of `source_workspace_id`.
     pub merge_workspace_id: Option<WorkspaceId>,
     /// Child generation captured when planning began.
     pub source_generation: GenerationId,
@@ -41,8 +40,7 @@ pub struct MultiRootMergeRoot {
     pub target_generation: GenerationId,
     /// Three-way common ancestor authenticated by the per-root join plan.
     pub base_generation: GenerationId,
-    /// Caller-selected child-wins binding paths pinned with the publication
-    /// journal. This does not alter ordinary filesystem merge semantics.
+    /// Caller-selected child-wins binding paths pinned with the publication journal.
     pub child_wins_bindings: BTreeSet<String>,
 }
 
@@ -68,8 +66,7 @@ pub struct MultiRootMergeCandidate {
     pub resolutions: BTreeMap<WorkspaceRootId, BTreeMap<ConflictKey, MergeResolution>>,
 }
 
-/// Opaque durable reservation proving that one target was validated and
-/// fenced for an exact publication operation.
+/// Opaque durable reservation proving that one target was validated and fenced for an exact publication operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MultiRootFence {
     /// Publisher-defined stable reservation token.
@@ -157,7 +154,7 @@ pub trait MultiRootPublicationStore: Send + Sync {
     fn load(
         &self,
         operation_id: OperationId,
-    ) -> impl Future<Output = Result<Option<MultiRootPublication>, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<Option<MultiRootPublication>, Self::Error>> + ProviderTask;
 
     /// Atomically replaces one expected revision; zero creates the record.
     fn compare_and_swap(
@@ -165,34 +162,33 @@ pub trait MultiRootPublicationStore: Send + Sync {
         operation_id: OperationId,
         expected_revision: u64,
         replacement: MultiRootPublication,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 
     /// Lists durable operations that may require restart recovery.
     fn list_operations(
         &self,
-    ) -> impl Future<Output = Result<Vec<OperationId>, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<Vec<OperationId>, Self::Error>> + ProviderTask;
 
     /// Removes a terminal record only when its exact revision still matches.
-    /// Failed physical cleanup leaves the record intact for restart recovery.
     fn compare_and_delete(
         &self,
         operation_id: OperationId,
         expected_revision: u64,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 
     /// Atomically claims the one publication slot for a parent context.
     fn claim_parent(
         &self,
         parent_context_id: WorkspaceContextId,
         operation_id: OperationId,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 
     /// Releases the exact parent claim after terminal cleanup.
     fn release_parent(
         &self,
         parent_context_id: WorkspaceContextId,
         operation_id: OperationId,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 }
 
 /// Root-specific publisher backed by the ordinary join and materializer APIs.
@@ -200,15 +196,14 @@ pub trait MultiRootPublisher: Send + Sync {
     /// Publisher error.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Atomically validates and reserves the exact pinned target. Repeating
-    /// this call for one operation must return the same live reservation.
+    /// Atomically validates and reserves the exact pinned target.
     fn prepare(
         &self,
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
         resolutions: &BTreeMap<ConflictKey, MergeResolution>,
-    ) -> impl Future<Output = Result<MultiRootPrepare, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<MultiRootPrepare, Self::Error>> + ProviderTask;
 
     /// Releases a reservation when validation fails before a commit decision.
     fn release(
@@ -216,7 +211,7 @@ pub trait MultiRootPublisher: Send + Sync {
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         fence: &MultiRootFence,
-    ) -> impl Future<Output = Result<(), Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<(), Self::Error>> + ProviderTask;
 
     /// Projects one root into its durable conflicted working state.
     fn project_conflict(
@@ -225,7 +220,7 @@ pub trait MultiRootPublisher: Send + Sync {
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
         conflict: Option<&crate::MergePlan>,
-    ) -> impl Future<Output = Result<GenerationId, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<GenerationId, Self::Error>> + ProviderTask;
 
     /// Restores one projected root to its exact pre-merge generation.
     fn abort_conflict(
@@ -234,7 +229,7 @@ pub trait MultiRootPublisher: Send + Sync {
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
         projected_generation: GenerationId,
-    ) -> impl Future<Output = Result<GenerationId, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<GenerationId, Self::Error>> + ProviderTask;
 
     /// Validates explicitly staged conflict paths and returns their exact keys.
     fn declare_conflicts(
@@ -244,7 +239,7 @@ pub trait MultiRootPublisher: Send + Sync {
         root: &MultiRootMergeRoot,
         conflict: &crate::MergePlan,
         paths: &[String],
-    ) -> impl Future<Output = Result<BTreeSet<ConflictKey>, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<BTreeSet<ConflictKey>, Self::Error>> + ProviderTask;
 
     /// Captures the current resolved working generation during continue.
     fn finish_conflict(
@@ -253,7 +248,7 @@ pub trait MultiRootPublisher: Send + Sync {
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
         projected_generation: GenerationId,
-    ) -> impl Future<Output = Result<MultiRootConflictFinish, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<MultiRootConflictFinish, Self::Error>> + ProviderTask;
 
     /// Idempotently rolls one root forward after the durable commit decision.
     fn publish(
@@ -263,17 +258,15 @@ pub trait MultiRootPublisher: Send + Sync {
         root: &MultiRootMergeRoot,
         resolutions: &BTreeMap<ConflictKey, MergeResolution>,
         fence: &MultiRootFence,
-    ) -> impl Future<Output = Result<MultiRootPublishRoot, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<MultiRootPublishRoot, Self::Error>> + ProviderTask;
 
-    /// Reclaims terminal per-root recovery state after the all-roots Applied
-    /// decision is durable. It must be idempotent because restart recovery
-    /// retries cleanup independently of logical publication.
+    /// Reclaims terminal per-root recovery state after the all-roots Applied decision is durable.
     fn finalize(
         &self,
         _operation_id: OperationId,
         _root_id: WorkspaceRootId,
         _root: &MultiRootMergeRoot,
-    ) -> impl Future<Output = Result<(), Self::Error>> + StorageFuture {
+    ) -> impl Future<Output = Result<(), Self::Error>> + ProviderTask {
         async { Ok(()) }
     }
 }
@@ -287,14 +280,22 @@ pub trait WorkspaceResolver<A, O>: Send + Sync {
     fn resolve(
         &self,
         workspace_id: WorkspaceId,
-    ) -> impl Future<Output = Result<Workspace<A, O>, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<Workspace<A, O>, Self::Error>> + ProviderTask;
+}
+
+impl<A, O, S> WorkspaceResolver<A, O> for (crate::Fs<A, O>, WorkspaceGraph<S>)
+where
+    A: AsyncAuthorityStore + Send + Sync,
+    O: AsyncObjectStore + Send + Sync,
+    S: WorkspaceLineageStore,
+{
+    type Error = WorkspaceLineageError<S::Error>;
+    async fn resolve(&self, workspace_id: WorkspaceId) -> Result<Workspace<A, O>, Self::Error> {
+        self.1.workspace(&self.0, workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
+    }
 }
 
 /// Applies one logically published root generation to its host checkout.
-///
-/// Implementations are injected capabilities: the coordinator owns retry and
-/// ordering, while a native host may use the core journaled materializer and
-/// a non-native host may deliberately provide no physical checkout.
 pub trait MultiRootMaterializer<A, O>: Send + Sync {
     /// Materialization failure.
     type Error: std::error::Error + Send + Sync + 'static;
@@ -307,24 +308,19 @@ pub trait MultiRootMaterializer<A, O>: Send + Sync {
         workspace: &Workspace<A, O>,
         from: GenerationId,
         to: GenerationId,
-    ) -> impl Future<Output = Result<(), Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<(), Self::Error>> + ProviderTask;
 
-    /// Reclaims terminal physical recovery state. Logical publication is
-    /// already durable when this runs, so failures are retried on recovery.
+    /// Reclaims terminal physical recovery state.
     fn finalize(
         &self,
         _operation_id: OperationId,
         _root_id: WorkspaceRootId,
-    ) -> impl Future<Output = Result<(), Self::Error>> + StorageFuture {
+    ) -> impl Future<Output = Result<(), Self::Error>> + ProviderTask {
         async { Ok(()) }
     }
 }
 
 /// SDK-owned publisher over ordinary immutable workspace joins.
-///
-/// Preparation validates pinned inputs and resolutions against a disposable
-/// SDK workspace. It never changes the target. Publication then repeats the
-/// same deterministic join through the target's fenced authority CAS.
 pub struct WorkspaceMultiRootPublisher<A, O, R> {
     resolver: R,
     merge_drivers: Option<std::sync::Arc<MergeDriverRegistry>>,
@@ -334,10 +330,6 @@ pub struct WorkspaceMultiRootPublisher<A, O, R> {
 }
 
 /// Workspace publisher composed with an injected physical materializer.
-///
-/// Logical publication happens first under the durable all-roots decision.
-/// If materialization is interrupted, retry discovers the exact generation
-/// from the workspace idempotency record and resumes the same materializer.
 pub struct MaterializingWorkspaceMultiRootPublisher<A, O, R, M> {
     publisher: WorkspaceMultiRootPublisher<A, O, R>,
     materializer: M,
@@ -465,26 +457,12 @@ where
         operation_id: OperationId,
         conflict: &'static str,
     ) -> Result<PublicationReservation, WorkspaceMultiRootPublisherError<R::Error>> {
-        let authority_head = target
-            .authority()
-            .head(
-                target.authority_id(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let authority_head = ({ let __authority_args = (target.authority_id(), WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .volume.fs.authority().head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value;
-        match target
-            .authority()
-            .reserve_publication(
-                target.authority_id(),
-                authority_head,
-                operation_id,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        match ({ let __authority_args = (target.authority_id(), authority_head, operation_id, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = target
+            .volume.fs.authority().reserve_publication(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value
         {
@@ -508,14 +486,8 @@ where
                 "publication reservation is owned by another operation",
             )
             .await?;
-        target
-            .authority()
-            .release_publication(
-                reservation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        ({ let __authority_args = (reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?;
         Ok(())
     }
@@ -538,7 +510,7 @@ where
                 .await
                 .map_err(WorkspaceMultiRootPublisherError::Resolver)?,
         };
-        let source_generation = source.generation(root.source_generation).await?;
+        let source_generation = source.generation(root.source_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let target_generation = target.generation(root.target_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let plan = source
             .join_into(&target)
@@ -565,7 +537,7 @@ where
             if_target: plan.target_head(),
             idempotency_key: operation,
         };
-        let initial = plan.apply_with_permit(options, permit).await?;
+        let initial = plan.apply(options, permit).await?;
         let JoinOutcome::Conflicted {
             conflicts,
             truncated,
@@ -642,7 +614,7 @@ where
                 plan: Box::new(candidate.plan.clone()),
             });
         }
-        plan.apply_candidate_with_permit(options, &candidate, permit)
+        plan.apply_candidate(options, &candidate, permit)
             .await
             .map_err(|error| WorkspaceMultiRootPublisherError::Candidate(error.to_string()))
     }
@@ -671,8 +643,8 @@ where
             .fork(
                 preview_name.as_str(),
                 ForkOptions::from_generation(target_generation, preview_key),
-            )
-            .await?;
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let result = async {
             let preview_generation = preview.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let preview_root = MultiRootMergeRoot {
@@ -740,26 +712,12 @@ where
             .resolve(root.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        let authority_head = target
-            .authority()
-            .head(
-                target.authority_id(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let authority_head = ({ let __authority_args = (target.authority_id(), WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .volume.fs.authority().head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value;
-        let reservation = match target
-            .authority()
-            .reserve_publication(
-                target.authority_id(),
-                authority_head,
-                operation_id,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let reservation = match ({ let __authority_args = (target.authority_id(), authority_head, operation_id, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = target
+            .volume.fs.authority().reserve_publication(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?
             .value
         {
@@ -788,14 +746,8 @@ where
             .resolve(decoded.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        target
-            .authority()
-            .release_publication(
-                decoded.reservation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        ({ let __authority_args = (decoded.reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error))?;
         Ok(())
     }
@@ -864,14 +816,8 @@ where
                 },
             )
             .await;
-        let release = target
-            .authority()
-            .release_publication(
-                reservation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let release = ({ let __authority_args = (reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error));
         if let Err(error) = release {
             return Err(error.into());
@@ -879,7 +825,7 @@ where
         let outcome = outcome?;
         match outcome {
             JoinOutcome::Applied(generation) | JoinOutcome::AlreadyApplied(generation) => {
-                Ok(generation.generation().id())
+                Ok(generation.generation.id())
             }
             JoinOutcome::NoChanges(generation) => Ok(generation.id()),
             _ => Err(WorkspaceMultiRootPublisherError::Candidate(
@@ -912,10 +858,10 @@ where
         let original = target.generation(root.target_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let projected = target.generation(projected_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let changed = original
-            .diff_to(&projected, u32::MAX)
-            .await?
-            .changed_paths(u32::MAX)
-            .await?;
+            .diff_to(&projected, u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?
+            .changed_paths(u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?;
         let paths = changed
             .iter()
             .map(|change| {
@@ -939,7 +885,7 @@ where
             )
             .await?;
         let outcome = target
-            .apply_paths_from_with_permit(
+            .apply_paths_from(
                 Some(&projected),
                 Some(&original),
                 &paths,
@@ -952,14 +898,8 @@ where
                 },
             )
             .await;
-        let release = target
-            .authority()
-            .release_publication(
-                reservation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
+        let release = ({ let __authority_args = (reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+            .volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| WorkspaceError::engine(failure.error));
         if let Err(error) = release {
             return Err(error.into());
@@ -1101,14 +1041,8 @@ where
         if target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id() != root.target_generation {
             if let Some(generation) = target.operation_generation(publisher_key(operation_id, root_id, b"publish"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             {
-                target
-                    .authority()
-                    .release_publication(
-                        decoded.reservation,
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                    )
-                    .await
+                ({ let __authority_args = (decoded.reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+                    .volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                     .map_err(|failure| WorkspaceError::engine(failure.error))?;
                 return Ok(MultiRootPublishRoot::AlreadyPublished(generation.id()));
             }
@@ -1134,11 +1068,11 @@ where
             .await?
         {
             JoinOutcome::Applied(generation) => {
-                MultiRootPublishRoot::Published(generation.generation().id())
+                MultiRootPublishRoot::Published(generation.generation.id())
             }
             JoinOutcome::NoChanges(generation) => MultiRootPublishRoot::Published(generation.id()),
             JoinOutcome::AlreadyApplied(generation) => {
-                MultiRootPublishRoot::AlreadyPublished(generation.generation().id())
+                MultiRootPublishRoot::AlreadyPublished(generation.generation.id())
             }
             JoinOutcome::StaleTarget(_)
             | JoinOutcome::Fenced
@@ -1149,14 +1083,8 @@ where
             outcome,
             MultiRootPublishRoot::Published(_) | MultiRootPublishRoot::AlreadyPublished(_)
         ) {
-            target
-                .authority()
-                .release_publication(
-                    decoded.reservation,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
+            ({ let __authority_args = (decoded.reservation, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = target
+                .volume.fs.authority().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                 .map_err(|failure| WorkspaceError::engine(failure.error))?;
         }
         Ok(outcome)
@@ -1435,8 +1363,7 @@ fn conflict_abort_materialization_operation_id(
     OperationId::from_bytes(bytes)
 }
 
-/// The portable text of a path in any encoding the volume stores (UTF-8 or
-/// Windows UTF-16); `None` only for a name with no Unicode text.
+/// The portable text of a path in any encoding the volume stores (UTF-8 or Windows UTF-16); `None` only for a name with no Unicode text.
 fn portable_namespace_path(path: &crate::kernel::NamespacePath) -> Option<String> {
     let mut value = String::new();
     for component in path.components() {
@@ -1476,7 +1403,7 @@ async fn generation_descends_from<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         if !visited.insert(candidate) || visited.len() > 65_536 {
             continue;
         }
-        for parent in workspace.generation(candidate, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.parents().await? {
+        for parent in workspace.generation(candidate, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.parents(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             if parent == ancestor {
                 return Ok(true);
             }
@@ -1508,8 +1435,8 @@ fn preview_workspace_name(
         hex::encode(&operation_id.into_bytes()[..6]),
         hex::encode(&root_id.into_bytes()[..6]),
         hex::encode(preview_key.operation_id().into_bytes())
-    ))
-    .map_err(Into::into)
+    ), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+    .map(|receipt| receipt.value).map_err(|failure| failure.error)
 }
 
 /// Authorization boundary for direct-parent and root-binding validation.
@@ -1517,20 +1444,18 @@ pub trait MultiRootPublicationAuthorizer: Send + Sync {
     /// Authorizer error.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Verifies that the plan publishes the exact child's bound roots only to
-    /// its exact direct parent.
+    /// Verifies that the plan publishes the exact child's bound roots only to its exact direct parent.
     fn authorize(
         &self,
         plan: &MultiRootMergePlan,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 
-    /// Verifies that an interactive transition is being requested by the
-    /// exact direct parent that owns the durable merge state.
+    /// Verifies that an interactive transition is being requested by the exact direct parent that owns the durable merge state.
     fn authorize_transition(
         &self,
         plan: &MultiRootMergePlan,
         caller_context_id: WorkspaceContextId,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + StorageFuture {
+    ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask {
         async move {
             if caller_context_id != plan.parent_context_id {
                 return Ok(false);
@@ -1713,8 +1638,7 @@ impl<S, P, A> MultiRootPublicationCoordinator<S, P, A> {
 impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicationAuthorizer>
     MultiRootPublicationCoordinator<S, P, A>
 {
-    /// Resumes one durable publication, returning `None` when no such
-    /// operation exists. The stored immutable candidate remains authoritative.
+    /// Resumes one durable publication, returning `None` when no such operation exists.
     pub async fn resume(
         &self,
         operation_id: OperationId,
@@ -1722,8 +1646,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         self.resume_with_finalization(operation_id, true).await
     }
 
-    /// Resumes publication while retaining an Applied journal until an
-    /// external, idempotent compatibility projection has been recorded.
+    /// Resumes publication while retaining an Applied journal until an external, idempotent compatibility projection has been recorded.
     pub async fn resume_retained(
         &self,
         operation_id: OperationId,
@@ -1781,18 +1704,17 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         &self,
         candidate: MultiRootMergeCandidate,
     ) -> impl Future<Output = MultiRootResult<Publication, S::Error, P::Error, A::Error>>
-    + StorageFuture
+    + ProviderTask
     + '_ {
         Box::pin(async move { self.publish_with_finalization(candidate, true).await })
     }
 
-    /// Publishes while retaining the terminal journal for a caller-owned,
-    /// idempotent compatibility projection before acknowledgement.
+    /// Publishes while retaining the terminal journal for a caller-owned, idempotent compatibility projection before acknowledgement.
     pub fn publish_retained(
         &self,
         candidate: MultiRootMergeCandidate,
     ) -> impl Future<Output = MultiRootResult<Publication, S::Error, P::Error, A::Error>>
-    + StorageFuture
+    + ProviderTask
     + '_ {
         Box::pin(async move { self.publish_with_finalization(candidate, false).await })
     }
@@ -1849,7 +1771,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         operation_id: OperationId,
         caller_context_id: WorkspaceContextId,
     ) -> impl Future<Output = MultiRootResult<Publication, S::Error, P::Error, A::Error>>
-    + StorageFuture
+    + ProviderTask
     + '_ {
         Box::pin(async move {
             self.continue_conflicted_with_finalization(operation_id, caller_context_id, true)
@@ -1857,14 +1779,13 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         })
     }
 
-    /// Continues a conflict while retaining the terminal journal until the
-    /// caller acknowledges its compatibility projection.
+    /// Continues a conflict while retaining the terminal journal until the caller acknowledges its compatibility projection.
     pub fn continue_conflicted_retained(
         &self,
         operation_id: OperationId,
         caller_context_id: WorkspaceContextId,
     ) -> impl Future<Output = MultiRootResult<Publication, S::Error, P::Error, A::Error>>
-    + StorageFuture
+    + ProviderTask
     + '_ {
         Box::pin(async move {
             self.continue_conflicted_with_finalization(operation_id, caller_context_id, false)
@@ -1872,9 +1793,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         })
     }
 
-    /// Declares the current projected contents of conflict paths as the
-    /// caller-selected resolutions. Text paths still containing generated
-    /// markers are rejected.
+    /// Declares the current projected contents of conflict paths as the caller-selected resolutions.
     pub async fn declare_conflicted_paths(
         &self,
         operation_id: OperationId,
@@ -2003,8 +1922,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         Ok(Publication::Applied(applied))
     }
 
-    /// Acknowledges a retained Applied journal after external compatibility
-    /// state has been durably and idempotently projected.
+    /// Acknowledges a retained Applied journal after external compatibility state has been durably and idempotently projected.
     pub async fn acknowledge_applied(
         &self,
         journal: &MultiRootPublication,
@@ -2021,7 +1939,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         &self,
         operation_id: OperationId,
         caller_context_id: WorkspaceContextId,
-    ) -> impl Future<Output = MultiRootResult<(), S::Error, P::Error, A::Error>> + StorageFuture + '_
+    ) -> impl Future<Output = MultiRootResult<(), S::Error, P::Error, A::Error>> + ProviderTask + '_
     {
         Box::pin(async move {
             let mut journal = self
@@ -2896,7 +2814,7 @@ mod tests {
     #[tokio::test]
     async fn add_all_declares_pathless_typed_conflicts() -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let target = fs.create_workspace("pathless-conflict-target").await?;
+        let target = fs.create_workspace("pathless-conflict-target", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let head = target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let publisher = WorkspaceMultiRootPublisher::new(Resolver {
             workspaces: Mutex::new(BTreeMap::from([(target.id(), target.clone())])),
@@ -3184,7 +3102,7 @@ mod tests {
     async fn workspace_publisher_previews_then_publishes_the_pinned_child_generation()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("publisher-parent").await?;
+        let parent = fs.create_workspace("publisher-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut base_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         base_tx.write_text("/base.txt", "base").await?;
         let TransactionCommit::Committed(base) = base_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
@@ -3194,8 +3112,8 @@ mod tests {
             .fork(
                 "publisher-child",
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            )
-            .await?;
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx.write_text("/child.txt", "child").await?;
         let TransactionCommit::Committed(child_head) = child_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
@@ -3236,7 +3154,7 @@ mod tests {
                 return Err("preview rejected a clean join".into());
             }
         };
-        assert_eq!(parent.head().await?.id(), parent_head.id());
+        assert_eq!(parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), parent_head.id());
         let published = publisher
             .publish(operation, root_id, &root, &resolutions, &fence)
             .await?;
@@ -3246,8 +3164,8 @@ mod tests {
             MultiRootPublishRoot::Published(generation)
                 if generation == published_generation
         ));
-        assert_eq!(parent.read("/child.txt", 16).await?.as_ref(), b"child");
-        assert_eq!(parent.read("/parent.txt", 16).await?.as_ref(), b"parent");
+        assert_eq!(parent.read("/child.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"child");
+        assert_eq!(parent.read("/parent.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"parent");
         assert_eq!(
             publisher
                 .publish(operation, root_id, &root, &resolutions, &fence)
@@ -3261,7 +3179,7 @@ mod tests {
     async fn automatic_text_markers_are_reported_not_published()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("publisher-conflict-parent").await?;
+        let parent = fs.create_workspace("publisher-conflict-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut base_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         base_tx.write_text("/conflicted.txt", "base\n").await?;
         let TransactionCommit::Committed(base) = base_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
@@ -3271,8 +3189,8 @@ mod tests {
             .fork(
                 "publisher-conflict-child",
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            )
-            .await?;
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx.write_text("/conflicted.txt", "child\n").await?;
         let TransactionCommit::Committed(child_head) = child_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
@@ -3314,9 +3232,9 @@ mod tests {
                 .await,
             Ok(MultiRootPrepare::Conflicted(_))
         ));
-        assert_eq!(parent.head().await?.id(), parent_head.id());
+        assert_eq!(parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), parent_head.id());
         assert_eq!(
-            parent.read("/conflicted.txt", 32).await?.as_ref(),
+            parent.read("/conflicted.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"parent\n"
         );
         Ok(())
@@ -3326,15 +3244,15 @@ mod tests {
     async fn child_wins_binding_policy_overrides_explicit_parent_resolution()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("child-wins-parent").await?;
+        let parent = fs.create_workspace("child-wins-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         parent.write_text("/base.txt", "base").await?;
         let base = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let child = parent
             .fork(
                 "child-wins-child",
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            )
-            .await?;
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child.write_text("/cache.tmp", "child").await?;
         parent.write_text("/cache.tmp", "parent").await?;
         let child_head = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -3391,7 +3309,7 @@ mod tests {
                 .map_err(|error| format!("resolved publication: {error}"))?,
             MultiRootPublishRoot::Published(_)
         ));
-        assert_eq!(parent.read("/cache.tmp", 16).await?.as_ref(), b"child");
+        assert_eq!(parent.read("/cache.tmp", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"child");
         Ok(())
     }
 
@@ -3399,27 +3317,27 @@ mod tests {
     async fn independent_same_name_directory_creations_merge_by_path()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("directory-race-parent").await?;
+        let parent = fs.create_workspace("directory-race-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let base = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let child = parent
             .fork(
                 "directory-race-child",
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            )
-            .await?;
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        child_tx.create_dir_all("/sub").await?;
+        child_tx.create_dir_all("/sub", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx.write_text("/.gitignore", "*.tmp\n").await?;
         child_tx.write_text("/scratch.tmp", "child").await?;
         child_tx.write_text("/sub/.gitignore", "*.tmp\n").await?;
         child_tx.write_text("/sub/cache.tmp", "child").await?;
-        child_tx.create_dir_all("/sub/nested").await?;
+        child_tx.create_dir_all("/sub/nested", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx
             .write_text("/sub/nested/deep.tmp", "nested child")
             .await?;
         child_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut parent_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        parent_tx.create_dir_all("/sub").await?;
+        parent_tx.create_dir_all("/sub", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         parent_tx.write_text("/scratch.tmp", "parent").await?;
         parent_tx.write_text("/sub/cache.tmp", "parent").await?;
         parent_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -3467,14 +3385,14 @@ mod tests {
             coordinator.publish(candidate).await?,
             Publication::Applied(_)
         ));
-        assert_eq!(parent.read("/sub/cache.tmp", 16).await?.as_ref(), b"child");
-        assert_eq!(parent.read("/scratch.tmp", 16).await?.as_ref(), b"child");
+        assert_eq!(parent.read("/sub/cache.tmp", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"child");
+        assert_eq!(parent.read("/scratch.tmp", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"child");
         assert_eq!(
-            parent.read("/sub/nested/deep.tmp", 32).await?.as_ref(),
+            parent.read("/sub/nested/deep.tmp", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"nested child"
         );
         assert_eq!(
-            parent.read("/sub/.gitignore", 16).await?.as_ref(),
+            parent.read("/sub/.gitignore", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"*.tmp
 "
         );
@@ -3490,7 +3408,7 @@ mod tests {
     async fn conflicted_publication_projects_edits_and_continues_durably_case()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("conflict-parent").await?;
+        let parent = fs.create_workspace("conflict-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut base_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         base_tx.write_text("/file.txt", "base\n").await?;
         let TransactionCommit::Committed(base) = base_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
@@ -3500,8 +3418,8 @@ mod tests {
             .fork(
                 "conflict-child",
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            )
-            .await?;
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx.write_text("/file.txt", "child\n").await?;
         let TransactionCommit::Committed(child_head) = child_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
@@ -3554,7 +3472,7 @@ mod tests {
         };
         assert_eq!(conflicted.projected_roots.len(), 1);
         assert!(
-            String::from_utf8(parent.read("/file.txt", 1_024).await?.to_vec())?
+            String::from_utf8(parent.read("/file.txt", 1_024, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.to_vec())?
                 .contains("<<<<<<< ours")
         );
         assert!(matches!(
@@ -3607,7 +3525,7 @@ mod tests {
                 .await?,
             Publication::Applied(_)
         ));
-        assert_eq!(parent.read("/file.txt", 32).await?.as_ref(), b"resolved\n");
+        assert_eq!(parent.read("/file.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"resolved\n");
         assert!(coordinator.pending_operations().await?.is_empty());
         Ok(())
     }
@@ -3616,7 +3534,7 @@ mod tests {
     async fn conflicted_publication_abort_restores_premerge_generation()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("abort-parent").await?;
+        let parent = fs.create_workspace("abort-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut base_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         base_tx.write_text("/file.txt", "base\n").await?;
         let TransactionCommit::Committed(base) = base_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
@@ -3626,8 +3544,8 @@ mod tests {
             .fork(
                 "abort-child",
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            )
-            .await?;
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx
             .write_text("/file.txt", "discarded child\n")
@@ -3692,11 +3610,11 @@ mod tests {
             .abort_conflicted(abort_operation, WorkspaceContextId::from_bytes([76; 16]))
             .await?;
         assert_eq!(
-            parent.read("/file.txt", 32).await?.as_ref(),
+            parent.read("/file.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"kept parent\n"
         );
         assert_eq!(
-            parent.read("/unrelated.txt", 32).await?.as_ref(),
+            parent.read("/unrelated.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"preserved\n"
         );
         assert!(aborting.pending_operations().await?.is_empty());
@@ -3710,7 +3628,7 @@ mod tests {
         // driver: the projection holds the record back, so it differs from the
         // pre-merge target in no path. Abort must still clear the operation.
         let fs = Fs::memory();
-        let parent = fs.create_workspace("empty-abort-parent").await?;
+        let parent = fs.create_workspace("empty-abort-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut base_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         base_tx.write_text("/keep.txt", "base\n").await?;
         let TransactionCommit::Committed(base) = base_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
@@ -3720,8 +3638,8 @@ mod tests {
             .fork(
                 "empty-abort-child",
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            )
-            .await?;
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx.write_text("/added.txt", "from child\n").await?;
         let TransactionCommit::Committed(child_head) = child_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
@@ -3774,10 +3692,10 @@ mod tests {
             .abort_conflicted(operation, parent_context)
             .await?;
         assert_eq!(
-            parent.read("/added.txt", 32).await?.as_ref(),
+            parent.read("/added.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"from parent\n"
         );
-        assert_eq!(parent.read("/keep.txt", 32).await?.as_ref(), b"base\n");
+        assert_eq!(parent.read("/keep.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"base\n");
         assert!(coordinator.pending_operations().await?.is_empty());
         Ok(())
     }

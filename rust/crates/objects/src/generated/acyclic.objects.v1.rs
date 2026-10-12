@@ -18,7 +18,10 @@ pub struct ObjectMetadata {
     #[prost(string, tag = "1")]
     pub content_type: ::prost::alloc::string::String,
     #[prost(btree_map = "string, string", tag = "2")]
-    pub user: ::prost::alloc::collections::BTreeMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+    pub user: ::prost::alloc::collections::BTreeMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
     #[prost(string, tag = "3")]
     pub content_encoding: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
@@ -31,7 +34,6 @@ pub struct ObjectMetadata {
     pub expires_unix_seconds: ::core::option::Option<i64>,
 }
 /// Evaluated atomically with single-object publication against the current value.
-/// An eventual HEAD/GET may be stale and cause a safe precondition failure.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Preconditions {
     #[prost(oneof = "preconditions::Condition", tags = "1, 2")]
@@ -102,7 +104,6 @@ pub struct PutObjectHeader {
     pub mutation: ::core::option::Option<MutationIdentity>,
 }
 /// Header first, bounded body frames, then complete=true and EOF. Missing completion
-/// never publishes bytes, even if transport cancellation appears as a clean EOF.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PutObjectRequest {
     #[prost(oneof = "put_object_request::Frame", tags = "1, 2, 3")]
@@ -172,12 +173,6 @@ pub struct GetObjectHeader {
     pub content_range: ::core::option::Option<ContentRange>,
 }
 /// One body frame. data decodes under codec to exactly decoded_length bytes, which
-/// follow the previous frame's bytes in the selected representation. Before it
-/// allocates or decompresses, a client rejects decoded_length above the bytes
-/// still selected, above OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES for CODEC_NONE, and
-/// above OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES for CODEC_ZSTD. It rejects any
-/// other decoded length and an unknown codec. A server chooses the codec
-/// independently for every frame.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Body {
     #[prost(enumeration = "Codec", tag = "1")]
@@ -188,7 +183,6 @@ pub struct Body {
     pub decoded_length: u64,
 }
 /// Exactly one metadata header first. The body belongs to that complete representation.
-/// A terminal semantic error can follow the header when an HTTP stream is already open.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetObjectResponse {
     #[prost(oneof = "get_object_response::Frame", tags = "1, 2, 3")]
@@ -239,7 +233,6 @@ pub struct DeleteObjectResponse {
     pub existed: bool,
 }
 /// Lexicographic S3 ListObjectsV2 traversal of an eventual listing, never a captured view.
-/// Concurrent insertions before the cursor can be missed. Tokens are opaque and query-bound.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListObjectsRequest {
     #[prost(message, optional, tag = "1")]
@@ -351,7 +344,6 @@ pub struct ListPartsResponse {
     pub is_truncated: bool,
 }
 /// Ordered part numbers and exact part ETags select the staged bytes.
-/// Non-final parts are at least 5 MiB. Publication and preconditions are atomic for this key.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CompleteMultipartRequest {
     #[prost(message, optional, tag = "1")]
@@ -404,38 +396,6 @@ pub enum ObjectsLimit {
     /// Bound on one compressed Body's decoded_length: one whole stored block.
     MaxBodyDecodedBytes = 8388608,
 }
-impl ObjectsLimit {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "OBJECTS_LIMIT_UNSPECIFIED",
-            Self::MaxIdempotencyKeyBytes => "OBJECTS_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES",
-            Self::MaxKeyBytes => "OBJECTS_LIMIT_MAX_KEY_BYTES",
-            Self::MaxUserMetadataBytes => "OBJECTS_LIMIT_MAX_USER_METADATA_BYTES",
-            Self::MaxPageEntries => "OBJECTS_LIMIT_MAX_PAGE_ENTRIES",
-            Self::MaxBodyFrameBytes => "OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES",
-            Self::MaxMultipartParts => "OBJECTS_LIMIT_MAX_MULTIPART_PARTS",
-            Self::MaxBodyDecodedBytes => "OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "OBJECTS_LIMIT_UNSPECIFIED" => Some(Self::Unspecified),
-            "OBJECTS_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES" => Some(Self::MaxIdempotencyKeyBytes),
-            "OBJECTS_LIMIT_MAX_KEY_BYTES" => Some(Self::MaxKeyBytes),
-            "OBJECTS_LIMIT_MAX_USER_METADATA_BYTES" => Some(Self::MaxUserMetadataBytes),
-            "OBJECTS_LIMIT_MAX_PAGE_ENTRIES" => Some(Self::MaxPageEntries),
-            "OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES" => Some(Self::MaxBodyFrameBytes),
-            "OBJECTS_LIMIT_MAX_MULTIPART_PARTS" => Some(Self::MaxMultipartParts),
-            "OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES" => Some(Self::MaxBodyDecodedBytes),
-            _ => None,
-        }
-    }
-}
 /// Encoding of one body frame's data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -446,28 +406,6 @@ pub enum Codec {
     None = 2,
     /// data is one or more complete Zstandard frames.
     Zstd = 1,
-}
-impl Codec {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "CODEC_UNSPECIFIED",
-            Self::None => "CODEC_NONE",
-            Self::Zstd => "CODEC_ZSTD",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "CODEC_UNSPECIFIED" => Some(Self::Unspecified),
-            "CODEC_NONE" => Some(Self::None),
-            "CODEC_ZSTD" => Some(Self::Zstd),
-            _ => None,
-        }
-    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -487,9 +425,6 @@ pub enum ErrorCode {
 }
 impl ErrorCode {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "ERROR_CODE_UNSPECIFIED",
@@ -504,24 +439,6 @@ impl ErrorCode {
             Self::AccessDenied => "ERROR_CODE_ACCESS_DENIED",
             Self::RangeNotSatisfiable => "ERROR_CODE_RANGE_NOT_SATISFIABLE",
             Self::NotModified => "ERROR_CODE_NOT_MODIFIED",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "ERROR_CODE_UNSPECIFIED" => Some(Self::Unspecified),
-            "ERROR_CODE_INVALID_ARGUMENT" => Some(Self::InvalidArgument),
-            "ERROR_CODE_NOT_FOUND" => Some(Self::NotFound),
-            "ERROR_CODE_ALREADY_EXISTS" => Some(Self::AlreadyExists),
-            "ERROR_CODE_PRECONDITION_FAILED" => Some(Self::PreconditionFailed),
-            "ERROR_CODE_IDEMPOTENCY_MISMATCH" => Some(Self::IdempotencyMismatch),
-            "ERROR_CODE_QUOTA_EXCEEDED" => Some(Self::QuotaExceeded),
-            "ERROR_CODE_UNSUPPORTED" => Some(Self::Unsupported),
-            "ERROR_CODE_UNAVAILABLE" => Some(Self::Unavailable),
-            "ERROR_CODE_ACCESS_DENIED" => Some(Self::AccessDenied),
-            "ERROR_CODE_RANGE_NOT_SATISFIABLE" => Some(Self::RangeNotSatisfiable),
-            "ERROR_CODE_NOT_MODIFIED" => Some(Self::NotModified),
-            _ => None,
         }
     }
 }

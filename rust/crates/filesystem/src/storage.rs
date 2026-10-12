@@ -3,10 +3,9 @@
 use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
 };
-use crate::performance::{MeasuredResult, OperationFailure, WorkBudget, WorkCounters};
+use crate::performance::{MeasuredResult, OperationFailure};
 use acyclic_stream::OwnedBytes;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use thiserror::Error;
 
 /// Canonical bytes hashed in addition to one object's body.
@@ -55,10 +54,6 @@ pub enum AppendOutcome {
 }
 
 /// Optional authority-side admission condition for one publication.
-///
-/// Ordinary SDK callers use [`PublicationPermit::Unrestricted`]. Managed
-/// operation windows issue lease permits whose gate is checked in the same
-/// storage transaction as the generation append.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum PublicationPermit {
     /// No operation-window admission is required.
@@ -139,155 +134,12 @@ pub enum FenceOutcome {
     },
 }
 
-/// Storage-only authority interface.
-///
-/// Implementations own ordering, fencing, idempotency, durable acknowledgement,
-/// and bounded replay. They do not interpret commit payloads.
-pub trait AuthorityStore: Send + Sync {
-    /// Creates one authority at the supplied non-zero genesis epoch.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed backend error if creation cannot be made durable.
-    fn create_authority(
-        &self,
-        authority_id: AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget,
-    ) -> AuthorityResult<CreateAuthorityOutcome>;
-
-    /// Returns the linearizable current head.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed backend error when the authority is missing, corrupt,
-    /// unavailable, or cannot be read durably.
-    fn head(&self, authority_id: AuthorityId, budget: WorkBudget) -> AuthorityResult<Head>;
-
-    /// Atomically checks epoch/head/idempotency and durably appends one operation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed backend error when durable evaluation cannot complete.
-    /// Semantic conflicts are returned as [`AppendOutcome`] variants.
-    fn compare_and_append(
-        &self,
-        authority_id: AuthorityId,
-        epoch: Epoch,
-        expected: Head,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-    ) -> AuthorityResult<AppendOutcome>;
-
-    /// Replays a contiguous bounded page after `sequence`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed backend error for invalid limits, missing/corrupt
-    /// authority state, or storage failure.
-    fn replay(
-        &self,
-        authority_id: AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        budget: WorkBudget,
-    ) -> AuthorityResult<Vec<DurableCommit>>;
-
-    /// Atomically compares the complete head, advances its epoch, and
-    /// permanently fences prior writers.
-    ///
-    /// # Errors
-    ///
-    /// A stale expected head is a semantic [`FenceOutcome::Conflict`], while a
-    /// backend failure means the fence could not be durably resolved.
-    fn fence(
-        &self,
-        authority_id: AuthorityId,
-        expected: Head,
-        budget: WorkBudget,
-    ) -> AuthorityResult<FenceOutcome>;
-
-    /// Looks up a durable operation for exact retry resolution.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed backend error when the authority cannot be read safely.
-    fn find_operation(
-        &self,
-        authority_id: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-    ) -> AuthorityResult<Option<DurableCommit>>;
-}
-
-impl<T: AuthorityStore + ?Sized> AuthorityStore for Arc<T> {
-    fn create_authority(
-        &self,
-        authority_id: AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
-        (**self).create_authority(authority_id, genesis_epoch, budget)
-    }
-
-    fn head(&self, authority_id: AuthorityId, budget: WorkBudget) -> AuthorityResult<Head> {
-        (**self).head(authority_id, budget)
-    }
-
-    fn compare_and_append(
-        &self,
-        authority_id: AuthorityId,
-        epoch: Epoch,
-        expected: Head,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-    ) -> AuthorityResult<AppendOutcome> {
-        (**self).compare_and_append(authority_id, epoch, expected, commit, budget)
-    }
-
-    fn replay(
-        &self,
-        authority_id: AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        budget: WorkBudget,
-    ) -> AuthorityResult<Vec<DurableCommit>> {
-        (**self).replay(authority_id, after, limit, budget)
-    }
-
-    fn fence(
-        &self,
-        authority_id: AuthorityId,
-        expected: Head,
-        budget: WorkBudget,
-    ) -> AuthorityResult<FenceOutcome> {
-        (**self).fence(authority_id, expected, budget)
-    }
-
-    fn find_operation(
-        &self,
-        authority_id: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-    ) -> AuthorityResult<Option<DurableCommit>> {
-        (**self).find_operation(authority_id, operation_id, budget)
-    }
-}
-
-/// One successful authority operation and its exact backend work.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthorityReceipt<T> {
-    /// Operation value.
-    pub value: T,
-    /// Exact backend work.
-    pub work: WorkCounters,
-}
 
 /// One failed authority operation retaining exact spent work.
 pub type AuthorityFailure = OperationFailure<AuthorityStoreError>;
 
 /// Receipt-bearing authority result.
-pub type AuthorityResult<T> = MeasuredResult<AuthorityReceipt<T>, AuthorityStoreError>;
+pub type AuthorityResult<T> = MeasuredResult<crate::OperationReceipt<T>, AuthorityStoreError>;
 
 /// Typed authority storage failures.
 #[derive(Debug, Error, strum::IntoStaticStr)]
@@ -295,8 +147,7 @@ pub enum AuthorityStoreError {
     /// Operation was cancelled before durable authority work began.
     #[error("authority operation was cancelled")]
     Cancelled,
-    /// This custom provider cannot fund the canonical producer in the original
-    /// native allocation ledger. Rejected before provider I/O.
+    /// This custom provider cannot fund the canonical producer in the original native allocation ledger.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("authority provider does not support original native work")]
     NativeOriginalUnsupported,
@@ -307,10 +158,6 @@ pub enum AuthorityStoreError {
     /// Canonical SDK failure without a formatted diagnostic allocation.
     #[error(transparent)]
     NativeStream(#[from] acyclic_stream::StreamError),
-    /// Native provider failure retains its original payload allocation custody.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[error(transparent)]
-    NativeStreamFailure(#[from] acyclic_stream::NativeStreamFailure),
     /// Canonical durable record validation preserves its actual typed cause.
     #[error(transparent)]
     DurableCodec(#[from] crate::streams_record::StreamsAuthorityRecordError),
@@ -372,7 +219,6 @@ pub enum AuthorityStoreError {
     #[error("authority sequence exhausted")]
     SequenceExhausted,
     /// A surviving reservation identity lacks authenticated original head evidence.
-    /// This is queryable uncertainty, never permission to adopt a current head.
     #[error("original publication reservation head is unavailable for authority {authority_id:?}, operation {operation_id:?}, gate {gate_tail}")]
     ReservationOriginalHeadUnavailable {
         /// Original authority selected by the reservation.
@@ -443,10 +289,6 @@ impl ObjectKind {
     }
 
     /// Parses one stable canonical object-class tag.
-    ///
-    /// # Errors
-    ///
-    /// Rejects unknown tags instead of guessing a future object class.
     pub const fn from_canonical_tag(tag: u8) -> Result<Self, ObjectKindError> {
         match tag {
             1 => Ok(Self::Blob),
@@ -532,9 +374,6 @@ pub fn object_digest(kind: ObjectKind, bytes: &[u8]) -> Digest {
 }
 
 /// Canonical immutable object bytes and the identity their hash proves.
-///
-/// The only constructor hashes the bytes, so holding one proves its identity:
-/// a store may admit it without hashing the same bytes again.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HashedObject {
     object_id: ObjectId,
@@ -564,26 +403,21 @@ impl HashedObject {
         cancellation: &crate::CancellationToken,
     ) -> Result<Self, ObjectStoreError> {
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
-        let hash = WorkCounters {
+        let hash = crate::WorkCounters {
             bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?
                 .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
                 .ok_or(crate::WorkError::Overflow)?,
-            ..WorkCounters::default()
+            ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
         let object_id = ObjectId { kind, digest: object_digest(kind, &bytes) };
         work.record_admitted(hash)?;
-        work.admit(WorkCounters::default())?;
+        work.admit(crate::WorkCounters::default())?;
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
         Ok(Self { object_id, bytes })
     }
 
     /// Transfers a guarded vector into the physical immutable byte owner.
-    ///
-    /// Validation failures leave caller inputs unchanged. After the actual
-    /// vector/guard transfer, constructor denial physically drops that failed
-    /// payload before returning its original cause; every successful alias
-    /// retains the original vector capacity until its final drop.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_native_vec(
         kind: ObjectKind,
@@ -597,25 +431,25 @@ impl HashedObject {
         if !work.shares_ledger(allocation.work()) || allocation.bytes() < capacity {
             return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout.into());
         }
-        let hash = WorkCounters {
+        let hash = crate::WorkCounters {
             bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?
                 .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
                 .ok_or(crate::WorkError::Overflow)?,
-            ..WorkCounters::default()
+            ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
         let object_id = ObjectId { kind, digest: object_digest(kind, bytes) };
         work.record_admitted(hash)?;
-        work.admit(WorkCounters::default())?;
+        work.admit(crate::WorkCounters::default())?;
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
         let payload_allocation = allocation.split_off(capacity)?;
         let payload_original = payload_allocation.work().clone();
         let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
-            std::mem::take(bytes), payload_allocation, payload_original.runtime_meter_owner(),
+            std::mem::take(bytes), payload_allocation, payload_original.runtime_meter(),
         ).map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => payload_original.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+            => {
                 ObjectStoreError::Native(crate::NativeTreeMaterializationError::InvalidLayout)
             }
         })?;
@@ -663,31 +497,19 @@ pub struct ByteRange {
     pub length: u64,
 }
 
-/// One successful immutable-object operation and its exact physical work.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ObjectReceipt<T> {
-    /// Operation value.
-    pub value: T,
-    /// Exact backend work, including zero-copy versus copied-byte behavior.
-    pub work: WorkCounters,
-}
-
 /// How the bytes returned by one immutable-object read remain resident.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectReadRetention {
-    /// The returned view shares backend-owned immutable storage and adds no
-    /// operation-owned byte buffer.
+    /// The returned view shares backend-owned immutable storage and adds no operation-owned byte buffer.
     Shared,
-    /// The backend allocated this exact logical byte capacity and transfers
-    /// ownership to the caller until the value is dropped.
+    /// The backend allocated this exact logical byte capacity and transfers ownership to the caller until the value is dropped.
     Owned {
         /// Exact requested capacity retained by the returned value.
         logical_bytes: u64,
     },
 }
 
-/// Immutable bytes plus explicit retention evidence for zero-copy and peak
-/// allocation accounting.
+/// Immutable bytes plus explicit retention evidence for zero-copy and peak allocation accounting.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectRead {
     /// Complete canonical object bytes.
@@ -726,140 +548,8 @@ impl std::ops::Deref for ObjectRead {
 pub type ObjectFailure = OperationFailure<ObjectStoreError>;
 
 /// Receipt-bearing immutable-object result. Failure never erases spent work.
-pub type ObjectResult<T> = MeasuredResult<ObjectReceipt<T>, ObjectStoreError>;
+pub type ObjectResult<T> = MeasuredResult<crate::OperationReceipt<T>, ObjectStoreError>;
 
-/// Immutable digest-addressed object storage interface.
-///
-/// Objects are deliberately read whole. Pages and blob chunks have hard size
-/// limits; logical range reads are built over authenticated chunk indexes. This
-/// prevents a backend from hiding a whole-object scan behind a tiny range read.
-pub trait ObjectStore: Send + Sync {
-    /// Admits canonical bytes under their verified identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error for digest mismatch or storage failure.
-    fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()>;
-
-    /// Admits an ordered bounded group through one backend batch operation.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first typed failure and all work completed before it.
-    fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()>;
-
-    /// Reads exactly the requested range or returns a typed error.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when the object is absent, corrupt, unavailable,
-    /// or the range is invalid.
-    fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-    ) -> ObjectResult<ObjectRead>;
-
-    /// Reads against the caller's original native work and allocation journal.
-    /// Custom providers without this capability fail before accessing storage.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work(
-        &self,
-        _object_id: ObjectId,
-        _maximum_bytes: u64,
-        _work: &crate::materializer::NativeMaterializationWork,
-        _cancellation: &crate::CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
-        Err(ObjectStoreError::NativeUnavailable)
-    }
-
-    /// Reads an ordered batch of complete bounded objects.
-    ///
-    /// The result position always matches the request position. Implementations
-    /// should coalesce physical transactions or I/O submission where their
-    /// backend supports it. The default preserves exact semantics and work
-    /// accounting without claiming fewer backend operations.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first typed object failure and all work completed before it.
-    fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-    ) -> ObjectResult<Vec<ObjectRead>>;
-
-    /// Executes this provider's actual batch under the original native journal.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_many_with_native_work(
-        &self,
-        _requests: &[ObjectReadRequest],
-        _work: &crate::materializer::NativeMaterializationWork,
-        _cancellation: &crate::CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
-        Err(ObjectStoreError::NativeUnavailable)
-    }
-
-    /// Returns whether the exact typed object is present and verified.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when presence cannot be checked safely.
-    fn contains(&self, object_id: ObjectId, budget: WorkBudget) -> ObjectResult<bool>;
-}
-
-impl<T: ObjectStore + ?Sized> ObjectStore for Arc<T> {
-    fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()> {
-        (**self).put(object_id, bytes, budget)
-    }
-
-    fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()> {
-        (**self).put_many(writes, budget)
-    }
-
-    fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-    ) -> ObjectResult<ObjectRead> {
-        (**self).read(object_id, maximum_bytes, budget)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
-        (**self).read_with_native_work(object_id, maximum_bytes, work, cancellation)
-    }
-
-    fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        (**self).read_many(requests, budget)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_many_with_native_work(
-        &self,
-        requests: &[ObjectReadRequest],
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
-        (**self).read_many_with_native_work(requests, work, cancellation)
-    }
-
-    fn contains(&self, object_id: ObjectId, budget: WorkBudget) -> ObjectResult<bool> {
-        (**self).contains(object_id, budget)
-    }
-}
 
 /// Typed immutable-object failures.
 #[derive(Debug, Error, strum::IntoStaticStr)]
@@ -922,8 +612,7 @@ pub enum ObjectStoreError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     Native(#[from] crate::materializer::NativeTreeMaterializationError),
-    /// The original Objects failure, including every acknowledged prefix and
-    /// intrinsically owned diagnostic or failed request packet.
+    /// The original Objects failure, including every acknowledged prefix and intrinsically owned diagnostic or failed request packet.
     #[cfg(all(feature = "distributed", not(target_arch = "wasm32")))]
     #[error(transparent)]
     NativeObjects(#[from] acyclic_objects::v1::NativeObjectsError),

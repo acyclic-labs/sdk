@@ -9,8 +9,8 @@ use acyclic_fs::{
 /// Durable leases sharing the filesystem's exact `IndexedDB` authority.
 #[wasm_bindgen]
 pub struct BrowserOperationWindowCoordinator {
-    inner: OperationWindowCoordinator<IndexedDbAuthorityStore>,
-    owner: BrowserEngine,
+    inner: OperationWindowCoordinator<BrowserAuthority>,
+    owner: Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
@@ -156,18 +156,16 @@ impl BrowserFs {
     /// Opens a coordinator on the exact persistent authority; construction acquires no lease.
     #[wasm_bindgen(js_name = operationWindows)]
     pub fn operation_windows(&self) -> Result<BrowserOperationWindowCoordinator, JsValue> {
-        let inner = match self.engine.as_ref().ok_or_else(closed_error)? {
-            BrowserEngine::IndexedDb(fs) => fs.operation_windows(),
-            BrowserEngine::IndexedDbOpfs(fs) => fs.operation_windows(),
-            BrowserEngine::Memory(_) => {
-                return Err(js_error(
-                    "operation windows require persistent browser authority",
-                ));
-            }
-        };
+        let engine = self.engine.as_ref().ok_or_else(closed_error)?;
+        if self.capabilities.authority != "indexeddb" {
+            return Err(js_error(
+                "operation windows require persistent browser authority",
+            ));
+        }
+        let inner = engine.operation_windows();
         Ok(BrowserOperationWindowCoordinator {
             inner,
-            owner: self.engine.as_ref().ok_or_else(closed_error)?.clone(),
+            owner: engine.clone(),
         })
     }
 }
@@ -312,37 +310,26 @@ impl BrowserOperationWindowCoordinator {
         self.require_workspace(workspace)?;
         let lease = lease.to_rust().map_err(js_error)?.decode()?;
         let limits = options.to_rust().map_err(js_error)?.into();
-        macro_rules! finish {
-            ($value:expr) => {
-                match self
-                    .inner
-                    .finish_workspace($value, &lease, now_millis, limits)
-                    .await
-                    .map_err(js_error)?
-                {
-                    WorkspaceOperationFinish::StillActive { remaining } => {
-                        BrowserWorkspaceOperationClose::StillActive { remaining }
-                    }
-                    WorkspaceOperationFinish::AlreadyClosed => {
-                        BrowserWorkspaceOperationClose::AlreadyClosed
-                    }
-                    WorkspaceOperationFinish::Reconciled(value) => {
-                        BrowserWorkspaceOperationClose::Reconciled {
-                            rebase: browser_workspace_rebase_result(value),
-                        }
+        ts(
+            match self
+                .inner
+                .finish_workspace(&workspace.engine, &lease, now_millis, limits)
+                .await
+                .map_err(js_error)?
+            {
+                WorkspaceOperationFinish::StillActive { remaining } => {
+                    BrowserWorkspaceOperationClose::StillActive { remaining }
+                }
+                WorkspaceOperationFinish::AlreadyClosed => {
+                    BrowserWorkspaceOperationClose::AlreadyClosed
+                }
+                WorkspaceOperationFinish::Reconciled(value) => {
+                    BrowserWorkspaceOperationClose::Reconciled {
+                        rebase: browser_workspace_rebase_result(value),
                     }
                 }
-            };
-        }
-        ts(match &workspace.engine {
-            BrowserWorkspaceEngine::IndexedDb(value) => finish!(value),
-            BrowserWorkspaceEngine::IndexedDbOpfs(value) => finish!(value),
-            BrowserWorkspaceEngine::Memory(_) => {
-                return Err(js_error(
-                    "persistent operation window requires a persistent workspace",
-                ));
-            }
-        })
+            },
+        )
     }
 
     /// Recovers expired leases and interrupted reconciliation without rerunning external effects.
@@ -355,44 +342,19 @@ impl BrowserOperationWindowCoordinator {
     ) -> Result<Option<Ts<BrowserWorkspaceRebaseResult>>, JsValue> {
         self.require_workspace(workspace)?;
         let limits = options.to_rust().map_err(js_error)?.into();
-        Ok(match &workspace.engine {
-            BrowserWorkspaceEngine::IndexedDb(value) => self
-                .inner
-                .recover_workspace(value, now_millis, limits)
-                .await
-                .map_err(js_error)?
-                .map(browser_workspace_rebase_result)
-                .map(ts)
-                .transpose()?,
-            BrowserWorkspaceEngine::IndexedDbOpfs(value) => self
-                .inner
-                .recover_workspace(value, now_millis, limits)
-                .await
-                .map_err(js_error)?
-                .map(browser_workspace_rebase_result)
-                .map(ts)
-                .transpose()?,
-            BrowserWorkspaceEngine::Memory(_) => {
-                return Err(js_error(
-                    "persistent operation window requires a persistent workspace",
-                ));
-            }
-        })
+        self.inner
+            .recover_workspace(&workspace.engine, now_millis, limits)
+            .await
+            .map_err(js_error)?
+            .map(browser_workspace_rebase_result)
+            .map(ts)
+            .transpose()
     }
 }
 
 impl BrowserOperationWindowCoordinator {
     fn require_workspace(&self, workspace: &BrowserWorkspace) -> Result<(), JsValue> {
-        let owned = match (&self.owner, &workspace.engine) {
-            (BrowserEngine::IndexedDb(fs), BrowserWorkspaceEngine::IndexedDb(value)) => {
-                fs.owns_workspace(value)
-            }
-            (BrowserEngine::IndexedDbOpfs(fs), BrowserWorkspaceEngine::IndexedDbOpfs(value)) => {
-                fs.owns_workspace(value)
-            }
-            _ => false,
-        };
-        if owned {
+        if self.owner.owns_workspace(&workspace.engine) {
             Ok(())
         } else {
             Err(js_error("workspace belongs to another browser filesystem"))

@@ -6,16 +6,11 @@ use super::persistent_btree::{Format, Page, children_within, leaf_within};
 use super::{DecodeLimits, persistent_io};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use crate::storage::ObjectId;
 
-pub(crate) struct Receipt<V> {
-    pub(crate) value: Option<V>,
-    pub(crate) work: WorkCounters,
-}
 pub(crate) type Failure = OperationFailure<Error>;
 
-/// Data precedes its original allocation guard in physical destruction order.
 pub(crate) struct Owned<T> {
     pub(crate) value: T,
     pub(crate) bytes: u64,
@@ -78,17 +73,17 @@ impl<T> Owned<Vec<T>> {
         }
         let actual = crate::foundation::usize_to_u64((self.value.capacity() - previous) * std::mem::size_of::<T>());
         let checked = accounting.reconcile_owned(&mut allocation, requested, actual);
-        absorb(&mut self.allocation, allocation)?;
+        self.allocation.absorb(&mut allocation)?;
         self.bytes = self.bytes.checked_add(actual).ok_or(crate::WorkError::Overflow)?;
         checked
     }
 }
 
-pub(crate) fn split_allocation(allocation: &mut KernelOwnedAllocation, bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
+pub(crate) fn split_allocation(allocation: &mut KernelOwnedAllocation, _bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
     match allocation {
         KernelOwnedAllocation::Standalone => Ok(KernelOwnedAllocation::Standalone),
         #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(guard) => Ok(KernelOwnedAllocation::NativeOriginal(guard.split_off(bytes)?)),
+        KernelOwnedAllocation::NativeOriginal(guard) => Ok(KernelOwnedAllocation::NativeOriginal(guard.split_off(_bytes)?)),
     }
 }
 
@@ -109,39 +104,21 @@ pub(crate) fn retire_allocation(
     }
 }
 
-pub(super) fn absorb(
-    destination: &mut KernelOwnedAllocation,
-    mut source: KernelOwnedAllocation,
-) -> Result<(), crate::FsError> {
-    match (destination, &mut source) {
-        (KernelOwnedAllocation::Standalone, KernelOwnedAllocation::Standalone) => Ok(()),
-        #[cfg(not(target_arch = "wasm32"))]
-        (KernelOwnedAllocation::NativeOriginal(destination), KernelOwnedAllocation::NativeOriginal(source)) => {
-            destination.absorb(source)?;
-            Ok(())
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        _ => unreachable!("one query never crosses allocation ledgers"),
-    }
-}
-
-
 pub(crate) async fn lookup_async<S, F>(
     store: &S, root: ObjectId, key: &F::Key, limits: DecodeLimits,
     budget: WorkBudget, cancellation: &CancellationToken,
     data_custody: Option<&super::ProofDataCustody>,
-) -> Result<Receipt<F::Value>, Failure>
+) -> Result<OperationReceipt<Option<F::Value>>, Failure>
 where S: AsyncObjectStore, F: Format {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = lookup_async_with_accounting::<S, F>(
         store, root, key, limits, &mut accounting, cancellation, data_custody,
     ).await;
     let work = accounting.spent();
-    result.map(|(value, _)| Receipt { value, work })
+    result.map(|(value, _)| OperationReceipt { value, work })
         .map_err(|error| OperationFailure::new(project_failure(error), work))
 }
 
-/// The standalone projection and native invocation walk exactly this body.
 pub(crate) async fn lookup_async_with_accounting<S, F>(
     store: &S, root: ObjectId, key: &F::Key, limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -152,7 +129,9 @@ where S: AsyncObjectStore, F: Format {
     if root.kind != F::kind() { return Err(query_error(Error::WrongRootKind)); }
     if !limits.page_limits_valid(1) { return Err(query_error(Error::InvalidLimits)); }
     let mut visited = VisitedObjectSet::new_with_accounting(
-        usize::from(limits.maximum_page_height), accounting,
+        usize::from(limits.maximum_page_height).min(
+            usize::try_from(limits.maximum_visited_pages).unwrap_or(usize::MAX),
+        ), accounting,
     )?;
     let mut lower: Option<Owned<F::Key>> = None;
     let mut upper: Option<Owned<F::Key>> = None;

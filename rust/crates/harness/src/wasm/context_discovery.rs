@@ -7,7 +7,7 @@ use crate::{
         ContextDiscovery, ContextReloadPolicy, ContextRoot, DiscoveredContext, PinnedContextPath,
     },
     conversation::{
-        ContentFuture, ContentResidencyVerifier, FileRef, PrivateDirectoryEntry,
+        BoundedContentFuture, ContentHold, ContentIo, ContentResidencyVerifier, FileRef, PrivateDirectoryEntry,
         PrivateDirectoryPage, VolumeRef,
     },
     resources::GenerationRef,
@@ -112,12 +112,9 @@ impl BrowserReader {
 }
 
 impl ContentResidencyVerifier for BrowserReader {
-    fn verify<'a>(&'a self, _: &'a FileRef) -> ContentFuture<'a, Result<()>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "bind the owner file verifier for direct refs".into(),
-            ))
-        })
+    fn verify<'a>(&'a self, _: &'a FileRef, _maximum_bytes: u64, _io: Option<&'a ContentIo>)
+        -> Result<BoundedContentFuture<'a, ()>> {
+        Err(Error::Unsupported("bind the owner file verifier for direct refs".into()))
     }
 
     fn list_private_directory<'a>(
@@ -127,9 +124,9 @@ impl ContentResidencyVerifier for BrowserReader {
         path: &'a str,
         generation: Option<&'a GenerationRef>,
         after: Option<&'a str>,
-        maximum_entries: u32,
-    ) -> ContentFuture<'a, Result<PrivateDirectoryPage>> {
-        Box::pin(async move {
+        maximum_entries: u32, io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
+        BoundedContentFuture::new(io, || async move {
             let query = ContextDirectoryQuery {
                 root: ContextRoot {
                     volume: volume.clone(),
@@ -173,9 +170,9 @@ impl ContentResidencyVerifier for BrowserReader {
         prefix: &'a str,
         path: &'a str,
         generation: &'a GenerationRef,
-        maximum_bytes: u64,
-    ) -> ContentFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
+        maximum_bytes: u64, io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        BoundedContentFuture::new(io, || async move {
             let query = ContextReadQuery {
                 source: PinnedContextPath {
                     root: ContextRoot {
@@ -192,14 +189,15 @@ impl ContentResidencyVerifier for BrowserReader {
         })
     }
 
-    fn read_private_path<'a>(
+    fn read_private_path<'a, 'io>(
         &'a self,
         volume: &'a VolumeRef,
         prefix: &'a str,
         path: &'a str,
-        generation: Option<&'a GenerationRef>,
-    ) -> ContentFuture<'a, Result<(FileRef, acyclic_stream::OwnedBytes)>> {
-        Box::pin(async move {
+        generation: Option<&'a GenerationRef>, maximum_bytes: u64, io: Option<&'io ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'io>>)>> where 'io: 'a {
+        BoundedContentFuture::new(io, || async move {
+            let maximum_bytes = maximum_bytes.min(self.maximum_bytes);
             let generation = generation.ok_or_else(|| {
                 Error::Invalid("context path requires a pinned generation".into())
             })?;
@@ -212,17 +210,17 @@ impl ContentResidencyVerifier for BrowserReader {
                     path: path.into(),
                     generation: generation.clone(),
                 },
-                maximum_bytes: self.maximum_bytes,
+                maximum_bytes,
             };
             let result = self.invoke(&self.read, &query).await?;
             let bytes = Self::bytes(
                 Reflect::get(&result, &JsValue::from_str("bytes")).map_err(platform_error)?,
-                self.maximum_bytes,
+                maximum_bytes,
             )?;
             let file =
                 from_js(Reflect::get(&result, &JsValue::from_str("file")).map_err(platform_error)?)
                     .map_err(platform_error)?;
-            Ok((file, bytes.into()))
+            Ok((file, bytes.into(), None))
         })
     }
 }
@@ -262,7 +260,7 @@ pub async fn context_for_request(
     let current: DiscoveredContext = from_js(current)?;
     let reload: ContextReloadPolicy = from_js(reload)?;
     if reload == ContextReloadPolicy::Explicit {
-        current.validate().map_err(js_error)?;
+        current.validate(&mut None).map_err(js_error)?;
         return snapshot_to_js(&current);
     }
     let reader =

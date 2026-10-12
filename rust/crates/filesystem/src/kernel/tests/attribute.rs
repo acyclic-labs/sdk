@@ -1,6 +1,7 @@
 use super::*;
 use crate::foundation::Digest;
 
+use crate::kernel::Child;
 #[test]
 fn classes_and_raw_names_round_trip() -> Result<(), Box<dyn std::error::Error>> {
     let page = AttributePage::Leaf(vec![AttributeEntry {
@@ -11,9 +12,9 @@ fn classes_and_raw_names_round_trip() -> Result<(), Box<dyn std::error::Error>> 
             digest: Digest::from_bytes([9; 32]),
         },
     }]);
-    let bytes = encode_attribute_page(&page, 8)?;
+    let bytes = encode_attribute_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(
-        decode_attribute_page(&bytes, DecodeLimits::default())?,
+        decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         page
     );
     Ok(())
@@ -78,12 +79,12 @@ fn every_attribute_page_shape_and_identity_is_canonical() -> Result<(), Box<dyn 
         },
     ]);
     let internal = AttributePage::Internal(vec![
-        AttributeChild {
-            first_name: first.clone(),
+        Child {
+            first: first.clone(),
             page: attribute_page,
         },
-        AttributeChild {
-            first_name: second.clone(),
+        Child {
+            first: second.clone(),
             page: ObjectId {
                 kind: ObjectKind::AttributePage,
                 digest: Digest::from_bytes([4; 32]),
@@ -99,12 +100,12 @@ fn every_attribute_page_shape_and_identity_is_canonical() -> Result<(), Box<dyn 
         (leaf.clone(), DecodedPageKind::Leaf),
         (internal.clone(), DecodedPageKind::Internal),
     ] {
-        let encoded = encode_attribute_page(&page, 2)?;
+        let encoded = encode_attribute_page(&page, 2, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
         let shape = attribute_page_decode_shape(&encoded, limits)?;
         assert_eq!(shape.kind, kind);
         assert_eq!(shape.items, 2);
         assert_eq!(shape.nested_bytes, 2);
-        assert_eq!(decode_attribute_page(&encoded, limits)?, page);
+        assert_eq!(decode_attribute_page(&encoded, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, page);
         let object_id = attribute_page_id(&page, 2)?;
         assert_eq!(object_id.kind, ObjectKind::AttributePage);
         assert_eq!(
@@ -120,17 +121,17 @@ fn every_attribute_page_shape_and_identity_is_canonical() -> Result<(), Box<dyn 
             },
             2
         )?,
-        encode_attribute_page(&leaf, 2)?.len()
+        encode_attribute_page(&leaf, 2, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?.len()
     );
     assert_eq!(
         attribute_internal_page_encoded_length(
             match &internal {
-                AttributePage::Internal(v) => v.iter().map(|child| (&child.first_name, child.page)),
+                AttributePage::Internal(v) => v.iter().map(|child| (&child.first, child.page)),
                 AttributePage::Leaf(_) => unreachable!(),
             },
             2
         )?,
-        encode_attribute_page(&internal, 2)?.len()
+        encode_attribute_page(&internal, 2, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?.len()
     );
     Ok(())
 }
@@ -158,12 +159,12 @@ fn malformed_attribute_pages_fail_at_every_public_boundary()
         ..entry.clone()
     }]);
     let empty_internal = AttributePage::Internal(Vec::new());
-    let wrong_internal = AttributePage::Internal(vec![AttributeChild {
-        first_name: name.clone(),
+    let wrong_internal = AttributePage::Internal(vec![Child {
+        first: name.clone(),
         page: wrong,
     }]);
     for page in [&duplicate, &wrong_leaf, &empty_internal, &wrong_internal] {
-        assert!(encode_attribute_page(page, 8).is_err());
+        assert!(encode_attribute_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
         assert_eq!(page.validate(8), Err(AttributeError::InvalidPage));
     }
     assert_eq!(
@@ -171,8 +172,8 @@ fn malformed_attribute_pages_fail_at_every_public_boundary()
         Err(AttributeError::TooManyItems)
     );
     assert_eq!(
-        AttributePage::Internal(vec![AttributeChild {
-            first_name: name,
+        AttributePage::Internal(vec![Child {
+            first: name,
             page: ObjectId {
                 kind: ObjectKind::AttributePage,
                 digest: Digest::from_bytes([3; 32]),
@@ -181,10 +182,10 @@ fn malformed_attribute_pages_fail_at_every_public_boundary()
         .validate(0),
         Err(AttributeError::TooManyItems)
     );
-    assert!(encode_attribute_page(&AttributePage::Leaf(vec![entry.clone()]), 0).is_err());
+    assert!(encode_attribute_page(&AttributePage::Leaf(vec![entry.clone()]), 0, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
     assert!(attribute_page_id(&duplicate, 8).is_err());
 
-    let valid = encode_attribute_page(&AttributePage::Leaf(vec![entry]), 1)?;
+    let valid = encode_attribute_page(&AttributePage::Leaf(vec![entry]), 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let mut unknown_page = valid.clone();
     unknown_page[DOMAIN.len() + 2] = 9;
     assert!(matches!(
@@ -195,7 +196,7 @@ fn malformed_attribute_pages_fail_at_every_public_boundary()
         })
     ));
     assert!(matches!(
-        decode_attribute_page(&unknown_page, DecodeLimits::default()),
+        decode_attribute_page(&unknown_page, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::UnknownTag {
             field: "attribute_page",
             tag: 9
@@ -205,7 +206,7 @@ fn malformed_attribute_pages_fail_at_every_public_boundary()
     let mut unknown_class = valid.clone();
     unknown_class[DOMAIN.len() + 2 + 1 + 4] = 9;
     assert!(matches!(
-        decode_attribute_page(&unknown_class, DecodeLimits::default()),
+        decode_attribute_page(&unknown_class, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::Invariant(_))
     ));
 
@@ -221,7 +222,7 @@ fn malformed_attribute_pages_fail_at_every_public_boundary()
         })
     ));
     assert!(matches!(
-        decode_attribute_page(&valid, tight_items),
+        decode_attribute_page(&valid, tight_items, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::FieldTooLarge {
             observed: 1,
             maximum: 0

@@ -1,5 +1,6 @@
 //! Real MemoryFS/SDK mailbox controls; no replacement reader or mailbox engine.
 
+use serde_json::json;
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
 
@@ -20,16 +21,14 @@ async fn native_stock_mail_command_uses_original_atomic_v3_send_and_custody() ->
     fixture.machine.native.store(true, Ordering::SeqCst);
     let runtime = fixture.runtime().await?;
     let task = TaskId::from_bytes([104; 16]);
-    let payloads = FilesystemSchedulerPayloadStore::new(
-        fixture.filesystem.clone(), fixture.volume.clone(), &fixture.issuer.verifier(), &fixture.signed, 65_536,
-    )?;
-    let payload = payloads.stage(OperationId::from_bytes([106; 16]), "native-stock-mail-body", b"7").await?;
+    let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, 65_536, None)?;
+    let payload = payloads.stage(OperationId::from_bytes([106; 16]), "native-stock-mail-body", b"7", None)?.await?;
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(finite_mail_budget()?, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let (lease, custody) = fixture.native_lease_command(
         &runtime, super::super::super::MAIL_SEND_TASK_COMMAND_KIND,
-        serde_json::to_value(super::super::super::MailSendTaskCommand { recipient: task, payload: payload.clone() })?,
+        serde_json::to_value(super::super::super::MailSendTaskCommand { recipient: task, payload: payload.clone() }).map_err(|error| Error::Invalid(error.to_string()))?,
         &work,
     ).await?;
     let reservation = lease.reservation.clone();

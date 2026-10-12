@@ -1,18 +1,8 @@
 use super::*;
+use crate::AsyncObjectStore;
 use crate::foundation::{Digest, FileId, VolumeId};
+use crate::kernel::decode_generation_root;
 use crate::memory::MemoryObjectStore;
-use std::future::Future;
-use std::task::{Context, Poll, Waker};
-
-fn run_ready<F: Future>(future: F) -> Option<F::Output> {
-    let mut future = std::pin::pin!(future);
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
-    match future.as_mut().poll(&mut context) {
-        Poll::Ready(value) => Some(value),
-        Poll::Pending => None,
-    }
-}
 
 fn table(byte: u8) -> ObjectId {
     ObjectId {
@@ -21,7 +11,7 @@ fn table(byte: u8) -> ObjectId {
     }
 }
 
-fn put_root(
+async fn put_root(
     store: &MemoryObjectStore,
     volume_byte: u8,
     root_file_byte: u8,
@@ -33,19 +23,31 @@ fn put_root(
         file_table: table(table_byte),
         parents: Vec::new(),
         required_features: 0,
-    })?;
+    }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let object = ObjectId {
         kind: ObjectKind::GenerationRoot,
-        digest: object_digest(ObjectKind::GenerationRoot, &encoded),
+        digest: crate::storage::object_digest(ObjectKind::GenerationRoot, &encoded),
     };
-    store.put(object, acyclic_stream::OwnedBytes::from(encoded), WorkBudget::UNBOUNDED)?;
+    {
+        let __object_args = (
+            object,
+            acyclic_stream::OwnedBytes::from(encoded),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object)
 }
 
-#[test]
-fn unchanged_checkpoint_reuses_base_without_a_write() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn unchanged_checkpoint_reuses_base_without_a_write() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let base = put_root(&store, 1, 2, 3)?;
+    let base = put_root(&store, 1, 2, 3).await?;
     let receipt = build_checkpoint(
         &store,
         CheckpointRequest {
@@ -55,19 +57,19 @@ fn unchanged_checkpoint_reuses_base_without_a_write() -> Result<(), Box<dyn std:
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
-    assert!(receipt.reused_base);
-    assert_eq!(receipt.root, base);
+        &CancellationToken::new(),
+    ).await?;
+    assert_eq!(receipt.value, base);
     assert_eq!(receipt.work.backend_read_operations, 1);
     assert_eq!(receipt.work.backend_write_operations, 0);
     Ok(())
 }
 
-#[test]
-fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
+#[tokio::test]
+async fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let base = put_root(&store, 4, 5, 6)?;
+    let base = put_root(&store, 4, 5, 6).await?;
     let receipt = build_checkpoint(
         &store,
         CheckpointRequest {
@@ -77,24 +79,37 @@ fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
-    assert!(!receipt.reused_base);
-    assert_ne!(receipt.root, base);
+        &CancellationToken::new(),
+    ).await?;
+    assert_ne!(receipt.value, base);
     assert_eq!(receipt.work.backend_write_operations, 1);
-    let bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+    let bytes = {
+        let __object_args = (
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
         .value;
-    let root = decode_generation_root(&bytes, DecodeLimits::default())?;
+    let root = decode_generation_root(&bytes, DecodeLimits::default(), |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
     assert_eq!(root.file_table, table(7));
     assert_eq!(root.parents, vec![GenerationId::new(base.digest)]);
     Ok(())
 }
 
-#[test]
-fn cross_volume_merge_fails_before_any_candidate_write() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn cross_volume_merge_fails_before_any_candidate_write() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let base = put_root(&store, 8, 9, 10)?;
-    let other = put_root(&store, 11, 9, 12)?;
+    let base = put_root(&store, 8, 9, 10).await?;
+    let other = put_root(&store, 11, 9, 12).await?;
     let failure = build_checkpoint(
         &store,
         CheckpointRequest {
@@ -104,7 +119,9 @@ fn cross_volume_merge_fails_before_any_candidate_write() -> Result<(), Box<dyn s
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("cross-volume merge unexpectedly succeeded")?;
     assert!(matches!(failure.error, CheckpointError::CrossVolumeMerge));
@@ -113,14 +130,14 @@ fn cross_volume_merge_fails_before_any_candidate_write() -> Result<(), Box<dyn s
     Ok(())
 }
 
-#[test]
-fn pre_cancelled_async_checkpoint_performs_zero_backend_work()
+#[tokio::test]
+async fn pre_cancelled_checkpoint_performs_zero_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let base = put_root(&store, 1, 2, 3)?;
+    let base = put_root(&store, 1, 2, 3).await?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = run_ready(build_checkpoint_async(
+    let failure = build_checkpoint(
         &store,
         CheckpointRequest {
             base,
@@ -130,8 +147,8 @@ fn pre_cancelled_async_checkpoint_performs_zero_backend_work()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory-backed asynchronous checkpoint unexpectedly blocked")?
+    )
+    .await
     .err()
     .ok_or("cancelled checkpoint unexpectedly succeeded")?;
     assert!(matches!(
@@ -142,11 +159,11 @@ fn pre_cancelled_async_checkpoint_performs_zero_backend_work()
     Ok(())
 }
 
-#[test]
-fn checkpoint_request_and_merge_identity_guards_are_total_before_publication()
+#[tokio::test]
+async fn checkpoint_request_and_merge_identity_guards_are_total_before_publication()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let base = put_root(&store, 1, 2, 3)?;
+    let base = put_root(&store, 1, 2, 3).await?;
     let wrong_generation = ObjectId {
         kind: ObjectKind::Blob,
         digest: base.digest,
@@ -193,7 +210,9 @@ fn checkpoint_request_and_merge_identity_guards_are_total_before_publication()
             request,
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
+        .await
         .err()
         .ok_or("invalid checkpoint request succeeded")?;
         assert!(match expected {
@@ -205,7 +224,7 @@ fn checkpoint_request_and_merge_identity_guards_are_total_before_publication()
         assert_eq!(*failure.work, WorkCounters::default());
     }
 
-    let other_root_identity = put_root(&store, 1, 9, 5)?;
+    let other_root_identity = put_root(&store, 1, 9, 5).await?;
     let mismatch = build_checkpoint(
         &store,
         CheckpointRequest {
@@ -215,7 +234,9 @@ fn checkpoint_request_and_merge_identity_guards_are_total_before_publication()
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("root-identity-mismatched merge succeeded")?;
     assert!(matches!(
@@ -227,12 +248,12 @@ fn checkpoint_request_and_merge_identity_guards_are_total_before_publication()
     Ok(())
 }
 
-#[test]
-fn valid_merge_checkpoint_preserves_both_exact_parent_identities()
+#[tokio::test]
+async fn valid_merge_checkpoint_preserves_both_exact_parent_identities()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let base = put_root(&store, 1, 2, 3)?;
-    let merge = put_root(&store, 1, 2, 4)?;
+    let base = put_root(&store, 1, 2, 3).await?;
+    let merge = put_root(&store, 1, 2, 4).await?;
     let receipt = build_checkpoint(
         &store,
         CheckpointRequest {
@@ -242,18 +263,28 @@ fn valid_merge_checkpoint_preserves_both_exact_parent_identities()
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
-    assert!(!receipt.reused_base);
-    assert_eq!(
-        receipt.generation_id,
-        GenerationId::new(receipt.root.digest)
-    );
+        &CancellationToken::new(),
+    ).await?;
+    assert_ne!(receipt.value, base);
     assert_eq!(receipt.work.backend_read_operations, 2);
     assert_eq!(receipt.work.backend_write_operations, 1);
-    let encoded = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+    let encoded = {
+        let __object_args = (
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
         .value;
-    let root = decode_generation_root(&encoded, DecodeLimits::default())?;
+    let root = decode_generation_root(&encoded, DecodeLimits::default(), |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
     assert_eq!(
         root.parents,
         vec![

@@ -5,17 +5,7 @@ const PACK_LIMIT: usize = 64 * 1024;
 const TEMPORARY: &str = ".v1-checkpoint.tmp";
 
 impl Journal {
-    pub(super) fn compact(&self, state: &State) -> Result<u64, LocalOpenError> {
-        self.compact_with(state, None).map_err(|error| match error {
-            NativeObjectsError::Service(error) if error.code == QuotaExceeded => {
-                LocalOpenError::Invalid
-            }
-            error => open_error(error),
-        })
-    }
-
-    /// Ordinary and current-original-meter checkpoints share the same frame, packing, synchronization, replacement and poison boundaries.
-    pub(super) fn compact_with(
+    pub(super) fn compact(
         &self,
         state: &State,
         meter: Option<Arc<dyn NativeReadMeter>>,
@@ -29,29 +19,44 @@ impl Journal {
                 reclaimed = obs::Empty
             ),
             || {
-                // All snapshot, encoded-frame and pending-frame storage drops
-                // before this temporary publication's allocation custody.
+                // Temporary storage drops before publication custody.
                 let mut publication = Publication::new(meter);
                 publication.check()?;
                 self.check()?;
-                let snapshot = difference_with(&State::default(), state, 0, &mut publication)?;
-                let temporary = CheckpointPath::new(&self.root.path, TEMPORARY, &publication)?;
-                let destination =
-                    CheckpointPath::new(&self.root.path, "mutations.log", &publication)?;
-                let mut file = crate::physical::open_publication(&temporary.path, &publication)?;
+                let snapshot = difference(&State::default(), state, 0, &mut publication)?;
+                let temporary = crate::physical::local_path(
+                    &self.root.path,
+                    TEMPORARY,
+                    publication.native.as_ref().map(|(meter, _)| meter),
+                )?;
+                let destination = crate::physical::local_path(
+                    &self.root.path,
+                    "mutations.log",
+                    publication.native.as_ref().map(|(meter, _)| meter),
+                )?;
+                let mut file = crate::physical::open_publication(&temporary.value, &publication)?;
                 let header = publication.encode(&self.header)?;
-                let header_length = u32::try_from(header.len())
-                    .map_err(|_| Error::from(QuotaExceeded))?;
+                let header_length =
+                    u32::try_from(header.len()).map_err(|_| Error::from(QuotaExceeded))?;
                 let digest = publication.codec(0, 0, header.len(), || blake3::hash(&header))?;
                 crate::physical::write_publication(&mut file, 0, MAGIC, &mut publication)?;
                 crate::physical::write_publication(
-                    &mut file, MAGIC.len() as u64, &header_length.to_le_bytes(), &mut publication,
+                    &mut file,
+                    MAGIC.len() as u64,
+                    &header_length.to_le_bytes(),
+                    &mut publication,
                 )?;
                 crate::physical::write_publication(
-                    &mut file, (MAGIC.len() + 4) as u64, digest.as_bytes(), &mut publication,
+                    &mut file,
+                    (MAGIC.len() + 4) as u64,
+                    digest.as_bytes(),
+                    &mut publication,
                 )?;
                 crate::physical::write_publication(
-                    &mut file, (MAGIC.len() + 36) as u64, &header, &mut publication,
+                    &mut file,
+                    (MAGIC.len() + 36) as u64,
+                    &header,
+                    &mut publication,
                 )?;
                 let mut output = Checkpoint {
                     file,
@@ -65,36 +70,45 @@ impl Journal {
                 };
                 output.snapshot(snapshot, &mut publication)?;
                 #[cfg(test)]
-                self.checkpoint_fault(1).map_err(|_| Error::from(Unavailable))?;
+                self.checkpoint_fault(1)
+                    .map_err(|_| Error::from(Unavailable))?;
                 crate::physical::sync_publication(
-                    &output.file, self.limits.durability, &publication,
+                    &output.file,
+                    self.limits.durability,
+                    &publication,
                 )?;
                 #[cfg(test)]
-                self.checkpoint_fault(2).map_err(|_| Error::from(Unavailable))?;
+                self.checkpoint_fault(2)
+                    .map_err(|_| Error::from(Unavailable))?;
                 let mut tail = self.tail.lock().map_err(|_| Error::from(Unavailable))?;
                 let reclaimed = tail.bytes.saturating_sub(output.bytes);
-                // Closing the old journal permits Windows replacement. The replacement
-                // handle retains the fully synchronized checkpoint across the rename.
+                // Close the old journal before Windows replacement.
                 drop(std::mem::replace(&mut tail.file, output.file));
                 #[cfg(test)]
-                self.checkpoint_fault(3).map_err(|_| Error::from(Unavailable))?;
-                if let Err(error) = self.root.replace_journal(|| {
-                    match &publication.meter {
-                        Some(meter) => acyclic_native_runtime::durable_rename_measured(
-                            &temporary.path, &destination.path,
-                            acyclic_native_runtime::RenameMode::Replace, meter,
-                        ),
-                        None => acyclic_native_runtime::durable_rename(
-                            &temporary.path, &destination.path,
-                            acyclic_native_runtime::RenameMode::Replace,
-                        ),
-                    }
+                self.checkpoint_fault(3)
+                    .map_err(|_| Error::from(Unavailable))?;
+                if let Err(error) = self.root.replace_journal(|| match &publication.native {
+                    Some((meter, _)) => acyclic_native_runtime::durable_rename(
+                        &temporary.value,
+                        &destination.value,
+                        acyclic_native_runtime::RenameMode::Replace,
+                        Some(meter),
+                    ),
+                    None => acyclic_native_runtime::durable_rename(
+                        &temporary.value,
+                        &destination.value,
+                        acyclic_native_runtime::RenameMode::Replace,
+                        None,
+                    ),
                 }) {
                     self.poisoned.store(true, Ordering::Release);
-                    return Err(NativeObjectsError::Admission(error));
+                    return Err(NativeObjectsError::from(NativeObjectsCause::Admission(
+                        error,
+                    )));
                 }
                 #[cfg(test)]
-                self.checkpoint_fault(4).map_err(|_| Error::from(Unavailable))?;
+                self.checkpoint_fault(4)
+                    .map_err(|_| Error::from(Unavailable))?;
                 tail.bytes = output.bytes;
                 tail.operations = output.operations;
                 tail.inline_bytes = 0;
@@ -118,44 +132,6 @@ impl Journal {
     }
 }
 
-struct CheckpointPath {
-    path: PathBuf,
-    _allocation: Option<ReadAllocation>,
-}
-impl CheckpointPath {
-    fn new(
-        root: &Path,
-        suffix: &str,
-        publication: &Publication,
-    ) -> Result<Self, NativeObjectsError> {
-        let maximum = root.as_os_str().len().checked_add(suffix.len())
-            .and_then(|length| length.checked_add(1))
-            .ok_or(Error::from(QuotaExceeded))?;
-        let mut allocation = publication.meter.as_ref()
-            .map(|meter| ReadAllocation::new(meter, maximum)).transpose()?;
-        let mut path = PathBuf::new();
-        path.try_reserve_exact(maximum).map_err(|error| {
-            publication.meter.as_ref().map_or_else(
-                || NativeObjectsError::Service(Unavailable.into()),
-                |meter| NativeObjectsError::Admission(meter.allocation_failed(error)),
-            )
-        })?;
-        let reconciled = allocation.as_mut()
-            .map(|allocation| allocation.reconcile_capacity(path.capacity())).transpose();
-        let mut output = Self { path, _allocation: allocation };
-        reconciled?;
-        if let Some(meter) = &publication.meter {
-            meter.admit_codec(0, maximum as u64, 0)?;
-        }
-        output.path.push(root);
-        output.path.push(suffix);
-        if let Some(meter) = &publication.meter {
-            meter.record_codec(0, output.path.as_os_str().len() as u64, 0)?;
-        }
-        Ok(output)
-    }
-}
-
 struct Checkpoint {
     file: File,
     limits: LocalObjectsLimits,
@@ -169,8 +145,7 @@ impl Checkpoint {
         snapshot: Delta,
         publication: &mut Publication,
     ) -> Result<(), NativeObjectsError> {
-        // Each frame admits only states within the final live byte capacity:
-        // create buckets, current objects, uploads/parts, then exact receipts.
+        // Pack buckets, objects, uploads/parts, then receipts.
         macro_rules! append {
             ($field:ident) => {
                 for item in snapshot.$field {
@@ -205,12 +180,15 @@ impl Checkpoint {
             || !self.pending.receipts.is_empty()
     }
     fn flush(&mut self, publication: &mut Publication) -> Result<(), NativeObjectsError> {
-        // A single multipart object may exceed the packing target while still
-        // fitting the journal's existing authenticated record limit.
-        self.pending.ordinal = self.operations.checked_add(1)
+        // Multipart frames must fit the authenticated record limit.
+        self.pending.ordinal = self
+            .operations
+            .checked_add(1)
             .ok_or(Error::from(QuotaExceeded))?;
         let length = self.pending.encoded_len();
-        let end = self.bytes.checked_add(36 + length as u64)
+        let end = self
+            .bytes
+            .checked_add(36 + length as u64)
             .ok_or(Error::from(QuotaExceeded))?;
         if length > RECORD_LIMIT
             || end > self.limits.maximum_journal_bytes
@@ -218,26 +196,32 @@ impl Checkpoint {
         {
             return Err(Error::from(QuotaExceeded).into());
         }
-        // A frame's encoded buffer is temporary, not live checkpoint state.
-        // Retire its claim when that buffer drops instead of accumulating all
-        // previous encodings while the remaining snapshot is packed.
-        let mut frame = Publication::new(publication.meter.clone());
+        // Each encoded frame owns temporary custody.
+        let mut frame = Publication::new(
+            publication
+                .native
+                .as_ref()
+                .map(|(meter, _)| Arc::clone(meter)),
+        );
         let encoded = frame.encode(&self.pending)?;
         let length = u32::try_from(encoded.len()).map_err(|_| Error::from(QuotaExceeded))?;
         let digest = frame.codec(0, 0, encoded.len(), || blake3::hash(&encoded))?;
         crate::physical::write_publication(
-            &mut self.file, self.bytes, &length.to_le_bytes(), &mut frame,
+            &mut self.file,
+            self.bytes,
+            &length.to_le_bytes(),
+            &mut frame,
         )?;
         crate::physical::write_publication(
-            &mut self.file, self.bytes + 4, digest.as_bytes(), &mut frame,
+            &mut self.file,
+            self.bytes + 4,
+            digest.as_bytes(),
+            &mut frame,
         )?;
-        crate::physical::write_publication(
-            &mut self.file, self.bytes + 36, &encoded, &mut frame,
-        )?;
+        crate::physical::write_publication(&mut self.file, self.bytes + 36, &encoded, &mut frame)?;
         self.bytes = end;
         self.operations = self.pending.ordinal;
-        // Preserve the packing inputs (including an unset ordinal) while
-        // reusing the actual pending-array allocations between frames.
+        // Reuse pending-array capacities without changing packing inputs.
         self.pending.ordinal = 0;
         self.pending.buckets.clear();
         self.pending.objects.clear();

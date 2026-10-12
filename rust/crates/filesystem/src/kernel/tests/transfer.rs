@@ -1,5 +1,5 @@
 use super::*;
-use crate::async_storage::{AsyncObjectStore, ImmediateObjectStore};
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{FileId, GenerationId, VolumeId};
 use crate::kernel::{
     DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot,
@@ -8,19 +8,9 @@ use crate::kernel::{
 };
 use crate::memory::MemoryObjectStore;
 use crate::model::{FilesystemProfile, Lifecycle, VolumeConfig};
-use crate::storage::{ObjectKind, ObjectStore, object_digest};
-use std::future::Future;
-use std::task::{Context, Poll, Waker};
+use crate::storage::{ObjectKind, object_digest};
 
-fn ready<T>(future: impl Future<Output = T>) -> Result<T, &'static str> {
-    let mut future = std::pin::pin!(future);
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
-    match future.as_mut().poll(&mut context) {
-        Poll::Ready(value) => Ok(value),
-        Poll::Pending => Err("immediate transfer store unexpectedly blocked"),
-    }
-}
+
 
 fn fixture() -> (GenerationExportManifest, [acyclic_stream::OwnedBytes; 2]) {
     let chunk = acyclic_stream::OwnedBytes::from_static(b"transfer-chunk");
@@ -63,7 +53,7 @@ fn empty_metadata() -> FileMetadata {
     }
 }
 
-fn put(
+async fn put(
     store: &MemoryObjectStore,
     kind: ObjectKind,
     bytes: Vec<u8>,
@@ -72,39 +62,48 @@ fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    ObjectStore::put(store, object_id, acyclic_stream::OwnedBytes::from(bytes), WorkBudget::UNBOUNDED)?;
+    {
+        let __object_args = (
+            object_id,
+            acyclic_stream::OwnedBytes::from(bytes),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object_id)
 }
 
-fn minimal_generation(
+async fn minimal_generation(
     store: &MemoryObjectStore,
     volume_id: VolumeId,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(empty_metadata())?,
-    )?;
+        encode_file_metadata(empty_metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let entries = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
-    )?;
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     let root_file_id = FileId::from_bytes([41; 16]);
     let table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![FileRecord {
+        encode_file_table_page(&FileTablePage::Leaf(vec![FileRecord {
                 file_id: root_file_id,
                 kind: FileKind::Directory,
                 link_count: 1,
                 metadata,
                 payload: FilePayload::Directory { entries },
-            }]),
-            8,
-        )?,
-    )?;
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await?;
     put(
         store,
         ObjectKind::GenerationRoot,
@@ -114,8 +113,8 @@ fn minimal_generation(
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
-    )
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
+    ).await
 }
 
 fn closure_limits() -> ClosureLimits {
@@ -131,24 +130,29 @@ fn closure_limits() -> ClosureLimits {
     }
 }
 
-#[test]
-fn resumable_batches_preserve_manifest_order_and_idempotent_import()
+#[tokio::test]
+async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
 -> Result<(), Box<dyn std::error::Error>> {
     let (manifest, bodies) = fixture();
     let source = MemoryObjectStore::default();
     let destination = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     for (object_id, body) in manifest.objects.iter().copied().zip(bodies.iter().cloned()) {
-        ready(AsyncObjectStore::put(
+        (async {
+            let __object_args = (object_id, body, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = AsyncObjectStore::put(
             &source,
-            object_id,
-            body,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))??;
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }).await?;
     }
 
-    let first = ready(export_generation_batch_async(
+    let first = (export_generation_batch_async(
         &source,
         &manifest,
         TransferCursor::START,
@@ -156,7 +160,7 @@ fn resumable_batches_preserve_manifest_order_and_idempotent_import()
         manifest.config.limits.maximum_object_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))??;
+    )).await?;
     assert_eq!(first.value.first_object, TransferCursor::START);
     assert_eq!(first.value.next, Some(TransferCursor::new(1)));
     assert_eq!(first.value.objects.len(), 1);
@@ -164,7 +168,7 @@ fn resumable_batches_preserve_manifest_order_and_idempotent_import()
     assert_eq!(first.work.backend_read_operations, 1);
     assert!(first.work.peak_allocation_bytes > 0);
 
-    let imported = ready(import_generation_batch_async(
+    let imported = (import_generation_batch_async(
         &destination,
         &manifest,
         TransferCursor::START,
@@ -172,9 +176,9 @@ fn resumable_batches_preserve_manifest_order_and_idempotent_import()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))??;
+    )).await?;
     assert_eq!(imported.value, TransferCursor::new(1));
-    let repeated = ready(import_generation_batch_async(
+    let repeated = (import_generation_batch_async(
         &destination,
         &manifest,
         TransferCursor::START,
@@ -182,10 +186,10 @@ fn resumable_batches_preserve_manifest_order_and_idempotent_import()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))??;
+    )).await?;
     assert_eq!(repeated.value, TransferCursor::new(1));
 
-    let second = ready(export_generation_batch_async(
+    let second = (export_generation_batch_async(
         &source,
         &manifest,
         TransferCursor::new(1),
@@ -193,10 +197,10 @@ fn resumable_batches_preserve_manifest_order_and_idempotent_import()
         manifest.config.limits.maximum_object_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))??;
+    )).await?;
     assert_eq!(second.value.next, None);
     assert_eq!(second.value.objects[0].bytes.as_ref(), bodies[1].as_ref());
-    ready(import_generation_batch_async(
+    (import_generation_batch_async(
         &destination,
         &manifest,
         TransferCursor::new(1),
@@ -204,28 +208,37 @@ fn resumable_batches_preserve_manifest_order_and_idempotent_import()
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))??;
+    )).await?;
     for (object_id, body) in manifest.objects.iter().copied().zip(bodies) {
-        let read = ObjectStore::read(
+        let read = {
+            let __object_args = (
+                object_id,
+                manifest.config.limits.maximum_object_bytes,
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = AsyncObjectStore::read(
             &destination,
-            object_id,
-            manifest.config.limits.maximum_object_bytes,
-            WorkBudget::UNBOUNDED,
-        )?;
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }?;
         assert_eq!(read.value.bytes.as_ref(), body.as_ref());
     }
     Ok(())
 }
 
-#[test]
-fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
+#[tokio::test]
+async fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
-    fn assert_immediate<T: ImmediateObjectStore>(_: &T) {}
     let (manifest, _) = fixture();
     let store = MemoryObjectStore::default();
-    assert_immediate(&store);
     let cancellation = CancellationToken::new();
-    let terminal = ready(export_generation_batch_async(
+    let terminal = (export_generation_batch_async(
         &store,
         &manifest,
         TransferCursor::new(2),
@@ -233,11 +246,11 @@ fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
         manifest.config.limits.maximum_object_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))??;
+    )).await?;
     assert!(terminal.value.objects.is_empty());
     assert_eq!(terminal.work, WorkCounters::default());
 
-    let invalid = ready(export_generation_batch_async(
+    let invalid = (export_generation_batch_async(
         &store,
         &manifest,
         TransferCursor::new(3),
@@ -245,7 +258,7 @@ fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
         manifest.config.limits.maximum_object_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))?
+    )).await
     .err()
     .ok_or("invalid transfer cursor unexpectedly succeeded")?;
     assert!(matches!(
@@ -255,7 +268,7 @@ fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
     assert_eq!(*invalid.work, WorkCounters::default());
 
     cancellation.cancel();
-    let cancelled = ready(import_generation_batch_async(
+    let cancelled = (import_generation_batch_async(
         &store,
         &manifest,
         TransferCursor::START,
@@ -263,7 +276,7 @@ fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))?
+    )).await
     .err()
     .ok_or("cancelled transfer unexpectedly succeeded")?;
     assert!(matches!(
@@ -274,8 +287,8 @@ fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
     Ok(())
 }
 
-#[test]
-fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
+#[tokio::test]
+async fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
 -> Result<(), Box<dyn std::error::Error>> {
     let (manifest, _) = fixture();
     let store = MemoryObjectStore::default();
@@ -284,7 +297,7 @@ fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
     for (maximum_objects, maximum_object_bytes) in
         [(0, manifest.config.limits.maximum_object_bytes), (1, 0)]
     {
-        let failure = ready(export_generation_batch_async(
+        let failure = (export_generation_batch_async(
             &store,
             &manifest,
             TransferCursor::START,
@@ -292,14 +305,14 @@ fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
             maximum_object_bytes,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))?
+        )).await
         .err()
         .ok_or("zero export bound was accepted")?;
         assert!(matches!(failure.error, GenerationTransferError::EmptyBatch));
         assert_eq!(*failure.work, WorkCounters::default());
     }
 
-    let terminal = ready(import_generation_batch_async(
+    let terminal = (import_generation_batch_async(
         &store,
         &manifest,
         TransferCursor::new(2),
@@ -307,7 +320,7 @@ fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))??;
+    )).await?;
     assert_eq!(terminal.value, TransferCursor::new(2));
     assert_eq!(terminal.work, WorkCounters::default());
 
@@ -315,7 +328,7 @@ fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
         bytes_copied: 0,
         ..WorkBudget::UNBOUNDED
     };
-    let budget_failure = ready(export_generation_batch_async(
+    let budget_failure = (export_generation_batch_async(
         &store,
         &manifest,
         TransferCursor::START,
@@ -323,7 +336,7 @@ fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
         manifest.config.limits.maximum_object_bytes,
         tiny_budget,
         &cancellation,
-    ))?
+    )).await
     .err()
     .ok_or("transfer request-vector copy escaped its work budget")?;
     assert!(matches!(
@@ -334,7 +347,7 @@ fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let cancellation_failure = ready(export_generation_batch_async(
+    let cancellation_failure = (export_generation_batch_async(
         &store,
         &manifest,
         TransferCursor::START,
@@ -342,7 +355,7 @@ fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
         manifest.config.limits.maximum_object_bytes,
         WorkBudget::UNBOUNDED,
         &cancelled,
-    ))?
+    )).await
     .err()
     .ok_or("cancelled export succeeded")?;
     assert!(matches!(
@@ -353,8 +366,8 @@ fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
     Ok(())
 }
 
-#[test]
-fn import_rejects_every_noncanonical_page_before_backend_work()
+#[tokio::test]
+async fn import_rejects_every_noncanonical_page_before_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let (manifest, fixture_bodies) = fixture();
     let store = MemoryObjectStore::default();
@@ -391,7 +404,7 @@ fn import_rejects_every_noncanonical_page_before_backend_work()
             GenerationTransferError::TooManyObjects,
         ),
     ] {
-        let failure = ready(import_generation_batch_async(
+        let failure = (import_generation_batch_async(
             &store,
             &manifest,
             cursor,
@@ -399,7 +412,7 @@ fn import_rejects_every_noncanonical_page_before_backend_work()
             maximum_objects,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))?
+        )).await
         .err()
         .ok_or("invalid import page was accepted")?;
         assert_eq!(
@@ -411,16 +424,16 @@ fn import_rejects_every_noncanonical_page_before_backend_work()
     Ok(())
 }
 
-#[test]
-fn manifest_construction_rejects_foreign_volume_after_complete_authentication()
+#[tokio::test]
+async fn manifest_construction_rejects_foreign_volume_after_complete_authentication()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let actual_volume = VolumeId::from_bytes([42; 16]);
-    let generation = minimal_generation(&store, actual_volume)?;
+    let generation = minimal_generation(&store, actual_volume).await?;
     let cancellation = CancellationToken::new();
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
 
-    let mismatch = ready(build_generation_export_manifest_async(
+    let mismatch = (build_generation_export_manifest_async(
         &store,
         VolumeId::from_bytes([43; 16]),
         config,
@@ -428,7 +441,7 @@ fn manifest_construction_rejects_foreign_volume_after_complete_authentication()
         closure_limits(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))?
+    )).await
     .err()
     .ok_or("foreign-volume generation unexpectedly produced a manifest")?;
     assert!(matches!(
@@ -438,7 +451,7 @@ fn manifest_construction_rejects_foreign_volume_after_complete_authentication()
     assert!(mismatch.work.backend_read_operations > 0);
     assert!(mismatch.work.page_reads > 0);
 
-    let manifest = ready(build_generation_export_manifest_async(
+    let manifest = (build_generation_export_manifest_async(
         &store,
         actual_volume,
         config,
@@ -446,7 +459,7 @@ fn manifest_construction_rejects_foreign_volume_after_complete_authentication()
         closure_limits(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))??;
+    )).await?;
     assert_eq!(manifest.value.volume_id, actual_volume);
     assert_eq!(manifest.value.generation_root, generation);
     assert_eq!(manifest.value.file_count, 1);

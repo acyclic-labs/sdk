@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::{AgentId, Capabilities, core::{AggregateKind, Authority}, conversation::{VolumeClass, VolumeOwner}};
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -14,14 +15,14 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
     let owner = WasmReducer::new(to_js(&Authority { kind: AggregateKind::Task, id: id.clone() })?,
         "headless-browser".into(), vec![41; 32], to_js(&Vec::<Value>::new())?)?;
     let agent = AgentId::from_bytes([42; 16]);
-    let provider = ProviderRef::new("headless-browser", "filesystem", "2").map_err(js_error)?;
+    let provider = ProviderRef::new("headless-browser".into(), "filesystem".into(), "2".into(), &mut None).map_err(js_error)?;
     let volume = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).map_err(js_error)?;
-    let scope = owner.issuer.root_for_agent(agent, "owner", Capabilities::new([
+    let scope = owner.issuer.issue("owner", &Capabilities::new([
         "operation:declare".into(), "operation:observe".into(), "operation:cancel".into(),
         "task:spawn:test.headless@1".into(), "tool:call:test.headless".into(), "model:generate".into(),
         volume.capability(VolumeOperation::Read).map_err(js_error)?,
         volume.capability(VolumeOperation::Write).map_err(js_error)?,
-    ]));
+    ]), Some(agent), None, &mut None).expect("scope proof");
     let mut registry = WasmTaskRegistry::new();
     registry.register_machine(wire(&serde_json::json!({
         "name":"test.headless", "version":"1", "digest":vec![43;32],
@@ -48,7 +49,7 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
     runtime.initialize_volume().await?;
     let write = ContentGrant::verify(&runtime.verifier, &runtime.scope, &volume, VolumeOperation::Write).map_err(js_error)?;
     let file = runtime.filesystem.put_content(&volume, &write, "selected/read.txt", b"selected bytes", "text/plain", "read.txt",
-        65536, &crate::IdempotencyKey::new("headless-file").map_err(js_error)?).await.map_err(js_error)?;
+        65536, &crate::IdempotencyKey::new("headless-file").map_err(js_error)?, None, None).await.map_err(js_error)?;
     let generation = runtime.filesystem.file_generation(&file).map_err(js_error)?;
     let operation = OperationId::new();
     let admitted = runtime.admit(operation.to_string(), "test.headless".into(), "1".into(), to_js(&serde_json::json!({}))?, None).await?;
@@ -73,7 +74,7 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
     assert_eq!(js_sys::Array::from(&field(&page,"entries")).length(), 0);
     assert!(runtime.children(task.clone(), None, None, 0).await.is_err());
     let generate: Function = Function::new_no_args("let calls=0; const f=()=>{calls++; let i=0; const events=[{kind:'tool_call',call_id:'exact-call',name:'test.headless',arguments:null},{kind:'completed',metadata:{}}]; return {next:()=>Promise.resolve(i<events.length?{done:false,value:events[i++]}:{done:true}),return:()=>({done:true})};}; f.calls=()=>calls; return f;").call0(&JsValue::UNDEFINED)?.unchecked_into();
-    runtime.configure_model(to_js(&Model::new("fixture", "headless", "1", serde_json::json!({})).map_err(js_error)?)?,
+    runtime.configure_model(to_js(&Model::new("fixture".into(), "headless".into(), "1".into(), serde_json::json!({})).map_err(js_error)?)?,
         generate.clone(), Function::new_no_args("return null;"),
         Some(Function::new_no_args("return {context_tokens:131072,output_tokens:8192};")),
         Some(Function::new_with_args("bytes,request_digest", "return {request_digest,fixed_tokens:bytes.byteLength,message_tokens:JSON.parse(new TextDecoder().decode(bytes)).messages.map(()=>0)};")),
@@ -82,7 +83,7 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
         WorkPull::Claimed(lease) => lease,
         _ => return Err(JsValue::from_str("headless lease unavailable")),
     };
-    runtime.runtime.task_host().start_task(&lease).await.map_err(js_error)?;
+    runtime.runtime.task_host().start_task(&lease, None).await.map_err(js_error)?;
     let execution = runtime.headless_execution(task, to_js(&crate::scheduler::LeaseFence::from(&lease.reservation))?, OperationId::new().to_string()).await?;
     let input = TurnInput { operation_id:OperationId::parse(&execution.operation_id()).map_err(js_error)?, input:crate::model::ModelContent::Text("headless".into()), selected_context:None, max_steps:1 };
     let first = execution.model_step(to_js(&input)?, 0, to_js(&Vec::<crate::model::ModelMessage>::new())?).await?;

@@ -86,12 +86,8 @@ pub async fn seal_checkout_with_permit_measured<A: AsyncAuthorityStore, O: Async
                 | LiveMutationOutcome::IdempotencyConflict { .. } => Err(MountSourceError::Stale),
             }
         }
-        crate::model::MutationMode::DirectLive => Err(MountSourceError::Unsupported(
-            "direct-live mounts do not support operation lease permits".to_owned(),
-        )),
-        crate::model::MutationMode::None => Err(MountSourceError::Unsupported(
-            "checkout does not admit native writes".to_owned(),
-        )),
+        crate::model::MutationMode::DirectLive => Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("direct-live mounts do not support operation lease permits".to_owned(),))),
+        crate::model::MutationMode::None => Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("checkout does not admit native writes".to_owned(),))),
     }
     }.await;
     result.map(|value| crate::OperationReceipt { value, work })
@@ -123,9 +119,7 @@ pub async fn seal_checkout_with_permit_force_measured<A: AsyncAuthorityStore, O:
     let result = async {
     cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
     if checkout.mode().mutations != crate::model::MutationMode::PrivateOverlay {
-        return Err(MountSourceError::Unsupported(
-            "forced publication requires a private-overlay checkout".to_owned(),
-        ));
+        return Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("forced publication requires a private-overlay checkout".to_owned(),)));
     }
     // The same safe-rebase bound governs the original native carrier below.
     for _ in 0..MAXIMUM_SAFE_REBASE_ATTEMPTS {
@@ -170,9 +164,7 @@ pub async fn seal_checkout_with_permit_force_measured<A: AsyncAuthorityStore, O:
             }
         }
     }
-    Err(MountSourceError::Engine(
-        "publication raced with repeated head advances; retry retained operation".to_owned(),
-    ))
+    Err(MountSourceError::Engine(std::borrow::Cow::Owned("publication raced with repeated head advances; retry retained operation".to_owned(),)))
     }.await;
     result.map(|value| crate::OperationReceipt { value, work })
         .map_err(|error| crate::OperationFailure::new(error, work))
@@ -192,7 +184,7 @@ pub(super) fn seal_checkout_with_permit_guarded_with_native_work<'a, A, O, T, F,
     operation_context: Option<crate::Digest>,
     operation_evidence: Option<acyclic_stream::OwnedBytes>,
     original_fingerprint_permit: Option<PublicationPermit>,
-) -> crate::async_storage::BoxStorageFuture<'a, Result<Option<super::adapter::NativeSourcePublicationAck>, T>>
+) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<super::adapter::NativeSourcePublicationAck>, T>>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -286,7 +278,7 @@ where
 }
 
 fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
-    MountSourceError::Engine(error.to_string())
+    MountSourceError::Engine(std::borrow::Cow::Owned(error.to_string()))
 }
 
 fn publication_failure(
@@ -369,12 +361,7 @@ mod tests {
                 config.limits,
             )?;
             checkout
-                .create_file(
-                    path,
-                    Bytes::from_static(b"data"),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
+                .create(crate::AuthoredMutation::CreateFile { path: path, bytes: (Bytes::from_static(b"data")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
                 .await?;
         }
         assert!(matches!(
@@ -490,7 +477,7 @@ mod tests {
         let context = crate::Digest::from_bytes([0x63; 32]);
         let (bytes, allocation) = original.copy_bytes(b"original-source-cut")?;
         let evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(
-            bytes, allocation, original.runtime_meter_owner(),
+            bytes, allocation, original.runtime_meter(),
         ).map_err(|failure| format!("{:?}", failure.into_error()))?;
         simulation.schedule_next(
             crate::SimulationOperation::AuthorityAppend, crate::SimulationFault::AmbiguousAuthorityAppend,
@@ -514,7 +501,7 @@ mod tests {
         assert_eq!(original.receipt().authority_records_appended, appended);
         let (changed_bytes, changed_allocation) = original.copy_bytes(b"changed-source-cut")?;
         let changed_evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(
-            changed_bytes, changed_allocation, original.runtime_meter_owner(),
+            changed_bytes, changed_allocation, original.runtime_meter(),
         ).map_err(|failure| format!("{:?}", failure.into_error()))?;
         let changed_payload = seal_checkout_with_permit_guarded_with_native_work(
             &mut checkout, operation, PublicationPermit::Unrestricted, true, &original, &cancellation,
@@ -532,9 +519,7 @@ mod tests {
             operation, generation,
         }));
         assert_eq!(original.receipt().authority_records_appended, appended);
-        let (durable, custody) = fs.authority().find_operation_with_native_work(
-            crate::kernel::volume_authority_id(volume.id()), operation, &original, &cancellation,
-        ).await?;
+        let (durable, custody) =(async { let __authority_args = (crate::kernel::volume_authority_id(volume.id()), operation, &original, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = fs.authority().find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }.await)?;
         let durable = durable.ok_or("original append disappeared")?;
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
         let decoded = crate::kernel::decode_publication_evidence_with_accounting(

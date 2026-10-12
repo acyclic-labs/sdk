@@ -28,14 +28,10 @@ impl PiSession {
             .await?;
         let native = self.native_host_with_native_work(&work)?;
         let protected = native.original_owner();
-        let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, Arc::clone(&protected), &self.state, &self.roots, native.clone());
-        let selected = pi_selected_host::PiSelectedHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+        let selected = pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             &self.resources, Arc::clone(&protected), &self.state, &self.roots, native, &work)?;
-        let operator = pi_operator_host::PiOperatorHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            protected, &self.resources, &self.state.root_session_id, &selected, work.clone())?;
         pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, &self.state, work).with_controls(&fork, &operator).control_command_with_native_work(command.0).await
+            &self.resources, &self.state, work).with_controls(&selected).control_command_with_native_work(command.0).await
             .map(|(value, allocation)| (value, Some(allocation)))
     }
 
@@ -69,7 +65,7 @@ impl PiSession {
                 Ok::<_, RootError>(bytes + path.len() as u64)
             },
         )?;
-        let _paths_custody = work.retain_owned(retained)
+        let _paths_custody = work.claim(retained, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         let mut paths = Vec::with_capacity(selected.len());
         for path in selected {

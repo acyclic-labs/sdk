@@ -10,7 +10,7 @@ use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Digest,
     DurableCommit, ForkOptions, Fs, Generation, GenerationId, IdempotencyKey, JoinHistory,
     JoinOutcome, MergeConflict, ObjectId, Sequence, Transaction, TransactionCommit,
-    TransactionConflict, TransactionConflictRegion, TransactionRebase, Workspace, WorkspaceDelete,
+    RebaseConflict, DependencyState, DependencyRegion, TransactionRebase, Workspace, WorkspaceDelete,
     WorkspaceError, WorkspaceMetadata, WorkspaceRebase,
 };
 use bytes::Bytes;
@@ -279,8 +279,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         let reference = required(reference, "workspace")?;
         let workspace = self
             .filesystem
-            .open_workspace(&reference.name)
-            .await
+            .open_workspace(&reference.name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         if workspace.id().into_bytes().as_slice() != reference.workspace_id {
             return Err(Status::failed_precondition(
@@ -379,9 +379,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 existing_operation: true,
             });
         }
+        let cancellation = crate::CancellationToken::new();
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
         let (current, head) = self
             .filesystem
-            .workspace_head_state(&target.volume)
+            .workspace_head_state(&target.volume, &mut accounting, &cancellation)
             .await
             .map_err(|error| status(&error))?;
         if current == expected {
@@ -392,9 +394,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         } else {
             Ok(JoinTargetHead::Stale(
                 target
-                    .generation(current)
-                    .await
-                    .map_err(|error| status(&error))?,
+                    .generation(current, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                    .await.map(|receipt| receipt.value)
+                    .map_err(|failure| status(&failure.error))?,
             ))
         }
     }
@@ -493,8 +495,8 @@ where
         config.profile = profile;
         let workspace = self
             .filesystem
-            .create_workspace_with_config_operation(request.name, config, Some(operation_id))
-            .await
+            .create_workspace_with_config_operation(request.name, config, Some(operation_id), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&workspace).await?),
@@ -513,8 +515,8 @@ where
             }
             wire::open_workspace_request::Selector::Name(name) => self
                 .filesystem
-                .open_workspace(name)
-                .await
+                .open_workspace(name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| status(&error))?,
         };
         Ok(Response::new(wire::WorkspaceResponse {
@@ -617,7 +619,7 @@ where
         }
         let generation = self.generation(request.generation).await?;
         let after = page.after.map(input_logical_name).transpose()?;
-        let listed = generation.list_directory(&request.path, after.as_ref(), page.maximum_items, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+        let listed = generation.list_directory(&request.path, after.as_ref(), page.maximum_items, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         let next = listed
             .has_more
@@ -738,8 +740,8 @@ where
         let base = self.generation(request.base).await?;
         let workspace = self.workspace(generation_ref(&base).workspace).await?;
         let mut transaction = workspace
-            .begin_transaction_at(&base, operation(request.operation)?)
-            .await
+            .begin_transaction_at(&base, operation(request.operation)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
@@ -786,8 +788,8 @@ where
         let base = self.generation(request.base).await?;
         let workspace = self.workspace(generation_ref(&base).workspace).await?;
         let mut transaction = workspace
-            .begin_transaction_at(&base, operation(request.operation)?)
-            .await
+            .begin_transaction_at(&base, operation(request.operation)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
@@ -830,8 +832,8 @@ where
             None => options,
         };
         let destination = source_workspace
-            .fork(request.destination_name, options)
-            .await
+            .fork(request.destination_name, options, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&destination).await?),
@@ -1079,7 +1081,7 @@ where
             .apply(ApplyOptions {
                 if_target: target_id,
                 idempotency_key: operation,
-            })
+            }, crate::PublicationPermit::Unrestricted)
             .await
             .map_err(|error| status(&error))?;
         let outcome = if existing_operation
@@ -1126,11 +1128,9 @@ where
         let generation = self.generation(request.generation).await?;
         let checkout = generation
             .workspace
-            .engine_checkout(
+            .checkout(
                 crate::model::GenerationSelector::Exact(generation.id()),
-                crate::model::CheckoutMode::read_only_pinned(),
-            )
-            .await
+                crate::model::CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         let manifest = checkout
             .export_manifest(crate::WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -1301,8 +1301,8 @@ where
             .map_err(|failure| Status::unavailable(failure.error.to_string()))?;
         let workspace = self
             .filesystem
-            .open_workspace(&workspace_ref.name)
-            .await
+            .open_workspace(&workspace_ref.name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         Ok(Response::new(wire::ImportResponse {
             outcome: Some(mutation(
@@ -1582,9 +1582,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 .map_err(|error| status(&error))?;
         } else {
             generation
-                .pin(&request.identity)
-                .await
-                .map_err(|error| status(&error))?;
+                .pin(&request.identity, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| status(&failure.error))?;
         }
         Ok(Response::new(wire::RetainGenerationResponse {
             generation: Some(generation_ref(&generation)),
@@ -1605,43 +1604,42 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .create_file(
                     &value.path,
                     Bytes::from(value.contents),
-                    metadata(value.metadata)?,
-                )
-                .await
+                    metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::CreateDirectory(value) => {
             transaction
-                .create_directory(&value.path)
-                .await
+                .create_directory(&value.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| status(&error))?;
             transaction
-                .set_metadata(&value.path, metadata(value.metadata)?)
-                .await
+                .set_metadata(&value.path, metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::CreateSymbolicLink(value) => {
             transaction
-                .create_symbolic_link(&value.path, Bytes::from(value.target))
-                .await
+                .create_symbolic_link(&value.path, Bytes::from(value.target), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| status(&error))?;
             transaction
-                .set_metadata(&value.path, metadata(value.metadata)?)
-                .await
+                .set_metadata(&value.path, metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
-        Mutation::Remove(value) => transaction.remove(&value.path).await,
+        Mutation::Remove(value) => transaction.remove(&value.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Mutation::Rename(value) => {
             transaction
-                .rename_with_replace(&value.source, &value.destination, value.replace)
-                .await
+                .rename(&value.source, &value.destination, value.replace, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::HardLink(value) => {
             transaction
-                .hard_link(&value.source, &value.destination)
-                .await
+                .hard_link(&value.source, &value.destination, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::Write(value) => {
             transaction
-                .write_range(&value.path, value.offset, Bytes::from(value.contents))
-                .await
+                .write_range(&value.path, value.offset, Bytes::from(value.contents), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::Resize(value) => transaction.resize(&value.path, value.logical_bytes).await,
         Mutation::ZeroRange(value) => {
@@ -1684,14 +1682,14 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         Mutation::SetMetadata(value) => {
             transaction
-                .set_metadata(&value.path, metadata(value.metadata)?)
-                .await
+                .set_metadata(&value.path, metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
-        Mutation::CreateDirectories(value) => transaction.create_dir_all(&value.path).await,
+        Mutation::CreateDirectories(value) => transaction.create_dir_all(&value.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Mutation::PutFile(value) => {
             transaction
-                .write(&value.path, Bytes::from(value.contents))
-                .await
+                .write(&value.path, Bytes::from(value.contents), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::CopyFile(value) => transaction.copy(&value.source, &value.destination).await,
     }
@@ -1880,14 +1878,14 @@ fn observed_mutation<A, O>(
         return Ok(mutation(wire::MutationStatus::Committed, None, None));
     }
     let root = if let Ok(publication) =
-        crate::kernel::decode_published_generation(&commit.payload, MAXIMUM_EVENT_BYTES)
+        crate::kernel::decode_published_generation(&commit.payload, MAXIMUM_EVENT_BYTES, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
     {
         if publication.volume_id != expected {
             return Err(Status::data_loss("operation workspace identity mismatch"));
         }
         publication.generation_root
     } else if let Ok(created) =
-        crate::kernel::decode_volume_created(&commit.payload, MAXIMUM_EVENT_BYTES)
+        crate::kernel::decode_volume_created(&commit.payload, MAXIMUM_EVENT_BYTES, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))
     {
         if created.volume_id != expected {
             return Err(Status::data_loss("operation workspace identity mismatch"));
@@ -1927,8 +1925,7 @@ async fn generation_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let reference = generation_ref(generation);
     let workspace = reference.workspace.clone();
     let parents = generation
-        .parents()
-        .await
+        .parents(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| status(&error))?
         .into_iter()
         .map(|id| wire::GenerationRef {
@@ -1969,11 +1966,11 @@ fn commit_message<A, O>(value: TransactionCommit<A, O>) -> wire::MutationRespons
 fn join_message<A, O>(value: JoinOutcome<A, O>) -> wire::JoinResponse {
     match value {
         JoinOutcome::Applied(generation) => {
-            join_response(wire::JoinStatus::Applied, Some(generation.generation()))
+            join_response(wire::JoinStatus::Applied, Some(&generation.generation))
         }
         JoinOutcome::AlreadyApplied(generation) => join_response(
             wire::JoinStatus::AlreadyApplied,
-            Some(generation.generation()),
+            Some(&generation.generation),
         ),
         JoinOutcome::NoChanges(generation) => {
             join_response(wire::JoinStatus::NoChanges, Some(&generation))
@@ -2225,19 +2222,19 @@ fn mutation_with_conflicts(
     }
 }
 
-fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
+fn transaction_conflict(value: RebaseConflict) -> wire::Conflict {
     use wire::conflict::Region;
     let region = match value.region {
-        TransactionConflictRegion::FileRecord(file_id) => Region::FileRecord(wire::FileConflict {
+        DependencyRegion::FileRecord(file_id) => Region::FileRecord(wire::FileConflict {
             file_id: file_id.into_bytes().to_vec(),
         }),
-        TransactionConflictRegion::Metadata(file_id) => Region::Metadata(wire::FileConflict {
+        DependencyRegion::Metadata(file_id) => Region::Metadata(wire::FileConflict {
             file_id: file_id.into_bytes().to_vec(),
         }),
-        TransactionConflictRegion::FileLength(file_id) => Region::FileLength(wire::FileConflict {
+        DependencyRegion::FileLength(file_id) => Region::FileLength(wire::FileConflict {
             file_id: file_id.into_bytes().to_vec(),
         }),
-        TransactionConflictRegion::ContentRange {
+        DependencyRegion::ContentRange {
             file_id,
             offset,
             length,
@@ -2245,7 +2242,7 @@ fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
             file_id: file_id.into_bytes().to_vec(),
             range: Some(wire::ByteRange { offset, length }),
         }),
-        TransactionConflictRegion::SparseSeek {
+        DependencyRegion::SparseSeek {
             file_id,
             offset,
             target,
@@ -2254,13 +2251,13 @@ fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
             offset,
             target: hosted_contract::sparse_target(target) as i32,
         }),
-        TransactionConflictRegion::DirectoryName { directory_id, name } => {
+        DependencyRegion::DirectoryName { directory_id, name } => {
             Region::DirectoryName(wire::DirectoryNameConflict {
                 directory_id: directory_id.into_bytes().to_vec(),
                 name: Some(logical_name(&name)),
             })
         }
-        TransactionConflictRegion::DirectoryRange {
+        DependencyRegion::DirectoryRange {
             directory_id,
             after,
             maximum_entries,
@@ -2273,12 +2270,8 @@ fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
     wire::Conflict {
         region: Some(region),
         r#use: hosted_contract::conflict_use(value.usage) as i32,
-        expected_digest: value
-            .expected
-            .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
-        actual_digest: value
-            .actual
-            .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
+        expected_digest: match value.expected { DependencyState::Absent => Vec::new(), DependencyState::Present(digest) => digest.as_bytes().to_vec() },
+        actual_digest: match value.actual { DependencyState::Absent => Vec::new(), DependencyState::Present(digest) => digest.as_bytes().to_vec() },
     }
 }
 

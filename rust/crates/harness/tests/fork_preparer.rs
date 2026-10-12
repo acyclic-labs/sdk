@@ -21,7 +21,7 @@ use acyclic_harness::{
     resources::{ArtifactRef, ProviderRef, StreamRef},
     store::StreamAggregate,
 };
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use futures::future::BoxFuture;
 use std::sync::{
     Arc,
@@ -74,8 +74,8 @@ impl ForkCaptureProvider for LostCaptureReply {
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 async fn exact_fork_preparation_reconciles_without_allocating_another_child() -> Result<()> {
-    let provider = ProviderRef::new("fork-e2e", "filesystem", "2")?;
-    let stream_provider = ProviderRef::new("fork-e2e", "stream", "2")?;
+    let provider = ProviderRef::new("fork-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("fork-e2e".into(), "stream".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let parent = Authority {
         kind: AggregateKind::Conversation,
@@ -89,63 +89,57 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let child_agent = AgentId::from_bytes([2; 16]);
     let project = VolumeRef::new(
         provider.clone(),
-        "parent-project",
+        "parent-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
+        &mut None,
     )?;
     let project_head = host.create_volume(&project).await?;
     let child_project = VolumeRef::new(
         provider.clone(),
-        "child-project",
+        "child-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
+        &mut None,
     )?;
     let child_private = VolumeRef::new(
         provider.clone(),
-        "child-private",
+        "child-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(child_agent),
+        &mut None,
     )?;
     let parent_private = VolumeRef::new(
         provider.clone(),
-        "parent-private",
+        "parent-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(parent_agent),
+        &mut None,
     )?;
     host.create_volume(&parent_private).await?;
     let issuer = AuthorityIssuer::new("fork-e2e", [7; 32], parent.clone());
-    let scope = issuer.root_for_agent(
-        parent_agent,
-        "parent",
-        Capabilities::new([
+    let scope = issuer.issue("parent", &Capabilities::new([
             "conversation:bind".to_owned(),
             "conversation:append".to_owned(),
             "fork:publish".to_owned(),
-            project.capability(VolumeOperation::Read)?,
-            parent_private.capability(VolumeOperation::Read)?,
-            parent_private.capability(VolumeOperation::Write)?,
-        ]),
-    );
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
-    let resolver = Arc::new(FilesystemContentVerifier::new(
-        host.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        64 * 1_024,
-    )?);
+            project.capability(VolumeOperation::Read, &mut None)?,
+            parent_private.capability(VolumeOperation::Read, &mut None)?,
+            parent_private.capability(VolumeOperation::Write, &mut None)?,
+        ]), Some(parent_agent), None, &mut None).expect("scope proof");
+    let stream = Arc::new(MemoryStream::default());
+    let resolver = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 64 * 1_024, None)?;
     let mut aggregate = StreamAggregate::open(
         &stream,
         parent.clone(),
-        issuer.verifier(),
-        SchemaRegistry::new(),
-    )
+        issuer.verifier(&mut None).expect("verifier copy"),
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
-    .with_resident_event_limit(1)?
     .with_content_verifier(resolver.clone())
-    .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
-        Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
-        Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-    ])?));
+    .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
+        FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
+        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+    ], &mut None)?));
+    aggregate.set_resident_event_limit(1)?;
     aggregate
         .execute(Command {
             operation_id: OperationId::from_bytes([3; 16]),
@@ -159,10 +153,11 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let parent_write = ContentGrant::verify(
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         &parent_private,
         VolumeOperation::Write,
+        u64::MAX, &mut None,
     )?;
     let text = host
         .put_content(
@@ -174,7 +169,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "request.txt",
             1_024,
             &IdempotencyKey::new("parent-message")?,
-        )
+         None, None)
         .await?;
     let attachment = host
         .put_content(
@@ -186,7 +181,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "evidence.bin",
             1_024,
             &IdempotencyKey::new("parent-attachment")?,
-        )
+         None, None)
         .await?;
     let manifest_bytes = serde_json::to_vec(&vec![Attachment {
         file: attachment.clone(),
@@ -203,7 +198,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "manifest.json",
             1_024,
             &IdempotencyKey::new("parent-manifest")?,
-        )
+         None, None)
         .await?;
     aggregate
         .execute(Command {
@@ -235,12 +230,12 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     ));
     assert_eq!(aggregate.reducer().events_after(1, 2)?.len(), 1);
     assert_eq!(
-        aggregate.read_event_at(1).await?.operation_id,
+        aggregate.read_event_at(1, &mut None).await?.0.operation_id,
         OperationId::from_bytes([3; 16])
     );
     let restored_parent = Reducer::restore(
-        aggregate.reducer().snapshot()?,
-        issuer.verifier(),
+        aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     )?;
     assert!(matches!(
@@ -251,11 +246,12 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let preparer = FilesystemForkPreparer::new(
         host.clone(),
         restored_parent.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),
         stream_provider.clone(),
         resolver.clone(),
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
     let request = ForkRequest {
         authorized_source: None,
@@ -283,7 +279,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                     generation: host
                         .resolve(&workspace_ref(
                             provider.clone(),
-                            &parent_private.storage_name()?,
+                            &parent_private.storage_name(&mut None)?,
                         )?)
                         .await?
                         .generation,
@@ -294,7 +290,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                 required: true,
                 revision: ResourceRevision::History(StreamRef::new(
                     stream_provider.clone(),
-                    parent.stream_path()?.into_bytes(),
+                    parent.stream_path(&mut None)?.into_bytes(),
                     Some("2".into()),
                 )?),
             },
@@ -308,19 +304,19 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         ],
         boundary: None,
     };
-    let request = request.with_history_policy(&restored_parent, ForkHistoryPolicy::default())?;
+    let request = request.with_history_policy(&restored_parent, ForkHistoryPolicy::default(), &mut None)?;
     assert_eq!(request.preparation.inherited_through_sequence, 1);
     let mut stale = request.clone();
     stale.parent_revision = 0;
     assert!(matches!(
-        stale.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default()),
+        stale.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None),
         Err(Error::Conflict(_))
     ));
     let mut too_small = request.clone();
     too_small.preparation.maximum_inherited_messages = 0;
     assert!(
         too_small
-            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default())
+            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None)
             .is_err()
     );
     let mut fresh_request = request.clone();
@@ -328,18 +324,20 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     fresh_request.child.id = "fresh-child".into();
     fresh_request.preparation.child_project_volume = VolumeRef::new(
         provider.clone(),
-        "fresh-project",
+        "fresh-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
+        &mut None,
     )?;
     fresh_request.preparation.child_private_volume = VolumeRef::new(
         provider.clone(),
-        "fresh-private",
+        "fresh-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(child_agent),
+        &mut None,
     )?;
     let fresh_request =
-        fresh_request.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::Fresh)?;
+        fresh_request.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::Fresh, &mut None)?;
     let fresh_report = aggregate
         .prepare_fork(&preparer, fresh_request.clone())
         .await?;
@@ -358,22 +356,22 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             .iter()
             .any(|grant| grant.file == text && grant.reader == child_agent)
     );
-    let mut unclaimed = report.clone().into_seed()?;
+    let mut unclaimed = report.clone().into_seed(&mut None)?;
     unclaimed.operation_id = OperationId::from_bytes([10; 16]);
     assert!(
-        FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?
-            .verify(&unclaimed)
+        FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?
+            .verify(&unclaimed, &mut None)?
             .await
             .is_err()
     );
-    let mut changed_seed = report.clone().into_seed()?;
+    let mut changed_seed = report.clone().into_seed(&mut None)?;
     changed_seed
         .attached_agents
         .push(AgentId::from_bytes([11; 16]));
-    changed_seed.validate()?;
+    changed_seed.validate(&mut None)?;
     assert!(matches!(
-        FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?
-            .verify(&changed_seed)
+        FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?
+            .verify(&changed_seed, &mut None)?
             .await,
         Err(acyclic_harness::Error::Conflict(_))
     ));
@@ -388,9 +386,10 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let mut changed = request.clone();
     changed.preparation.child_project_volume = VolumeRef::new(
         provider.clone(),
-        "another-child-project",
+        "another-child-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
+        &mut None,
     )?;
     assert!(aggregate.reconcile_fork(&preparer, changed).await.is_err());
     let mut reused_private = request.clone();
@@ -407,9 +406,10 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     reused_project.child.id = "third-child".into();
     reused_project.preparation.child_private_volume = VolumeRef::new(
         provider.clone(),
-        "another-private",
+        "another-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(child_agent),
+        &mut None,
     )?;
     assert!(
         aggregate
@@ -417,7 +417,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             .await
             .is_err()
     );
-    let objects_provider = ProviderRef::new("fork-e2e", "objects", "2")?;
+    let objects_provider = ProviderRef::new("fork-e2e".into(), "objects".into(), "2".into(), &mut None)?;
     let lost_reply = Arc::new(LostCaptureReply {
         provider: objects_provider.clone(),
         capture_calls: AtomicUsize::new(0),
@@ -427,11 +427,12 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let composed = FilesystemForkPreparer::new(
         host.clone(),
         aggregate.reducer().clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),
         stream_provider.clone(),
         resolver.clone(),
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?
     .with_capture_provider(lost_reply.clone())?;
     let another_agent = AgentId::from_bytes([12; 16]);
@@ -441,15 +442,17 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     uncertain.child_agent = another_agent;
     uncertain.preparation.child_project_volume = VolumeRef::new(
         provider.clone(),
-        "uncertain-project",
+        "uncertain-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
+        &mut None,
     )?;
     uncertain.preparation.child_private_volume = VolumeRef::new(
         provider.clone(),
-        "uncertain-private",
+        "uncertain-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(another_agent),
+        &mut None,
     )?;
     let attached_reader = AgentId::from_bytes([14; 16]);
     uncertain.attached_agents.push(attached_reader);
@@ -483,18 +486,18 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         Some(Capture::Captured(_))
     ));
     assert_eq!(recovered.attachment_manifests, vec![manifest.clone()]);
-    let recovered_seed = recovered.clone().into_seed()?;
+    let recovered_seed = recovered.clone().into_seed(&mut None)?;
     let readable = recovered_seed.reference_capabilities(attached_reader)?;
     assert!(readable.contains(&text.read_capability()?));
     assert!(readable.contains(&attachment.read_capability()?));
     assert!(readable.contains(&manifest.read_capability()?));
-    assert!(!readable.contains(&parent_private.capability(VolumeOperation::Write)?));
+    assert!(!readable.contains(&parent_private.capability(VolumeOperation::Write, &mut None)?));
     let child_issuer = AuthorityIssuer::new("fork-e2e", [7; 32], uncertain.child.clone());
-    let reader_scope = child_issuer.root_for_agent(attached_reader, "attached-reader", readable);
+    let reader_scope = child_issuer.issue("attached-reader", &readable, Some(attached_reader), None, &mut None).expect("scope proof");
     let attached_resolver =
-        FilesystemContentVerifier::new(host.clone(), child_issuer.verifier(), reader_scope, 1_024)?;
+        FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
     attached_resolver
-        .verify_manifest(&manifest, 1, &Limits::default())
+        .verify_manifest(&manifest, 1, &Limits::default(), None)?
         .await?;
     assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 1);
     assert_eq!(lost_reply.reconcile_calls.load(Ordering::SeqCst), 2);
@@ -507,11 +510,12 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let resumed_uncertain = FilesystemForkPreparer::new(
         host.clone(),
         aggregate.reducer().clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),
         stream_provider.clone(),
         resolver.clone(),
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?
     .with_capture_provider(lost_reply.clone())?;
     assert_eq!(
@@ -523,7 +527,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert_eq!(
         host.resolve(&workspace_ref(
             provider.clone(),
-            &uncertain.preparation.child_private_volume.storage_name()?,
+            &uncertain.preparation.child_private_volume.storage_name(&mut None)?,
         )?)
         .await?
         .generation,
@@ -531,7 +535,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     );
     assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 1);
     aggregate
-        .publish_fork_report(report.clone(), scope.clone())
+        .publish_fork_report(report.clone(), scope.clone(), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let mut later_message = aggregate
         .reducer()
@@ -557,7 +561,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert!(matches!(
         request
             .clone()
-            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default()),
+            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None),
         Err(Error::Conflict(_))
     ));
     let mut bounded_later = request.clone();
@@ -566,7 +570,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         if matches!(selection.revision, ResourceRevision::History(_)) {
             selection.revision = ResourceRevision::History(StreamRef::new(
                 stream_provider.clone(),
-                parent.stream_path()?.into_bytes(),
+                parent.stream_path(&mut None)?.into_bytes(),
                 Some(aggregate.reducer().revision().to_string()),
             )?);
         }
@@ -574,17 +578,18 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     bounded_later.preparation.maximum_inherited_messages = 1;
     assert!(
         bounded_later
-            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default())
+            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None)
             .is_err()
     );
     let restarted = FilesystemForkPreparer::new(
         host,
         aggregate.reducer().clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope,
         project,
         stream_provider,
         resolver,
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
     assert_eq!(
         aggregate.reconcile_fork(&restarted, request).await?,

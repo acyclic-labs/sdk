@@ -6,11 +6,10 @@
 //! than exposing stale resident source backing to lazy restore.
 
 use super::*;
+use acyclic_fs::NativeAllocation;
 
 pub(crate) type LocalWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
 pub(crate) type LocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;
-pub(crate) type LocalDistributedFs =
-    DistributedFs<LocalAuthorityBackend, LocalObjectBackend, LocalCoreStateStore>;
 pub(crate) type LocalLazySource = FilteredDemandSource<NativeDemandSource>;
 pub(crate) type LocalLazyWorkspace =
     LazyWorkspace<LocalAuthorityBackend, LocalObjectBackend, LocalLazySource, LocalCoreStateStore>;
@@ -82,7 +81,6 @@ impl BackgroundCollection {
     }
 
     pub(crate) fn start(&self, fs: LocalFs, store: LocalCoreStateStore) {
-        let collection = LocalDistributedFs::new(fs, store);
         let cancellation = acyclic_fs::CancellationToken::new();
         let deletions = Arc::clone(&self.deletions);
         let wake = Arc::clone(&self.wake);
@@ -97,7 +95,7 @@ impl BackgroundCollection {
                 deletions.store(0, std::sync::atomic::Ordering::Release);
                 // A failed collection sweeps nothing it should not; the next
                 // one starts over.
-                let _ = collection.collect_garbage(&token).await;
+                let _ = fs.collect_local_garbage(Some(&store), &token).await;
             }
         });
         if let Some(previous) = self
@@ -131,7 +129,9 @@ pub(crate) struct SharedRootSlot {
 
 impl std::ops::Deref for SharedRootSlot {
     type Target = AsyncMutex<SharedRootRegistration>;
-    fn deref(&self) -> &Self::Target { &self.state }
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
 }
 
 pub(crate) struct SharedSourceReference {
@@ -142,7 +142,9 @@ pub(crate) struct SharedSourceReference {
 
 impl std::ops::Deref for SharedSourceReference {
     type Target = Mutex<SourceReference>;
-    fn deref(&self) -> &Self::Target { &self.value }
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
 }
 
 #[derive(Default)]
@@ -195,11 +197,10 @@ fn observation_consumes_changes(batch: &WatchBatch) -> bool {
 impl SharedPhysicalRoot {
     pub(crate) async fn validate_path_identity(&self, path: PathBuf) -> Result<(), String> {
         let display_path = path.clone();
-        let current =
-            tokio::task::spawn_blocking(move || HostRoot::open(&path).map(|root| root.identity()))
-                .await
-                .map_err(|error| format!("physical root validation worker failed: {error}"))?
-                .map_err(display)?;
+        let current = tokio::task::spawn_blocking(move || acyclic_fs::capture_root_identity(&path))
+            .await
+            .map_err(|error| format!("physical root validation worker failed: {error}"))?
+            .map_err(display)?;
         if current != self.source.inner().root_identity() {
             return Err(format!(
                 "physical root {} changed identity while it was in use",
@@ -226,22 +227,35 @@ impl SharedPhysicalRoot {
     /// The same indivisible watcher/source observation as `observe`, with one
     /// remaining allowance shared by the fence and publication-ready poll.
     pub(crate) fn observe_measured(
-        &self, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<SharedRootObservation>, String> {
+        &self,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<SharedRootObservation>, String>
+    {
         let mut work = acyclic_fs::WorkCounters::default();
         let result = self.observe_with(|| {
-            let mut watcher = self.watcher.lock()
+            let mut watcher = self
+                .watcher
+                .lock()
                 .map_err(|_| "physical root watcher state is poisoned".to_owned())?;
-            match watcher.fence_measured(
-                WATCH_FENCE_TIMEOUT, work.remaining(budget).map_err(display)?, cancellation,
+            let fence_work = match acyclic_fs::NativeMaterializationWork::new(
+                work.remaining(budget).map_err(display)?,
+                cancellation,
             ) {
-                Ok(receipt) => work = work.checked_add(receipt.work).map_err(display)?,
-                Err(failure) => {
-                    work = work.checked_add(*failure.work).map_err(display)?;
-                    return Err(display(failure.error));
+                Ok(work) => work,
+                Err((cause, spent)) => {
+                    work = work.checked_add(spent).map_err(display)?;
+                    return Err(display(cause));
                 }
-            }
-            match watcher.poll(65_536, work.remaining(budget).map_err(display)?, cancellation) {
+            };
+            let fenced = watcher.fence_with_native_work(WATCH_FENCE_TIMEOUT, &fence_work);
+            work = work.checked_add(fence_work.receipt()).map_err(display)?;
+            fenced.map_err(display)?;
+            match watcher.poll(
+                65_536,
+                work.remaining(budget).map_err(display)?,
+                cancellation,
+            ) {
                 Ok(receipt) => {
                     work = work.checked_add(receipt.work).map_err(display)?;
                     Ok(receipt.value)
@@ -252,22 +266,38 @@ impl SharedPhysicalRoot {
                 }
             }
         });
-        result.map(|value| acyclic_fs::OperationReceipt { value, work })
+        result
+            .map(|value| acyclic_fs::OperationReceipt { value, work })
             .map_err(|error| acyclic_fs::OperationFailure::new(error, work))
     }
 
     pub(crate) fn observe_with(
-        &self, poll: impl FnOnce() -> Result<WatchBatch, String>,
+        &self,
+        poll: impl FnOnce() -> Result<WatchBatch, String>,
     ) -> Result<SharedRootObservation, String> {
         self.observe_transaction(
             || "physical root reference state is poisoned".to_owned(),
             |prior_source, reference| {
                 let batch = poll()?;
                 let consumed_changes = observation_consumes_changes(&batch);
-                let source = if consumed_changes { self.source.inner().invalidate() }
-                    else { prior_source };
+                let source = if consumed_changes {
+                    self.source
+                        .inner()
+                        .invalidate(&mut acyclic_fs::demand::DemandWork::new(
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                        ))
+                        .map_err(display)?
+                } else {
+                    prior_source
+                };
                 *reference = source;
-                Ok(SharedRootObservation { batch, prior_source, source, consumed_changes })
+                Ok(SharedRootObservation {
+                    batch,
+                    prior_source,
+                    source,
+                    consumed_changes,
+                })
             },
         )
     }
@@ -277,7 +307,9 @@ impl SharedPhysicalRoot {
     /// hint custody in the batch; the returned allocation owns only backing
     /// newly allocated by this observation.
     pub(crate) async fn observe_with_native_work<F, G>(
-        &self, work: &acyclic_fs::NativeMaterializationWork, mut guard: G,
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+        mut guard: G,
     ) -> acyclic_harness::Result<(SharedRootObservation, NativeAllocation)>
     where
         G: FnMut() -> F + Send,
@@ -285,17 +317,21 @@ impl SharedPhysicalRoot {
     {
         use native_root_source::native_work_error;
 
-        work.check().map_err(native_work_error)?;
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)
+            .map_err(native_work_error)?;
         guard().await?;
-        work.check().map_err(native_work_error)?;
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)
+            .map_err(native_work_error)?;
         // No standard mutex guard crosses a proof await. The complete poll /
         // source invalidation / reference update remains one shared transaction.
         let observed = self.observe_native_transaction(work)?;
         // Tuple field order retains the producer guard through this last proof
         // await and drops batch data before its guard on a rejected publication.
-        work.check().map_err(native_work_error)?;
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)
+            .map_err(native_work_error)?;
         guard().await?;
-        work.check().map_err(native_work_error)?;
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)
+            .map_err(native_work_error)?;
         Ok(observed)
     }
     /// The shared native publication transaction, also required before a warm
@@ -303,21 +339,22 @@ impl SharedPhysicalRoot {
     /// The caller authenticates before entry and keeps the returned tuple
     /// through its final original-owner proof.
     fn observe_native_transaction(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(SharedRootObservation, NativeAllocation)> {
         use native_root_source::{native_source_error, native_watch_error};
 
         self.observe_transaction(
-            || acyclic_harness::RootError::NativeBoundary {
+            || acyclic_harness::Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Storage,
                 reason: "physical root reference state is poisoned",
             },
             |prior_source, reference| {
                 self.source.inner()
-                    .validate_current_with_native_work(prior_source, work)
+                    .validate_current(prior_source, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work))
                     .map_err(native_source_error)?;
                 let mut watcher = self.watcher.lock().map_err(|_| {
-                    acyclic_harness::RootError::NativeBoundary {
+                    acyclic_harness::Error::NativeBoundary {
                         code: acyclic_harness::wire::ErrorCode::Storage,
                         reason: "physical root watcher state is poisoned",
                     }
@@ -328,7 +365,7 @@ impl SharedPhysicalRoot {
                 let (batch, allocation) = watcher
                     .poll_with_native_work_guarded(65_536, work, |batch| {
                         if observation_consumes_changes(batch) {
-                            source = self.source.inner().invalidate_with_native_work(work)?;
+                            source = self.source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work))?;
                             // The SDK source epoch has really advanced. Keep
                             // shared state aligned even if later publication
                             // fails; the watcher preserves rescan on that error.
@@ -345,12 +382,12 @@ impl SharedPhysicalRoot {
         )
     }
 
-
     /// Serializes the complete watcher/source publication across every session
     /// sharing this root. Native and ordinary instrumentation use this same
     /// reference transaction rather than independent observation caches.
     fn observe_transaction<T, E>(
-        &self, poisoned: impl FnOnce() -> E,
+        &self,
+        poisoned: impl FnOnce() -> E,
         observe: impl FnOnce(SourceReference, &mut SourceReference) -> Result<T, E>,
     ) -> Result<T, E> {
         let mut reference = self.reference.lock().map_err(|_| poisoned())?;
@@ -365,7 +402,8 @@ impl SharedRootRegistry {
         admission: SharedRootAdmission,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Arc<SharedPhysicalRoot>>, String> {
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Arc<SharedPhysicalRoot>>, String>
+    {
         native_root_source::acquire(self, root, admission, budget, cancellation).await
     }
 
@@ -373,21 +411,31 @@ impl SharedRootRegistry {
     /// verification. Its result is the authenticated held allocation identity,
     /// not permission reconstructed from the path or source reference.
     pub(crate) async fn acquire_with_native_work<F, G>(
-        &self, root: &Path, admission: SharedRootAdmission,
-        work: &acyclic_fs::NativeMaterializationWork, guard: G,
+        &self,
+        root: &Path,
+        admission: SharedRootAdmission,
+        work: &acyclic_fs::NativeMaterializationWork,
+        guard: G,
     ) -> acyclic_harness::Result<Arc<SharedPhysicalRoot>>
-    where G: FnMut() -> F + Send,
-        F: Future<Output = acyclic_harness::Result<acyclic_fs::NativeRootIdentity>> + Send {
+    where
+        G: FnMut() -> F + Send,
+        F: Future<Output = acyclic_harness::Result<acyclic_fs::NativeRootIdentity>> + Send,
+    {
         native_root_source::acquire_with_native_work(self, root, admission, work, guard).await
     }
 
     /// Explicitly settles a failed cold admission using the original source
     /// owner's legitimate cleanup span. False retains the actual SDK owners.
     pub(crate) async fn shutdown_pending_with_native_work<F, G>(
-        &self, root: &Path, work: &acyclic_fs::NativeMaterializationWork, guard: G,
+        &self,
+        root: &Path,
+        work: &acyclic_fs::NativeMaterializationWork,
+        guard: G,
     ) -> acyclic_harness::Result<bool>
-    where G: FnMut() -> F + Send,
-        F: Future<Output = acyclic_harness::Result<acyclic_fs::NativeRootIdentity>> + Send {
+    where
+        G: FnMut() -> F + Send,
+        F: Future<Output = acyclic_harness::Result<acyclic_fs::NativeRootIdentity>> + Send,
+    {
         native_root_source::shutdown_pending_with_native_work(self, root, work, guard).await
     }
 
@@ -396,11 +444,12 @@ impl SharedRootRegistry {
             if Arc::strong_count(registration) != 1 {
                 return true;
             }
-            registration
-                .try_lock()
-                .map_or(true, |state| state.live.strong_count() != 0
+            registration.try_lock().map_or(true, |state| {
+                state.live.strong_count() != 0
                     || state.pending_raw_watcher.is_some()
-                    || state.pending_watcher.is_some() || state.pending_source.is_some())
+                    || state.pending_watcher.is_some()
+                    || state.pending_source.is_some()
+            })
         });
     }
 
@@ -462,12 +511,20 @@ impl LocalMount {
         permit: PublicationPermit,
     ) -> Result<(), String> {
         let name = std::str::from_utf8(name).map_err(display)?;
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, _)| display(cause))?;
         self.routes
             .get(name)
             .ok_or_else(|| "mounted root route is missing".to_owned())?
-            .sync_with_permit(permit)
+            .sync_with_permit(permit, &work, |_| {
+                std::future::ready(Ok::<(), acyclic_fs::native_mount::MountLifecycleError>(()))
+            })
             .await
-            .map_err(display)
+            .map(|_| ())
+            .map_err(|failure| display(failure.cause))
     }
 
     pub(crate) async fn sync(&self) -> Result<(), String> {
@@ -513,7 +570,7 @@ impl LocalMount {
 pub(crate) type LocalPublicationPublisher = MaterializingWorkspaceMultiRootPublisher<
     LocalAuthorityBackend,
     LocalObjectBackend,
-    LocalDistributedFs,
+    (LocalFs, WorkspaceGraph<LocalCoreStateStore>),
     PluginRootMaterializer,
 >;
 pub(crate) type LocalPublicationCoordinator = MultiRootPublicationCoordinator<
@@ -572,13 +629,25 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             .map_err(PluginRootMaterializerError)?;
         let options = MaterializeOptions {
             destination: directory.join("target"),
+            expected_root_identity: None,
             maximum_directory_entries: 4_096,
             maximum_extent_spans: 65_536,
             transfer_bytes: 8 * 1024 * 1024,
         };
         let cancellation = CancellationToken::new();
-        acyclic_fs::publish_native_workspace_generation(
-            workspace,
+        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| PluginRootMaterializerError(error.to_string()))?;
+        let from_generation = workspace
+            .generation(from, &work, &cancellation)
+            .await
+            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        let to_generation = workspace
+            .generation(to, &work, &cancellation)
+            .await
+            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        acyclic_fs::publish_native_generation_transition(
+            &from_generation,
+            &to_generation,
             &self.state,
             acyclic_fs::NativeWorkspacePublication {
                 root: &physical.path,
@@ -592,9 +661,11 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
                 budget: WorkBudget::UNBOUNDED,
                 cancellation: &cancellation,
             },
+            work,
+            || std::future::ready(Ok(())),
         )
         .await
-        .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        .map_err(|(error, _)| PluginRootMaterializerError(error.to_string()))?;
         Ok(())
     }
 
@@ -629,7 +700,16 @@ pub(crate) async fn existing_tracked_paths(
 ) -> Result<BTreeSet<String>, PluginGitError> {
     let mut tracked = BTreeSet::new();
     for path in candidates {
-        match generation.stat(&format!("/{path}"), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
+        match generation
+            .stat(
+                &format!("/{path}"),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+        {
             Ok(stat) if stat.kind != FileKind::Directory => {
                 tracked.insert(path.clone());
             }

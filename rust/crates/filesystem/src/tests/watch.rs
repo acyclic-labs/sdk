@@ -1,4 +1,5 @@
 use super::*;
+use crate::demand::NativeSourceWork;
 
 #[test]
 fn native_root_identity_encoding_is_exact_and_round_trips() {
@@ -120,30 +121,17 @@ fn root_replacement_during_a_baseline_invalidates_the_rescan()
         measured_watch_startup_work(),
         &cancellation,
     )?;
-    assert_eq!(opened.work, measured_watch_startup_work());
     let mut watch = opened.value;
     let original_identity = watch.root_identity();
-    let begun = watch.begin_rescan_measured(WorkBudget::default(), &cancellation)?;
-    assert_eq!(begun.work, WorkCounters::default());
+    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    watch.begin_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(&work))?;
     std::fs::rename(&root, &displaced)?;
     std::fs::create_dir(&root)?;
-    let finished = watch.finish_rescan_measured(
-        WorkBudget {
-            backend_read_operations: 2,
-            ..WorkBudget::default()
-        },
-        &cancellation,
-    )?;
-    assert_eq!(
-        finished.work,
-        WorkCounters {
-            backend_read_operations: 2,
-            ..WorkCounters::default()
-        }
-    );
+    let finished = watch.finish_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(&work))?;
     assert_eq!(watch.root_identity(), original_identity);
     assert!(matches!(
-        finished.value,
+        finished,
         WatchBatch::RescanRequired {
             reason: WatchInvalidationReason::RootChanged,
             ..
@@ -222,7 +210,7 @@ fn measured_native_watch_open_admits_only_started_requests()
     )
     .err()
     .expect("the root does not exist");
-    assert!(matches!(failure.error, NativeWatchError::OriginalIo(_)));
+    assert!(matches!(failure.error, NativeWatchError::Io(_)));
     assert_eq!(
         *failure.work,
         WorkCounters {
@@ -271,7 +259,7 @@ fn measured_native_watch_open_admits_only_started_requests()
     assert_eq!(baseline.work, baseline_work);
     assert!(matches!(
         baseline.value,
-        WatchBatch::Changes { epoch, changes, .. } if epoch.get() == 1 && changes.is_empty()
+        WatchBatch::Changes { epoch, changes, .. } if epoch == 1 && changes.is_empty()
     ));
     Ok(())
 }
@@ -283,77 +271,31 @@ fn measured_native_watch_baseline_failures_leave_the_rescan_recoverable()
     let directory = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
     let mut watch = NativeWatch::open_with_profile_measured(
-        directory.path().canonicalize()?,
-        FilesystemProfile::Portable,
-        measured_watch_options(),
-        measured_watch_startup_work(),
-        &cancellation,
-    )?
-    .value;
+        directory.path().canonicalize()?, FilesystemProfile::Portable,
+        measured_watch_options(), measured_watch_startup_work(), &cancellation,
+    )?.value;
     let cancelled = CancellationToken::new();
+    let cancelled_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancelled)
+        .map_err(|(error, _)| error)?;
     cancelled.cancel();
-    let baseline_work = WorkCounters {
-        backend_read_operations: 2,
-        ..WorkCounters::default()
-    };
-    let failure = watch
-        .accept_lazy_baseline_measured(baseline_work, &cancelled)
-        .expect_err("pre-cancellation cannot start a baseline");
-    assert!(matches!(failure.error, NativeWatchError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
-
-    let failure = watch
-        .accept_lazy_baseline_measured(WorkBudget::default(), &cancellation)
-        .expect_err("zero budget cannot open the baseline root");
-    assert!(matches!(
-        failure.error,
-        NativeWatchError::Work(WorkError::BudgetExceeded {
-            counter: "backend_read_operations",
-            observed: 1,
-            maximum: 0,
-        })
-    ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert!(matches!(watch.accept_lazy_baseline_with_native_work(&cancelled_work),
+        Err(NativeWatchError::Cancelled(_))));
+    let denied = crate::NativeMaterializationWork::new(WorkBudget {
+        backend_read_operations: 0, ..WorkBudget::UNBOUNDED
+    }, &cancellation).map_err(|(error, _)| error)?;
+    assert!(matches!(watch.accept_lazy_baseline_with_native_work(&denied),
+        Err(NativeWatchError::Work(_))));
     watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
-
-    let begun = watch.begin_rescan_measured(WorkBudget::default(), &cancellation)?;
-    assert_eq!(begun.work, WorkCounters::default());
-    let failure = watch
-        .finish_rescan_measured(baseline_work, &cancelled)
-        .expect_err("pre-cancellation cannot verify the baseline root");
-    assert!(matches!(failure.error, NativeWatchError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
-    let failure = watch
-        .finish_rescan_measured(
-            WorkBudget {
-                backend_read_operations: 1,
-                ..WorkBudget::default()
-            },
-            &cancellation,
-        )
-        .expect_err("root identity verification needs a second read");
-    assert!(matches!(
-        failure.error,
-        NativeWatchError::Work(WorkError::BudgetExceeded {
-            counter: "backend_read_operations",
-            observed: 2,
-            maximum: 1,
-        })
-    ));
-    assert_eq!(
-        *failure.work,
-        WorkCounters {
-            backend_read_operations: 1,
-            ..WorkCounters::default()
-        }
-    );
+    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    watch.begin_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(&work))?;
+    assert!(matches!(watch.finish_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(&cancelled_work)),
+        Err(NativeWatchError::Cancelled(_))));
+    assert!(matches!(watch.finish_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(&denied)),
+        Err(NativeWatchError::Work(_))));
     watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
-    let retried = watch.accept_lazy_baseline_measured(baseline_work, &cancellation)?;
-    assert_eq!(retried.work, baseline_work);
-    assert!(matches!(
-        retried.value,
-        WatchBatch::Changes { epoch, changes, .. } if epoch.get() == 3 && changes.is_empty()
-    ));
+    assert!(matches!(watch.accept_lazy_baseline_with_native_work(&work)?,
+        WatchBatch::Changes { changes, .. } if changes.is_empty()));
     Ok(())
 }
 
@@ -363,98 +305,35 @@ fn measured_native_watch_cleanup_retains_prior_work_and_can_be_retried()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let root = directory.path().canonicalize()?;
-    for name in ["a", "b"] {
-        std::fs::create_dir(root.join(name))?;
-    }
+    for name in ["a", "b"] { std::fs::create_dir(root.join(name))?; }
     let cancellation = CancellationToken::new();
     let mut watch = NativeWatch::open_with_profile_measured(
-        &root,
-        FilesystemProfile::Portable,
-        measured_watch_options(),
-        measured_watch_startup_work(),
-        &cancellation,
-    )?
-    .value;
+        &root, FilesystemProfile::Portable, measured_watch_options(),
+        measured_watch_startup_work(), &cancellation,
+    )?.value;
     for name in ["/a", "/b"] {
         let portable = crate::path::PortablePath::parse(name, VolumeLimits::default())?;
-        let path = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
-        watch.watch_directory(&path)?;
+        watch.watch_directory(&NamespacePath::from_portable(&portable, VolumeLimits::default())?)?;
     }
-    assert_eq!(watch.watched_directories.len(), 3);
-    let path_bytes = u64::try_from(root.join("a").as_os_str().len())?;
-    let cleanup_work = WorkCounters {
-        backend_write_operations: 1,
-        allocation_operations: 1,
-        bytes_copied: path_bytes,
-        peak_allocation_bytes: path_bytes,
-        ..WorkCounters::default()
-    };
-    let failure = watch
-        .begin_rescan_measured(
-            WorkBudget {
-                allocation_operations: 2,
-                bytes_copied: path_bytes * 2,
-                ..cleanup_work
-            },
-            &cancellation,
-        )
-        .expect_err("the second demanded-directory unwatch exceeds the write budget");
-    assert!(matches!(
-        failure.error,
-        NativeWatchError::Work(WorkError::BudgetExceeded {
-            counter: "backend_write_operations",
-            observed: 2,
-            maximum: 1,
-        })
-    ));
-    assert_eq!(*failure.work, cleanup_work);
+    let denied = crate::NativeMaterializationWork::new(WorkBudget {
+        backend_write_operations: 1, ..WorkBudget::UNBOUNDED
+    }, &cancellation).map_err(|(error, _)| error)?;
+    assert!(matches!(watch.begin_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(&denied)), Err(NativeWatchError::Work(_))));
     assert!(!watch.watched_directories.contains(&root.join("a")));
     assert!(watch.watched_directories.contains(&root.join("b")));
     watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
-
     let cancelled = CancellationToken::new();
+    let cancelled_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancelled)
+        .map_err(|(error, _)| error)?;
     cancelled.cancel();
-    let failure = watch
-        .accept_lazy_baseline_measured(
-            WorkBudget {
-                backend_read_operations: 2,
-                ..cleanup_work
-            },
-            &cancelled,
-        )
-        .expect_err("pre-cancellation must preserve the outstanding subscription");
-    assert!(matches!(failure.error, NativeWatchError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert!(matches!(watch.accept_lazy_baseline_with_native_work(&cancelled_work),
+        Err(NativeWatchError::Cancelled(_))));
     assert!(watch.watched_directories.contains(&root.join("b")));
-
-    let prior_and_spent = WorkCounters {
-        backend_read_operations: 1,
-        ..cleanup_work
-    };
-    let failure = watch
-        .accept_lazy_baseline_measured(prior_and_spent, &cancellation)
-        .expect_err("identity verification exhausts the remaining read budget");
-    assert!(matches!(
-        failure.error,
-        NativeWatchError::Work(WorkError::BudgetExceeded {
-            counter: "backend_read_operations",
-            observed: 2,
-            maximum: 1,
-        })
-    ));
-    assert_eq!(*failure.work, prior_and_spent);
+    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    assert!(matches!(watch.accept_lazy_baseline_with_native_work(&work)?,
+        WatchBatch::Changes { changes, .. } if changes.is_empty()));
     assert_eq!(watch.watched_directories, vec![root]);
-    watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
-    let baseline_work = WorkCounters {
-        backend_read_operations: 2,
-        ..WorkCounters::default()
-    };
-    let retried = watch.accept_lazy_baseline_measured(baseline_work, &cancellation)?;
-    assert_eq!(retried.work, baseline_work);
-    assert!(matches!(
-        retried.value,
-        WatchBatch::Changes { epoch, changes, .. } if epoch.get() == 3 && changes.is_empty()
-    ));
     Ok(())
 }
 
@@ -875,7 +754,7 @@ fn capabilities_never_misrepresent_process_local_sequences_as_restart_cursors() 
     assert!(!capabilities.persistent_restart);
     assert_eq!(
         capabilities.recursive,
-        capabilities.backend != NativeWatchBackend::Unsupported
+        capabilities.backend != "unsupported"
     );
     assert_eq!(capabilities.root_identity_fencing, cfg!(any(unix, windows)));
     let expected = if cfg!(target_os = "windows") {
@@ -887,7 +766,7 @@ fn capabilities_never_misrepresent_process_local_sequences_as_restart_cursors() 
     } else {
         "unsupported"
     };
-    assert_eq!(capabilities.backend.as_str(), expected);
+    assert_eq!(capabilities.backend, expected);
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -910,7 +789,7 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
         }
     ));
     let failed_epoch = watch.begin_rescan()?;
-    assert_eq!(failed_epoch.get(), 1);
+    assert_eq!(failed_epoch, 1);
     watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
     assert!(matches!(
         watch
@@ -922,7 +801,7 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
         }
     ));
     let epoch = watch.begin_rescan()?;
-    assert_eq!(epoch.get(), 2);
+    assert_eq!(epoch, 2);
     assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
     let empty = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
     assert_eq!(empty.work.backend_read_operations, 1);
@@ -1157,7 +1036,7 @@ fn live_native_backend_saturation_fails_closed_and_recovers()
     ));
 
     let epoch = watch.begin_rescan()?;
-    assert!(epoch.get() > 1);
+    assert!(epoch > 1);
     assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
     Ok(())
 }

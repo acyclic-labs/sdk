@@ -127,44 +127,86 @@ impl Inference {
         )
     }
 
-    /// Start an exact immutable Context creation with a stable pre-dispatch identity.
+    /// Prepares one immutable Context creation with a stable pre-dispatch identity.
     #[must_use]
-    pub fn context(&self, model: impl Into<String>) -> CreateContext {
-        CreateContext {
-            client: self.clone(),
-            request: wire::CreateContextRequest {
-                identity: Some(self.identity()),
-                model: model.into(),
-                items: Vec::new(),
-            },
-        }
+    pub fn context(&self, model: impl Into<String>) -> wire::CreateContextRequest {
+        wire::CreateContextRequest { identity: Some(self.identity()), model: model.into(), items: Vec::new() }
     }
 
-    /// Authenticate and attach to an existing immutable retained revision.
-    ///
-    /// # Errors
-    /// Rejects unknown/unretained revisions or an invalid service response.
+    /// Creates or reconciles the same prepared Context and requires a retained revision.
     #[tracing::instrument(
-        name = "acyclic.inference.attach",
+        name = "acyclic.inference.context.create",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
     )]
-    pub async fn attach(&self, revision: [u8; 32]) -> Result<Context, Error> {
-        obs::finish(
-            async {
-                nonzero(&revision)?;
-                let context = Context {
-                    client: self.clone(),
-                    revision,
-                };
-                context.inspect().await?;
-                Ok(context)
-            }
-            .await,
-        )
+    pub async fn create_context(&self, request: &wire::CreateContextRequest) -> Result<[u8; 32], Error> {
+        obs::finish(async {
+            bounded(request)?;
+            let receipt = self.rpc().create(self.request(request.clone())?).await?.into_inner();
+            validate_receipt(&receipt)?;
+            if !receipt.retained { return Err(Error::Invalid("creation did not retain a revision")); }
+            fixed(&receipt.revision)
+        }.await)
     }
 
-    fn identity(&self) -> wire::RequestIdentity {
+    /// Reads one retained Context and validates its exact revision and logical identity.
+    #[tracing::instrument(
+        name = "acyclic.inference.context.inspect",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn inspect_context(&self, revision: [u8; 32]) -> Result<wire::ContextView, Error> {
+        obs::finish(async {
+            nonzero(&revision)?;
+            let view = self.rpc().inspect(self.request(wire::InspectContextRequest {
+                revision: revision.to_vec(),
+            })?).await?.into_inner();
+            validate_context_view(&view, revision)?;
+            Ok(view)
+        }.await)
+    }
+
+    /// Submits or reconciles the same prepared mutation and validates its receipt.
+    #[tracing::instrument(
+        name = "acyclic.inference.context.mutate",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn mutate_context(&self, request: &wire::MutateContextRequest) -> Result<wire::MutationReceipt, Error> {
+        obs::finish(async {
+            bounded(request)?;
+            fixed::<32>(&request.source)?;
+            let receipt = self.rpc().mutate(self.request(request.clone())?).await?.into_inner();
+            validate_receipt(&receipt)?;
+            Ok(receipt)
+        }.await)
+    }
+
+    /// Prepares one recoverable Run against an explicit immutable revision.
+    #[must_use]
+    pub fn generate(&self, revision: [u8; 32], input: impl Into<String>, maximum_output: u64) -> wire::GenerateRunRequest {
+        wire::GenerateRunRequest {
+            identity: Some(self.identity()), context: revision.to_vec(),
+            input: Some(text_item(wire::ItemKind::User, input.into())),
+            maximum_output, seed: None,
+        }
+    }
+
+    /// Prepares one warm-retention request for an explicit immutable revision.
+    #[must_use]
+    pub fn retention_request(&self, revision: [u8; 32], policy: Retention) -> wire::RetainWarmRequest {
+        wire::RetainWarmRequest {
+            identity: Some(self.identity()), context: revision.to_vec(),
+            latency_profile: if policy.idle_kv.is_some() { Vec::new() } else { policy.latency_profile.to_vec() },
+            expires_at_ms: policy.expires_at_ms,
+            idle_kv: policy.idle_kv.map(|(profile, idle_timeout_ms)| wire::IdleKvPolicy {
+                profile: profile.to_vec(), idle_timeout_ms,
+            }),
+        }
+    }
+
+    /// Allocates one request identity before effects, retaining this connection's client instance.
+    pub fn identity(&self) -> wire::RequestIdentity {
         wire::RequestIdentity {
             client_instance: self.0.client_instance.to_vec(),
             request_id: uuid::Uuid::now_v7().as_bytes().to_vec(),
@@ -201,25 +243,46 @@ impl Inference {
             .max_encoding_message_size(MAXIMUM_MESSAGE_BYTES)
     }
 
-    /// Prepare one immutable evaluation admission with a caller-known identity.
+    /// Prepares one immutable evaluation request with its identity allocated before effects.
     #[must_use]
-    pub fn evaluation(&self, spec: wire::EvaluationSpec) -> CreateEvaluation {
-        CreateEvaluation {
-            client: self.clone(),
-            request: wire::CreateEvaluationRequest {
-                identity: Some(self.identity()),
-                spec: Some(spec),
-            },
-        }
+    pub fn evaluation(&self, spec: wire::EvaluationSpec) -> wire::CreateEvaluationRequest {
+        wire::CreateEvaluationRequest { identity: Some(self.identity()), spec: Some(spec) }
     }
 
-    /// Recover one previously admitted evaluation without admitting new work.
-    #[must_use]
-    pub fn recover_evaluation(&self, evaluation_id: [u8; 16]) -> Evaluation {
-        Evaluation {
-            client: self.clone(),
-            evaluation_id,
-        }
+    /// Admits or reconciles the same prepared evaluation request.
+    #[tracing::instrument(
+        name = "acyclic.inference.evaluation.create",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn create_evaluation(&self, request: &wire::CreateEvaluationRequest) -> Result<[u8; 16], Error> {
+        obs::finish(async {
+            bounded(request)?;
+            let expected = fixed(&request.identity.as_ref()
+                .ok_or(Error::Invalid("missing evaluation identity"))?.request_id)?;
+            let spec = request.spec.as_ref().ok_or(Error::Invalid("evaluation spec is absent"))?;
+            validate_evaluation_spec(spec)?;
+            let view = self.evaluations().create(self.request(request.clone())?).await?.into_inner();
+            validate_evaluation_admission(&view, expected, spec)?;
+            Ok(expected)
+        }.await)
+    }
+
+    /// Inspects one retained evaluation ID and validates its exact result evidence.
+    #[tracing::instrument(
+        name = "acyclic.inference.evaluation.inspect",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn inspect_evaluation(&self, evaluation_id: [u8; 16]) -> Result<wire::EvaluationView, Error> {
+        obs::finish(async {
+            nonzero(&evaluation_id)?;
+            let view = self.evaluations().inspect(self.request(wire::InspectEvaluationRequest {
+                evaluation_id: evaluation_id.to_vec(),
+            })?).await?.into_inner();
+            validate_evaluation_view(&view, evaluation_id)?;
+            Ok(view)
+        }.await)
     }
 
     /// Discover exact model revisions and the customer features currently admitted for them.
@@ -274,22 +337,146 @@ impl Inference {
         )
     }
 
-    /// Recover one previously admitted Run by its caller-known identity.
-    #[must_use]
-    pub fn recover_run(&self, run_id: [u8; 16]) -> Run {
-        Run {
-            client: self.clone(),
-            run_id,
-        }
+    /// Admits or reconciles the same prepared Run and validates its identity and input.
+    #[tracing::instrument(
+        name = "acyclic.inference.run.generate",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn generate_run(&self, request: &wire::GenerateRunRequest) -> Result<[u8; 16], Error> {
+        obs::finish(async {
+            bounded(request)?;
+            if request.maximum_output == 0 {
+                return Err(Error::Invalid("zero output bound"));
+            }
+            let context = fixed::<32>(&request.context)?;
+            let run_id = fixed::<16>(&request.identity.as_ref()
+                .ok_or(Error::Invalid("missing Run identity"))?.request_id)?;
+            let response = self.runs().generate(self.request(request.clone())?).await?.into_inner();
+            let view = response.run.ok_or(Error::Invalid("missing Run response"))?;
+            contract::validate_generated_run_view(&view, run_id, context).map_err(contract_error)?;
+            Ok(run_id)
+        }.await)
     }
 
-    /// Recover a previously admitted warm commitment without creating another.
-    #[must_use]
-    pub fn recover_warm(&self, commitment: [u8; 32]) -> WarmContext {
-        WarmContext {
-            client: self.clone(),
-            commitment,
-        }
+    /// Inspects durable Run state and validates its exact identity.
+    #[tracing::instrument(
+        name = "acyclic.inference.run.inspect",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn inspect_run(&self, run_id: [u8; 16]) -> Result<wire::RunView, Error> {
+        obs::finish(async {
+            let view = self.runs().inspect(self.request(wire::InspectRunRequest {
+                run_id: run_id.to_vec(),
+            })?).await?.into_inner();
+            validate_run_view(&view, run_id)?;
+            Ok(view)
+        }.await)
+    }
+
+    /// Resumes the validated event stream at an inclusive zero-based cursor.
+    #[tracing::instrument(
+        name = "acyclic.inference.run.watch",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn watch_run(&self, run_id: [u8; 16], from_sequence: u64) -> Result<RunEvents, Error> {
+        obs::finish(async {
+            let view = self.inspect_run(run_id).await?;
+            let state = contract::watch_run_start(&view, from_sequence).map_err(contract_error)?;
+            if state.is_terminal() {
+                return Ok(RunEvents { stream: None, state });
+            }
+            let stream = self.runs().watch(self.request(wire::WatchRunRequest {
+                run_id: run_id.to_vec(), from_sequence,
+            })?).await?.into_inner();
+            Ok(RunEvents { stream: Some(stream), state })
+        }.await)
+    }
+
+    /// Requests durable cancellation and validates the resulting Run state.
+    #[tracing::instrument(
+        name = "acyclic.inference.run.cancel",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn cancel_run(&self, run_id: [u8; 16]) -> Result<wire::RunView, Error> {
+        obs::finish(async {
+            let view = self.runs().cancel(self.request(wire::InspectRunRequest {
+                run_id: run_id.to_vec(),
+            })?).await?.into_inner();
+            validate_run_view(&view, run_id)?;
+            Ok(view)
+        }.await)
+    }
+
+    /// Admits or reconciles the same prepared warm-retention request.
+    #[tracing::instrument(
+        name = "acyclic.inference.warm.retain",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn retain_warm(&self, request: &wire::RetainWarmRequest) -> Result<[u8; 32], Error> {
+        obs::finish(async {
+            bounded(request)?;
+            contract::validate_retain_request(request).map_err(|error| Error::Invalid(error.message()))?;
+            let view = self.warm().retain(self.request(request.clone())?).await?.into_inner();
+            contract::validate_retain_response(&view, request).map_err(|error| Error::Invalid(error.message()))?;
+            fixed(&view.commitment)
+        }.await)
+    }
+
+    /// Inspects one warm commitment and validates the returned lifecycle evidence.
+    #[tracing::instrument(
+        name = "acyclic.inference.warm.inspect",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn inspect_warm(&self, commitment: [u8; 32]) -> Result<wire::WarmView, Error> {
+        obs::finish(async {
+            nonzero(&commitment)?;
+            let view = self.warm().inspect(self.request(wire::InspectWarmRequest {
+                commitment: commitment.to_vec(),
+            })?).await?.into_inner();
+            validate_warm_view(&view, None, Some(commitment))?;
+            Ok(view)
+        }.await)
+    }
+
+    /// Renews the same prepared warm promise without changing its requested policy.
+    #[tracing::instrument(
+        name = "acyclic.inference.warm.renew",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn renew_warm(&self, request: &wire::RenewWarmRequest) -> Result<wire::WarmView, Error> {
+        obs::finish(async {
+            bounded(request)?;
+            contract::validate_renew_request(request).map_err(|error| Error::Invalid(error.message()))?;
+            let view = self.warm().renew(self.request(request.clone())?).await?.into_inner();
+            contract::validate_renew_response(&view, request).map_err(|error| Error::Invalid(error.message()))?;
+            Ok(view)
+        }.await)
+    }
+
+    /// Releases the same prepared warm promise and requires factual terminal release.
+    #[tracing::instrument(
+        name = "acyclic.inference.warm.release",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn release_warm(&self, request: &wire::ReleaseWarmRequest) -> Result<wire::WarmView, Error> {
+        obs::finish(async {
+            bounded(request)?;
+            let commitment = fixed::<32>(&request.commitment)?;
+            let view = self.warm().release(self.request(request.clone())?).await?.into_inner();
+            validate_warm_view(&view, None, Some(commitment))?;
+            if wire::WarmState::try_from(view.state).unwrap_or(wire::WarmState::Unspecified) != wire::WarmState::Released {
+                return Err(Error::Invalid("warm release is not terminal"));
+            }
+            Ok(view)
+        }.await)
     }
 
     fn request<T>(&self, value: T) -> Result<Request<T>, Error> {
@@ -339,175 +526,6 @@ fn bounded<M: prost::Message>(message: &M) -> Result<(), Error> {
     Ok(())
 }
 
-/// Replayable immutable evaluation admission. Reusing this value reconciles the
-/// same candidate/suite/grader contract and never creates another evaluation.
-#[derive(Clone)]
-pub struct CreateEvaluation {
-    client: Inference,
-    request: wire::CreateEvaluationRequest,
-}
-
-impl CreateEvaluation {
-    /// Caller-known evaluation identity allocated before network effects.
-    pub fn id(&self) -> Result<[u8; 16], Error> {
-        fixed(
-            &self
-                .request
-                .identity
-                .as_ref()
-                .ok_or(Error::Invalid("missing evaluation identity"))?
-                .request_id,
-        )
-    }
-
-    /// Admit or reconcile this exact immutable evaluation.
-    #[tracing::instrument(
-        name = "acyclic.inference.evaluation.create",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn send(&self) -> Result<Evaluation, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                let expected = self.id()?;
-                validate_evaluation_spec(
-                    self.request
-                        .spec
-                        .as_ref()
-                        .ok_or(Error::Invalid("evaluation spec is absent"))?,
-                )?;
-                let view = self
-                    .client
-                    .evaluations()
-                    .create(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                validate_evaluation_admission(
-                    &view,
-                    expected,
-                    self.request
-                        .spec
-                        .as_ref()
-                        .ok_or(Error::Invalid("evaluation spec is absent"))?,
-                )?;
-                Ok(Evaluation {
-                    client: self.client.clone(),
-                    evaluation_id: expected,
-                })
-            }
-            .await,
-        )
-    }
-}
-
-/// Recoverable immutable evaluation handle.
-#[derive(Clone)]
-pub struct Evaluation {
-    client: Inference,
-    evaluation_id: [u8; 16],
-}
-
-impl Evaluation {
-    /// Stable caller-known evaluation identity.
-    #[must_use]
-    pub const fn id(&self) -> [u8; 16] {
-        self.evaluation_id
-    }
-
-    /// Inspect durable evaluation state and exact result evidence.
-    #[tracing::instrument(
-        name = "acyclic.inference.evaluation.inspect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn inspect(&self) -> Result<wire::EvaluationView, Error> {
-        obs::finish(
-            async {
-                nonzero(&self.evaluation_id)?;
-                let view = self
-                    .client
-                    .evaluations()
-                    .inspect(self.client.request(wire::InspectEvaluationRequest {
-                        evaluation_id: self.evaluation_id.to_vec(),
-                    })?)
-                    .await?
-                    .into_inner();
-                validate_evaluation_view(&view, self.evaluation_id)?;
-                Ok(view)
-            }
-            .await,
-        )
-    }
-}
-
-/// Replayable creation builder. Reusing it reconciles the same exact command.
-#[derive(Clone)]
-pub struct CreateContext {
-    client: Inference,
-    request: wire::CreateContextRequest,
-}
-
-impl CreateContext {
-    /// Append exact instruction bytes with a fresh item identity.
-    #[must_use]
-    pub fn instructions(self, text: impl Into<String>) -> Self {
-        self.item(text_item(wire::ItemKind::Instruction, text.into()))
-    }
-
-    /// Add one typed item. Semantic validation belongs to the authenticated service.
-    #[must_use]
-    pub fn item(mut self, item: wire::Item) -> Self {
-        self.request.items.push(item);
-        self
-    }
-
-    /// Caller-known command identity, available before network effects.
-    #[must_use]
-    pub fn identity(&self) -> Option<&wire::RequestIdentity> {
-        self.request.identity.as_ref()
-    }
-
-    /// Create or reconcile this immutable Context; never repeat logical work.
-    ///
-    /// # Errors
-    /// Failed observations require the same builder, not a new creation command.
-    #[tracing::instrument(
-        name = "acyclic.inference.context.create",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn create(&self) -> Result<Context, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                let receipt = self
-                    .client
-                    .rpc()
-                    .create(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                validate_receipt(&receipt)?;
-                if !receipt.retained {
-                    return Err(Error::Invalid("creation did not retain a revision"));
-                }
-                Ok(Context {
-                    client: self.client.clone(),
-                    revision: fixed(&receipt.revision)?,
-                })
-            }
-            .await,
-        )
-    }
-}
-
-/// Immutable revision handle; cloning a handle does not create a fork or retention edge.
-#[derive(Clone)]
-pub struct Context {
-    client: Inference,
-    revision: [u8; 32],
-}
-
 /// Explicit customer warm-retention policy. Distribution and capacity remain
 /// service-owned; the opaque profile must come from model discovery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -536,557 +554,6 @@ impl Retention {
             expires_at_ms: 0,
             idle_kv: Some((profile, idle_timeout_ms)),
         }
-    }
-}
-
-impl Context {
-    /// Portable revision identity for later authenticated attachment.
-    #[must_use]
-    pub const fn id(&self) -> [u8; 32] {
-        self.revision
-    }
-
-    /// Read exact retained content and its pinned logical execution identity.
-    ///
-    /// # Errors
-    /// Returns service rejection or malformed response without fabricating content.
-    #[tracing::instrument(
-        name = "acyclic.inference.context.inspect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn inspect(&self) -> Result<wire::ContextView, Error> {
-        obs::finish(
-            async {
-                let view = self
-                    .client
-                    .rpc()
-                    .inspect(self.client.request(wire::InspectContextRequest {
-                        revision: self.revision.to_vec(),
-                    })?)
-                    .await?
-                    .into_inner();
-                validate_context_view(&view, self.revision)?;
-                Ok(view)
-            }
-            .await,
-        )
-    }
-
-    /// Prepare an independently retained fork. Sending twice reconciles that fork.
-    #[must_use]
-    pub fn fork(&self) -> ContextMutation {
-        self.mutation(wire::mutate_context_request::Action::Fork(wire::Empty {}))
-    }
-
-    /// Prepare exact atomic item edits, leaving this revision unchanged.
-    #[must_use]
-    pub fn edit(&self, edits: Vec<wire::Edit>) -> ContextMutation {
-        self.mutation(wire::mutate_context_request::Action::Edit(wire::Edits {
-            edits,
-        }))
-    }
-
-    /// Prepare one exact user-message append.
-    #[must_use]
-    pub fn append(&self, text: impl Into<String>) -> ContextMutation {
-        self.edit(vec![wire::Edit {
-            action: Some(wire::edit::Action::Append(text_item(
-                wire::ItemKind::User,
-                text.into(),
-            ))),
-        }])
-    }
-
-    /// Retain exactly the selected prefix; None explicitly means an empty prefix.
-    #[must_use]
-    pub fn truncate(&self, through: Option<[u8; 16]>) -> ContextMutation {
-        self.mutation(wire::mutate_context_request::Action::Truncate(
-            wire::Truncate {
-                through: through.map(|id| id.to_vec()),
-            },
-        ))
-    }
-
-    /// Prepare explicit replacement of selected items; no summary is generated.
-    #[must_use]
-    pub fn compact(
-        &self,
-        selected: Vec<[u8; 16]>,
-        replacement: Vec<wire::Item>,
-    ) -> ContextMutation {
-        self.mutation(wire::mutate_context_request::Action::Compact(
-            wire::Compact {
-                selected: selected.into_iter().map(|id| id.to_vec()).collect(),
-                replacement,
-            },
-        ))
-    }
-
-    /// Release only this revision's own edge, never descendants or physical bytes.
-    #[must_use]
-    pub fn release(&self) -> ContextMutation {
-        self.mutation(wire::mutate_context_request::Action::Release(
-            wire::Empty {},
-        ))
-    }
-
-    /// Resolve a target model revision and replay this exact canonical content into a new Context.
-    #[must_use]
-    pub fn transfer(&self, model: impl Into<String>) -> ContextMutation {
-        self.mutation(wire::mutate_context_request::Action::Transfer(
-            wire::Transfer {
-                model: model.into(),
-            },
-        ))
-    }
-
-    /// Prepare one recoverable generation against this exact immutable revision.
-    #[must_use]
-    pub fn generate(&self, input: impl Into<String>, maximum_output: u64) -> GenerateRun {
-        let identity = self.client.identity();
-        GenerateRun {
-            client: self.client.clone(),
-            request: wire::GenerateRunRequest {
-                identity: Some(identity),
-                context: self.revision.to_vec(),
-                input: Some(text_item(wire::ItemKind::User, input.into())),
-                maximum_output,
-                seed: None,
-            },
-        }
-    }
-
-    /// Prepare one replayable warm-retention admission for this exact revision.
-    #[must_use]
-    pub fn retain(&self, policy: Retention) -> RetainWarm {
-        RetainWarm {
-            client: self.client.clone(),
-            request: wire::RetainWarmRequest {
-                identity: Some(self.client.identity()),
-                context: self.revision.to_vec(),
-                latency_profile: if policy.idle_kv.is_some() {
-                    Vec::new()
-                } else {
-                    policy.latency_profile.to_vec()
-                },
-                expires_at_ms: policy.expires_at_ms,
-                idle_kv: policy
-                    .idle_kv
-                    .map(|(profile, idle_timeout_ms)| wire::IdleKvPolicy {
-                        profile: profile.to_vec(),
-                        idle_timeout_ms,
-                    }),
-            },
-        }
-    }
-
-    fn mutation(&self, action: wire::mutate_context_request::Action) -> ContextMutation {
-        ContextMutation {
-            client: self.client.clone(),
-            request: wire::MutateContextRequest {
-                identity: Some(self.client.identity()),
-                source: self.revision.to_vec(),
-                action: Some(action),
-            },
-        }
-    }
-}
-
-/// Replayable warm admission. A failed observation must be reconciled by
-/// sending this same value, never by allocating another request identity.
-#[derive(Clone)]
-pub struct RetainWarm {
-    client: Inference,
-    request: wire::RetainWarmRequest,
-}
-
-impl RetainWarm {
-    /// Caller-known request identity allocated before effects.
-    #[must_use]
-    pub fn identity(&self) -> Option<&wire::RequestIdentity> {
-        self.request.identity.as_ref()
-    }
-
-    /// Admit or reconcile the exact warm promise.
-    ///
-    /// # Errors
-    /// Rejects malformed policy, transport failure, service rejection, or a
-    /// response not bound to the requested Context.
-    #[tracing::instrument(
-        name = "acyclic.inference.warm.retain",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn send(&self) -> Result<WarmContext, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                contract::validate_retain_request(&self.request)
-                    .map_err(|error| Error::Invalid(error.message()))?;
-                let view = self
-                    .client
-                    .warm()
-                    .retain(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                contract::validate_retain_response(&view, &self.request)
-                    .map_err(|error| Error::Invalid(error.message()))?;
-                Ok(WarmContext {
-                    client: self.client.clone(),
-                    commitment: fixed(&view.commitment)?,
-                })
-            }
-            .await,
-        )
-    }
-}
-
-/// Recoverable warm commitment. It never exposes physical placement or KV
-/// allocation identity and therefore remains valid through service rebalancing.
-#[derive(Clone)]
-pub struct WarmContext {
-    client: Inference,
-    commitment: [u8; 32],
-}
-
-impl WarmContext {
-    /// Stable commitment identity.
-    #[must_use]
-    pub const fn id(&self) -> [u8; 32] {
-        self.commitment
-    }
-
-    /// Inspect the latest durable logical warm fact.
-    ///
-    /// # Errors
-    /// Rejects transport/service failure or malformed commitment evidence.
-    #[tracing::instrument(
-        name = "acyclic.inference.warm.inspect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn inspect(&self) -> Result<wire::WarmView, Error> {
-        obs::finish(
-            async {
-                nonzero(&self.commitment)?;
-                let view = self
-                    .client
-                    .warm()
-                    .inspect(self.client.request(wire::InspectWarmRequest {
-                        commitment: self.commitment.to_vec(),
-                    })?)
-                    .await?
-                    .into_inner();
-                validate_warm_view(&view, None, Some(self.commitment))?;
-                Ok(view)
-            }
-            .await,
-        )
-    }
-
-    /// Prepare an extension of the current promise. Reusing the returned builder
-    /// reconciles the same renewal; a failed renewal leaves the prior promise intact.
-    #[must_use]
-    pub fn renew(&self, expires_at_ms: u64) -> RenewWarm {
-        RenewWarm {
-            client: self.client.clone(),
-            request: wire::RenewWarmRequest {
-                identity: Some(self.client.identity()),
-                commitment: self.commitment.to_vec(),
-                expires_at_ms,
-                idle_timeout_ms: None,
-            },
-        }
-    }
-
-    /// Change idle timeout from the last verified use (initial pin before first use).
-    /// Does not advance last-use time or resurrect an expired/released commitment.
-    #[must_use]
-    pub fn renew_idle(&self, idle_timeout_ms: u64) -> RenewWarm {
-        RenewWarm {
-            client: self.client.clone(),
-            request: wire::RenewWarmRequest {
-                identity: Some(self.client.identity()),
-                commitment: self.commitment.to_vec(),
-                expires_at_ms: 0,
-                idle_timeout_ms: Some(idle_timeout_ms),
-            },
-        }
-    }
-
-    /// Prepare cleanup and release of only this warm promise.
-    #[must_use]
-    pub fn release(&self) -> ReleaseWarm {
-        ReleaseWarm {
-            client: self.client.clone(),
-            request: wire::ReleaseWarmRequest {
-                identity: Some(self.client.identity()),
-                commitment: self.commitment.to_vec(),
-            },
-        }
-    }
-}
-
-/// Replayable warm renewal.
-#[derive(Clone)]
-pub struct RenewWarm {
-    client: Inference,
-    request: wire::RenewWarmRequest,
-}
-
-impl RenewWarm {
-    /// Identity allocated before effects; reuse this builder to reconcile retries.
-    #[must_use]
-    pub fn identity(&self) -> Option<&wire::RequestIdentity> {
-        self.request.identity.as_ref()
-    }
-
-    /// Extend and reconcile this exact commitment.
-    ///
-    /// # Errors
-    /// Rejects malformed expiry, transport/service failure, or a foreign response.
-    #[tracing::instrument(
-        name = "acyclic.inference.warm.renew",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn send(&self) -> Result<wire::WarmView, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                contract::validate_renew_request(&self.request)
-                    .map_err(|error| Error::Invalid(error.message()))?;
-                let view = self
-                    .client
-                    .warm()
-                    .renew(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                contract::validate_renew_response(&view, &self.request)
-                    .map_err(|error| Error::Invalid(error.message()))?;
-                Ok(view)
-            }
-            .await,
-        )
-    }
-}
-
-/// Replayable cleanup-complete release.
-#[derive(Clone)]
-pub struct ReleaseWarm {
-    client: Inference,
-    request: wire::ReleaseWarmRequest,
-}
-
-impl ReleaseWarm {
-    /// Release or reconcile this exact warm promise.
-    ///
-    /// # Errors
-    /// Rejects transport/service failure or a response without factual release.
-    #[tracing::instrument(
-        name = "acyclic.inference.warm.release",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn send(&self) -> Result<wire::WarmView, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                let commitment = fixed::<32>(&self.request.commitment)?;
-                let view = self
-                    .client
-                    .warm()
-                    .release(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                validate_warm_view(&view, None, Some(commitment))?;
-                if wire::WarmState::try_from(view.state).unwrap_or(wire::WarmState::Unspecified)
-                    != wire::WarmState::Released
-                {
-                    return Err(Error::Invalid("warm release is not terminal"));
-                }
-                Ok(view)
-            }
-            .await,
-        )
-    }
-}
-
-/// Replayable Run admission builder. Reusing it reconciles one logical Run.
-#[derive(Clone)]
-pub struct GenerateRun {
-    client: Inference,
-    request: wire::GenerateRunRequest,
-}
-
-impl GenerateRun {
-    /// Pin a deterministic sampling seed.
-    #[must_use]
-    pub fn seed(mut self, seed: u64) -> Self {
-        self.request.seed = Some(seed);
-        self
-    }
-
-    /// Caller-known Run identity allocated before network effects.
-    ///
-    /// # Errors
-    /// Rejects a missing, zero, or incorrectly sized identity.
-    pub fn id(&self) -> Result<[u8; 16], Error> {
-        fixed(
-            &self
-                .request
-                .identity
-                .as_ref()
-                .ok_or(Error::Invalid("missing Run identity"))?
-                .request_id,
-        )
-    }
-
-    /// Admit or reconcile this exact Run without creating a successor.
-    ///
-    /// # Errors
-    /// An unavailable response requires replaying this builder, never allocating another Run.
-    #[tracing::instrument(
-        name = "acyclic.inference.run.generate",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn send(&self) -> Result<Run, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                if self.request.maximum_output == 0 {
-                    return Err(Error::Invalid("zero output bound"));
-                }
-                let context = fixed::<32>(&self.request.context)?;
-                let run_id = self.id()?;
-                let response = self
-                    .client
-                    .runs()
-                    .generate(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                let view = response.run.ok_or(Error::Invalid("missing Run response"))?;
-                contract::validate_generated_run_view(&view, run_id, context)
-                    .map_err(contract_error)?;
-                Ok(Run {
-                    client: self.client.clone(),
-                    run_id,
-                })
-            }
-            .await,
-        )
-    }
-}
-
-/// Recoverable logical Run. Cloning this handle never repeats execution.
-#[derive(Clone)]
-pub struct Run {
-    client: Inference,
-    run_id: [u8; 16],
-}
-
-impl Run {
-    /// Caller-known stable Run identity.
-    #[must_use]
-    pub const fn id(&self) -> [u8; 16] {
-        self.run_id
-    }
-
-    fn inspect_request(&self) -> wire::InspectRunRequest {
-        wire::InspectRunRequest {
-            run_id: self.run_id.to_vec(),
-        }
-    }
-
-    /// Inspect durable Run state without opening a watch or admitting work.
-    ///
-    /// # Errors
-    /// Returns authenticated service rejection or malformed response evidence.
-    #[tracing::instrument(
-        name = "acyclic.inference.run.inspect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn inspect(&self) -> Result<wire::RunView, Error> {
-        obs::finish(
-            async {
-                let view = self
-                    .client
-                    .runs()
-                    .inspect(self.client.request(self.inspect_request())?)
-                    .await?
-                    .into_inner();
-                validate_run_view(&view, self.run_id)?;
-                Ok(view)
-            }
-            .await,
-        )
-    }
-
-    /// Resume the ordered event stream at an inclusive zero-based cursor.
-    ///
-    /// # Errors
-    /// Returns transport or authenticated service rejection before the stream is established.
-    #[tracing::instrument(
-        name = "acyclic.inference.run.watch",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn watch(&self, from_sequence: u64) -> Result<RunEvents, Error> {
-        obs::finish(
-            async {
-                let view = self.inspect().await?;
-                let state =
-                    contract::watch_run_start(&view, from_sequence).map_err(contract_error)?;
-                if state.is_terminal() {
-                    return Ok(RunEvents {
-                        stream: None,
-                        state,
-                    });
-                }
-                let stream = self
-                    .client
-                    .runs()
-                    .watch(self.client.request(wire::WatchRunRequest {
-                        run_id: self.run_id.to_vec(),
-                        from_sequence,
-                    })?)
-                    .await?
-                    .into_inner();
-                Ok(RunEvents {
-                    stream: Some(stream),
-                    state,
-                })
-            }
-            .await,
-        )
-    }
-
-    /// Request durable cancellation of this Run only.
-    ///
-    /// # Errors
-    /// Returns authenticated service rejection or malformed post-cancellation state.
-    #[tracing::instrument(
-        name = "acyclic.inference.run.cancel",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn cancel(&self) -> Result<wire::RunView, Error> {
-        obs::finish(
-            async {
-                let view = self
-                    .client
-                    .runs()
-                    .cancel(self.client.request(self.inspect_request())?)
-                    .await?
-                    .into_inner();
-                validate_run_view(&view, self.run_id)?;
-                Ok(view)
-            }
-            .await,
-        )
     }
 }
 
@@ -1152,52 +619,12 @@ fn validate_warm_view(
         .map_err(contract_error)
 }
 
-/// Replayable mutation with a pre-dispatch command identity, not an execution retry.
-#[derive(Clone)]
-pub struct ContextMutation {
-    client: Inference,
-    request: wire::MutateContextRequest,
-}
-
-impl ContextMutation {
-    /// Caller-known command identity before dispatch.
-    #[must_use]
-    pub fn identity(&self) -> Option<&wire::RequestIdentity> {
-        self.request.identity.as_ref()
-    }
-
-    /// Submit or reconcile the exact command. The receipt is not a billing/deletion proof.
-    ///
-    /// # Errors
-    /// An unavailable observation does not imply the mutation failed to commit.
-    #[tracing::instrument(
-        name = "acyclic.inference.context.mutate",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn send(&self) -> Result<wire::MutationReceipt, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                let receipt = self
-                    .client
-                    .rpc()
-                    .mutate(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                validate_receipt(&receipt)?;
-                Ok(receipt)
-            }
-            .await,
-        )
-    }
-}
-
 fn validate_receipt(receipt: &wire::MutationReceipt) -> Result<(), Error> {
     contract::validate_receipt(receipt).map_err(contract_error)
 }
 
-fn text_item(kind: wire::ItemKind, text: String) -> wire::Item {
+/// Allocates a fresh item identity before its exact text bytes are dispatched.
+pub fn text_item(kind: wire::ItemKind, text: String) -> wire::Item {
     wire::Item {
         id: uuid::Uuid::now_v7().as_bytes().to_vec(),
         kind: kind as i32,
@@ -1296,25 +723,20 @@ mod tests {
             authorization: authorization("fixture")?,
             client_instance: [7; 16],
         }));
-        let context = Context {
-            client: client.clone(),
-            revision: [2; 32],
-        };
-        let warm = WarmContext {
-            client,
-            commitment: [1; 32],
-        };
+        let revision = [2; 32];
+        let commitment = [1; 32];
         for baseline in [latency.clone(), idle.clone()] {
             let is_idle = baseline.idle_kv.is_some();
-            let retain = context.retain(if is_idle {
+            let retain = client.retention_request(revision, if is_idle {
                 Retention::idle_kv([6; 32], 10)
             } else {
                 Retention::warm_until([6; 32], 110)
             });
-            let renew = if is_idle {
-                warm.renew_idle(10)
-            } else {
-                warm.renew(110)
+            let renew = wire::RenewWarmRequest {
+                identity: Some(client.identity()),
+                commitment: commitment.to_vec(),
+                expires_at_ms: if is_idle { 0 } else { 110 },
+                idle_timeout_ms: is_idle.then_some(10),
             };
             for fault in 0..6 {
                 let mut response = baseline.clone();
@@ -1333,8 +755,8 @@ mod tests {
                     _ => {}
                 }
                 *fixture.0.lock().map_err(|_| "fixture lock poisoned")? = response;
-                assert_eq!(retain.send().await.is_ok(), fault == 0 || fault == 2);
-                assert_eq!(renew.send().await.is_ok(), fault == 0 || fault == 1);
+                assert_eq!(client.retain_warm(&retain).await.is_ok(), fault == 0 || fault == 2);
+                assert_eq!(client.renew_warm(&renew).await.is_ok(), fault == 0 || fault == 1);
             }
             let mut response = baseline;
             if let Some(policy) = response
@@ -1347,7 +769,7 @@ mod tests {
                 response.latency_profile = vec![9; 32];
             }
             *fixture.0.lock().map_err(|_| "fixture lock poisoned")? = response;
-            assert!(retain.send().await.is_err());
+            assert!(client.retain_warm(&retain).await.is_err());
         }
         server.abort();
         let _cancelled = server.await;
@@ -1714,42 +1136,12 @@ mod tests {
     #[tokio::test]
     async fn calls_emit_spans_with_status_codes_and_no_content() -> Result<(), Error> {
         let _connect_trace = CONNECT_TRACE_TEST.lock().await;
-        use std::sync::Mutex;
-        use tracing::field::{Field, Visit};
-        use tracing_subscriber::layer::{Context, SubscriberExt as _};
+        use acyclic_grpc_observability::test_support::Capture;
+        use tracing_subscriber::layer::SubscriberExt as _;
 
-        type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
-        struct Capture(Seen);
-        struct Fields<'a>(
-            &'static str,
-            &'a mut Vec<(&'static str, &'static str, String)>,
-        );
-        impl Visit for Fields<'_> {
-            fn record_str(&mut self, field: &Field, value: &str) {
-                self.1.push((self.0, field.name(), value.to_owned()));
-            }
-            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-                self.1.push((self.0, field.name(), format!("{value:?}")));
-            }
-        }
-        impl<S> tracing_subscriber::Layer<S> for Capture
-        where
-            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-        {
-            fn on_record(
-                &self,
-                id: &tracing::span::Id,
-                values: &tracing::span::Record<'_>,
-                context: Context<'_, S>,
-            ) {
-                let name = context.span(id).unwrap().name();
-                values.record(&mut Fields(name, &mut self.0.lock().unwrap()));
-            }
-        }
-
-        let seen = Seen::default();
+        let seen = Capture::default();
         let _default = tracing::subscriber::set_default(
-            tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
+            tracing_subscriber::registry().with(seen.clone()),
         );
         assert!(
             Inference::connect("http://localhost", "secret", b"pem")
@@ -1768,15 +1160,17 @@ mod tests {
             authorization: authorization("secret")?,
             client_instance: [1; 16],
         }));
-        let creation = client.context("model").instructions("prompt text");
-        let Err(Error::Observation(status)) = creation.create().await else {
+        let mut creation = client.context("model");
+        creation.items.push(text_item(wire::ItemKind::Instruction, "prompt text".into()));
+        let Err(Error::Observation(status)) = client.create_context(&creation).await else {
             return Err(Error::Invalid("the RPC did not fail"));
         };
 
-        let seen = seen.lock().unwrap();
+        let evidence = seen.0.lock().unwrap();
+        let seen = &evidence.records;
         let has = |span: &str, field: &str, value: &str| {
             seen.iter()
-                .any(|(s, f, v)| *s == span && *f == field && v == value)
+                .any(|(s, f, v)| s == span && f == field && v.trim_matches('"') == value)
         };
         assert!(
             has("acyclic.inference.connect", "error.kind", "invalid"),
@@ -1792,7 +1186,7 @@ mod tests {
         assert!(has("acyclic.inference.context.create", "outcome", "err"));
         for (span, field, value) in seen.iter() {
             assert!(
-                !["path", "token", "content", "body", "authorization"].contains(field),
+                !["path", "token", "content", "body", "authorization"].contains(&field.as_str()),
                 "{span} records {field}"
             );
             assert!(

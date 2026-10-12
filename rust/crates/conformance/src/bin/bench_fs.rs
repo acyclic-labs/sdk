@@ -50,14 +50,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         options
     };
     let fs = Box::pin(Fs::local(options())).await?;
-    let workspace = Box::pin(fs.create_workspace("benchmark")).await?;
+    let workspace = Box::pin(fs.create_workspace("benchmark", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let started = Instant::now();
     if batch {
         let mut transaction = Box::pin(async { workspace.begin_transaction(IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await?;
         for index in 0..writes {
             Box::pin(transaction.write(
                 &format!("/entry-{index:04}"),
-                Bytes::from(format!("value-{index}")),
+                Bytes::from(format!("value-{index}")), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
             ))
             .await?;
         }
@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(fs);
     // Reopen so reads start from durable storage instead of warm caches.
     let fs = Box::pin(Fs::local(options())).await?;
-    let workspace = Box::pin(fs.open_workspace("benchmark")).await?;
+    let workspace = Box::pin(fs.open_workspace("benchmark", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cold_started = Instant::now();
     for index in 0..writes {
         let value = Box::pin(async { workspace.read(&format!("/entry-{index:04}"), 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await?;
@@ -120,7 +120,7 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
     }
     let storage = tempfile::tempdir()?;
     let fs = Box::pin(Fs::local(LocalOptions::new(storage.path()))).await?;
-    let workspace = Box::pin(fs.create_workspace("capture-benchmark")).await?;
+    let workspace = Box::pin(fs.create_workspace("capture-benchmark", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut checkout = Box::pin(async { workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
     .await?;
     let options = CaptureOptions {
@@ -133,6 +133,7 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
     let receipt = capture_baseline(
         &mut checkout,
         &options,
+        &acyclic_fs::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     )

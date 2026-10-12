@@ -11,7 +11,7 @@ use acyclic_harness::conversation::{
 };
 use acyclic_harness::core::{AggregateKind, Authority, AuthorityIssuer};
 use acyclic_harness::distributed::{
-    DistributedCoordinator, DurableReducer, ReducerRegistry,
+    DistributedCoordinator, ReducerRegistry,
     SchedulerPayloadStore,
 };
 use acyclic_harness::filesystem::{
@@ -23,7 +23,7 @@ use acyclic_harness::scheduler::{
     ParentLink, Reservation, ResourceRequest, SchedulerEvent, assembly_invocation_digest,
 };
 use acyclic_harness::{AgentId, Capabilities, IdempotencyKey, OperationId, Outcome, Result};
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -33,26 +33,18 @@ fn id(byte: u8) -> OperationId {
     OperationId::from_bytes([byte; 16])
 }
 
-struct SumReducer(EntrypointRef);
-
-impl DurableReducer for SumReducer {
-    fn entrypoint(&self) -> &EntrypointRef {
-        &self.0
-    }
-
-    fn reduce(&self, values: &[(String, serde_json::Value)]) -> Result<Outcome<serde_json::Value>> {
-        let sum = values
-            .iter()
-            .map(|(_, value)| {
-                value.as_i64().ok_or_else(|| {
-                    acyclic_harness::Error::Invalid("reducer expected integer children".into())
-                })
+fn sum(values: &[(String, serde_json::Value)]) -> Result<Outcome<serde_json::Value>> {
+    let sum = values
+        .iter()
+        .map(|(_, value)| {
+            value.as_i64().ok_or_else(|| {
+                acyclic_harness::Error::Invalid("reducer expected integer children".into())
             })
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .sum::<i64>();
-        Ok(Outcome::Succeeded(serde_json::json!(sum)))
-    }
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .sum::<i64>();
+    Ok(Outcome::Succeeded(serde_json::json!(sum)))
 }
 
 fn spec(
@@ -69,8 +61,7 @@ fn spec(
         owner: DurableOwner::Attached {
             authority: owner.clone(),
         },
-        owner_scope: AuthorityIssuer::new("qualification", [5; 32], owner.clone())
-            .root("original-declare", Capabilities::new(["operation:declare"])),
+        owner_scope: AuthorityIssuer::new("qualification", [5; 32], owner.clone()).issue("original-declare", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof"),
         entrypoint: EntrypointRef {
             name: "test.scheduler".into(),
             version: "1".into(),
@@ -98,33 +89,30 @@ async fn start(
     let fence = LeaseFence::from(&reservation);
     coordinator
         .apply(
-            operation_id,
             IdempotencyKey::new(format!("admit-{operation_id}"))?,
             SchedulerEvent::Admitted {
                 operation_id,
                 reservation,
-            },
+            }, &mut None,
         )
         .await?;
     coordinator
         .apply(
-            operation_id,
             IdempotencyKey::new(format!("start-{operation_id}"))?,
             SchedulerEvent::Started {
                 operation_id,
                 fence: fence.clone(),
-            },
+            }, &mut None,
         )
         .await?;
     if waiting_for_children {
         coordinator
             .apply(
-                operation_id,
                 IdempotencyKey::new(format!("wait-{operation_id}"))?,
                 SchedulerEvent::WaitingForChildren {
                     operation_id,
                     fence: fence.clone(),
-                },
+                }, &mut None,
             )
             .await?;
     }
@@ -133,13 +121,14 @@ async fn start(
 
 #[tokio::test]
 async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> {
-    let provider = ProviderRef::new("qualification", "filesystem", "2")?;
+    let provider = ProviderRef::new("qualification".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let volume = VolumeRef::new(
         provider,
-        "scheduler-private",
+        "scheduler-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([6; 16])),
+        &mut None,
     )?;
     host.create_volume(&volume).await?;
     let owner = Authority {
@@ -147,17 +136,13 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         id: "scheduler-owner".into(),
     };
     let issuer = AuthorityIssuer::new("qualification", [5; 32], owner.clone());
-    let scope = issuer.root_for_agent(
-        AgentId::from_bytes([6; 16]),
-        "scheduler",
-        Capabilities::new([
+    let scope = issuer.issue("scheduler", &Capabilities::new([
             "operation:declare".to_owned(),
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
+        ]), Some(AgentId::from_bytes([6; 16])), None, &mut None).expect("scope proof");
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
     let state = host
         .put_content(
             &volume,
@@ -168,34 +153,29 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "initial.json",
             1_024,
             &IdempotencyKey::new("scheduler-initial")?,
-        )
+         None, None)
         .await?;
-    let verifier = Arc::new(FilesystemContentVerifier::new(
-        host.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        1_024,
-    )?);
+    let verifier = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_024, None)?;
     let stager = Arc::new(FilesystemSchedulerPayloadStore::new(
         host.clone(),
-        volume.clone(),
-        &issuer.verifier(),
+        &volume,
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
-        1_024,
+        1_024, None,
     )?);
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
-    let mut coordinator = DistributedCoordinator::open(&stream, verifier.clone())
+    let stream = Arc::new(MemoryStream::default());
+    let mut coordinator = DistributedCoordinator::open(&stream, verifier.clone(), Some(stager.clone()), &mut None)
         .await?
-        .with_payload_store(stager.clone());
+        ;
     let parent = id(1);
     coordinator
         .declare_operation(
             &owner,
             &scope,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             spec(parent, &owner, &state, Orchestration::Join, None, "array"),
             IdempotencyKey::new("declare-parent")?,
-            None,
+            None, &mut None,
         )
         .await?;
     start(&mut coordinator, parent, true).await?;
@@ -206,7 +186,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             .declare_operation(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 spec(
                     child,
                     &owner,
@@ -219,7 +199,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     "number",
                 ),
                 IdempotencyKey::new(format!("declare-{slot}"))?,
-                None,
+                None, &mut None,
             )
             .await?;
         let fence = start(&mut coordinator, child, false).await?;
@@ -233,20 +213,20 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "child.json",
                 1_024,
                 &IdempotencyKey::new(format!("child-upload-{slot}"))?,
-            )
+             None, None)
             .await?;
         if slot == "a" {
             let corrupt = FileRef::new(
                 result.volume().clone(),
-                result.path(),
-                result.version(),
-                FileDescriptor::from_bytes(b"999", "application/json")?,
-                "child.json",
+                result.path().into(),
+                result.version().into(),
+                FileDescriptor::from_bytes(b"999", "application/json", &mut None)?,
+                "child.json".into(),
+                &mut None,
             )?;
             assert!(
                 coordinator
                     .apply(
-                        child,
                         IdempotencyKey::new("corrupt-child")?,
                         SchedulerEvent::Completed {
                             operation_id: child,
@@ -254,7 +234,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                             fence: Some(fence.clone()),
                             execution_duration_ns: None,
                         }
-                    )
+                    , &mut None)
                     .await
                     .is_err()
             );
@@ -266,15 +246,15 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             );
             let missing = FileRef::new(
                 result.volume().clone(),
-                "child/missing.json",
-                result.version(),
+                "child/missing.json".into(),
+                result.version().into(),
                 result.descriptor().clone(),
-                "missing.json",
+                "missing.json".into(),
+                &mut None,
             )?;
             assert!(
                 coordinator
                     .apply(
-                        child,
                         IdempotencyKey::new("missing-child")?,
                         SchedulerEvent::Completed {
                             operation_id: child,
@@ -282,7 +262,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                             fence: Some(fence.clone()),
                             execution_duration_ns: None,
                         }
-                    )
+                    , &mut None)
                     .await
                     .is_err()
             );
@@ -296,12 +276,11 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     "invalid.json",
                     1_024,
                     &IdempotencyKey::new("invalid-type-upload")?,
-                )
+                 None, None)
                 .await?;
             assert!(
                 coordinator
                     .apply(
-                        child,
                         IdempotencyKey::new("schema-child")?,
                         SchedulerEvent::Completed {
                             operation_id: child,
@@ -309,7 +288,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                             fence: Some(fence.clone()),
                             execution_duration_ns: None,
                         }
-                    )
+                    , &mut None)
                     .await
                     .is_err()
             );
@@ -322,14 +301,13 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         }
         coordinator
             .apply(
-                child,
                 IdempotencyKey::new(format!("finish-{slot}"))?,
                 SchedulerEvent::Completed {
                     operation_id: child,
                     outcome: Outcome::Succeeded(result),
                     fence: Some(fence),
                     execution_duration_ns: None,
-                },
+                }, &mut None,
             )
             .await?;
     }
@@ -351,7 +329,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "forged-join.json",
             1_024,
             &IdempotencyKey::new("forged-join-upload")?,
-        )
+         None, None)
         .await?;
     let expected_revision = coordinator
         .scheduler()
@@ -360,7 +338,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .revision;
     let forged_result = coordinator
         .apply(
-            parent,
             IdempotencyKey::new("forged-join")?,
             SchedulerEvent::Orchestrated {
                 operation_id: parent,
@@ -369,7 +346,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 cancel,
                 reducer: None,
                 reduction_digest: Some(assembly_invocation_digest(assembly, &values)?),
-            },
+            }, &mut None,
         )
         .await;
     assert!(
@@ -384,17 +361,17 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
     );
     assert!(
         coordinator
-            .orchestrate(parent, IdempotencyKey::new("join-once")?)
-            .await?
-    );
-    assert!(
-        coordinator
-            .orchestrate(parent, IdempotencyKey::new("join-once")?)
+            .orchestrate(parent, IdempotencyKey::new("join-once")?, None)
             .await?
     );
     assert!(
         !coordinator
-            .orchestrate(parent, IdempotencyKey::new("join-again")?)
+            .orchestrate(parent, IdempotencyKey::new("join-once")?, None)
+            .await?
+    );
+    assert!(
+        !coordinator
+            .orchestrate(parent, IdempotencyKey::new("join-again")?, None)
             .await?
     );
     let outcome = coordinator
@@ -408,14 +385,14 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "join did not succeed".into(),
         ));
     };
-    let bytes = host.read_content(result, &read, 1_024).await?;
+    let bytes = host.read_content(result, &read, 1_024, None).await?;
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes)
             .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
         serde_json::json!([{"slot":"a","value":2},{"slot":"b","value":3}])
     );
     assert!(matches!(
-        stager.stage(parent, "join-once", b"different").await,
+        stager.stage(parent, "join-once", b"different", None)?.await,
         Err(acyclic_harness::Error::Conflict(_))
     ));
 
@@ -424,7 +401,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .declare_operation(
             &owner,
             &scope,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             spec(
                 quorum,
                 &owner,
@@ -434,7 +411,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "array",
             ),
             IdempotencyKey::new("declare-quorum")?,
-            None,
+            None, &mut None,
         )
         .await?;
     start(&mut coordinator, quorum, true).await?;
@@ -444,7 +421,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             .declare_operation(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 spec(
                     child,
                     &owner,
@@ -457,7 +434,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     "number",
                 ),
                 IdempotencyKey::new(format!("declare-{slot}"))?,
-                None,
+                None, &mut None,
             )
             .await?;
         let fence = start(&mut coordinator, child, false).await?;
@@ -475,29 +452,28 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "child.json",
                 1_024,
                 &IdempotencyKey::new(format!("child-upload-{slot}"))?,
-            )
+             None, None)
             .await?;
         coordinator
             .apply(
-                child,
                 IdempotencyKey::new(format!("finish-{slot}"))?,
                 SchedulerEvent::Completed {
                     operation_id: child,
                     outcome: Outcome::Succeeded(result),
                     fence: Some(fence),
                     execution_duration_ns: None,
-                },
+                }, &mut None,
             )
             .await?;
     }
     assert!(
         coordinator
-            .orchestrate(quorum, IdempotencyKey::new("quorum-once")?)
+            .orchestrate(quorum, IdempotencyKey::new("quorum-once")?, None)
             .await?
     );
     assert!(
-        coordinator
-            .orchestrate(quorum, IdempotencyKey::new("quorum-once")?)
+        !coordinator
+            .orchestrate(quorum, IdempotencyKey::new("quorum-once")?, None)
             .await?
     );
     let Some(Outcome::Succeeded(quorum_result)) = coordinator
@@ -511,7 +487,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
     };
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(
-            &host.read_content(quorum_result, &read, 1_024).await?
+            &host.read_content(quorum_result, &read, 1_024, None).await?
         )
         .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
         serde_json::json!([5, 6])
@@ -529,14 +505,14 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         digest: [9; 32],
         result_schema: serde_json::json!({"type":"number"}),
     };
-    let mut reducers = ReducerRegistry::new();
-    reducers.register(Arc::new(SumReducer(reducer.clone())))?;
+    let mut reducers = ReducerRegistry::default();
+    reducers.register(reducer.clone(), sum)?;
     let reduction = id(8);
     coordinator
         .declare_operation(
             &owner,
             &scope,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             spec(
                 reduction,
                 &owner,
@@ -546,7 +522,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "number",
             ),
             IdempotencyKey::new("declare-reduction")?,
-            None,
+            None, &mut None,
         )
         .await?;
     start(&mut coordinator, reduction, true).await?;
@@ -555,7 +531,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .declare_operation(
             &owner,
             &scope,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             spec(
                 child,
                 &owner,
@@ -568,7 +544,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "number",
             ),
             IdempotencyKey::new("declare-reduce-child")?,
-            None,
+            None, &mut None,
         )
         .await?;
     let fence = start(&mut coordinator, child, false).await?;
@@ -582,35 +558,33 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "child.json",
             1_024,
             &IdempotencyKey::new("reduce-child-upload")?,
-        )
+         None, None)
         .await?;
     coordinator
         .apply(
-            child,
             IdempotencyKey::new("finish-reduce-child")?,
             SchedulerEvent::Completed {
                 operation_id: child,
                 outcome: Outcome::Succeeded(result),
                 fence: Some(fence),
                 execution_duration_ns: None,
-            },
+            }, &mut None,
         )
         .await?;
     coordinator
-        .complete_reduction(&reducers, reduction, IdempotencyKey::new("reduce-once")?)
+        .orchestrate(reduction, IdempotencyKey::new("reduce-once")?, Some(&reducers))
         .await?;
     assert_eq!(
         coordinator
-            .complete_reduction(&reducers, reduction, IdempotencyKey::new("reduce-once")?)
+            .orchestrate(reduction, IdempotencyKey::new("reduce-once")?, Some(&reducers))
             .await?,
         false
     );
-    assert!(matches!(
-        coordinator
-            .complete_reduction(&reducers, reduction, IdempotencyKey::new("reduce-again")?)
-            .await,
-        Err(acyclic_harness::Error::Conflict(_))
-    ));
+    assert!(
+        !coordinator
+            .orchestrate(reduction, IdempotencyKey::new("reduce-again")?, Some(&reducers))
+            .await?
+    );
     let Some(Outcome::Succeeded(reduced)) = coordinator
         .scheduler()
         .operation(reduction)
@@ -621,26 +595,26 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         ));
     };
     assert_eq!(
-        host.read_content(reduced, &read, 1_024).await?.as_ref(),
+        host.read_content(reduced, &read, 1_024, None).await?.as_ref(),
         b"11"
     );
 
-    let mut reopened = DistributedCoordinator::open(&stream, verifier)
+    let mut reopened = DistributedCoordinator::open(&stream, verifier, Some(stager), &mut None)
         .await?
-        .with_payload_store(stager);
+        ;
     assert!(
-        reopened
-            .orchestrate(parent, IdempotencyKey::new("join-once")?)
+        !reopened
+            .orchestrate(parent, IdempotencyKey::new("join-once")?, None)
             .await?
     );
     assert!(
-        reopened
-            .orchestrate(quorum, IdempotencyKey::new("quorum-once")?)
+        !reopened
+            .orchestrate(quorum, IdempotencyKey::new("quorum-once")?, None)
             .await?
     );
     assert_eq!(
         reopened
-            .complete_reduction(&reducers, reduction, IdempotencyKey::new("reduce-once")?)
+            .orchestrate(reduction, IdempotencyKey::new("reduce-once")?, Some(&reducers))
             .await?,
         false
     );

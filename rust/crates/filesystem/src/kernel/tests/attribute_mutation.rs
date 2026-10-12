@@ -1,13 +1,15 @@
-use crate::kernel::decode_attribute_page;
 use super::*;
 use crate::CancellationToken;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
+use crate::kernel::decode_attribute_page;
 use crate::kernel::persistent_btree::Mutation;
-use crate::kernel::{AttributeChild, AttributePage, attribute_page_id, encode_attribute_page};
+use crate::kernel::{AttributePage, attribute_page_id, encode_attribute_page};
 use crate::memory::MemoryObjectStore;
-use crate::storage::ObjectStore;
+
 use acyclic_stream::OwnedBytes;
 
+use crate::kernel::Child;
 fn name(byte: u8, length: usize) -> Result<AttributeName, Box<dyn std::error::Error>> {
     Ok(AttributeName::new(
         super::super::AttributeClass::PosixXattr,
@@ -31,58 +33,64 @@ fn entry(
     })
 }
 
-fn put(
+async fn put(
     store: &MemoryObjectStore,
     page: &AttributePage,
     maximum_items: u32,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = attribute_page_id(page, maximum_items)?;
-    store.put(
+    {
+        let __object_args = (
         id,
-        OwnedBytes::from(encode_attribute_page(page, maximum_items)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        OwnedBytes::from(encode_attribute_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(id)
 }
 
-fn three_leaf_tree(
+async fn three_leaf_tree(
     store: &MemoryObjectStore,
 ) -> Result<(ObjectId, [ObjectId; 3]), Box<dyn std::error::Error>> {
     let leaves = [
-        put(store, &AttributePage::Leaf(vec![entry(1, 1, 1)?]), 8)?,
+        put(store, &AttributePage::Leaf(vec![entry(1, 1, 1)?]), 8).await?,
         put(
             store,
             &AttributePage::Leaf(vec![entry(3, 1, 3)?, entry(4, 1, 4)?]),
             8,
-        )?,
-        put(store, &AttributePage::Leaf(vec![entry(6, 1, 6)?]), 8)?,
+        ).await?,
+        put(store, &AttributePage::Leaf(vec![entry(6, 1, 6)?]), 8).await?,
     ];
     let root = put(
         store,
         &AttributePage::Internal(vec![
-            AttributeChild {
-                first_name: name(1, 1)?,
+            Child {
+                first: name(1, 1)?,
                 page: leaves[0],
             },
-            AttributeChild {
-                first_name: name(3, 1)?,
+            Child {
+                first: name(3, 1)?,
                 page: leaves[1],
             },
-            AttributeChild {
-                first_name: name(6, 1)?,
+            Child {
+                first: name(6, 1)?,
                 page: leaves[2],
             },
         ]),
         8,
-    )?;
+    ).await?;
     Ok((root, leaves))
 }
 
-#[test]
-fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
+#[tokio::test]
+async fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (root, leaves) = three_leaf_tree(&store)?;
+    let (root, leaves) = three_leaf_tree(&store).await?;
     let expected = entry(3, 1, 3)?;
     let receipt = apply_attribute_mutations(
         &store,
@@ -94,13 +102,28 @@ fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
-    let bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
-        .value;
-    let AttributePage::Internal(children) = decode_attribute_page(&bytes, DecodeLimits::default())?
+    let bytes = {
+        let __object_args = (
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
+    .value;
+    let AttributePage::Internal(children) =
+        decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
     else {
         return Err("candidate attribute root is not internal".into());
     };
@@ -110,11 +133,11 @@ fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
     Ok(())
 }
 
-#[test]
-fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
+#[tokio::test]
+async fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &AttributePage::Leaf(Vec::new()), 8)?;
+    let root = put(&store, &AttributePage::Leaf(Vec::new()), 8).await?;
     let receipt = apply_attribute_mutations(
         &store,
         root,
@@ -127,11 +150,23 @@ fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
         4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
-    let bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+        &CancellationToken::new(),
+    )
+    .await?;
+    let bytes = {
+        let __object_args = (
+            receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
         .value;
-    let AttributePage::Leaf(entries) = decode_attribute_page(&bytes, DecodeLimits::default())?
+    let AttributePage::Leaf(entries) =
+        decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
     else {
         return Err("unordered attribute result is not a leaf".into());
     };
@@ -145,11 +180,11 @@ fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
     Ok(())
 }
 
-#[test]
-fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let (root, _) = three_leaf_tree(&store)?;
+    let (root, _) = three_leaf_tree(&store).await?;
     let same = entry(3, 1, 3)?;
     let receipt = apply_attribute_mutations(
         &store,
@@ -161,54 +196,23 @@ fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), Box<dyn
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
-    assert_eq!(receipt.root, root);
+        &CancellationToken::new(),
+    ).await?;
+    assert_eq!(receipt.value, root);
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
     assert_eq!(receipt.work.backend_write_operations, 0);
     Ok(())
 }
 
-#[test]
-fn sync_and_async_attribute_mutation_are_identical() -> Result<(), Box<dyn std::error::Error>> {
-    let sync_store = MemoryObjectStore::default();
-    let async_store = MemoryObjectStore::default();
-    let (sync_root, _) = three_leaf_tree(&sync_store)?;
-    let (async_root, _) = three_leaf_tree(&async_store)?;
-    let mutation = AttributeMutation::Replace {
-        expected: entry(3, 1, 3)?,
-        replacement: entry(3, 1, 9)?,
-    };
-    let synchronous = apply_attribute_mutations(
-        &sync_store,
-        sync_root,
-        vec![mutation.clone()],
-        8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = crate::async_storage::poll_ready(apply_attribute_mutations_async(
-        &async_store,
-        async_root,
-        vec![mutation],
-        8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed async attribute mutation unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
-    Ok(())
-}
-
-#[test]
-fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &AttributePage::Leaf(vec![entry(1, 1, 1)?]), 8)?;
+    let root = put(&store, &AttributePage::Leaf(vec![entry(1, 1, 1)?]), 8).await?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = crate::async_storage::poll_ready(apply_attribute_mutations_async(
+    let failure = apply_attribute_mutations(
         &store,
         root,
         vec![AttributeMutation::Insert(entry(2, 1, 2)?)],
@@ -216,8 +220,7 @@ fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Box<dyn 
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory-backed async attribute mutation unexpectedly blocked")?
+    ).await
     .err()
     .ok_or("cancelled attribute mutation unexpectedly succeeded")?;
     assert!(matches!(
@@ -229,10 +232,11 @@ fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[test]
-fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
-    let root = put(&store, &AttributePage::Leaf(vec![entry(1, 40, 1)?]), 8)?;
+    let root = put(&store, &AttributePage::Leaf(vec![entry(1, 40, 1)?]), 8).await?;
     let limits = DecodeLimits {
         maximum_page_bytes: 175,
         maximum_page_items: 8,
@@ -246,36 +250,65 @@ fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std:
         1,
         limits,
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(receipt.work.page_writes, 3);
-    let root_bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
-        .value;
+    let root_bytes = {
+        let __object_args = (
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
+    .value;
     assert!(root_bytes.len() <= 175);
-    let AttributePage::Internal(children) = decode_attribute_page(&root_bytes, limits)? else {
+    let AttributePage::Internal(children) = decode_attribute_page(&root_bytes, limits, &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
+    else {
         return Err("byte-bounded candidate attribute root is not internal".into());
     };
     assert_eq!(children.len(), 2);
     for child in children {
-        let bytes = store
-            .read(child.page, u64::MAX, WorkBudget::UNBOUNDED)?
-            .value;
+        let bytes = {
+            let __object_args = (
+                child.page,
+                u64::MAX,
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?
+        .value;
         assert!(bytes.len() <= 175);
         assert!(
-            matches!(decode_attribute_page(&bytes, limits)?, AttributePage::Leaf(entries) if entries.len() == 1)
+            matches!(decode_attribute_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, AttributePage::Leaf(entries) if entries.len() == 1)
         );
     }
     Ok(())
 }
 
-#[test]
-fn oversized_attribute_item_rejects_before_writes() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn oversized_attribute_item_rejects_before_writes()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &AttributePage::Leaf(Vec::new()), 8)?;
+    let root = put(&store, &AttributePage::Leaf(Vec::new()), 8).await?;
     let failure = apply_attribute_mutations(
         &store,
         root,
-        vec![AttributeMutation::Insert(entry(1, 40, 1)?)],
+        vec![
+            AttributeMutation::Insert(entry(1, 40, 1)?)],
         1,
         DecodeLimits {
             maximum_page_bytes: 99,
@@ -283,7 +316,8 @@ fn oversized_attribute_item_rejects_before_writes() -> Result<(), Box<dyn std::e
             ..DecodeLimits::default()
         },
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("oversized attribute item unexpectedly succeeded")?;
     assert!(matches!(
@@ -304,26 +338,26 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
         },
         ..entry(1, 1, 1)?
     };
-    assert_eq!(
+    assert!(matches!(
         AttributeMutation::Insert(invalid).validate(),
-        Err(AttributeSemanticError::InvalidEntry)
-    );
-    assert_eq!(
+        Err(AttributeMutationError::InvalidEntry)
+    ));
+    assert!(matches!(
         AttributeMutation::Remove {
             name: name(2, 1)?,
             expected: Some(entry(1, 1, 1)?),
         }
         .validate(),
-        Err(AttributeSemanticError::NameMismatch)
-    );
-    assert_eq!(
+        Err(AttributeMutationError::NameMismatch)
+    ));
+    assert!(matches!(
         AttributeMutation::Replace {
             expected: entry(1, 1, 1)?,
             replacement: entry(2, 1, 2)?,
         }
         .validate(),
-        Err(AttributeSemanticError::NameMismatch)
-    );
+        Err(AttributeMutationError::NameMismatch)
+    ));
     assert!(
         AttributeMutation::Remove {
             name: name(1, 1)?,
@@ -337,30 +371,29 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
     assert_eq!(insert.key(), &name(1, 1)?);
     assert!(insert.changes_cardinality());
     let mut current = Some(entry(1, 1, 1)?);
-    assert_eq!(
-        insert.apply_current(&mut current),
-        Err(AttributeSemanticError::AlreadyExists)
-    );
+    assert!(matches!(
+        insert.replacement(current.as_ref()),
+        Err(AttributeMutationError::AlreadyExists)
+    ));
     current = None;
-    assert!(insert.apply_current(&mut current).is_ok());
+    assert!(insert.replacement(current.as_ref()).is_ok());
 
     let remove = AttributeMutation::Remove {
         name: name(1, 1)?,
         expected: Some(entry(1, 1, 2)?),
     };
     current = None;
-    assert_eq!(
-        remove.apply_current(&mut current),
-        Err(AttributeSemanticError::Missing)
-    );
+    assert!(matches!(
+        remove.replacement(current.as_ref()),
+        Err(AttributeMutationError::Missing)
+    ));
     current = Some(entry(1, 1, 1)?);
-    assert_eq!(
-        remove.apply_current(&mut current),
-        Err(AttributeSemanticError::StateConflict)
-    );
+    assert!(matches!(
+        remove.replacement(current.as_ref()),
+        Err(AttributeMutationError::StateConflict)
+    ));
     current = Some(entry(1, 1, 2)?);
-    assert!(remove.apply_current(&mut current).is_ok());
-    assert_eq!(current, None);
+    assert!(remove.replacement(current.as_ref())?.is_none());
 
     let replace = AttributeMutation::Replace {
         expected: entry(1, 1, 1)?,
@@ -368,93 +401,16 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
     };
     assert!(!replace.changes_cardinality());
     current = None;
-    assert_eq!(
-        replace.apply_current(&mut current),
-        Err(AttributeSemanticError::Missing)
-    );
+    assert!(matches!(
+        replace.replacement(current.as_ref()),
+        Err(AttributeMutationError::Missing)
+    ));
     current = Some(entry(1, 1, 3)?);
-    assert_eq!(
-        replace.apply_current(&mut current),
-        Err(AttributeSemanticError::StateConflict)
-    );
+    assert!(matches!(
+        replace.replacement(current.as_ref()),
+        Err(AttributeMutationError::StateConflict)
+    ));
     current = Some(entry(1, 1, 1)?);
-    assert!(replace.apply_current(&mut current).is_ok());
-    assert_eq!(current, Some(entry(1, 1, 2)?));
+    assert_eq!(replace.replacement(current.as_ref())?.cloned(), Some(entry(1, 1, 2)?));
     Ok(())
-}
-
-#[test]
-fn persistent_error_translation_is_total() {
-    use persistent_btree::Error as PersistentError;
-
-    assert!(matches!(
-        map_error(PersistentError::Empty),
-        AttributeMutationError::Empty
-    ));
-    assert!(matches!(
-        map_error(PersistentError::TooManyMutations),
-        AttributeMutationError::TooManyMutations
-    ));
-    assert!(matches!(
-        map_error(PersistentError::WrongRootKind),
-        AttributeMutationError::WrongRootKind
-    ));
-    assert!(matches!(
-        map_error(PersistentError::InvalidLimits),
-        AttributeMutationError::InvalidLimits
-    ));
-    assert!(matches!(
-        map_error(PersistentError::PageItemTooLarge),
-        AttributeMutationError::PageItemTooLarge
-    ));
-    assert!(matches!(
-        map_error(PersistentError::HeightExceeded),
-        AttributeMutationError::HeightExceeded
-    ));
-    assert!(matches!(
-        map_error(PersistentError::CycleOrAlias),
-        AttributeMutationError::CycleOrAlias
-    ));
-    assert!(matches!(
-        map_error(PersistentError::ChildBoundsMismatch),
-        AttributeMutationError::ChildBoundsMismatch
-    ));
-    assert!(matches!(
-        map_error(PersistentError::MutationContract),
-        AttributeMutationError::MutationContract
-    ));
-    assert!(matches!(
-        map_error(PersistentError::AllocationFailed),
-        AttributeMutationError::AllocationFailed
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Allocation(
-            AllocationError::CapacityExceeded
-        )),
-        AttributeMutationError::AllocationFailed
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Allocation(AllocationError::Work(
-            WorkError::Overflow
-        ))),
-        AttributeMutationError::Work(WorkError::Overflow)
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Semantic(AttributeSemanticError::Missing)),
-        AttributeMutationError::Semantic(AttributeSemanticError::Missing)
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Storage(ObjectStoreError::Missing)),
-        AttributeMutationError::Storage(ObjectStoreError::Missing)
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Decode(
-            CanonicalDecodeError::LengthOverflow
-        )),
-        AttributeMutationError::Decode(CanonicalDecodeError::LengthOverflow)
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Work(WorkError::Overflow)),
-        AttributeMutationError::Work(WorkError::Overflow)
-    ));
 }

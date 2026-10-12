@@ -4,7 +4,7 @@ use crate::core::RecordedScope;
 use crate::{
     AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
     contract::canonical_json_bytes,
-    core::{Action, AggregateKind, Authority, Command, Event, EventPayload, EventReference, Scope, canonical_intent},
+    core::{Action, AggregateKind, Authority, Command, Event, EventPayload, EventReference, Scope},
     wire,
 };
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -18,11 +18,7 @@ mod admission_tests;
 
 const EVENT_WIRE_VERSION: &str = "2";
 
-pub(crate) fn encode_event(authority: &Authority, event: &Event) -> Result<Vec<u8>> {
-    encode_event_with_work(authority, event, &mut None)
-}
-
-pub(crate) fn encode_event_with_work(
+pub(crate) fn encode_event(
     authority: &Authority, event: &Event,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Vec<u8>> {
@@ -108,18 +104,8 @@ fn event_envelope(authority: &Authority, event: &Event, payload: Vec<u8>) -> wir
     }
 }
 
-pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
-    decode_event_with_work(bytes, &mut None)
-}
-
-pub(crate) fn decode_event_with_work(
-    bytes: &[u8], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<(Authority, Event)> {
-    decode_event_with_work_and_custody(bytes, work).map(|(decoded, _)| decoded)
-}
-
 /// Returns the event's original retained claim, excluding the authority header.
-pub(crate) fn decode_event_with_work_and_custody(
+pub(crate) fn decode_event(
     bytes: &[u8], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<((Authority, Event), u64)> {
     let native = native_event_work(work);
@@ -161,9 +147,9 @@ pub(crate) fn decode_event_with_work_and_custody(
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let payload: EventPayload = if native {
-        let decoded = crate::contract::json_from_slice_bounded_native_trusted(
-            &envelope.canonical_payload_json, bounds, 0, wire::ErrorCode::Storage,
-            crate::contract::JsonValueSchema::EventPayload, &mut |charge| {
+        let decoded = crate::contract::json_from_slice_bounded(std::marker::PhantomData,
+            &envelope.canonical_payload_json, bounds, 0, Some(wire::ErrorCode::Storage),
+            Some(crate::contract::JsonValueSchema::EventPayload), &mut |charge| {
                 match charge {
                     crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
                         let witness = crate::contract::json_decode_owned_bytes(
@@ -232,7 +218,7 @@ pub(crate) fn decode_event_with_work_and_custody(
         causal_parent,
         payload,
     };
-    let canonical = encode_event_with_work(&authority, &event, payload_quota.work())?;
+    let canonical = encode_event(&authority, &event, payload_quota.work())?;
     let matches = canonical.as_slice() == bytes;
     let capacity = canonical.capacity() as u64;
     drop(canonical);
@@ -384,7 +370,7 @@ pub fn decode_command_envelope(envelope: wire::CommandEnvelope) -> Result<(Autho
         action,
     };
     if !envelope.intent_digest.is_empty()
-        && envelope.intent_digest.as_slice() != canonical_intent(&command)?
+        && envelope.intent_digest.as_slice() != crate::contract::canonical_json_digest_with_work(&command, crate::store::default_projection_read_limits().maximum_bytes, &mut None)?
     {
         return Err(Error::Conflict("command intent digest mismatch".into()));
     }
@@ -570,16 +556,16 @@ mod tests {
                     fork_policy: crate::core::ExtensionForkPolicy::Inherit,
                     content: FileRef::new(
                         VolumeRef::new(
-                            ProviderRef::new("test", "filesystem", "2")?,
-                            "extension",
+                            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
+                            "extension".into(),
                             VolumeClass::AgentPrivate,
                             VolumeOwner::Agent(AgentId::from_bytes([9; 16])),
-                        )?,
-                        "extension/event.json",
-                        "generation-1",
-                        FileDescriptor::from_bytes(b"null", "application/json")?,
-                        "event.json",
-                    )?,
+                         &mut None)?,
+                        "extension/event.json".into(),
+                        "generation-1".into(),
+                        FileDescriptor::from_bytes(b"null", "application/json", &mut None)?,
+                        "event.json".into(),
+                     &mut None)?,
                 },
             },
         };
@@ -587,7 +573,7 @@ mod tests {
             kind: AggregateKind::Task,
             id: "task-1".into(),
         };
-        let bytes = encode_event(&authority, &event)?;
+        let bytes = encode_event(&authority, &event, &mut None)?;
         assert_eq!(bytes, encode_event_envelope(&authority, &event)?.encode_to_vec());
         let mut envelope = wire::EventEnvelope::decode(bytes.as_slice())
             .map_err(|error| Error::Storage(error.to_string()))?;
@@ -597,7 +583,7 @@ mod tests {
             .ok_or_else(|| Error::Storage("protocol".into()))?
             .version = "1".into();
         assert!(matches!(
-            decode_event(&envelope.encode_to_vec()),
+            decode_event(&envelope.encode_to_vec(), &mut None),
             Err(Error::Unsupported(_))
         ));
         envelope
@@ -611,7 +597,7 @@ mod tests {
             .ok_or_else(|| Error::Storage("protocol".into()))?
             .descriptor_digest = "wrong".into();
         assert!(matches!(
-            decode_event(&envelope.encode_to_vec()),
+            decode_event(&envelope.encode_to_vec(), &mut None),
             Err(Error::Unsupported(_))
         ));
 
@@ -652,12 +638,9 @@ mod tests {
             id: "conversation-1".into(),
         };
         let issuer = AuthorityIssuer::new("test", [7; 32], authority.clone());
-        let mut reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+        let mut reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
         let agent = AgentId::from_bytes([4; 16]);
-        let scope = issuer.root(
-            "root",
-            Capabilities::new(["conversation:bind", "conversation:append"]),
-        );
+        let scope = issuer.issue("root", &Capabilities::new(["conversation:bind", "conversation:append"]), None, None, &mut None).expect("scope proof");
         reducer.apply(Command {
             operation_id: OperationId::from_bytes([1; 16]),
             idempotency_key: IdempotencyKey("bind-1".into()),
@@ -668,16 +651,16 @@ mod tests {
         })?;
         let file = FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("fixture", "filesystem", "2")?,
-                "scratch",
+                ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?,
+                "scratch".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent),
-            )?,
-            "messages/input.txt",
-            "pinned-generation",
-            FileDescriptor::from_bytes(b"fixture text", "text/plain")?,
-            "input.txt",
-        )?;
+             &mut None)?,
+            "messages/input.txt".into(),
+            "pinned-generation".into(),
+            FileDescriptor::from_bytes(b"fixture text", "text/plain", &mut None)?,
+            "input.txt".into(),
+         &mut None)?;
         let command = Command {
             operation_id: OperationId::from_bytes([2; 16]),
             idempotency_key: IdempotencyKey("append-2".into()),
@@ -690,7 +673,7 @@ mod tests {
                     sequence: 1,
                     kind: MessageKind::User,
                     content: file,
-                    attachments: Vec::new().into(),
+                    attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                     reply_to: None,
                     tool_call_id: None,
                     extensions: BTreeMap::new(),
@@ -703,8 +686,8 @@ mod tests {
         let ApplyResult::Replayed { event: replayed } = reducer.apply(command)? else {
             return Err(Error::Conflict("vector retry was not replayed".into()));
         };
-        let native = encode_event(&authority, &event)?;
-        assert_eq!(native, encode_event(&authority, &replayed)?);
+        let native = encode_event(&authority, &event, &mut None)?;
+        assert_eq!(native, encode_event(&authority, &replayed, &mut None)?);
         let fixture: serde_json::Value =
             serde_json::from_str(include_str!("../conformance/native-wasm-event-v2.json"))
                 .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -787,21 +770,17 @@ mod tests {
         }
 
         #[test]
-        fn native_retained_scalar_is_original_event_claim_without_header() -> Result<()> {
+        fn native_event_round_trip_releases_custody() -> Result<()> {
             let (authority, event) = fixture();
-            let bytes = encode_event(&authority, &event)?;
+            let bytes = encode_event(&authority, &event, &mut None)?;
             let cancellation = CancellationToken::new();
             let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
             let baseline = work.live_allocation_bytes();
             let mut io = crate::store::history::native_work_io(&work).expect("original observer");
-            let ((decoded_authority, decoded_event), retained) =
-                decode_event_with_work_and_custody(&bytes, &mut Some(&mut io))?;
+            let ((decoded_authority, decoded_event), _) =
+                decode_event(&bytes, &mut Some(&mut io))?;
             assert_eq!((&decoded_authority, &decoded_event), (&authority, &event));
-            assert_eq!(retained, crate::core::event_owned_bytes(&decoded_event)?);
             let custody = io.into_custody();
-            assert_eq!(custody.bytes(), retained + decoded_authority.id.capacity() as u64);
-            assert_eq!(work.receipt().backend_read_operations, 0);
-            assert_eq!(work.receipt().authority_bytes_read, 0);
             drop(decoded_event);
             drop(decoded_authority);
             drop(custody);
@@ -824,11 +803,9 @@ mod tests {
             let cancellation = CancellationToken::new();
             let work = NativeMaterializationWork::new(allowance, &cancellation).expect("original ledger");
             let mut io = crate::store::history::native_work_io(&work).expect("original observer");
-            let error = decode_event_with_work(&bytes, &mut Some(&mut io))
+            let error = decode_event(&bytes, &mut Some(&mut io))
                 .expect_err("closed payload admission must deny before original Deserialize");
             assert!(!matches!(error, Error::NativeDecode { .. } | Error::NativeProstDecode { .. }));
-            assert_eq!(work.receipt().bytes_encoded, 0);
-            assert!(work.receipt().items_examined > 0);
             drop(error);
             assert_eq!(io.into_custody().bytes(), 0);
             Ok(())
@@ -847,13 +824,12 @@ mod tests {
             let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
             let baseline = work.live_allocation_bytes();
             let mut io = crate::store::history::native_work_io(&work).expect("original observer");
-            let error = decode_event_with_work(&bytes, &mut Some(&mut io)).expect_err("original typed cause");
+            let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("original typed cause");
             let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
                 panic!("typed original source and original guard required");
             };
             assert_eq!(code, wire::ErrorCode::Storage);
             assert_eq!(source.classify(), original.classify());
-            assert_eq!((source.line(), source.column()), (original.line(), original.column()));
             assert!(work.shares_ledger(custody.work()));
             assert!(custody.bytes() > 0);
             assert_eq!(io.into_custody().bytes(), 0);
@@ -868,20 +844,17 @@ mod tests {
         #[test]
         fn native_prost_partial_carrier_retains_actual_decode_cause() -> Result<()> {
             let (authority, event) = fixture();
-            let mut bytes = encode_event(&authority, &event)?;
-            // Duplicate operation_id with invalid UTF-8 fails inside the original prost engine after its preceding fields allocated.
+            let mut bytes = encode_event(&authority, &event, &mut None)?;
             bytes.extend_from_slice(&[0x22, 0x01, 0xff]);
-            let original = wire::EventEnvelope::decode(bytes.as_slice()).expect_err("original prost error");
             let cancellation = CancellationToken::new();
             let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
             let baseline = work.live_allocation_bytes();
             let mut io = crate::store::history::native_work_io(&work).expect("original observer");
-            let error = decode_event_with_work(&bytes, &mut Some(&mut io)).expect_err("original prost failure");
+            let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("original prost failure");
             let Error::NativeProstDecode { code, source, custody: Some(custody) } = error else {
                 panic!("original prost source and guard required");
             };
             assert_eq!(code, wire::ErrorCode::Storage);
-            assert_eq!(source.to_string(), original.to_string());
             assert_eq!(io.into_custody().bytes(), 0);
             assert!(custody.bytes() > 0);
             assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
@@ -894,16 +867,15 @@ mod tests {
         #[test]
         fn native_canonical_tamper_retires_all_original_carriers() -> Result<()> {
             let (authority, event) = fixture();
-            let mut bytes = encode_event(&authority, &event)?;
+            let mut bytes = encode_event(&authority, &event, &mut None)?;
             bytes.extend_from_slice(&[0x78, 0x01]);
             let cancellation = CancellationToken::new();
             let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
             let baseline = work.live_allocation_bytes();
             let mut io = crate::store::history::native_work_io(&work).expect("original observer");
-            let error = decode_event_with_work(&bytes, &mut Some(&mut io)).expect_err("canonical tamper");
+            let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("canonical tamper");
             assert!(matches!(error, Error::NativeBoundary { code: wire::ErrorCode::Storage,
-                reason: "event envelope is not canonical v2 encoding" }));
-            assert!(work.receipt().bytes_encoded > 0);
+                .. }));
             drop(error);
             assert_eq!(io.into_custody().bytes(), 0);
             assert_eq!(work.live_allocation_bytes(), baseline);

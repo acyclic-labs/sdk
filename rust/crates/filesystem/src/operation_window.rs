@@ -229,7 +229,7 @@ pub enum WorkspaceOperationFinish<A, O> {
 }
 
 /// Durable optimistic-concurrency adapter for operation-window state.
-pub trait OperationWindowStore: crate::async_storage::StorageProvider {
+pub trait OperationWindowStore: acyclic_stream::ProviderPlatform {
     /// Adapter error.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -238,7 +238,7 @@ pub trait OperationWindowStore: crate::async_storage::StorageProvider {
         &self,
         workspace_id: WorkspaceId,
     ) -> impl Future<Output = Result<Option<OperationWindowSnapshot>, Self::Error>>
-    + crate::async_storage::StorageFuture;
+    + acyclic_stream::ProviderTask;
 
     /// Replaces `expected_revision` atomically. Revision zero creates state.
     fn compare_and_swap(
@@ -246,7 +246,7 @@ pub trait OperationWindowStore: crate::async_storage::StorageProvider {
         workspace_id: WorkspaceId,
         expected_revision: u64,
         replacement: OperationWindowSnapshot,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + crate::async_storage::StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + acyclic_stream::ProviderTask;
 }
 
 /// Operation-window state stored beside generation authority in one Stream
@@ -891,7 +891,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         let final_close = || {
             let workspace = workspace.clone();
             async move {
-                match workspace.parent_advance(limits.maximum_generations).await {
+                match workspace.volume.fs.parent_advance(&workspace.volume, limits.maximum_generations).await {
                     Ok(Some(parent)) => Ok(FinalClose::Rebase(parent)),
                     // A workspace that is not a fork has no parent to follow.
                     Ok(None) | Err(WorkspaceError::NotFork) => Ok(FinalClose::Settle),
@@ -1302,8 +1302,8 @@ mod tests {
         for field in 0..3 {
             let fs = Fs::memory();
             let parent = fs
-                .create_workspace("invalid-limit-parent")
-                .await
+                .create_workspace("invalid-limit-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("parent");
             let child = parent
                 .fork(
@@ -1312,8 +1312,8 @@ mod tests {
                         parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                         IdempotencyKey::new(),
                     ),
-                )
-                .await
+                crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("child");
             let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
             let lease = coordinator
@@ -1362,8 +1362,9 @@ mod tests {
     async fn overlapping_leases_coalesce_parent_and_reconcile_once() {
         let workspace = WorkspaceId::derive(
             [7; 16],
-            &crate::WorkspaceName::new("agent").expect("valid test workspace"),
-        );
+            &crate::WorkspaceName::new("agent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid test workspace").value,
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let first = coordinator
             .begin(workspace, generation(1), "tool-1", 10, 100)
@@ -1409,7 +1410,7 @@ mod tests {
     #[tokio::test]
     async fn parent_advance_after_child_close_rebases_without_another_tool() {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("late-parent").await.expect("parent");
+        let parent = fs.create_workspace("late-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent");
         let child = parent
             .fork(
                 "late-child",
@@ -1417,8 +1418,8 @@ mod tests {
                     parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
-            )
-            .await
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("child");
         child
             .write_text("/child", "local")
@@ -1450,7 +1451,7 @@ mod tests {
             coordinator
                 .parent_advanced_workspace(
                     &child,
-                    parent.head().await.expect("new parent head").id(),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("new parent head").id(),
                     OperationReconcileLimits::default(),
                 )
                 .await
@@ -1458,11 +1459,11 @@ mod tests {
             Some(WorkspaceRebase::Rebased(_))
         ));
         assert_eq!(
-            child.read("/parent", 16).await.expect("upstream").as_slice(),
+            child.read("/parent", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("upstream").as_slice(),
             b"upstream"
         );
         assert_eq!(
-            child.read("/child", 16).await.expect("local").as_slice(),
+            child.read("/child", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("local").as_slice(),
             b"local"
         );
         assert!(matches!(
@@ -1474,7 +1475,7 @@ mod tests {
     #[tokio::test]
     async fn final_close_of_a_current_fork_releases_the_window_in_one_transition() {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("current-parent").await.expect("parent");
+        let parent = fs.create_workspace("current-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent");
         let child = parent
             .fork(
                 "current-child",
@@ -1482,8 +1483,8 @@ mod tests {
                     parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
-            )
-            .await
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("child");
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
@@ -1513,8 +1514,8 @@ mod tests {
     async fn final_close_rebases_onto_a_parent_advance_it_never_observed() {
         let fs = Fs::memory();
         let parent = fs
-            .create_workspace("unobserved-parent")
-            .await
+            .create_workspace("unobserved-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("parent");
         let child = parent
             .fork(
@@ -1523,8 +1524,8 @@ mod tests {
                     parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
-            )
-            .await
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("child");
         parent
             .write_text("/parent", "unobserved")
@@ -1550,7 +1551,7 @@ mod tests {
             WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Rebased(_))
         ));
         assert_eq!(
-            child.read("/parent", 16).await.expect("upstream").as_ref(),
+            child.read("/parent", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("upstream").as_ref(),
             b"unobserved"
         );
         assert_eq!(
@@ -1562,7 +1563,7 @@ mod tests {
     #[tokio::test]
     async fn parent_advance_during_child_tool_rebases_at_final_close() {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("active-parent").await.expect("parent");
+        let parent = fs.create_workspace("active-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent");
         let child = parent
             .fork(
                 "active-child",
@@ -1570,8 +1571,8 @@ mod tests {
                     parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
-            )
-            .await
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("child");
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
@@ -1592,7 +1593,7 @@ mod tests {
             coordinator
                 .parent_advanced_workspace(
                     &child,
-                    parent.head().await.expect("new parent head").id(),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("new parent head").id(),
                     OperationReconcileLimits::default(),
                 )
                 .await
@@ -1607,7 +1608,7 @@ mod tests {
             WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Rebased(_))
         ));
         assert_eq!(
-            child.read("/parent", 16).await.expect("upstream").as_ref(),
+            child.read("/parent", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("upstream").as_ref(),
             b"new"
         );
     }
@@ -1616,8 +1617,9 @@ mod tests {
     async fn deterministic_lease_identity_is_idempotent_but_cannot_be_rebound() {
         let workspace = WorkspaceId::derive(
             [12; 16],
-            &crate::WorkspaceName::new("lease-identity").expect("valid test workspace"),
-        );
+            &crate::WorkspaceName::new("lease-identity", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid test workspace").value,
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease_id = OperationLeaseId::from_bytes([42; 16]);
         let first = coordinator
@@ -1649,8 +1651,9 @@ mod tests {
     async fn renewal_replaces_the_exact_live_lease_and_fences_stale_handles() {
         let workspace = WorkspaceId::derive(
             [13; 16],
-            &crate::WorkspaceName::new("lease-renewal").expect("valid test workspace"),
-        );
+            &crate::WorkspaceName::new("lease-renewal", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid test workspace").value,
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
             .begin(workspace, generation(1), "owner", 1, 10)
@@ -1680,8 +1683,9 @@ mod tests {
     async fn parent_observed_during_reconcile_is_not_lost() {
         let workspace = WorkspaceId::derive(
             [8; 16],
-            &crate::WorkspaceName::new("agent").expect("valid test workspace"),
-        );
+            &crate::WorkspaceName::new("agent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid test workspace").value,
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
             .begin(workspace, generation(1), "tool", 10, 100)
@@ -1713,8 +1717,9 @@ mod tests {
     async fn expired_lease_is_fenced_and_recovery_ticket_is_claimable() {
         let workspace = WorkspaceId::derive(
             [9; 16],
-            &crate::WorkspaceName::new("expired").expect("valid test workspace"),
-        );
+            &crate::WorkspaceName::new("expired", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid test workspace").value,
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
             .begin(workspace, generation(1), "tool", 10, 20)
@@ -1742,8 +1747,9 @@ mod tests {
     async fn expired_close_is_persistently_fenced_while_another_lease_remains() {
         let workspace = WorkspaceId::derive(
             [10; 16],
-            &crate::WorkspaceName::new("overlap-expiry").expect("valid test workspace"),
-        );
+            &crate::WorkspaceName::new("overlap-expiry", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid test workspace").value,
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let expired = coordinator
             .begin(workspace, generation(1), "expired", 10, 20)
@@ -1777,8 +1783,9 @@ mod tests {
     async fn duplicate_close_persists_expiry_of_the_remaining_lease() {
         let workspace = WorkspaceId::derive(
             [11; 16],
-            &crate::WorkspaceName::new("duplicate-expiry").expect("valid test workspace"),
-        );
+            &crate::WorkspaceName::new("duplicate-expiry", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid test workspace").value,
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let first = coordinator
             .begin(workspace, generation(1), "first", 1, 10)
@@ -1819,24 +1826,10 @@ mod tests {
         let workspace = WorkspaceId::from_bytes([61; 16]);
         let authority_id = crate::kernel::volume_authority_id(workspace.volume_id());
         let unrelated_authority = AuthorityId::from_bytes([62; 16]);
-        let cancellation = CancellationToken::new();
-        AsyncAuthorityStore::create_authority(
-            &authority,
-            unrelated_authority,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .expect("create unrelated authority");
-        AsyncAuthorityStore::create_authority(
-            &authority,
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let cancellation = CancellationToken::new();({ let __authority_args = (unrelated_authority, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =
+        AsyncAuthorityStore::create_authority(&authority, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
+        .expect("create unrelated authority");({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =
+        AsyncAuthorityStore::create_authority(&authority, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .expect("create authority");
         let first = windows
             .begin(workspace, generation(1), "first", 1, 100)
@@ -1851,18 +1844,10 @@ mod tests {
             OperationWindowFinish::StillActive { remaining: 1 }
         );
 
-        let head = AsyncAuthorityStore::head(
-            &authority,
-            authority_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let head =({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::head(&authority, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         .expect("authority head")
         .value;
-        let rejected = AsyncAuthorityStore::compare_and_append_guarded(
-            &authority,
-            crate::GuardedAppend {
+        let rejected =({ let __authority_args = (crate::GuardedAppend {
                 authority_id,
                 epoch: head.epoch,
                 expected: head,
@@ -1872,18 +1857,12 @@ mod tests {
                     payload: Bytes::from_static(b"first"),
                 },
                 permit: first.publication_permit(),
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .expect("guarded rejection")
         .value;
         assert!(matches!(rejected, crate::AppendOutcome::Fenced { .. }));
 
-        let committed = AsyncAuthorityStore::compare_and_append_guarded(
-            &authority,
-            crate::GuardedAppend {
+        let committed =({ let __authority_args = (crate::GuardedAppend {
                 authority_id,
                 epoch: head.epoch,
                 expected: head,
@@ -1893,27 +1872,15 @@ mod tests {
                     payload: Bytes::from_static(b"second"),
                 },
                 permit: second.publication_permit(),
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .expect("guarded append")
         .value;
         assert!(matches!(committed, crate::AppendOutcome::Committed(_)));
 
-        let unrelated_head = AsyncAuthorityStore::head(
-            &authority,
-            unrelated_authority,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let unrelated_head =({ let __authority_args = (unrelated_authority, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::head(&authority, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         .expect("unrelated authority head")
         .value;
-        let rejected = AsyncAuthorityStore::compare_and_append_guarded(
-            &authority,
-            crate::GuardedAppend {
+        let rejected =({ let __authority_args = (crate::GuardedAppend {
                 authority_id: unrelated_authority,
                 epoch: unrelated_head.epoch,
                 expected: unrelated_head,
@@ -1923,22 +1890,12 @@ mod tests {
                     payload: Bytes::from_static(b"cross-authority"),
                 },
                 permit: second.publication_permit(),
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .expect("cross-authority lease is a semantic fence")
         .value;
         assert!(matches!(rejected, crate::AppendOutcome::Fenced { .. }));
-        assert_eq!(
-            AsyncAuthorityStore::head(
-                &authority,
-                unrelated_authority,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
+        assert_eq!(({ let __authority_args = (unrelated_authority, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =
+            AsyncAuthorityStore::head(&authority, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .expect("unrelated authority remains unchanged")
             .value,
             unrelated_head
@@ -1958,33 +1915,18 @@ mod tests {
             OperationWindowCoordinator::new(StreamOperationWindowStore::new(Arc::clone(&stream)));
         let workspace = WorkspaceId::from_bytes([81; 16]);
         let authority_id = crate::kernel::volume_authority_id(workspace.volume_id());
-        let cancellation = CancellationToken::new();
-        AsyncAuthorityStore::create_authority(
-            &authority,
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let cancellation = CancellationToken::new();({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =
+        AsyncAuthorityStore::create_authority(&authority, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .expect("create authority");
         let lease = windows
             .begin(workspace, generation(1), "tool", 10, 20)
             .await
             .expect("lease");
-        let head = AsyncAuthorityStore::head(
-            &authority,
-            authority_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let head =({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::head(&authority, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         .expect("authority head")
         .value;
         clock.0.store(20, Ordering::SeqCst);
-        let outcome = AsyncAuthorityStore::compare_and_append_guarded(
-            &authority,
-            crate::GuardedAppend {
+        let outcome =({ let __authority_args = (crate::GuardedAppend {
                 authority_id,
                 epoch: head.epoch,
                 expected: head,
@@ -1994,22 +1936,12 @@ mod tests {
                     payload: Bytes::from_static(b"expired"),
                 },
                 permit: lease.publication_permit(),
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
         .expect("deadline is a semantic fence")
         .value;
         assert!(matches!(outcome, crate::AppendOutcome::Fenced { .. }));
-        assert_eq!(
-            AsyncAuthorityStore::head(
-                &authority,
-                authority_id,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
+        assert_eq!(({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =
+            AsyncAuthorityStore::head(&authority, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .expect("unchanged authority")
             .value,
             head
@@ -2043,15 +1975,8 @@ mod tests {
             let windows = OperationWindowCoordinator::new(StreamOperationWindowStore::new(stream));
             let workspace = WorkspaceId::from_bytes([91; 16]);
             let authority_id = crate::kernel::volume_authority_id(workspace.volume_id());
-            let cancellation = CancellationToken::new();
-            AsyncAuthorityStore::create_authority(
-                &authority,
-                authority_id,
-                Epoch::GENESIS,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
+            let cancellation = CancellationToken::new();({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =
+            AsyncAuthorityStore::create_authority(&authority, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
             .expect("create");
             let first = windows
                 .begin(workspace, generation(1), "first", 10, 20)
@@ -2066,19 +1991,11 @@ mod tests {
             for event in events {
                 match event {
                     0 => {
-                        let head = AsyncAuthorityStore::head(
-                            &authority,
-                            authority_id,
-                            WorkBudget::UNBOUNDED,
-                            &cancellation,
-                        )
-                        .await
+                        let head =({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::head(&authority, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                         .expect("head")
                         .value;
                         let allowed = !revoked && clock.0.load(Ordering::SeqCst) < 20;
-                        let outcome = AsyncAuthorityStore::compare_and_append_guarded(
-                            &authority,
-                            crate::GuardedAppend {
+                        let outcome =({ let __authority_args = (crate::GuardedAppend {
                                 authority_id,
                                 epoch: head.epoch,
                                 expected: head,
@@ -2088,11 +2005,7 @@ mod tests {
                                     payload: Bytes::from_static(b"first"),
                                 },
                                 permit: first.publication_permit(),
-                            },
-                            WorkBudget::UNBOUNDED,
-                            &cancellation,
-                        )
-                        .await
+                            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
                         .expect("publish")
                         .value;
                         assert_eq!(
@@ -2122,18 +2035,10 @@ mod tests {
                 }
             }
             for (index, lease) in std::iter::once(peer).chain(renewed).enumerate() {
-                let head = AsyncAuthorityStore::head(
-                    &authority,
-                    authority_id,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
+                let head =({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::head(&authority, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                 .expect("peer head")
                 .value;
-                let outcome = AsyncAuthorityStore::compare_and_append_guarded(
-                    &authority,
-                    crate::GuardedAppend {
+                let outcome =({ let __authority_args = (crate::GuardedAppend {
                         authority_id,
                         epoch: head.epoch,
                         expected: head,
@@ -2147,11 +2052,7 @@ mod tests {
                             payload: Bytes::from_static(b"peer"),
                         },
                         permit: lease.publication_permit(),
-                    },
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
+                    }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
                 .expect("peer publish")
                 .value;
                 assert!(
@@ -2175,15 +2076,8 @@ mod tests {
             OperationWindowCoordinator::new(StreamOperationWindowStore::new(Arc::clone(&stream)));
         let workspace = WorkspaceId::from_bytes([101; 16]);
         let authority_id = crate::kernel::volume_authority_id(workspace.volume_id());
-        let cancellation = CancellationToken::new();
-        AsyncAuthorityStore::create_authority(
-            &authority,
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let cancellation = CancellationToken::new();({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result =
+        AsyncAuthorityStore::create_authority(&authority, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .expect("create authority");
         let original = windows
             .begin(workspace, generation(1), "original-owner", 10, 20)
@@ -2247,18 +2141,10 @@ mod tests {
                 _ => original.publication_permit(),
             };
             let expected_commit = matches!(index, 0 | 2 | 3);
-            let before = AsyncAuthorityStore::head(
-                &authority,
-                authority_id,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
+            let before =({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::head(&authority, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .expect("head")
             .value;
-            let outcome = AsyncAuthorityStore::compare_and_append_guarded(
-                &authority,
-                crate::GuardedAppend {
+            let outcome =({ let __authority_args = (crate::GuardedAppend {
                     authority_id,
                     epoch: before.epoch,
                     expected: before,
@@ -2272,11 +2158,7 @@ mod tests {
                         payload: Bytes::from_static(b"renewal-control"),
                     },
                     permit,
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
+                }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
             .expect("guarded publication")
             .value;
             if expected_commit {
@@ -2289,14 +2171,8 @@ mod tests {
                 } else {
                     assert!(matches!(outcome, crate::AppendOutcome::Fenced { .. }));
                 }
-                assert_eq!(
-                    AsyncAuthorityStore::head(
-                        &authority,
-                        authority_id,
-                        WorkBudget::UNBOUNDED,
-                        &cancellation,
-                    )
-                    .await
+                assert_eq!(({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =
+                    AsyncAuthorityStore::head(&authority, __authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                     .expect("unchanged head")
                     .value,
                     before

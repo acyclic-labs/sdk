@@ -1,12 +1,12 @@
 use super::*;
-use crate::async_storage::poll_ready;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::{
     BlobBuildOptions, Extent, ExtentPage, InlineFileData, build_blob, encode_extent_page,
     extent_page_id,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectId, ObjectKind, ObjectStore};
+use crate::storage::{ObjectId, ObjectKind, };
 use acyclic_stream::OwnedBytes;
 use std::io::Cursor;
 
@@ -34,8 +34,8 @@ fn limits() -> DecodeLimits {
     }
 }
 
-#[test]
-fn inline_ranges_are_exact_and_need_no_backend_work() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn inline_ranges_are_exact_and_need_no_backend_work() -> Result<(), Box<dyn std::error::Error>> {
     let request = FileRangeRequest {
         record: inline_record(b"abcdef")?,
         range: ByteRange {
@@ -46,12 +46,11 @@ fn inline_ranges_are_exact_and_need_no_backend_work() -> Result<(), Box<dyn std:
         limits: limits(),
         budget: WorkBudget::UNBOUNDED,
     };
-    let read = poll_ready(read_file_range_async(
+    let read = (read_file_range_async(
         &MemoryObjectStore::default(),
         request,
         &CancellationToken::new(),
-    ))
-    .ok_or("inline read blocked")??;
+    )).await?;
     assert_eq!(&read.bytes[..], b"cde");
     assert_eq!(read.logical_owned_bytes(), 3);
     let shared = read.bytes.slice(1..2);
@@ -63,8 +62,8 @@ fn inline_ranges_are_exact_and_need_no_backend_work() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[test]
-fn invalid_inline_range_fails_before_work() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn invalid_inline_range_fails_before_work() -> Result<(), Box<dyn std::error::Error>> {
     let request = FileRangeRequest {
         record: inline_record(b"abc")?,
         range: ByteRange {
@@ -75,12 +74,11 @@ fn invalid_inline_range_fails_before_work() -> Result<(), Box<dyn std::error::Er
         limits: limits(),
         budget: WorkBudget::UNBOUNDED,
     };
-    let result = poll_ready(read_file_range_async(
+    let result = (read_file_range_async(
         &MemoryObjectStore::default(),
         request,
         &CancellationToken::new(),
-    ))
-    .ok_or("inline read blocked")?;
+    )).await;
     let Err(failure) = result else {
         return Err("invalid range succeeded".into());
     };
@@ -89,13 +87,13 @@ fn invalid_inline_range_fails_before_work() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-#[test]
-fn cancellation_kind_and_payload_fail_at_the_first_boundary()
+#[tokio::test]
+async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let cancelled = poll_ready(read_file_range_async(
+    let cancelled = (read_file_range_async(
         &store,
         FileRangeRequest {
             record: inline_record(b"abc")?,
@@ -108,8 +106,7 @@ fn cancellation_kind_and_payload_fail_at_the_first_boundary()
             budget: WorkBudget::UNBOUNDED,
         },
         &cancellation,
-    ))
-    .ok_or("cancelled read blocked")?
+    )).await
     .err()
     .ok_or("cancelled read succeeded")?;
     assert!(matches!(cancelled.error, FileRangeReadError::Cancelled));
@@ -128,7 +125,7 @@ fn cancellation_kind_and_payload_fail_at_the_first_boundary()
             },
         },
     };
-    let rejected = poll_ready(read_file_range_async(
+    let rejected = (read_file_range_async(
         &store,
         FileRangeRequest {
             record: not_regular,
@@ -141,8 +138,7 @@ fn cancellation_kind_and_payload_fail_at_the_first_boundary()
             budget: WorkBudget::UNBOUNDED,
         },
         &CancellationToken::new(),
-    ))
-    .ok_or("non-regular read blocked")?
+    )).await
     .err()
     .ok_or("non-regular read succeeded")?;
     assert!(matches!(rejected.error, FileRangeReadError::NotRegular));
@@ -156,7 +152,7 @@ fn cancellation_kind_and_payload_fail_at_the_first_boundary()
             digest: Digest::from_bytes([11; 32]),
         },
     };
-    let rejected = poll_ready(read_file_range_async(
+    let rejected = (read_file_range_async(
         &store,
         FileRangeRequest {
             record: mismatched,
@@ -169,8 +165,7 @@ fn cancellation_kind_and_payload_fail_at_the_first_boundary()
             budget: WorkBudget::UNBOUNDED,
         },
         &CancellationToken::new(),
-    ))
-    .ok_or("payload-mismatched read blocked")?
+    )).await
     .err()
     .ok_or("payload-mismatched read succeeded")?;
     assert!(matches!(rejected.error, FileRangeReadError::NotRegular));
@@ -179,12 +174,12 @@ fn cancellation_kind_and_payload_fail_at_the_first_boundary()
     Ok(())
 }
 
-#[test]
-fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.output_bytes = 2;
-    let rejected = poll_ready(read_file_range_async(
+    let rejected = (read_file_range_async(
         &store,
         FileRangeRequest {
             record: inline_record(b"abc")?,
@@ -197,8 +192,7 @@ fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn std::
             budget,
         },
         &CancellationToken::new(),
-    ))
-    .ok_or("budgeted inline read blocked")?
+    )).await
     .err()
     .ok_or("inline read exceeded output budget")?;
     assert!(matches!(
@@ -212,9 +206,9 @@ fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn std::
     Ok(())
 }
 
-#[test]
-fn zero_length_inline_read_at_eof_is_allocation_free() -> Result<(), Box<dyn std::error::Error>> {
-    let read = poll_ready(read_file_range_async(
+#[tokio::test]
+async fn zero_length_inline_read_at_eof_is_allocation_free() -> Result<(), Box<dyn std::error::Error>> {
+    let read = (read_file_range_async(
         &MemoryObjectStore::default(),
         FileRangeRequest {
             record: inline_record(b"abc")?,
@@ -227,8 +221,7 @@ fn zero_length_inline_read_at_eof_is_allocation_free() -> Result<(), Box<dyn std
             budget: WorkBudget::UNBOUNDED,
         },
         &CancellationToken::new(),
-    ))
-    .ok_or("zero-length inline read blocked")??;
+    )).await?;
     assert!(read.bytes.is_empty());
     assert_eq!(read.logical_owned_bytes(), 0);
     assert_eq!(read.work.output_bytes, 0);
@@ -238,8 +231,8 @@ fn zero_length_inline_read_at_eof_is_allocation_free() -> Result<(), Box<dyn std
     Ok(())
 }
 
-#[test]
-fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
+#[tokio::test]
+async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let blob = build_blob(
@@ -252,7 +245,8 @@ fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
             maximum_blob_bytes: 10,
         },
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     let extents = ExtentPage::Leaf(vec![
         Extent {
             offset: 0,
@@ -287,12 +281,17 @@ fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
         },
     ]);
     let extent_root = extent_page_id(&extents, 16)?;
-    ObjectStore::put(
-        &store,
-        extent_root,
-        OwnedBytes::from(encode_extent_page(&extents, 16)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+    {
+        let __object_args = (
+            extent_root,
+        OwnedBytes::from(encode_extent_page(&extents, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     let record = FileRecord {
         file_id: FileId::from_bytes([12; 16]),
         kind: FileKind::Regular,
@@ -306,7 +305,7 @@ fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
             extents: extent_root,
         },
     };
-    let denied = poll_ready(read_file_range_async(
+    let denied = (read_file_range_async(
         &store,
         FileRangeRequest {
             record,
@@ -316,12 +315,12 @@ fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
             budget: WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
         },
         &CancellationToken::new(),
-    )).ok_or("frame admission blocked")?
+    )).await
         .expect_err("the canonical sparse future is admitted before immutable I/O");
     assert_eq!(denied.work.allocation_operations, 0);
     assert_eq!(denied.work.backend_read_operations, 0);
     assert_eq!(denied.work.bytes_copied, 0);
-    let read = poll_ready(read_file_range_async(
+    let read = (read_file_range_async(
         &store,
         FileRangeRequest {
             record,
@@ -334,8 +333,7 @@ fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
             budget: WorkBudget::UNBOUNDED,
         },
         &CancellationToken::new(),
-    ))
-    .ok_or("sparse file read blocked")??;
+    )).await?;
     assert_eq!(&read.bytes[..], &[b'B', 0, 0, 0, 0, b'E', b'F', b'G']);
     assert_eq!(read.logical_owned_bytes(), 8);
     assert_eq!(read.work.output_bytes, 8);
@@ -351,11 +349,11 @@ fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
             .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
-        let native = poll_ready(read_file_range_with_accounting(
+        let native = (read_file_range_with_accounting(
             &store, FileRangeRequest { record, range: ByteRange { offset: 1, length: 8 },
                 maximum_spans: 5, limits: DecodeLimits::default(), budget: WorkBudget::UNBOUNDED },
             &mut accounting, &cancellation,
-        )).ok_or("original sparse read blocked")??;
+        )).await?;
         assert_eq!(native.bytes.as_ref(), read.bytes.as_ref());
         assert_eq!(original.receipt().output_bytes, 8);
         assert!(original.receipt().backend_read_operations >= 3);
@@ -381,16 +379,12 @@ fn original_decode_completion_survives_cancellation_after_the_copy()
     let mut observed = OriginalReadAccounting::new(&mut accounting)?;
     let mut bytes = Vec::<u8>::new();
     let result = (|| -> Result<(), FsError> {
-        reserve_decoded_items_with_steps(&mut bytes, 4, &mut |step| observed.observe(step))
-            .map_err(ReadDecodeError::into_original_fs_error)?;
-        observed.observe(ReadAllocationStep::BeforeCopy(4))
-            .map_err(ReadDecodeError::into_original_fs_error)?;
+        reserve_decoded_items(&mut bytes, 4, &mut |step| observed.observe(step))?;
+        observed.observe(ReadAllocationStep::BeforeCopy(4))?;
         bytes.extend_from_slice(b"data");
         cancellation.cancel();
-        observed.observe(ReadAllocationStep::Copied(4))
-            .map_err(ReadDecodeError::into_original_fs_error)?;
+        observed.observe(ReadAllocationStep::Copied(4))?;
         observed.observe(ReadAllocationStep::BeforeItem)
-            .map_err(ReadDecodeError::into_original_fs_error)
     })();
     drop(bytes);
     observed.release_failed()?;
@@ -408,7 +402,7 @@ fn late_backend_retention_refusal_releases_only_returned_backing()
     let budget = WorkBudget { peak_allocation_bytes: 4, ..WorkBudget::UNBOUNDED };
     let mut accounting = KernelAccounting::standalone(budget, &cancellation);
     let existing = allocate_read_buffer(4, &mut accounting)?;
-    let receipt = crate::storage::ObjectReceipt {
+    let receipt = crate::OperationReceipt {
         value: crate::storage::ObjectRead {
             bytes: OwnedBytes::from(vec![1, 2, 3]),
             retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 3 },
@@ -434,7 +428,7 @@ fn backend_merge_failure_does_not_release_unregistered_returned_backing()
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let existing = allocate_read_buffer(4, &mut accounting)?;
     accounting.standalone_parts().ok_or("standalone parts unavailable")?.1.object_probes = u64::MAX;
-    let receipt = crate::storage::ObjectReceipt {
+    let receipt = crate::OperationReceipt {
         value: crate::storage::ObjectRead {
             bytes: OwnedBytes::from(vec![1, 2, 3]),
             retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 3 },

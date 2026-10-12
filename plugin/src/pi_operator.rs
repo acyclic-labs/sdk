@@ -4,29 +4,29 @@ use crate::{ControlCommand, ControlRequest, pi_owner::PiOwnerConfig,
 use acyclic_fs::{GenerationId, LazySnapshotRef, MaterializationJournal, NativeAllocation, NativeMaterializationWork,
     WorkCounters};
 use acyclic_harness::{Capabilities, OperationId, Result, Error, JsonBounds, JsonCodecCharge,
-    json_from_slice_bounded_native_trusted, json_from_value_bounded_native_trusted, core::Scope, conversation::VolumeRef};
+    json_from_slice_bounded, json_from_value_bounded, core::Scope, conversation::VolumeRef};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PiPreparedApproval {
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, bound(deserialize = "S: Deserialize<'de> + Default, V: Deserialize<'de>, P: Deserialize<'de> + Default, J: Deserialize<'de>"))]
+pub(crate) struct PiPreparedApproval<S = String, V = VolumeRef, P = Vec<String>, J = MaterializationJournal> {
     pub(crate) version: u32,
-    pub(crate) session: String,
-    pub(crate) command: PiSelectedCommand,
+    pub(crate) session: S,
+    pub(crate) command: PiSelectedCommand<S, P>,
     pub(crate) operation: OperationId,
-    pub(crate) approval_digest: String,
-    pub(crate) private_volume: VolumeRef,
+    pub(crate) approval_digest: S,
+    pub(crate) private_volume: V,
     /// Original Root baseline inherited by the child; canonical digest tuple[10].
     pub(crate) source_snapshot: LazySnapshotRef,
     /// Child snapshot sealed by the actual selected import, not its native mount.
     pub(crate) selected_snapshot: LazySnapshotRef,
     pub(crate) imported: GenerationId,
-    pub(crate) import_receipt: crate::pi_selected_host::PiSelectedImportReceipt,
-    pub(crate) journal: MaterializationJournal,
-    pub(crate) canonical_digest_input: String,
-    pub(crate) root_path: String,
-    pub(crate) source_path: String,
+    pub(crate) import_receipt: crate::pi_selected_host::PiSelectedImportReceipt<S, V, P>,
+    pub(crate) journal: J,
+    pub(crate) canonical_digest_input: S,
+    pub(crate) root_path: S,
+    pub(crate) source_path: S,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,11 +35,11 @@ pub(crate) enum PiOperatorDecision { Approve, Decline }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PiOperatorFileCursor {
-    pub(crate) operation: String,
-    pub(crate) root: String,
+pub(crate) struct PiOperatorFileCursor<S = String> {
+    pub(crate) operation: S,
+    pub(crate) root: S,
     pub(crate) generation: GenerationId,
-    pub(crate) path: String,
+    pub(crate) path: S,
     pub(crate) offset: u64,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -88,28 +88,27 @@ impl PiOperatorRequest {
         let remaining = work.remaining().map_err(native_error)?;
         let bounds = JsonBounds { maximum_bytes: crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
             maximum_items: remaining.items_examined, maximum_depth: 64 };
-        let mut custody = work.retain_owned(0).map_err(native_error)?;
-        let decoded = json_from_value_bounded_native_trusted(body_value, bounds, 0,
+        let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
+        let decoded = json_from_value_bounded(std::borrow::Cow::Borrowed(body_value), bounds, 0,
             acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
             &mut |charge| operator_decode_charge(charge, work, &mut custody));
         let body: PiOperatorBody = match decoded {
             Ok(body) => body,
             Err(error) => return Err(operator_decode_error(error, custody)),
         };
-        let session_bytes = session.len() as u64;
-        work.admit(WorkCounters { bytes_copied: session_bytes, ..WorkCounters::default() }).map_err(native_error)?;
-        let session_custody = work.claim(session_bytes).map_err(native_error)?;
-        let mut session_id = String::new();
-        session_id.try_reserve_exact(session.len())
-            .map_err(|cause| native_error(acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause)))?;
-        work.charge(WorkCounters { bytes_copied: session_bytes, ..WorkCounters::default() }).map_err(native_error)?;
-        session_id.push_str(session);
-        custody.absorb(session_custody).map_err(native_error)?;
-        let scope_custody;
-        let operator;
-        (operator, scope_custody) = Scope::from_value_with_native_work(scope_value, work)?;
-        custody.absorb(scope_custody).map_err(native_error)?;
-        Ok((Self { session_id, body, operator }, custody))
+        let mut session = work.display(session).map_err(native_error)?;
+        let mut scope_custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
+        let decoded = json_from_value_bounded::<Scope, _>(std::borrow::Cow::Borrowed(scope_value), bounds, 0,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
+            &mut |charge| operator_decode_charge(charge, work, &mut scope_custody));
+        let mut scope = match decoded {
+            Ok(scope) => (scope, scope_custody),
+            Err(error) => return Err(operator_decode_error(error, scope_custody)),
+        };
+        let mut request = (Self { session_id: session.0, body, operator: scope.0 }, custody);
+        request.1.absorb(&mut session.1).map_err(native_error)?;
+        request.1.absorb(&mut scope.1).map_err(native_error)?;
+        Ok(request)
     }
 }
 
@@ -118,16 +117,7 @@ fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error { Er
 pub(crate) fn body_hash(body: &PiOperatorBody, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
     if body.session().is_empty() || body.session().len() > 512 || body.operation().is_empty()
         || body.operation().len() > 512 { return Err(invalid("operator requires its bounded original session and SDK operation")); }
-    canonical_hash(body, work)
-}
-fn canonical_hash<T: Serialize>(body: &T, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
-    let maximum = work.remaining().map_err(native_error)?.bytes_encoded.min(crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64);
-    let bytes = pi_root_provider::canonical_pi_value(body, maximum, work)?;
-    work.charge(WorkCounters { bytes_hashed: bytes.0.len() as u64, ..WorkCounters::UNCHARGED }).map_err(native_error)?;
-    let digest = blake3::hash(&bytes.0);
-    drop(bytes.0);
-    drop(bytes.1);
-    work.display(&format_args!("{}", digest.to_hex())).map_err(native_error)
+    pi_root_provider::digest_pi_value(body, crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)
 }
 pub(crate) fn approval_body_hash(prepared: &PiPreparedApproval, digest: &str,
     decision: PiOperatorDecision, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
@@ -135,7 +125,8 @@ pub(crate) fn approval_body_hash(prepared: &PiPreparedApproval, digest: &str,
     struct BorrowedApproval<'a> {
         action: &'static str, prepared: &'a PiPreparedApproval, digest: &'a str, decision: PiOperatorDecision,
     }
-    canonical_hash(&BorrowedApproval { action: "approval", prepared, digest, decision }, work)
+    pi_root_provider::digest_pi_value(&BorrowedApproval { action: "approval", prepared, digest, decision },
+        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)
 }
 fn capability(body: &PiOperatorBody, hash: &str) -> String { format!("pi:operator:{}:{hash}", body.session()) }
 
@@ -144,8 +135,7 @@ pub(crate) fn build_control_request(owner: &PiOwnerConfig, cwd: PathBuf,
     let hash_custody = body_hash(&body, work)?;
     let hash = &hash_custody.0;
     let authority = owner.authority()?;
-    let operator = authority.issuer.root_for_agent(owner.policy().agent,
-        format!("pi:operator:{}:{hash}", body.session()), Capabilities::new([capability(&body, &hash)]));
+    let operator = authority.issuer.issue(&format!("pi:operator:{}:{hash}", body.session()), &Capabilities::new([capability(&body, &hash)]), Some(owner.policy().agent), None, &mut None).expect("scope proof");
     let session_id = body.session().to_owned();
     let event = match &body { PiOperatorBody::Inspect { .. } => "OperatorInspect", PiOperatorBody::Approval { .. } => "OperatorApproval" };
     let request = PiOperatorRequest { session_id, body, operator };
@@ -160,7 +150,7 @@ pub(crate) fn build_control_request(owner: &PiOwnerConfig, cwd: PathBuf,
 
 pub(crate) fn verify_request(owner: &PiOwnerConfig, session: &str, request: &PiOperatorRequest,
     work: &NativeMaterializationWork) -> Result<()> {
-    owner.authority()?.verifier.verify(&request.operator)?;
+    owner.authority()?.verifier.verify(&request.operator, &mut None)?;
     let hash_custody = body_hash(&request.body, work)?;
     let hash = &hash_custody.0;
     if request.session_id != session || request.body.session() != session
@@ -300,9 +290,9 @@ fn decode_prepared_approval(bytes: &[u8], work: &NativeMaterializationWork)
         maximum_items: remaining.items_examined,
         maximum_depth: 64,
     };
-    let mut custody = work.retain_owned(0).map_err(native_error)?;
-    let decoded = json_from_slice_bounded_native_trusted(bytes, bounds, 0,
-        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
+    let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
+    let decoded = json_from_slice_bounded(std::marker::PhantomData::<PiPreparedApproval>, bytes, bounds, 0,
+        Some(acyclic_harness::wire::ErrorCode::Invalid), Some(acyclic_harness::JsonValueSchema::None),
         &mut |charge| operator_decode_charge(charge, work, &mut custody));
     match decoded {
         Ok(prepared) => Ok((prepared, custody)),
@@ -320,36 +310,17 @@ fn operator_decode_error(error: Error, custody: NativeAllocation) -> Error {
 
 fn operator_decode_charge(charge: JsonCodecCharge, work: &NativeMaterializationWork,
     custody: &mut NativeAllocation) -> Result<()> {
-    let result = match charge {
-        JsonCodecCharge::Work { bytes, items } => work.charge(WorkCounters {
-            bytes_encoded: bytes, items_examined: items, ..WorkCounters::default() }),
-        JsonCodecCharge::Read { bytes } => work.charge(WorkCounters {
-            source_bytes_read: bytes, ..WorkCounters::default() }),
-        JsonCodecCharge::Inspect { items } => work.charge(WorkCounters {
-            items_examined: items, ..WorkCounters::default() }),
-        JsonCodecCharge::CopyAdmission { bytes } => work.admit(WorkCounters {
-            bytes_copied: bytes, ..WorkCounters::default() }),
-        JsonCodecCharge::Copy { bytes } => work.charge(WorkCounters {
-            bytes_copied: bytes, ..WorkCounters::default() }),
-        JsonCodecCharge::AllocationOperation { .. } => work.charge(WorkCounters {
-            allocation_operations: 1, ..WorkCounters::default() }),
-        JsonCodecCharge::Retain { bytes } => {
-            let retained = custody.bytes().checked_add(bytes)
-                .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
-                .map_err(native_error)?;
-            custody.resize_retained(retained)
-        }
-        JsonCodecCharge::Release { bytes } => custody.release(bytes),
+    match charge {
         JsonCodecCharge::Admission { maximum_owned_bytes: scratch, value_shape } => {
             let items = value_shape.lexical_items();
             let input_bytes = items.checked_mul(64).and_then(|scalars| scalars.checked_add(value_shape.input_bytes()))
                 .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
                 .map_err(native_error)?;
-            let quota = work.retain_owned(operator_owned_quota(items, input_bytes, scratch)?).map_err(native_error)?;
-            custody.absorb(quota)
+            let mut quota = work.claim(operator_owned_quota(items, input_bytes, scratch)?, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
+            custody.absorb(&mut quota).map_err(native_error)
         }
-    };
-    result.map_err(native_error)
+        charge => pi_root_provider::native_buffer_codec_charge(work, custody, charge),
+    }
 }
 
 /// The only path loading operator credentials: a trusted host CLI action, not a hook supplied by an agent.

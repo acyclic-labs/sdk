@@ -42,21 +42,7 @@ pub struct ModelTokenCount {
 
 impl ModelTokenCount {
     /// Verifies request identity and dimensions, returning the full input bound.
-    pub fn validate(&self, request: &PreparedModelRequest) -> Result<u64> {
-        self.validate_with_work(request, &mut None)
-    }
-
-    /// Validates the original count on its admitted ledger without allocating denial diagnostics.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(
-        &self, request: &PreparedModelRequest, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<u64> {
-        let mut observer = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.validate_with_work(request, &mut Some(&mut observer))
-    }
-
-    fn validate_with_work(
+    pub(crate) fn validate(
         &self,
         request: &PreparedModelRequest,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -65,7 +51,7 @@ impl ModelTokenCount {
             io.check_cancellation()?;
             io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
-        if self.request_digest != request.manifest().request_digest
+        if self.request_digest != request.request_digest()
             || self.message_tokens.len() != request.request().messages.len()
         {
             return Err(token_count_invalid(work, "token count does not bind the prepared request"));
@@ -127,7 +113,7 @@ mod tests {
     #[test]
     fn accounting_binds_content_model_and_message_dimensions() -> Result<()> {
         let request = ModelRequest {
-            model: Model::new("provider", "model", "revision", serde_json::json!({}))?,
+            model: Model::new("provider".into(), "model".into(), "revision".into(), serde_json::json!({}))?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("hello".into()),
@@ -138,11 +124,11 @@ mod tests {
         let prepared =
             PreparedModelRequest::prepare(request.clone(), crate::conversation::Limits::default(), None)?;
         let mut count = ModelTokenCount {
-            request_digest: prepared.manifest().request_digest,
+            request_digest: prepared.request_digest(),
             fixed_tokens: u32::MAX,
             message_tokens: vec![u32::MAX],
         };
-        assert_eq!(count.validate(&prepared)?, 2 * u64::from(u32::MAX));
+        assert_eq!(count.validate(&prepared, &mut None)?, 2 * u64::from(u32::MAX));
         let mut changed = request.clone();
         changed.model.revision = "different".into();
         assert!(
@@ -151,7 +137,7 @@ mod tests {
                     changed,
                     crate::conversation::Limits::default(),
                     None,
-                )?)
+                )?, &mut None)
                 .is_err()
         );
         let mut changed = request;
@@ -162,11 +148,11 @@ mod tests {
                     changed,
                     crate::conversation::Limits::default(),
                     None,
-                )?)
+                )?, &mut None)
                 .is_err()
         );
         count.message_tokens.clear();
-        assert!(count.validate(&prepared).is_err());
+        assert!(count.validate(&prepared, &mut None).is_err());
         Ok(())
     }
 

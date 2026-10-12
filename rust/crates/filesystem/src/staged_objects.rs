@@ -21,12 +21,11 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue, PublicationScope,
 };
 use crate::cancellation::CancellationToken;
-use crate::async_storage::{NativeObjectRead, NativeObjectReadBatch};
 use crate::materializer::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError};
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     HashedObject, ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention,
-    ObjectReceipt, ObjectResult, ObjectStoreError, ObjectWrite,
+    ObjectResult, ObjectStoreError, ObjectWrite,
 };
 use acyclic_native_runtime::{NativeFile, OwnedRead, OwnedWrite};
 use acyclic_stream::OwnedBytes;
@@ -43,11 +42,12 @@ fn staged_vector<T>(
     let bytes = capacity.checked_mul(std::mem::size_of::<T>())
         .ok_or(crate::WorkError::Overflow)?;
     let mut control = native.map(|work| {
-        if bytes == 0 { work.retain_owned(0) } else { work.claim(bytes as u64) }
+        if bytes == 0 { work.claim(0, 0, crate::WorkCounters::UNCHARGED) } else { work.claim(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED) }
     }).transpose()?;
     let mut values = Vec::new();
-    values.try_reserve_exact(capacity).map_err(|error|
-        ObjectStoreError::Native(NativeTreeMaterializationError::AllocationFailed(error)))?;
+    values.try_reserve_exact(capacity).map_err(|error| {
+        ObjectStoreError::Native(NativeTreeMaterializationError::AllocationFailed(error))
+    })?;
     if let Some(control) = &mut control {
         let actual = values.capacity().checked_mul(std::mem::size_of::<T>())
             .ok_or(crate::WorkError::Overflow)?;
@@ -59,34 +59,42 @@ fn staged_vector<T>(
 fn staged_owned_bytes(
     bytes: Vec<u8>, allocation: NativeAllocation, native: &NativeMaterializationWork,
 ) -> Result<OwnedBytes, ObjectStoreError> {
-    OwnedBytes::from_vec_with_guard(bytes, allocation, native.runtime_meter_owner())
-        .map_err(|failure| match failure.into_error() {
-            acyclic_stream::PreparedOwnedBytesError::Admission(error) => native.runtime_error(error).into(),
+    OwnedBytes::from_vec_with_guard(bytes, allocation, native.runtime_meter())
+        .map_err(|failure| {
+        match failure.into_error() {
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                native.runtime_error(error).into()
+            }
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
-                ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
-        })
+            => {
+                ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout)
+            }
+        }
+    })
 }
 
 async fn staged_native_read(
     file: &NativeFile, offset: u64, length: usize, native: &NativeMaterializationWork,
 ) -> Result<OwnedBytes, ObjectStoreError> {
     if length == 0 {
-        native.runtime_meter_owner().check().map_err(|error| native.runtime_error(error))?;
+        native.runtime_meter().check().map_err(|error| native.runtime_error(error))?;
         return Ok(OwnedBytes::new());
     }
     let (allocation, mut bytes) = staged_vector::<u8>(length, Some(native))?;
     bytes.resize(bytes.capacity(), 0);
     let prepared = acyclic_stream::PreparedOwnedBytes::new(
-        bytes, allocation.expect("native read buffer is funded"), native.runtime_meter_owner(),
+        bytes, allocation.expect("native read buffer is funded"), native.runtime_meter(),
     ).map_err(|failure| match failure.into_error() {
-        acyclic_stream::PreparedOwnedBytesError::Admission(error) => native.runtime_error(error).into(),
+        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+            native.runtime_error(error).into()
+        }
         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-        | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
-            ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
+        => {
+            ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout)
+        }
     })?;
     let (prepared, filled) = file.read_prepared_bounded_async(
-        offset, prepared, length, false, native.runtime_meter_owner(),
+        offset, prepared, length, false, native.runtime_meter(),
     ).map_err(|error| native.runtime_error(error))?
         .await.map_err(|error| native.runtime_error(error))?;
     prepared.freeze(filled).map_err(|_| ObjectStoreError::Corrupt)
@@ -144,7 +152,7 @@ enum Lookup {
 fn resident_read(
     bytes: OwnedBytes, maximum_bytes: u64, budget: WorkBudget,
     native: Option<&NativeMaterializationWork>,
-) -> Result<ObjectReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
+) -> Result<crate::OperationReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
     let length = byte_length(&bytes);
     if length > maximum_bytes {
         return Err((ObjectStoreError::TooLarge {
@@ -160,7 +168,7 @@ fn resident_read(
     } else {
         work.verify(budget).map_err(|error| (error.into(), WorkCounters::default()))?;
     }
-    Ok(ObjectReceipt {
+    Ok(crate::OperationReceipt {
         value: ObjectRead { bytes, retention: ObjectReadRetention::Shared },
         work,
     })
@@ -339,11 +347,11 @@ impl<S> StagedObjects<S> {
     ///
     /// Returns the host error if the private spill file cannot be created.
     pub async fn open(inner: S, spill_directory: PathBuf) -> std::io::Result<Self> {
-        let spill = acyclic_native_runtime::run_blocking_io(move || create_spill(&spill_directory))
+        let spill = acyclic_native_runtime::run_blocking_io(move || create_spill(&spill_directory), None).expect("unmetered task construction cannot fail")
             .await??;
         Ok(Self {
             inner,
-            spill: NativeFile::from_file(spill)?,
+            spill: NativeFile::from_file(spill, None).map_err(|(error, _)| error)?,
             index: std::sync::RwLock::new(Index::default()),
             spill_io: RwLock::new(()),
             collection: Arc::default(),
@@ -391,15 +399,16 @@ impl<S> StagedObjects<S> {
             // resident puts cannot grow the vector beyond its funded capacity.
             let mut index = self.index_mut();
             if index.resident_bytes <= MAXIMUM_RESIDENT_BYTES {
-                return Ok(ObjectReceipt { value: (), work: WorkCounters::default() });
+                return Ok(crate::OperationReceipt { value: (), work: WorkCounters::default() });
             }
             let (control, mut victims) = staged_vector(index.order.len(), native)
                 .map_err(ObjectFailure::before_work)?;
             index.spill_victims(&mut victims);
             (control, victims, index.spill_end)
         };
-        let spilled = victims.iter().fold(0_u64, |total, (_, bytes)|
-            total.saturating_add(byte_length(bytes)));
+        let spilled = victims.iter().fold(0_u64, |total, (_, bytes)| {
+            total.saturating_add(byte_length(bytes))
+        });
         let work = WorkCounters {
             backend_write_operations: 1,
             object_bytes_written: spilled,
@@ -414,7 +423,9 @@ impl<S> StagedObjects<S> {
             }
             let length = usize::try_from(spilled)
                 .map_err(|_| ObjectFailure::before_work(crate::WorkError::Overflow.into()))?;
-            let copy = native.map(|native| native.reserve_copy(spilled)).transpose()
+            let copy = native.map(|native| {
+                    native.reserve_work(crate::WorkCounters { bytes_copied: spilled, ..crate::WorkCounters::UNCHARGED })
+                }).transpose()
                 .map_err(|error| ObjectFailure::before_work(error.into()))?;
             let (buffer_control, mut buffer) = staged_vector(length, native)
                 .map_err(ObjectFailure::before_work)?;
@@ -422,7 +433,7 @@ impl<S> StagedObjects<S> {
                 buffer.extend_from_slice(bytes);
             }
             if let Some(copy) = copy {
-                copy.record(spilled).map_err(|error| ObjectFailure::before_work(error.into()))?;
+                { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: spilled, ..crate::WorkCounters::UNCHARGED }) }.map_err(|error| ObjectFailure::before_work(error.into()))?;
             }
             if let Some(native) = native {
                 native.admit(WorkCounters { object_bytes_written: spilled, ..WorkCounters::default() })
@@ -430,11 +441,15 @@ impl<S> StagedObjects<S> {
                 let bytes = staged_owned_bytes(
                     buffer, buffer_control.expect("native spill buffer is admitted"), native,
                 ).map_err(ObjectFailure::before_work)?;
-                self.spill.control_bounded_async(move |file, meter| {
-                    acyclic_native_runtime::write_all_at_measured_held(file, offset, &bytes, meter)
-                }, native.runtime_meter_owner())
-                    .map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?
-                    .await.map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?;
+                self.spill.control_async(move |file, meter| { let meter = meter.expect("metered control");
+                    acyclic_native_runtime::write_all_at(file, offset, &bytes, Some((meter, true)))
+                }, Some(native.runtime_meter()))
+                    .map_err(|error| {
+                        ObjectFailure::before_work(native.runtime_error(error).into())
+                    })?
+                    .await.map_err(|error| {
+                        ObjectFailure::before_work(native.runtime_error(error).into())
+                    })?;
                 // Physical partial writes (including cancellation) are
                 // recorded by the runtime as output_bytes before returning.
                 native.record_admitted(WorkCounters { object_bytes_written: spilled, ..WorkCounters::default() })
@@ -457,7 +472,7 @@ impl<S> StagedObjects<S> {
             return Err(error);
         }
         self.index_mut().mark_spilled(&victims, offset);
-        Ok(ObjectReceipt { value: (), work: if native.is_some() { WorkCounters::default() } else { work } })
+        Ok(crate::OperationReceipt { value: (), work: if native.is_some() { WorkCounters::default() } else { work } })
     }
 
     /// Reads spilled objects back in one submission and authenticates each
@@ -609,7 +624,9 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                         Some(Staged::Resident { bytes, .. }) => writes.push(ObjectWrite {
                             object_id, bytes: bytes.clone(),
                         }),
-                        Some(&Staged::Spilled { offset, length }) => spilled.push((object_id, offset, length)),
+                        Some(&Staged::Spilled { offset, length }) => {
+                            spilled.push((object_id, offset, length))
+                        }
                         None => {}
                     }
                 }
@@ -620,7 +637,9 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 for (object_id, offset, length) in spilled {
                     cancellation.check().map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
                     let hashed = length.checked_add(crate::storage::OBJECT_DIGEST_ENVELOPE_BYTES)
-                        .ok_or_else(|| ObjectFailure::before_work(crate::WorkError::Overflow.into()))?;
+                        .ok_or_else(|| {
+                            ObjectFailure::before_work(crate::WorkError::Overflow.into())
+                        })?;
                     native.admit(WorkCounters { object_bytes_read: length, bytes_hashed: hashed, ..WorkCounters::default() })
                         .map_err(|error| ObjectFailure::before_work(error.into()))?;
                     let length_usize = usize::try_from(length)
@@ -643,8 +662,18 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 for write in &writes {
                     cancellation.check().map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
                     self.collection.writing(unswept, [write.object_id]);
-                    self.inner.put_with_native_work(write.object_id, write.bytes.clone(), native, cancellation)
-                        .await.map_err(ObjectFailure::before_work)?;
+                    {
+                        let __object_args =
+                            (write.object_id, write.bytes.clone(), native, cancellation);
+                        let mut __object_work =
+                            crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                        let __object_result = self
+                            .inner
+                            .put(__object_args.0, __object_args.1, &mut __object_work)
+                            .await;
+                        __object_result
+                    }
+                    .map_err(ObjectFailure::before_work)?;
                     self.index_mut().acknowledge(write.object_id);
                 }
             } else {
@@ -662,9 +691,22 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     }));
                 }
                 self.collection.writing(unswept, writes.iter().map(|write| write.object_id));
-                let receipt = self.inner.put_many(&writes,
-                    work.remaining(budget).map_err(|error| ObjectFailure::new(error.into(), work))?, cancellation,
-                ).await.map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                let receipt = {
+                    let __object_args = (
+                        &writes,
+                        work.remaining(budget)
+                            .map_err(|error| ObjectFailure::new(error.into(), work))?,
+                        cancellation,
+                    );
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .inner
+                        .put_many(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                }
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
                 // Cleanup cannot be skipped by cancellation after acknowledgement.
                 for write in &writes { self.index_mut().acknowledge(write.object_id); }
                 work = work.checked_add(receipt.work).map_err(|error| ObjectFailure::new(error.into(), work))?;
@@ -676,15 +718,19 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         };
         if truncate {
             if let Some(native) = native {
-                self.spill.set_len_bounded_async(0, native.runtime_meter_owner())
-                    .map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?
-                    .await.map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?;
+                self.spill.set_len_async(0, Some(native.runtime_meter()))
+                    .map_err(|error| {
+                        ObjectFailure::before_work(native.runtime_error(error).into())
+                    })?
+                    .await.map_err(|error| {
+                        ObjectFailure::before_work(native.runtime_error(error).into())
+                    })?;
             } else {
-                self.spill.set_len_async(0).await.map_err(|error| ObjectFailure::new(error.into(), work))?;
+                self.spill.set_len_async(0, None).expect("unmetered unit construction cannot fail").await.map_err(|error| ObjectFailure::new(error.into(), work))?;
             }
             self.index_mut().spill_end = 0;
         }
-        Ok(ObjectReceipt { value: (), work })
+        Ok(crate::OperationReceipt { value: (), work })
     }
 
     async fn put_engine(
@@ -708,7 +754,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             prior.remaining(budget).map_err(|error| ObjectFailure::new(error.into(), prior))?,
             cancellation, native,
         ).await.map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
-        Ok(ObjectReceipt { value: (), work: prior.checked_add(admitted.work)
+        Ok(crate::OperationReceipt { value: (), work: prior.checked_add(admitted.work)
             .map_err(|error| ObjectFailure::new(error.into(), prior))? })
     }
 
@@ -723,18 +769,38 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             let (mut future, _) = crate::heap_future::in_heap_admitted(
                 native,
                 |native, bytes| {
-                    allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                    allocation = native.map(|native| {
+                            native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)
+                        }).transpose()?;
                     Ok::<_, NativeTreeMaterializationError>(())
                 },
                 |native| async move {
                     let unswept = self.collection.unswept().await;
                     self.collection.writing(&unswept, [object.object_id()]);
                     if let Some(native) = native {
-                        self.inner.put_hashed_with_native_work(object, native, cancellation).await
-                            .map_err(ObjectFailure::before_work)?;
-                        Ok(ObjectReceipt { value: (), work: WorkCounters::default() })
+                        {
+                            let __object_args = (object, native, cancellation);
+                            let mut __object_work =
+                                crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                            let __object_result = self
+                                .inner
+                                .put_hashed(__object_args.0, &mut __object_work)
+                                .await;
+                            __object_result
+                        }
+                        .map_err(ObjectFailure::before_work)?;
+                        Ok(crate::OperationReceipt { value: (), work: WorkCounters::default() })
                     } else {
-                        self.inner.put_hashed(object, budget, cancellation).await
+                        {
+                            let __object_args = (object, budget, cancellation);
+                            let mut __object_work =
+                                crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                            let __object_result = self
+                                .inner
+                                .put_hashed(__object_args.0, &mut __object_work)
+                                .await;
+                            __object_work.receipt(__object_result)
+                        }
                     }
                 },
             ).map_err(|error| ObjectFailure::before_work(error.into()))?;
@@ -750,12 +816,14 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             let mut index = self.index_mut();
             index.admit_resident(object_id, bytes) && index.resident_bytes > MAXIMUM_RESIDENT_BYTES
         };
-        if !overflowing { return Ok(ObjectReceipt { value: (), work: WorkCounters::default() }); }
+        if !overflowing { return Ok(crate::OperationReceipt { value: (), work: WorkCounters::default() }); }
         let mut allocation = None;
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             native,
             |native, bytes| {
-                allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                allocation = native.map(|native| {
+                        native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)
+                    }).transpose()?;
                 Ok::<_, NativeTreeMaterializationError>(())
             },
             |native| self.relieve_window(budget, cancellation, native),
@@ -781,7 +849,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             ).await.map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
             work = work.checked_add(receipt.work).map_err(|error| ObjectFailure::new(error.into(), work))?;
         }
-        Ok(ObjectReceipt { value: (), work })
+        Ok(crate::OperationReceipt { value: (), work })
     }
 
     async fn flush_engine(
@@ -820,7 +888,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                             }
                             if index.objects.contains_key(&object_id) { targets.push(object_id); }
                         }
-                    },
+                    }
                     PublicationScope::Everything => {
                         for &object_id in index.objects.keys() {
                             if let Some(native) = native {
@@ -834,7 +902,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 (control, targets)
             };
             let drained = self.drain_locked(&unswept, &targets, budget, cancellation, native).await?;
-            Ok(ObjectReceipt { value: unswept.into_hold(), work: drained.work })
+            Ok(crate::OperationReceipt { value: unswept.into_hold(), work: drained.work })
         }).await;
         crate::obs::measured_on(&span, result, |receipt| &receipt.work)
     }
@@ -849,7 +917,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
         native: Option<&NativeMaterializationWork>,
-    ) -> Result<ObjectReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
+    ) -> Result<crate::OperationReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
         // Sharing the spill file keeps a drain from truncating or reusing it
         // until this read completes.
         let spill_file = self.spill_io.read().await;
@@ -908,7 +976,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         {
             index.insert_resident(object_id, bytes.clone());
         }
-        Ok(ObjectReceipt {
+        Ok(crate::OperationReceipt {
             value: ObjectRead { bytes, retention: ObjectReadRetention::Shared },
             work,
         })
@@ -917,20 +985,37 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
     async fn read_durable(
         &self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,
         cancellation: &CancellationToken, native: Option<&NativeMaterializationWork>,
-    ) -> Result<ObjectReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
+    ) -> Result<crate::OperationReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
         if let Some(native) = native {
-            return self.inner.read_with_native_work(object_id, maximum_bytes, native, cancellation)
-                .await.map(|read| ObjectReceipt { value: read.into_read(), work: WorkCounters::default() })
-                .map_err(|error| (error, WorkCounters::default()));
+            return {
+                let __object_args = (object_id, maximum_bytes, native, cancellation);
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                let __object_result = self
+                    .inner
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_result
+            }
+            .map(|read| crate::OperationReceipt { value: read, work: WorkCounters::default() })
+            .map_err(|error| (error, WorkCounters::default()));
         }
-        self.inner.read(object_id, maximum_bytes, budget, cancellation).await
-            .map_err(|failure| (failure.error, *failure.work))
+        {
+            let __object_args = (object_id, maximum_bytes, budget, cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = self
+                .inner
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }
+        .map_err(|failure| (failure.error, *failure.work))
     }
 
     async fn read_engine(
         &self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,
         cancellation: &CancellationToken, native: Option<&NativeMaterializationWork>,
-    ) -> Result<ObjectReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
+    ) -> Result<crate::OperationReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
         cancellation.check().map_err(|_| (ObjectStoreError::Cancelled, WorkCounters::default()))?;
         match self.lookup(object_id) {
             Lookup::Resident(bytes) => resident_read(bytes, maximum_bytes, budget, native),
@@ -940,10 +1025,14 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 let (mut future, _) = crate::heap_future::in_heap_admitted(
                     native,
                     |native, bytes| {
-                        allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                        allocation = native.map(|native| {
+                                native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)
+                            }).transpose()?;
                         Ok::<_, NativeTreeMaterializationError>(())
                     },
-                    |native| self.read_durable(object_id, maximum_bytes, budget, cancellation, native),
+                    |native| {
+                        self.read_durable(object_id, maximum_bytes, budget, cancellation, native)
+                    },
                 ).map_err(|error| (error.into(), WorkCounters::default()))?;
                 let result = future.as_mut().await;
                 drop(future);
@@ -955,10 +1044,14 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 let (mut future, _) = crate::heap_future::in_heap_admitted(
                     native,
                     |native, bytes| {
-                        allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                        allocation = native.map(|native| {
+                                native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)
+                            }).transpose()?;
                         Ok::<_, NativeTreeMaterializationError>(())
                     },
-                    |native| self.read_spilled_object(object_id, maximum_bytes, budget, cancellation, native),
+                    |native| {
+                        self.read_spilled_object(object_id, maximum_bytes, budget, cancellation, native)
+                    },
                 ).map_err(|error| (error.into(), WorkCounters::default()))?;
                 let result = future.as_mut().await;
                 drop(future);
@@ -969,24 +1062,19 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
     }
 
     fn decoded_get(
-        &self, key: DecodedCacheKey, native: Option<&NativeMaterializationWork>,
+        &self, key: DecodedCacheKey,
     ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        if let Some(native) = native { native.remaining()?; }
         match self.index().objects.get(&key.object_id) {
             Some(Staged::Resident { decoded, .. }) => Ok(decoded.get()
                 .filter(|(cached, _)| *cached == key).map(|(_, value)| value.clone())),
             Some(Staged::Spilled { .. }) => Ok(None),
-            None => match native {
-                Some(native) => self.inner.decoded_cache_get_with_native_work(key, native),
-                None => self.inner.decoded_cache_get(key),
-            },
+            None => self.inner.decoded_cache_get(key),
         }
     }
 
     fn decoded_admit(
-        &self, key: DecodedCacheKey, value: DecodedCacheValue, native: Option<&NativeMaterializationWork>,
+        &self, key: DecodedCacheKey, value: DecodedCacheValue,
     ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        if let Some(native) = native { native.remaining()?; }
         match self.index().objects.get(&key.object_id) {
             Some(Staged::Resident { decoded, .. }) => {
                 let (cached, shared) = decoded.get_or_init(|| (key, value.clone()));
@@ -997,10 +1085,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 })
             }
             Some(Staged::Spilled { .. }) => Ok(DecodedCacheAdmission::Uncached(value)),
-            None => match native {
-                Some(native) => self.inner.decoded_cache_admit_with_native_work(key, value, native),
-                None => self.inner.decoded_cache_admit(key, value),
-            },
+            None => self.inner.decoded_cache_admit(key, value),
         }
     }
 }
@@ -1016,7 +1101,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         &self,
         key: DecodedCacheKey,
     ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        self.decoded_get(key, None)
+        self.decoded_get(key)
     }
 
     fn decoded_cache_admit(
@@ -1024,141 +1109,178 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         key: DecodedCacheKey,
         value: DecodedCacheValue,
     ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        self.decoded_admit(key, value, None)
-    }
-
-    fn decoded_cache_get_with_native_work(
-        &self, key: DecodedCacheKey, work: &NativeMaterializationWork,
-    ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        self.decoded_get(key, Some(work))
-    }
-
-    fn decoded_cache_admit_with_native_work(
-        &self, key: DecodedCacheKey, value: DecodedCacheValue, work: &NativeMaterializationWork,
-    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        self.decoded_admit(key, value, Some(work))
+        self.decoded_admit(key, value)
     }
 
     async fn put(
-        &self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        &self,
+        object_id: ObjectId,
+        bytes: OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+        self.put_engine(object_id, bytes, work.remaining()?, cancellation, Some(work))
+            .await.map(|_| ()).map_err(|failure| failure.error)
+    }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         self.put_engine(object_id, bytes, budget, cancellation, None).await
+    }
+        .await;
+        context.accept(result)
     }
 
     async fn put_hashed(
-        &self, object: HashedObject, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        &self,
+        object: HashedObject,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+        self.put_hashed_engine(object, work.remaining()?, cancellation, Some(work))
+            .await.map(|_| ()).map_err(|failure| failure.error)
+    }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         self.put_hashed_engine(object, budget, cancellation, None).await
+    }
+        .await;
+        context.accept(result)
     }
 
     async fn put_many(
-        &self, writes: &[ObjectWrite], budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        &self,
+        writes: &[ObjectWrite],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+        self.put_many_engine(writes, work.remaining()?, cancellation, Some(work))
+            .await.map(|_| ()).map_err(|failure| failure.error)
+    }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         self.put_many_engine(writes, budget, cancellation, None).await
+    }
+        .await;
+        context.accept(result)
     }
 
     async fn put_many_hashed(
         &self,
         objects: &[HashedObject],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        if objects.is_empty() {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            if objects.is_empty() {
             return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
                 "object write batch is empty".to_owned(),
             )));
         }
-        let mut work = WorkCounters::default();
-        for object in objects {
-            let receipt = self
-                .put_hashed(
-                    object.clone(),
-                    work.remaining(budget)
-                        .map_err(|error| ObjectFailure::new(error.into(), work))?,
-                    cancellation,
-                )
-                .await
+            let mut work = WorkCounters::default();
+            for object in objects {
+                let receipt = {
+                    let __object_args = (
+                        object.clone(),
+                        work.remaining(budget)
+                            .map_err(|error| ObjectFailure::new(error.into(), work))?,
+                        cancellation,
+                    );
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result =
+                        self.put_hashed(__object_args.0, &mut __object_work).await;
+                    __object_work.receipt(__object_result)
+                }
                 .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-            work = work
-                .checked_add(receipt.work)
-                .map_err(|error| ObjectFailure::new(error.into(), work))?;
+                work = work
+                    .checked_add(receipt.work)
+                    .map_err(|error| ObjectFailure::new(error.into(), work))?;
+            }
+            Ok(crate::OperationReceipt { value: (), work })
         }
-        Ok(ObjectReceipt { value: (), work })
+        .await;
+        context.accept(result)
     }
 
     async fn flush_before_publish(
-        &self, scope: PublicationScope<'_>, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<crate::PublicationHold> {
+        &self,
+        scope: PublicationScope<'_>,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::PublicationHold, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                let mut allocation = None;
+                let (mut future, _) = crate::heap_future::in_heap_admitted(
+                    Some(work),
+                    |native, bytes| {
+                        allocation = native
+                            .map(|native| {
+                                native.claim(
+                                    bytes,
+                                    u64::from((bytes) != 0),
+                                    crate::WorkCounters::UNCHARGED,
+                                )
+                            })
+                            .transpose()?;
+                        Ok::<_, NativeTreeMaterializationError>(())
+                    },
+                    |native| self.flush_engine(scope, WorkBudget::default(), cancellation, native),
+                )?;
+                let result = future
+                    .as_mut()
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error);
+                drop(future);
+                drop(allocation);
+                result
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         self.flush_engine(scope, budget, cancellation, None).await
-    }
-
-    async fn put_with_native_work(
-        &self, object_id: ObjectId, bytes: OwnedBytes, work: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        self.put_engine(object_id, bytes, work.remaining()?, cancellation, Some(work))
-            .await.map(|_| ()).map_err(|failure| failure.error)
-    }
-
-    async fn put_hashed_with_native_work(
-        &self, object: HashedObject, work: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        self.put_hashed_engine(object, work.remaining()?, cancellation, Some(work))
-            .await.map(|_| ()).map_err(|failure| failure.error)
-    }
-
-    async fn put_many_with_native_work(
-        &self, writes: &[ObjectWrite], work: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        self.put_many_engine(writes, work.remaining()?, cancellation, Some(work))
-            .await.map(|_| ()).map_err(|failure| failure.error)
-    }
-
-    async fn flush_before_publish_with_native_work(
-        &self, scope: PublicationScope<'_>, work: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<crate::PublicationHold, ObjectStoreError> {
-        let mut allocation = None;
-        let (mut future, _) = crate::heap_future::in_heap_admitted(
-            Some(work),
-            |native, bytes| {
-                allocation = native.map(|native| native.claim(bytes)).transpose()?;
-                Ok::<_, NativeTreeMaterializationError>(())
-            },
-            |native| self.flush_engine(scope, WorkBudget::default(), cancellation, native),
-        )?;
-        let result = future.as_mut().await.map(|receipt| receipt.value).map_err(|failure| failure.error);
-        drop(future);
-        drop(allocation);
-        result
+    }.await;
+        context.accept(result)
     }
 
     async fn prepare_generation_publication(
-        &self, request: &crate::kernel::PublishGenerationRequest,
-        proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend,
-        scope: crate::PublicationScope<'_>, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        self.inner.prepare_generation_publication(
-            request, proof, append, scope, budget, cancellation,
-        ).await
-    }
-
-    async fn prepare_generation_publication_with_native_work(
-        &self, request: &crate::kernel::PublishGenerationRequest,
-        proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend,
-        scope: crate::PublicationScope<'_>, original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        self.inner.prepare_generation_publication_with_native_work(
-            request, proof, append, scope, original, cancellation,
-        ).await
+        &self,
+        request: &crate::kernel::PublishGenerationRequest,
+        proof: &crate::kernel::GenerationProof,
+        append: &crate::GuardedAppend,
+        scope: crate::PublicationScope<'_>,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        self.inner
+            .prepare_generation_publication(request, proof, append, scope, context)
+            .await
     }
 
     fn collection(&self) -> Option<&Arc<crate::Collection>> {
@@ -1171,69 +1293,109 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         record: &crate::DurableCommit,
         maximum_bytes: u64,
         maximum_objects: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Option<crate::kernel::HistoricalGenerationEvidence>> {
-        self.inner
-            .historical_generation_evidence(
-                authority_id, record, maximum_bytes, maximum_objects, budget, cancellation,
-            )
-            .await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<Option<crate::kernel::HistoricalGenerationEvidence>, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (
+                    authority_id,
+                    record,
+                    maximum_bytes,
+                    maximum_objects,
+                    budget,
+                    cancellation,
+                );
+                let mut __object_work = crate::AuthorityWork::new(__object_args.4, __object_args.5);
+                let __object_result = self
+                    .inner
+                    .historical_generation_evidence(
+                        __object_args.0,
+                        __object_args.1,
+                        __object_args.2,
+                        __object_args.3,
+                        &mut __object_work,
+                    )
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read(
-        &self,
-        object_id: ObjectId,
+        &self, object_id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
-        self.read_engine(object_id, maximum_bytes, budget, cancellation, None)
-            .await.map_err(|(error, work)| ObjectFailure::new(error, work))
-    }
-
-    async fn read_with_native_work(
-        &self, object_id: ObjectId, maximum_bytes: u64,
-        work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<NativeObjectRead, ObjectStoreError> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
         let mut read = self.read_engine(object_id, maximum_bytes, work.remaining()?, cancellation, Some(work))
             .await.map_err(|(error, _)| error)?.value;
         read.retention = ObjectReadRetention::Shared;
-        NativeObjectRead::shared(read)
+        Ok(read)
+    }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+        self.read_engine(object_id, maximum_bytes, budget, cancellation, None)
+            .await.map_err(|(error, work)| ObjectFailure::new(error, work))
+    }
+        .await;
+        context.accept(result)
     }
 
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        crate::async_storage::read_many_sequential_async(self, requests, budget, cancellation).await
-    }
-
-    async fn read_many_with_native_work(
-        &self, requests: &[ObjectReadRequest],
-        work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<NativeObjectReadBatch, ObjectStoreError> {
-        crate::async_storage::read_many_sequential_with_native_work(self, requests, work, cancellation).await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        crate::async_storage::read_many_sequential(self, requests, context).await
     }
 
     async fn contains(
         &self,
         object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         if self.index().objects.contains_key(&object_id) {
-            return Ok(ObjectReceipt {
+            return Ok(crate::OperationReceipt {
                 value: true,
                 work: WorkCounters::default(),
             });
         }
-        self.inner.contains(object_id, budget, cancellation).await
+            {
+                let __object_args = (object_id, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .contains(__object_args.0, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 }
 
@@ -1292,6 +1454,7 @@ mod tests {
             acyclic_objects::v1::local::LocalObjects::open(
                 directory.join("objects"),
                 acyclic_objects::LocalObjectsLimits::default(),
+                None,
             )
             .await?,
         );
@@ -1318,6 +1481,7 @@ mod tests {
         let reopened = acyclic_objects::v1::local::LocalObjects::open(
             directory.join("objects"),
             acyclic_objects::LocalObjectsLimits::default(),
+            None,
         )
         .await?;
         let bucket = acyclic_objects::v1::wire::BucketRef {
@@ -1331,9 +1495,12 @@ mod tests {
         let reopened = LogicalObjectStore::new(Arc::new(reopened), bucket);
         let token = CancellationToken::new();
         for &object_id in objects {
-            if !reopened
-                .contains(object_id, WorkBudget::UNBOUNDED, &token)
-                .await?
+            if !{
+                let __object_args = (object_id, WorkBudget::UNBOUNDED, &token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = reopened.contains(__object_args.0, &mut __object_work).await;
+                __object_work.receipt(__object_result)
+            }?
                 .value
             {
                 return Ok(false);
@@ -1357,19 +1524,26 @@ mod tests {
         let (store, provider) = open_staged(directory.path()).await?;
         let (object_id, bytes) = blob(OwnedBytes::from_static(b"staged immutable body"));
         let token = CancellationToken::new();
-        store
-            .put(object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token)
-            .await?;
+        {
+            let __object_args = (object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?;
         assert!(
-            store
-                .contains(object_id, WorkBudget::UNBOUNDED, &token)
-                .await?
+            {
+                let __object_args = (object_id, WorkBudget::UNBOUNDED, &token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = store.contains(__object_args.0, &mut __object_work).await;
+                __object_work.receipt(__object_result)
+            }?
                 .value
         );
         assert!(
             !store
-                .inner()
-                .contains(object_id, WorkBudget::UNBOUNDED, &token)
+                .inner(object_id, WorkBudget::UNBOUNDED, &token)
                 .await?
                 .value
         );
@@ -1377,32 +1551,43 @@ mod tests {
         let mut insufficient = WorkBudget::UNBOUNDED;
         insufficient.object_bytes_written = 0;
         assert!(
-            store
-                .flush_before_publish(PublicationScope::Everything, insufficient, &token)
-                .await
-                .is_err()
+            {
+                let __object_args = (PublicationScope::Everything, insufficient, &token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = store
+                    .flush_before_publish(__object_args.0, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+            .is_err()
         );
         assert!(
-            store
-                .contains(object_id, WorkBudget::UNBOUNDED, &token)
-                .await?
+            {
+                let __object_args = (object_id, WorkBudget::UNBOUNDED, &token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = store.contains(__object_args.0, &mut __object_work).await;
+                __object_work.receipt(__object_result)
+            }?
                 .value
         );
         assert!(
             !store
-                .inner()
-                .contains(object_id, WorkBudget::UNBOUNDED, &token)
+                .inner(object_id, WorkBudget::UNBOUNDED, &token)
                 .await?
                 .value
         );
 
-        store
-            .flush_before_publish(PublicationScope::Everything, WorkBudget::UNBOUNDED, &token)
-            .await?;
+        {
+            let __object_args = (PublicationScope::Everything, WorkBudget::UNBOUNDED, &token);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store
+                .flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?;
         assert!(
             store
-                .inner()
-                .contains(object_id, WorkBudget::UNBOUNDED, &token)
+                .inner(object_id, WorkBudget::UNBOUNDED, &token)
                 .await?
                 .value
         );
@@ -1431,31 +1616,50 @@ mod tests {
             })
             .collect::<Vec<_>>();
         for (object_id, bytes) in &objects {
-            store
-                .put(*object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token)
-                .await?;
+            {
+                let __object_args = (*object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = store
+                    .put(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
         }
         for (object_id, bytes) in &objects {
             assert!(
                 !store
-                    .inner()
-                    .contains(*object_id, WorkBudget::UNBOUNDED, &token)
+                    .inner(*object_id, WorkBudget::UNBOUNDED, &token)
                     .await?
                     .value,
                 "overflow must not make staged bytes durable"
             );
-            let read = store
-                .read(*object_id, u64::MAX, WorkBudget::UNBOUNDED, &token)
-                .await?;
+            let read = {
+                let __object_args = (*object_id, u64::MAX, WorkBudget::UNBOUNDED, &token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = store
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
             assert_eq!(&read.value.bytes, bytes);
         }
-        store
-            .flush_before_publish(PublicationScope::Everything, WorkBudget::UNBOUNDED, &token)
-            .await?;
+        {
+            let __object_args = (PublicationScope::Everything, WorkBudget::UNBOUNDED, &token);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store
+                .flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?;
         for (object_id, bytes) in &objects {
-            let read = store
-                .read(*object_id, u64::MAX, WorkBudget::UNBOUNDED, &token)
-                .await?;
+            let read = {
+                let __object_args = (*object_id, u64::MAX, WorkBudget::UNBOUNDED, &token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = store
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
             assert_eq!(&read.value.bytes, bytes);
         }
         assert_eq!(store.index().spill_end, 0);
@@ -1487,9 +1691,14 @@ mod tests {
             .collect::<Vec<_>>();
         let (early, late) = objects.split_at(3 * window);
         for (object_id, bytes) in early {
-            store
-                .put(*object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token)
-                .await?;
+            {
+                let __object_args = (*object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = store
+                    .put(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
         }
         assert!(store.index().spilled_objects > 0);
         // Stand in for a spill file that has grown past its bound.
@@ -1499,17 +1708,21 @@ mod tests {
         let mut admission = WorkBudget::UNBOUNDED;
         admission.backend_write_operations = 1;
         for (object_id, bytes) in late {
-            let receipt = store
-                .put(*object_id, bytes.clone(), admission, &token)
-                .await?;
+            let receipt = {
+                let __object_args = (*object_id, bytes.clone(), admission, &token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = store
+                    .put(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
             assert!(receipt.work.backend_write_operations <= 1);
         }
         let durable = {
             let mut durable = 0;
             for (object_id, _) in early {
                 if store
-                    .inner()
-                    .contains(*object_id, WorkBudget::UNBOUNDED, &token)
+                    .inner(*object_id, WorkBudget::UNBOUNDED, &token)
                     .await?
                     .value
                 {
@@ -1524,9 +1737,14 @@ mod tests {
             "the steps emptied and reused the spill file"
         );
         for (object_id, bytes) in &objects {
-            let read = store
-                .read(*object_id, u64::MAX, WorkBudget::UNBOUNDED, &token)
-                .await?;
+            let read = {
+                let __object_args = (*object_id, u64::MAX, WorkBudget::UNBOUNDED, &token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = store
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
             assert_eq!(&read.value.bytes, bytes);
         }
         drop(store);
@@ -1553,9 +1771,12 @@ mod tests {
             })
             .collect::<Vec<_>>();
         for object in &objects {
-            store
-                .put_hashed(object.clone(), WorkBudget::UNBOUNDED, &token)
-                .await?;
+            {
+                let __object_args = (object.clone(), WorkBudget::UNBOUNDED, &token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
+                __object_work.receipt(__object_result)
+            }?;
         }
         let identities = objects
             .iter()
@@ -1571,30 +1792,39 @@ mod tests {
             .map(|(_, id)| *id)
             .collect::<Vec<_>>();
 
-        store
-            .flush_before_publish(
+        {
+            let __object_args = (
                 PublicationScope::Closure {
                     objects: &closure,
                     proven_at: 0,
                 },
                 WorkBudget::UNBOUNDED,
                 &token,
-            )
-            .await?;
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store
+                .flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?;
         for &object_id in &superseded {
             assert!(
                 !store
-                    .inner()
-                    .contains(object_id, WorkBudget::UNBOUNDED, &token)
+                    .inner(object_id, WorkBudget::UNBOUNDED, &token)
                     .await?
                     .value,
                 "an object outside the published closure must stay private"
             );
         }
         for object in &objects {
-            let read = store
-                .read(object.object_id(), u64::MAX, WorkBudget::UNBOUNDED, &token)
-                .await?;
+            let read = {
+                let __object_args = (object.object_id(), u64::MAX, WorkBudget::UNBOUNDED, &token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = store
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
             assert_eq!(read.value.bytes, object.clone().into_parts().1);
         }
         drop(store);
@@ -1622,22 +1852,40 @@ mod tests {
             let shared_bytes = shared_bytes.clone();
             async move {
                 let (fresh, fresh_bytes) = blob(OwnedBytes::from(format!("file body {index:04}")));
-                store
-                    .put(shared, shared_bytes, WorkBudget::UNBOUNDED, token)
-                    .await?;
-                store
-                    .put(fresh, fresh_bytes, WorkBudget::UNBOUNDED, token)
-                    .await?;
-                let flushed = store
-                    .flush_before_publish(
+                {
+                    let __object_args = (shared, shared_bytes, WorkBudget::UNBOUNDED, token);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = store
+                        .put(__object_args.0, __object_args.1, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                }?;
+                {
+                    let __object_args = (fresh, fresh_bytes, WorkBudget::UNBOUNDED, token);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = store
+                        .put(__object_args.0, __object_args.1, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                }?;
+                let flushed = {
+                    let __object_args = (
                         PublicationScope::Closure {
                             objects: &[shared, fresh],
                             proven_at: store.collection.sweeps(),
                         },
                         WorkBudget::UNBOUNDED,
                         token,
-                    )
-                    .await?;
+                    );
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = store
+                        .flush_before_publish(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                }?;
                 Ok::<_, Box<dyn std::error::Error>>((fresh, flushed.work))
             }
         };
@@ -1684,9 +1932,12 @@ mod tests {
         let (store, _provider) = open_staged(directory.path()).await?;
         let token = CancellationToken::new();
         let object = HashedObject::new(ObjectKind::Blob, OwnedBytes::from_static(b"proven body"));
-        let admitted = store
-            .put_hashed(object.clone(), WorkBudget::UNBOUNDED, &token)
-            .await?;
+        let admitted = {
+            let __object_args = (object.clone(), WorkBudget::UNBOUNDED, &token);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        }?;
         assert_eq!(admitted.work.bytes_hashed, 0);
         // A resident page keeps its own decoded representation, which leaves
         // with it once publication makes the page durable.
@@ -1707,19 +1958,29 @@ mod tests {
         assert_eq!(cached.value.downcast_ref::<u32>(), Some(&7));
         let other = DecodedCacheKey::new::<u64>(object.object_id(), DecodeLimits::default());
         assert!(store.decoded_cache_get(other)?.is_none());
-        store
-            .flush_before_publish(PublicationScope::Everything, WorkBudget::UNBOUNDED, &token)
-            .await?;
+        {
+            let __object_args = (PublicationScope::Everything, WorkBudget::UNBOUNDED, &token);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store
+                .flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?;
         assert!(store.decoded_cache_get(key)?.is_none());
         let (object_id, _) = object.into_parts();
-        let forged = store
-            .put(
+        let forged = {
+            let __object_args = (
                 object_id,
                 OwnedBytes::from_static(b"other body"),
                 WorkBudget::UNBOUNDED,
                 &token,
-            )
-            .await;
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        };
         assert!(matches!(
             forged.map(|_| ()).map_err(|failure| failure.error),
             Err(ObjectStoreError::DigestMismatch)
@@ -1752,13 +2013,25 @@ mod tests {
         let (staged, objects, token) = (&store, &objects, &token);
         let writers = futures::future::try_join_all(objects.chunks(8).map(|chunk| async move {
             for object in chunk {
-                staged
-                    .put_hashed(object.clone(), WorkBudget::UNBOUNDED, token)
-                    .await?;
+                {
+                    let __object_args = (object.clone(), WorkBudget::UNBOUNDED, token);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result =
+                        staged.put_hashed(__object_args.0, &mut __object_work).await;
+                    __object_work.receipt(__object_result)
+                }?;
                 for earlier in objects.iter().take(8) {
-                    let read = staged
-                        .read(earlier.object_id(), u64::MAX, WorkBudget::UNBOUNDED, token)
-                        .await;
+                    let read = {
+                        let __object_args =
+                            (earlier.object_id(), u64::MAX, WorkBudget::UNBOUNDED, token);
+                        let mut __object_work =
+                            crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                        let __object_result = staged
+                            .read(__object_args.0, __object_args.1, &mut __object_work)
+                            .await;
+                        __object_work.receipt(__object_result)
+                    };
                     if let Ok(read) = read {
                         assert_eq!(read.value.bytes, earlier.clone().into_parts().1);
                     }
@@ -1767,20 +2040,30 @@ mod tests {
             Ok::<_, ObjectFailure>(())
         }));
         writers.await?;
-        store
-            .flush_before_publish(
+        {
+            let __object_args = (
                 PublicationScope::Closure {
                     objects: &closure,
                     proven_at: 0,
                 },
                 WorkBudget::UNBOUNDED,
                 token,
-            )
-            .await?;
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store
+                .flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?;
         for object in objects {
-            let read = store
-                .read(object.object_id(), u64::MAX, WorkBudget::UNBOUNDED, token)
-                .await?;
+            let read = {
+                let __object_args = (object.object_id(), u64::MAX, WorkBudget::UNBOUNDED, token);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = store
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
             assert_eq!(read.value.bytes, object.clone().into_parts().1);
         }
         drop(store);
@@ -1808,12 +2091,19 @@ mod tests {
     async fn spill_fixture(store: &LocalStaged, token: &CancellationToken)
     -> Result<(ObjectId, OwnedBytes), Box<dyn std::error::Error>> {
         let (id, bytes) = blob(OwnedBytes::from_static(b"real spill bytes"));
-        store.put(id, bytes.clone(), WorkBudget::UNBOUNDED, token).await?;
+        {
+            let __object_args = (id, bytes.clone(), WorkBudget::UNBOUNDED, token);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?;
         let _spill_file = store.spill_io.write().await;
         let spill_bytes = bytes.clone();
-        store.spill.control_async(move |file| {
-            acyclic_native_runtime::write_all_at(file, 0, spill_bytes.as_slice())
-        }).await?;
+        store.spill.control_async(move |file, _| {
+            acyclic_native_runtime::write_all_at(file, 0, spill_bytes.as_slice(), None)
+        }, None).expect("unmetered control construction cannot fail").await?;
         let mut index = store.index_mut();
         if let Some(Staged::Resident { order, .. }) = index.objects.get(&id) {
             let order = *order;
@@ -1831,15 +2121,29 @@ mod tests {
         let token = CancellationToken::new();
         let (id, bytes) = spill_fixture(&store, &token).await?;
         let work = NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
-        let read = store.read_with_native_work(id, bytes.len() as u64, &work, &token).await?;
-        assert_eq!(read.read().bytes, bytes);
-        let alias = read.read().bytes.clone();
+        let read = {
+            let __object_args = (id, bytes.len() as u64, &work, &token);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_result
+        }?;
+        assert_eq!(read.bytes, bytes);
+        let alias = read.bytes.clone();
         let held = work.live_allocation_bytes();
         assert!(held >= NativeMaterializationWork::accounting_state_bytes() + bytes.len() as u64);
         assert_eq!(work.receipt().backend_read_operations, 1);
         assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
         let prefix = work.receipt();
-        drop(store.read_with_native_work(id, bytes.len() as u64, &work, &token).await?);
+        drop({
+            let __object_args = (id, bytes.len() as u64, &work, &token);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_result
+        }?);
         assert_eq!(work.receipt().backend_read_operations, prefix.backend_read_operations);
         assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
         drop(read);
@@ -1861,7 +2165,16 @@ mod tests {
         let mut budget = native_read_budget();
         budget.backend_read_operations = 0;
         let denied = NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
-        assert!(matches!(store.read_with_native_work(id, bytes.len() as u64, &denied, &token).await,
+        assert!(matches!(
+            {
+                let __object_args = (id, bytes.len() as u64, &denied, &token);
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                let __object_result = store
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_result
+            },
             Err(ObjectStoreError::Native(NativeTreeMaterializationError::Work(
                 crate::WorkError::BudgetExceeded { counter: "backend_read_operations", .. })))));
         assert_eq!(denied.receipt().backend_read_operations, 0);
@@ -1870,7 +2183,14 @@ mod tests {
 
         let work = NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
         let spill_file = store.spill_io.write().await;
-        let mut future = Box::pin(store.read_with_native_work(id, bytes.len() as u64, &work, &token));
+        let mut future = Box::pin(async {
+            let __object_args = (id, bytes.len() as u64, &work, &token);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_result
+        });
         assert!(Future::poll(future.as_mut(),
             &mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
         assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
@@ -1883,7 +2203,16 @@ mod tests {
             offset: 0, bytes: bytes::Bytes::from_static(b"bad! spill bytes"),
         }]).await?;
         let work = NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
-        assert!(matches!(store.read_with_native_work(id, bytes.len() as u64, &work, &token).await,
+        assert!(matches!(
+            {
+                let __object_args = (id, bytes.len() as u64, &work, &token);
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                let __object_result = store
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_result
+            },
             Err(ObjectStoreError::Corrupt)));
         assert_eq!(work.receipt().backend_read_operations, 1);
         assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
@@ -1901,24 +2230,53 @@ mod tests {
         let (store, _provider) = open_staged(directory.path()).await?;
         let token = CancellationToken::new();
         let (id, bytes) = blob(OwnedBytes::from_static(b"resident native page"));
-        store.put(id, bytes.clone(), WorkBudget::UNBOUNDED, &token).await?;
-        let work = NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
+        {
+            let __object_args = (id, bytes.clone(), WorkBudget::UNBOUNDED, &token);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?;
+        let work = NativeMaterializationWork::new(native_read_budget(), &token)
+            .map_err(|(error, _)| error)?;
         let initial = work.receipt().allocation_operations;
-        let read = store.read_with_native_work(id, bytes.len() as u64, &work, &token).await?;
-        assert_eq!(read.read().bytes.as_ptr(), bytes.as_ptr());
+        let read = {
+            let __object_args = (id, bytes.len() as u64, &work, &token);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_result
+        }?;
+        assert_eq!(read.bytes.as_ptr(), bytes.as_ptr());
         assert_eq!(work.receipt().allocation_operations, initial);
         assert_eq!(work.receipt().backend_read_operations, 0);
-        let mut allocation = work.claim(std::mem::size_of::<Page>() as u64)?;
-        let mut control = work.claim(std::mem::size_of::<NativeAllocation>() as u64)?;
+        let mut allocation = work.claim(std::mem::size_of::<Page>() as u64, u64::from((std::mem::size_of::<Page>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
+        let mut control = work.claim(std::mem::size_of::<NativeAllocation>() as u64, u64::from((std::mem::size_of::<NativeAllocation>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         allocation.absorb(&mut control)?;
         let custody = Arc::new(allocation);
         let page = Arc::new(Page { _custody: Arc::clone(&custody) });
         let key = DecodedCacheKey::new::<Page>(id, DecodeLimits::default());
         let prefix = work.receipt();
-        drop(store.decoded_cache_admit_with_native_work(key, DecodedCacheValue {
+        drop({
+            let __decoded_args = (key, DecodedCacheValue {
             value: page, logical_bytes: std::mem::size_of::<Page>() as u64, native_custody: Some(custody),
-        }, &work)?);
-        let cached = store.decoded_cache_get_with_native_work(key, &work)?.ok_or("resident native decoded miss")?;
+        }, &work);
+            __decoded_args
+                .2
+                .remaining()
+                .map_err(crate::ObjectStoreError::from)
+                .and_then(|_| store.decoded_cache_admit(__decoded_args.0, __decoded_args.1))
+        }?);
+        let cached = {
+            let __decoded_args = (key, &work);
+            __decoded_args
+                .1
+                .remaining()
+                .map_err(crate::ObjectStoreError::from)
+                .and_then(|_| store.decoded_cache_get(__decoded_args.0))
+        }?.ok_or("resident native decoded miss")?;
         assert_eq!(work.receipt().allocation_operations, prefix.allocation_operations);
         let alias = Arc::clone(&cached.value);
         let held = work.live_allocation_bytes();
@@ -1938,14 +2296,21 @@ mod tests {
         let token = CancellationToken::new();
         let (first, first_bytes) = spill_fixture(&store, &token).await?;
         let (second, second_bytes) = blob(OwnedBytes::from_static(b"second spill bytes"));
-        store.put(second, second_bytes.clone(), WorkBudget::UNBOUNDED, &token).await?;
+        {
+            let __object_args = (second, second_bytes.clone(), WorkBudget::UNBOUNDED, &token);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?;
         {
             let _spill_file = store.spill_io.write().await;
             let offset = store.index().spill_end;
             let spill_bytes = second_bytes.clone();
-            store.spill.control_async(move |file| {
-                acyclic_native_runtime::write_all_at(file, offset, spill_bytes.as_slice())
-            }).await?;
+            store.spill.control_async(move |file, _| {
+                acyclic_native_runtime::write_all_at(file, offset, spill_bytes.as_slice(), None)
+            }, None).expect("unmetered control construction cannot fail").await?;
             let mut index = store.index_mut();
             if let Some(Staged::Resident { order, .. }) = index.objects.get(&second) {
                 let order = *order;
@@ -1958,16 +2323,24 @@ mod tests {
             ObjectReadRequest { object_id: first, maximum_bytes: first_bytes.len() as u64 },
             ObjectReadRequest { object_id: second, maximum_bytes: second_bytes.len() as u64 },
         ];
-        let batch = store.read_many_with_native_work(&requests, &work, &token).await?;
-        assert_eq!(batch.reads().len(), 2);
-        assert_eq!(batch.reads()[0].bytes, first_bytes);
-        assert_eq!(batch.reads()[1].bytes, second_bytes);
+        let batch = {
+            let __object_args = (&requests, &work, &token);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+            let __object_result = store
+                .read_many(__object_args.0, &mut __object_work)
+                .await
+                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
+            __object_result
+        }?;
+        assert_eq!(batch.0.len(), 2);
+        assert_eq!(batch.0[0].bytes, first_bytes);
+        assert_eq!(batch.0[1].bytes, second_bytes);
         // Staging's canonical ordinary convention is sequential scalar reads;
         // native attribution must retain both real submissions, not invent one.
         assert_eq!(work.receipt().backend_read_operations, 2);
         assert_eq!(work.receipt().object_bytes_read, (first_bytes.len() + second_bytes.len()) as u64);
-        let alias = batch.reads()[0].bytes.clone();
-        let (values, allocation) = batch.into_parts();
+        let alias = batch.0[0].bytes.clone();
+        let (values, allocation) = batch;
         assert_eq!(allocation.bytes(), (values.capacity() * std::mem::size_of::<ObjectRead>()) as u64);
         drop(values);
         drop(allocation);
@@ -2010,7 +2383,12 @@ mod tests {
         let object_id = object.object_id();
         let store = StagedObjects::open(crate::MemoryObjectStore::default(), directory.path().to_path_buf()).await?;
         let before = work.receipt();
-        store.put_hashed_with_native_work(object, &work, &token).await?;
+        {
+            let __object_args = (object, &work, &token);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+            let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
+            __object_result
+        }?;
         assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
         let alias = match store.lookup(object_id) {
             Lookup::Resident(bytes) => bytes,
@@ -2018,15 +2396,31 @@ mod tests {
         };
         assert_eq!(alias.as_ptr(), bytes.as_ptr());
         let (unselected, obsolete) = blob(OwnedBytes::from_static(b"unpublished superseded object"));
-        store.put_with_native_work(unselected, obsolete, &work, &token).await?;
+        {
+            let __object_args = (unselected, obsolete, &work, &token);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+            let __object_result = store
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_result
+        }?;
         let closure = [object_id];
-        let hold = store.flush_before_publish_with_native_work(
-            PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() }, &work, &token,
-        ).await?;
+        let hold = {
+            let __object_args = (
+                PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() },
+                &work,
+                &token,
+            );
+            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+            let __object_result = store
+                .flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_result
+        }?;
         assert!(!store.index().objects.contains_key(&object_id));
         assert!(store.index().objects.contains_key(&unselected));
-        assert!(store.inner().contains(object_id, WorkBudget::UNBOUNDED, &token).await?.value);
-        assert!(!store.inner().contains(unselected, WorkBudget::UNBOUNDED, &token).await?.value);
+        assert!(store.inner(object_id, WorkBudget::UNBOUNDED, &token).await?.value);
+        assert!(!store.inner(unselected, WorkBudget::UNBOUNDED, &token).await?.value);
         assert_eq!(work.receipt().backend_write_operations, 1);
         drop(hold);
         drop(bytes);
@@ -2046,9 +2440,18 @@ mod tests {
         let (id, bytes) = spill_fixture(&store, &token).await?;
         let work = NativeMaterializationWork::new(native_write_budget(), &token).map_err(|(error, _)| error)?;
         let closure = [id];
-        let hold = store.flush_before_publish_with_native_work(
-            PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() }, &work, &token,
-        ).await?;
+        let hold = {
+            let __object_args = (
+                PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() },
+                &work,
+                &token,
+            );
+            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+            let __object_result = store
+                .flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_result
+        }?;
         assert!(store.index().objects.is_empty());
         assert_eq!(store.index().spilled_objects, 0);
         assert_eq!(store.index().spill_end, 0);
@@ -2107,9 +2510,21 @@ mod tests {
         budget.backend_read_operations = 0;
         let work = NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
         let closure = [id];
-        assert!(store.flush_before_publish_with_native_work(
-            PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() }, &work, &token,
-        ).await.is_err());
+        assert!(
+            {
+                let __object_args = (
+                    PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() },
+                    &work,
+                    &token,
+                );
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                let __object_result = store
+                    .flush_before_publish(__object_args.0, &mut __object_work)
+                    .await;
+                __object_result
+            }
+            .is_err());
         assert_eq!(work.receipt().backend_read_operations, 0);
         assert_eq!(work.receipt().backend_write_operations, 0);
         assert_eq!(work.receipt().object_bytes_read, 0);
@@ -2124,24 +2539,128 @@ mod tests {
     }
 
     impl AsyncObjectStore for CancelAfterNativePut {
-        async fn put(&self, id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()> {
-            AsyncObjectStore::put(&self.inner, id, bytes, budget, cancellation).await
-        }
-        async fn put_with_native_work(
-            &self, id: ObjectId, bytes: OwnedBytes, work: &NativeMaterializationWork, cancellation: &CancellationToken,
-        ) -> Result<(), ObjectStoreError> {
-            AsyncObjectStore::put_with_native_work(&self.inner, id, bytes, work, cancellation).await?;
+        async fn put(&self, id: ObjectId, bytes: OwnedBytes,
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<(), crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = context.original {
+                let cancellation = context.cancellation;
+                return async {
+                    {
+                        let __object_args = (id, bytes, work, cancellation);
+                        let mut __object_work =
+                            crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                        let __object_result = AsyncObjectStore::put(
+                            &self.inner,
+                            __object_args.0,
+                            __object_args.1,
+                            &mut __object_work,
+                        )
+                        .await;
+                        __object_result
+                    }?;
             if self.cancel_once.swap(false, Ordering::Relaxed) { cancellation.cancel(); }
             Ok(())
+                }
+                .await;
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let cancellation = context.cancellation;
+            let result = async {
+                {
+                    let __object_args = (id, bytes, budget, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = AsyncObjectStore::put(
+                        &self.inner,
+                        __object_args.0,
+                        __object_args.1,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result)
         }
-        async fn read(&self, id: ObjectId, maximum: u64, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<ObjectRead> {
-            AsyncObjectStore::read(&self.inner, id, maximum, budget, cancellation).await
+        async fn read(&self, id: ObjectId, maximum: u64,
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let cancellation = context.cancellation;
+            let result = async {
+                {
+                    let __object_args = (id, maximum, budget, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = AsyncObjectStore::read(&self.inner,
+                        __object_args.0,
+                        __object_args.1,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result)
         }
-        async fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<Vec<ObjectRead>> {
-            AsyncObjectStore::read_many(&self.inner, requests, budget, cancellation).await
+        async fn read_many(&self, requests: &[ObjectReadRequest],
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>
+        {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let cancellation = context.cancellation;
+            let result = async {
+                {
+                    let __object_args = (requests, budget, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = AsyncObjectStore::read_many(&self.inner,
+                        __object_args.0,
+                        &mut __object_work,
+                    )
+                    .await
+                    .map(|(values, _allocation)| values);
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result).map(|values| (values, None))
         }
-        async fn contains(&self, id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<bool> {
-            AsyncObjectStore::contains(&self.inner, id, budget, cancellation).await
+        async fn contains(&self, id: ObjectId,
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<bool, crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let cancellation = context.cancellation;
+            let result = async {
+                {
+                    let __object_args = (id, budget, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = AsyncObjectStore::contains(&self.inner,
+                        __object_args.0,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result)
         }
     }
 
@@ -2156,21 +2675,55 @@ mod tests {
         let (first, first_bytes) = blob(OwnedBytes::from_static(b"acknowledged first"));
         let (second, second_bytes) = blob(OwnedBytes::from_static(b"retryable second"));
         let work = NativeMaterializationWork::new(native_write_budget(), &token).map_err(|(error, _)| error)?;
-        store.put_with_native_work(first, first_bytes.clone(), &work, &token).await?;
-        store.put_with_native_work(second, second_bytes, &work, &token).await?;
+        {
+            let __object_args = (first, first_bytes.clone(), &work, &token);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+            let __object_result = store
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_result
+        }?;
+        {
+            let __object_args = (second, second_bytes, &work, &token);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+            let __object_result = store
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_result
+        }?;
         let closure = [first, second];
-        assert!(matches!(store.flush_before_publish_with_native_work(
-            PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() }, &work, &token,
-        ).await, Err(ObjectStoreError::Cancelled)));
+        assert!(matches!(
+            {
+                let __object_args = (
+                    PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() },
+                    &work,
+                    &token,
+                );
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                let __object_result = store
+                    .flush_before_publish(__object_args.0, &mut __object_work)
+                    .await;
+                __object_result
+            }, Err(ObjectStoreError::Cancelled)));
         assert!(!store.index().objects.contains_key(&first));
         assert!(store.index().objects.contains_key(&second));
         assert_eq!(work.receipt().backend_write_operations, 1);
         assert_eq!(work.receipt().object_bytes_written, first_bytes.len() as u64);
         let token = CancellationToken::new();
         let retry = NativeMaterializationWork::new(native_write_budget(), &token).map_err(|(error, _)| error)?;
-        let hold = store.flush_before_publish_with_native_work(
-            PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() }, &retry, &token,
-        ).await?;
+        let hold = {
+            let __object_args = (
+                PublicationScope::Closure { objects: &closure, proven_at: store.collection.sweeps() },
+                &retry,
+                &token,
+            );
+            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+            let __object_result = store
+                .flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_result
+        }?;
         assert!(store.index().objects.is_empty());
         assert_eq!(retry.receipt().backend_write_operations, 1);
         assert_eq!(work.receipt().backend_write_operations, 1);

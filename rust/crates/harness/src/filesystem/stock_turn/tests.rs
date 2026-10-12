@@ -16,16 +16,16 @@ fn command() -> Result<WorkflowCommand> {
         kind: MODEL_TASK_COMMAND_KIND.into(),
         payload: FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("stock-turn-test", "filesystem", "2")?,
-                "private",
+                ProviderRef::new("stock-turn-test".into(), "filesystem".into(), "2".into(), &mut None)?,
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
-            )?,
-            "commands/model.json",
-            "immutable-command",
-            FileDescriptor::from_bytes(b"{}", "application/json")?,
-            "model.json",
-        )?,
+             &mut None)?,
+            "commands/model.json".into(),
+            "immutable-command".into(),
+            FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
+            "model.json".into(),
+         &mut None)?,
     })
 }
 
@@ -61,7 +61,7 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
     tasks.register(machine.definition()?)?;
     tasks.get::<Value, TurnOutput>("acyclic.stock_turn@1")?;
     let mut registry = MachineRegistry::default();
-    registry.register(machine.clone())?;
+    registry.register(machine.clone(), &mut None)?;
     let command = command()?;
     let receive = WorkflowCommand { operation_id: OperationId::from_bytes([10;16]),
         kind: MAIL_RECEIVE_TASK_COMMAND_KIND.into(), payload: command.payload.clone() };
@@ -86,7 +86,7 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
         .step(
             OperationId::from_bytes([2; 16]),
             IdempotencyKey::new("emit")?,
-            Value::Null,
+            Value::Null, |_| Ok(())
         )
         .await?;
     assert_eq!(emitted.commands, vec![receive.clone()]);
@@ -99,13 +99,13 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
         host.step(
             OperationId::from_bytes([2; 16]),
             IdempotencyKey::new("emit")?,
-            Value::Null
+            Value::Null, |_| Ok(())
         )
         .await?,
         emitted
     );
     let selected = host.step(OperationId::from_bytes([11;16]), IdempotencyKey::new("select")?,
-        json!({"commands":[{"operation_id":receive.operation_id,"value":{"Succeeded":null}}]})).await?;
+        json!({"commands":[{"operation_id":receive.operation_id,"value":{"Succeeded":null}}]}), |_| Ok(())).await?;
     assert_eq!(selected.commands, vec![command.clone()]);
     drop(host);
     let mut host = DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
@@ -133,7 +133,7 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
             host.step(
                 OperationId::new(),
                 IdempotencyKey::new("invalid-result")?,
-                input
+                input, |_| Ok(())
             )
             .await
             .is_err()
@@ -145,7 +145,7 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
         .step(
             OperationId::from_bytes([3; 16]),
             IdempotencyKey::new("settle")?,
-            json!({"commands":[result]}),
+            json!({"commands":[result]}), |_| Ok(())
         )
         .await?;
     assert!(completed.commands.is_empty());

@@ -4,13 +4,13 @@ use super::{
     CanonicalDecodeError, ClosureError, ClosureLimits, GenerationProof, codec::Decoder,
     volume_authority_id,
 };
-use crate::async_storage::StorageFuture;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, Digest, Epoch, Head, OperationId, ProposedCommit, VolumeId, usize_to_u64,
 };
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{AppendOutcome, AuthorityStoreError, GuardedAppend, ObjectId, ObjectKind, PublicationPermit};
+use acyclic_stream::ProviderTask;
 use bytes::Bytes;
 use thiserror::Error;
 
@@ -109,7 +109,9 @@ impl<'a> PublicationAccounting<'a> {
                 Ok(remaining)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native(_) => unreachable!("original callers pass the native meter, never a reconstructed budget"),
+            Self::Native(_) => {
+                unreachable!("original callers pass the native meter, never a reconstructed budget")
+            }
         }
     }
 
@@ -125,11 +127,14 @@ impl<'a> PublicationAccounting<'a> {
         }
     }
 
-
     fn retain(&mut self, bytes: u64) -> Result<(), crate::FsError> {
-        if let Self::Standalone { retained, .. } = self {
-            *retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
-            self.remaining()?;
+        match self {
+            Self::Standalone { retained, .. } => {
+                *retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
+                self.remaining()?;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native(_) => {}
         }
         Ok(())
     }
@@ -229,8 +234,6 @@ impl PublicationIntent {
         self
     }
 
-    /// Original fingerprint data supplied only by trusted, authenticated
-    /// canonical evidence ingress. This never changes current CAS authority.
     pub(crate) fn with_original_fingerprint_permit(mut self, original_permit: Option<PublicationPermit>) -> Self {
         self.fingerprint_permit = original_permit;
         self
@@ -246,8 +249,6 @@ pub struct PublishedGeneration {
     pub generation_root: ObjectId,
 }
 
-/// Borrowed data authenticated by the complete canonical publication decoder.
-/// It conveys no current publication permission or owner authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BorrowedPublicationEvidence<'a> {
     pub(crate) publication: PublishedGeneration,
@@ -255,42 +256,25 @@ pub(crate) struct BorrowedPublicationEvidence<'a> {
     pub(crate) evidence_digest: Option<Digest>,
 }
 
-/// Decodes one canonical generation-publication authority payload.
-///
-/// The authority store deliberately treats payloads as opaque. This decoder is
-/// the filesystem projection boundary used to reconstruct the current volume
-/// generation without scanning immutable storage or confusing the authority
-/// hash-chain digest with a generation identity.
-///
-/// # Errors
-///
-/// Rejects wrong domain/version, truncation, trailing bytes, an unknown/non-root
-/// object kind, or invalid v2 evidence framing/digest before projecting either scalar.
-pub fn decode_published_generation(
-    bytes: &[u8],
-    maximum_payload_bytes: u64,
-) -> Result<PublishedGeneration, CanonicalDecodeError> {
-    decode_published_generation_with_steps(bytes, maximum_payload_bytes, |_| Ok(()))
-}
-
-pub(crate) fn decode_published_generation_with_steps<E: From<CanonicalDecodeError>>(
+/// Decodes one canonical publication with before-effect admission.
+pub fn decode_published_generation<E: From<CanonicalDecodeError>>(
     bytes: &[u8],
     maximum_payload_bytes: u64,
     observe: impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<PublishedGeneration, E> {
-    decode_publication_evidence_with_steps(bytes, maximum_payload_bytes, observe).map(|decoded| decoded.publication)
+    decode_publication_evidence(bytes, maximum_payload_bytes, observe).map(|decoded| decoded.publication)
 }
 
-pub(crate) fn decode_publication_evidence_with_steps<'a, E: From<CanonicalDecodeError>>(
+pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
     bytes: &'a [u8],
     maximum_payload_bytes: u64,
     mut observe: impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<BorrowedPublicationEvidence<'a>, E> {
-    let (mut decoder, version) = Decoder::new_recognized_versions_with_steps(
+    let (mut decoder, version) = Decoder::new_recognized_versions(
         bytes, PAYLOAD_DOMAIN, &[1, 2], maximum_payload_bytes, &mut observe,
     )?;
-    let volume_id = VolumeId::from_bytes(decoder.fixed_with_steps::<16, E>(&mut observe)?);
-    let kind = ObjectKind::from_canonical_tag(decoder.u8_with_steps(&mut observe)?).map_err(|_| {
+    let volume_id = VolumeId::from_bytes(decoder.fixed::<16, E>(&mut observe)?);
+    let kind = ObjectKind::from_canonical_tag(decoder.u8(&mut observe)?).map_err(|_| {
         E::from(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("unknown publication object kind")))
     })?;
     if kind != ObjectKind::GenerationRoot {
@@ -300,14 +284,14 @@ pub(crate) fn decode_publication_evidence_with_steps<'a, E: From<CanonicalDecode
     }
     let generation_root = ObjectId {
         kind,
-        digest: Digest::from_bytes(decoder.fixed_with_steps::<32, E>(&mut observe)?),
+        digest: Digest::from_bytes(decoder.fixed::<32, E>(&mut observe)?),
     };
     let publication = PublishedGeneration { volume_id, generation_root };
     if version == 1 {
         decoder.finish().map_err(E::from)?;
         return Ok(BorrowedPublicationEvidence { publication, original_evidence: None, evidence_digest: None });
     }
-    let length = decoder.u32_with_steps(&mut observe)?;
+    let length = decoder.u32(&mut observe)?;
     if length == 0 {
         return Err(E::from(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(
             "empty original publication evidence",
@@ -320,7 +304,7 @@ pub(crate) fn decode_publication_evidence_with_steps<'a, E: From<CanonicalDecode
         return Err(E::from(CanonicalDecodeError::FieldTooLarge { observed: length, maximum }));
     }
     let evidence = decoder.take_exact(usize::try_from(length).map_err(|_| CanonicalDecodeError::LengthOverflow)?)?;
-    let stored_digest = Digest::from_bytes(decoder.fixed_with_steps::<32, E>(&mut observe)?);
+    let stored_digest = Digest::from_bytes(decoder.fixed::<32, E>(&mut observe)?);
     decoder.finish().map_err(E::from)?;
     let hashed = usize_to_u64(EVIDENCE_DOMAIN.len()).checked_add(u64::from(length))
         .ok_or(CanonicalDecodeError::LengthOverflow)?;
@@ -335,40 +319,15 @@ pub(crate) fn decode_publication_evidence_with_steps<'a, E: From<CanonicalDecode
     Ok(BorrowedPublicationEvidence { publication, original_evidence: Some(evidence), evidence_digest: Some(stored_digest) })
 }
 
-/// Decodes the same canonical authority payload on the caller's existing
-/// accounting context. This fixed-field format allocates neither data nor
-/// error strings, including on malformed original-native recovery.
-pub(crate) fn decode_published_generation_with_accounting(
-    bytes: &[u8],
-    maximum_payload_bytes: u64,
-    accounting: &mut super::allocation::KernelAccounting<'_>,
-) -> Result<PublishedGeneration, crate::FsError> {
-    decode_publication_evidence_with_accounting(bytes, maximum_payload_bytes, accounting).map(|decoded| decoded.publication)
-}
-
 pub(crate) fn decode_publication_evidence_with_accounting<'a>(
     bytes: &'a [u8],
     maximum_payload_bytes: u64,
     accounting: &mut super::allocation::KernelAccounting<'_>,
 ) -> Result<BorrowedPublicationEvidence<'a>, crate::FsError> {
-    accounting.check()?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if accounting.native_work().is_some() {
-        let mut observer = super::file_read::OriginalReadAccounting::new(accounting)?;
-        let decoded = decode_publication_evidence_with_steps(bytes, maximum_payload_bytes, |step| observer.observe(step));
-        drop(observer.into_allocation());
-        return decoded.map_err(super::file_read::ReadDecodeError::into_original_fs_error);
-    }
-    let (allocations, work, budget, cancellation) = accounting.standalone_parts()
-        .expect("only a standalone decoder remains after the native branch");
-    let mut observer = Some(super::file_read::ReadDecodeAccounting { allocations, work, budget, cancellation });
-    decode_publication_evidence_with_steps(bytes, maximum_payload_bytes, |step| {
-        super::file_read::observe_read_decode_step(&mut observer, step).map_err(|error| match error {
-            super::file_read::ReadDecodeError::Canonical(error) => crate::FsError::Decode(error),
-            super::file_read::ReadDecodeError::AllocationFailed(_) => crate::FsError::Decode(CanonicalDecodeError::AllocationFailed),
-            super::file_read::ReadDecodeError::Accounting(error) => error,
-        })
+    super::file_read::decode_owned(accounting, |observe| {
+        decode_publication_evidence(bytes, maximum_payload_bytes, observe)
     })
+        .map(|(value, _guard)| value)
 }
 
 /// Successful or semantically rejected generation publication.
@@ -384,8 +343,6 @@ pub struct PublicationReceipt {
 
 /// Publication failure retaining every unit of work spent before rejection.
 pub type PublicationFailure = OperationFailure<PublicationError>;
-
-
 
 /// Fail-closed generation-publication errors.
 #[derive(Debug, Error, strum::IntoStaticStr)]
@@ -422,42 +379,8 @@ pub enum PublicationError {
     Work(#[from] WorkError),
 }
 
-/// Authenticates an immutable generation's complete closure, then atomically
-/// submits it to the volume authority.
-///
-/// No authority operation occurs unless closure and volume validation succeed.
-/// Semantic stale-head, fenced-writer, and idempotency outcomes are returned as
-/// values so callers can resolve retries without guessing whether publication
-/// became durable.
-///
-/// # Errors
-///
-/// Fails with an exact work receipt on closure, volume, authority-backend, or
-/// work-admission failure.
-pub fn publish_generation<O: crate::ImmediateObjectStore, A: crate::ImmediateAuthorityStore>(
-    objects: &O,
-    authority: &A,
-    request: PublishGenerationRequest,
-    closure_limits: ClosureLimits,
-    budget: WorkBudget,
-) -> Result<PublicationReceipt, PublicationFailure> {
-    let cancellation = CancellationToken::new();
-    crate::async_storage::poll_immediate(publish_generation_async(
-        objects, authority, request, closure_limits, budget, &cancellation,
-    ))
-}
-
-/// Asynchronously authenticates and atomically publishes one generation.
-///
-/// This is the browser/remote execution surface for the same canonical closure
-/// proof, publication payload, fingerprint, and authority state machine used by
-/// [`publish_generation`].
-///
-/// # Errors
-///
-/// Returns exact closure, cancellation, authority, and work failures without
-/// exposing a generation before its complete immutable closure is proven.
-pub async fn publish_generation_async<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
+/// Authenticates an immutable generation's complete closure, then atomically submits it to the volume authority.
+pub async fn publish_generation<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
     objects: &O,
     authority: &A,
     request: PublishGenerationRequest,
@@ -491,11 +414,6 @@ pub(crate) async fn publish_generation_async_with_permit<
     ).await.map_err(|failure| OperationFailure::new(publication_error(failure.error), *failure.work))
 }
 
-/// Uses the original closure/append engine with a caller-owned asynchronous
-/// check at its authority seal. Resolved lost acknowledgements never reseal.
-/// Optional root preparation admits actual caller-owned buffers from the
-/// authenticated root before publication; those buffers remain standing
-/// throughout the drain, owner check and original authority CAS.
 pub(crate) async fn publish_generation_async_guarded<O, A, E, F, Fut>(
     objects: &O,
     authority: &A,
@@ -512,8 +430,8 @@ where
     O: crate::AsyncObjectStore,
     A: crate::AsyncAuthorityStore,
     E: From<crate::FsError> + Send,
-    F: FnMut(WorkBudget) -> Fut + StorageFuture,
-    Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + StorageFuture,
+    F: FnMut(WorkBudget) -> Fut + ProviderTask,
+    Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + ProviderTask,
 {
     let mut accounting = PublicationAccounting::standalone(budget, cancellation);
     let mut seal = |allowance: Option<WorkBudget>| {
@@ -525,18 +443,18 @@ where
         }
     };
     let mut dispatch = |request: GuardedAppend, allowance: Option<WorkBudget>| {
-        let future = authority.compare_and_append_guarded(
-            request, allowance.expect("the ordinary engine supplies its remaining budget"), cancellation,
-        );
+        let future =async move { let __authority_args = (request, allowance.expect("the ordinary engine supplies its remaining budget"), cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) };
         async move {
-            future.await.map(|receipt| (
+            future.await.map(|receipt| {
+                    (
                 PublicationAppend {
                     outcome: receipt.value,
                     #[cfg(not(target_arch = "wasm32"))]
                     allocation: None,
                 },
                 Some(receipt.work),
-            )).map_err(|failure| PublicationStepFailure {
+            )
+                }).map_err(|failure| PublicationStepFailure {
                 cause: E::from(crate::FsError::Authority(failure.error)), work: Some(*failure.work),
             })
         }
@@ -561,9 +479,6 @@ where
         .map_err(|error| OperationFailure::new(error, accounting.work()))
 }
 
-/// Original-ledger publication: no reconstructed budget, measured failure box
-/// or receipt merge occurs in this path. The actual proof guard leaves with
-/// its data, and the caller's exact callback cause remains unchanged.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn publish_generation_async_guarded_with_native_work<'a, O, A, E, F, Fut>(
     objects: &O,
@@ -602,13 +517,15 @@ where
     let mut dispatch = move |request: GuardedAppend, _: Option<WorkBudget>| {
         let mut owner = owned_owner.clone();
         async move {
-            let (outcome, allocation) = authority.compare_and_append_guarded_with_native_owner(
-                request, original, cancellation, &mut owner,
-            ).await.map_err(|error| PublicationStepFailure {
+            let (outcome, allocation) =(async { let __authority_args = (request, original, cancellation, &mut owner,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.3).clone()))).await.map_err(|error| error.into_error(NativePublicationOwnerFailure::Authority)).map(|(value, allocation)| {
+                        (value, allocation.expect("native authority allocation"))
+                    }); __authority_result }.await).map_err(|error| PublicationStepFailure {
                 cause: match error {
                     NativePublicationOwnerFailure::Owner(error) => error,
-                    NativePublicationOwnerFailure::Authority(error) => E::from(native_authority_error(error)),
-                },
+                    NativePublicationOwnerFailure::Authority(error) => {
+                            E::from(native_authority_error(error))
+                        }
+                    },
                 work: None,
             })?;
             Ok((PublicationAppend { outcome, allocation: Some(allocation) }, None))
@@ -624,7 +541,9 @@ where
         if let Some(prepare) = prepare_roots.as_mut() {
             match guard {
                 PublicationProofGuard::Native(guard) => prepare(root, guard, original)?,
-                PublicationProofGuard::Standalone(_) => unreachable!("native preparation owns a native proof"),
+                PublicationProofGuard::Standalone(_) => {
+                    unreachable!("native preparation owns a native proof")
+                }
             }
         }
         Ok(())
@@ -635,7 +554,9 @@ where
     ).await?;
     match output.guard {
         PublicationProofGuard::Native(guard) => Ok((output.receipt, guard)),
-        PublicationProofGuard::Standalone(_) => unreachable!("original proof retains its original guard"),
+        PublicationProofGuard::Standalone(_) => {
+            unreachable!("original proof retains its original guard")
+        }
     }
 }
 
@@ -654,10 +575,11 @@ async fn publish_generation_async_inner<O, E, F, Fut, G, Dispatch, R>(
 where
     O: crate::AsyncObjectStore,
     E: From<crate::FsError> + Send,
-    F: FnMut(Option<WorkBudget>) -> Fut + StorageFuture,
-    Fut: Future<Output = Result<Option<WorkCounters>, PublicationStepFailure<E>>> + StorageFuture,
-    G: FnMut(GuardedAppend, Option<WorkBudget>) -> Dispatch + crate::async_storage::StorageFuture,
-    Dispatch: Future<Output = Result<(PublicationAppend, Option<WorkCounters>), PublicationStepFailure<E>>> + crate::async_storage::StorageFuture,
+    F: FnMut(Option<WorkBudget>) -> Fut + ProviderTask,
+    Fut: Future<Output = Result<Option<WorkCounters>, PublicationStepFailure<E>>> + ProviderTask,
+    G: FnMut(GuardedAppend, Option<WorkBudget>) -> Dispatch + acyclic_stream::ProviderTask,
+    Dispatch: Future<Output = Result<(PublicationAppend, Option<WorkCounters>), PublicationStepFailure<E>>,
+        > + acyclic_stream::ProviderTask,
     R: FnMut(&super::GenerationRoot, &mut PublicationProofGuard, &mut PublicationAccounting<'_>) -> Result<(), E>,
 {
     let expected_authority = volume_authority_id(request.volume_id);
@@ -698,8 +620,12 @@ where
     };
     // Field order keeps the concrete proof data physically ahead of its guard.
     let mut output = ProvenPublication { proof, guard };
-    if let PublicationProofGuard::Standalone(guard) = &output.guard {
-        accounting.retain(guard.retained_bytes()).map_err(E::from)?;
+    match &output.guard {
+        PublicationProofGuard::Standalone(guard) => {
+            accounting.retain(guard.retained_bytes()).map_err(E::from)?
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        PublicationProofGuard::Native(_) => {}
     }
     if output.proof.root.volume_id != request.volume_id {
         return Err(E::from(crate::FsError::Publication(PublicationError::VolumeMismatch {
@@ -738,17 +664,34 @@ where
     let scope = crate::PublicationScope::Closure { objects: &output.proof.objects, proven_at };
     let _publication_hold = match accounting {
         PublicationAccounting::Standalone { .. } => {
-            let result = objects.flush_before_publish(scope, accounting.remaining().map_err(E::from)?, cancellation).await
-                .map(|receipt| (receipt.value, Some(receipt.work)))
+            let result = {
+                let __object_args = (
+                    scope,
+                    accounting.remaining().map_err(E::from)?,
+                    cancellation,
+                );
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = objects
+                    .flush_before_publish(__object_args.0, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+            .map(|receipt| (receipt.value, Some(receipt.work)))
                 .map_err(|failure| PublicationStepFailure {
                     cause: E::from(crate::FsError::Object(failure.error)), work: Some(*failure.work),
                 });
             accounting.accept_step(result)?
         }
         #[cfg(not(target_arch = "wasm32"))]
-        PublicationAccounting::Native(original) => objects.flush_before_publish_with_native_work(
-            scope, original, cancellation,
-        ).await.map_err(native_object_error).map_err(E::from)?,
+        PublicationAccounting::Native(original) => {
+            let __object_args = (scope, original, cancellation);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+            let __object_result = objects
+                .flush_before_publish(__object_args.0, &mut __object_work)
+                .await;
+            __object_result
+        }
+        .map_err(native_object_error).map_err(E::from)?,
     };
     let append = crate::GuardedAppend {
         authority_id: request.authority_id, epoch: request.epoch, expected: request.expected,
@@ -758,21 +701,55 @@ where
     // with the exact authenticated closure and durability hold still standing.
     match accounting {
         PublicationAccounting::Standalone { .. } => {
-            let result = objects.prepare_generation_publication(
-                &request, &output.proof, &append,
-                crate::PublicationScope::Closure { objects: &output.proof.objects, proven_at },
-                accounting.remaining().map_err(E::from)?, cancellation,
-            ).await.map(|receipt| ((), Some(receipt.work))).map_err(|failure| PublicationStepFailure {
+            let result = {
+                let __object_args = (
+                    &request,
+                    &output.proof,
+                    &append,
+                    crate::PublicationScope::Closure { objects: &output.proof.objects, proven_at },
+                    accounting.remaining().map_err(E::from)?,
+                    cancellation,
+                );
+                let mut __object_work = crate::AuthorityWork::new(__object_args.4, __object_args.5);
+                let __object_result = objects
+                    .prepare_generation_publication(
+                        __object_args.0,
+                        __object_args.1,
+                        __object_args.2,
+                        __object_args.3,
+                        &mut __object_work,
+                    )
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+            .map(|receipt| ((), Some(receipt.work))).map_err(|failure| PublicationStepFailure {
                 cause: E::from(crate::FsError::Object(failure.error)), work: Some(*failure.work),
             });
             accounting.accept_step(result)?;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        PublicationAccounting::Native(original) => objects.prepare_generation_publication_with_native_work(
-            &request, &output.proof, &append,
-            crate::PublicationScope::Closure { objects: &output.proof.objects, proven_at },
-            original, cancellation,
-        ).await.map_err(native_object_error).map_err(E::from)?,
+        PublicationAccounting::Native(original) => {
+            let __object_args = (
+                &request,
+                &output.proof,
+                &append,
+                crate::PublicationScope::Closure { objects: &output.proof.objects, proven_at },
+                original,
+                cancellation,
+            );
+            let mut __object_work = crate::AuthorityWork::native(__object_args.4, __object_args.5);
+            let __object_result = objects
+                .prepare_generation_publication(
+                    __object_args.0,
+                    __object_args.1,
+                    __object_args.2,
+                    __object_args.3,
+                    &mut __object_work,
+                )
+                .await;
+            __object_result
+        }
+        .map_err(native_object_error).map_err(E::from)?,
     }
     if matches!(accounting, PublicationAccounting::Standalone { .. }) {
         let checked = before_publication(Some(accounting.remaining().map_err(E::from)?)).await;
@@ -789,9 +766,11 @@ where
     let mut appended = appended;
     #[cfg(not(target_arch = "wasm32"))]
     if let PublicationProofGuard::Native(proof_guard) = &mut output.guard {
-        let allocation = appended.allocation.as_mut().ok_or_else(|| E::from(crate::FsError::NativeKernel(
+        let allocation = appended.allocation.as_mut().ok_or_else(|| {
+            E::from(crate::FsError::NativeKernel(
             crate::NativeTreeMaterializationError::InvalidLayout,
-        )))?;
+        ))
+        })?;
         proof_guard.absorb(allocation).map_err(crate::FsError::from).map_err(E::from)?;
     }
     Ok(output.finish(appended.outcome, accounting.work()))
@@ -834,12 +813,14 @@ pub(crate) fn permit_context_with_accounting(
     accounting.check()?;
     let permit_hash_bytes = match permit {
         PublicationPermit::Unrestricted => 0,
-        PublicationPermit::Lease { .. } =>
+        PublicationPermit::Lease { .. } => {
             usize_to_u64(b"acyclic-fs-publication-lease-v1\0".len()) + 1 + 16 + 16 + 16 + 8
-                + if context.is_some() { 32 } else { 0 },
-        PublicationPermit::Reservation { .. } =>
+                + if context.is_some() { 32 } else { 0 }
+        }
+        PublicationPermit::Reservation { .. } => {
             usize_to_u64(b"acyclic-fs-publication-reservation-v1\0".len()) + 1 + 16 + 8 + 8 + 8 + 32
-                + if context.is_some() { 32 } else { 0 },
+                + if context.is_some() { 32 } else { 0 }
+    }
     };
     let hashing = WorkCounters { bytes_hashed: permit_hash_bytes, ..WorkCounters::UNCHARGED };
     accounting.admit(hashing)?;
@@ -940,7 +921,7 @@ fn prepare_publication_commit(
             )?;
             cancellation.check()?;
             original.admit(WorkCounters::UNCHARGED)?;
-            let control = original.claim(super::allocation::bytes_owner_control_bytes::<NativePublicationPayload>()?)?;
+            let control = { let claim_bytes = super::allocation::bytes_owner_control_bytes::<NativePublicationPayload>()?; original.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
             let (payload, fingerprint) = built;
             let super::persistent_point::Owned { value: payload, allocation, .. } = payload;
             let super::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
@@ -1021,8 +1002,6 @@ pub(crate) fn contextual_publication_fingerprint_with_accounting(
     Ok(fingerprint)
 }
 
-/// Hashes the authenticated original payload without allocating or copying its
-/// retained operation data. The caller keeps the complete durable record alive.
 pub(crate) fn contextual_publication_fingerprint_from_payload_with_accounting(
     request: PublishGenerationRequest,
     operation_context: Digest,
@@ -1064,13 +1043,13 @@ fn hash_publication_fingerprint(operation_context: Option<Digest>, input: &[u8])
     Digest::from_bytes(*hasher.finalize().as_bytes())
 }
 
-
 const fn publication_payload_length() -> usize {
     PAYLOAD_DOMAIN.len() + 2 + 16 + 1 + 32
 }
 
 fn publication_payload_length_with_evidence(evidence: Option<&[u8]>) -> Result<usize, crate::FsError> {
-    let Some(evidence) = evidence else { return Ok(publication_payload_length()) };
+    let Some(evidence) = evidence else { return Ok(publication_payload_length());
+    };
     if evidence.is_empty() {
         return Err(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("empty original publication evidence")).into());
     }
@@ -1146,7 +1125,9 @@ fn write_fingerprint_input(
     bytes: &mut Vec<u8>, request: &PublishGenerationRequest,
     operation_context: Option<Digest>, payload: &[u8],
 ) {
-    feed_fingerprint_input(request, operation_context, payload, |part| bytes.extend_from_slice(part));
+    feed_fingerprint_input(request, operation_context, payload, |part| {
+        bytes.extend_from_slice(part)
+    });
 }
 
 fn feed_fingerprint_input(

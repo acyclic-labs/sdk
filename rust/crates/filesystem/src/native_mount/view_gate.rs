@@ -1,4 +1,4 @@
-use super::{MountSourceError, MountViewLease};
+use super::MountSourceError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::cell::Cell;
@@ -201,7 +201,7 @@ impl ViewGateReadAdmissions {
             let mut replacement = Vec::new();
             if replacement.try_reserve_exact(count).is_err() {
                 allocations.release(bytes).map_err(gate_allocation_error)?;
-                return Err(MountSourceError::Engine("view admission allocation failed".into()));
+                return Err(MountSourceError::Engine(std::borrow::Cow::Owned("view admission allocation failed".into())));
             }
             let old_bytes = (self.more.capacity() * std::mem::size_of::<ReadAdmission>()) as u64;
             replacement.append(&mut self.more);
@@ -313,8 +313,6 @@ struct WaitingWriter {
     gate: Arc<ViewGate>,
     registered: bool,
 }
-
-impl MountViewLease for ViewReadLease {}
 
 impl ViewReadLease {
     /// Transfers an already admitted visible owner payload to this original lease.
@@ -434,7 +432,7 @@ impl ViewGate {
     pub(super) fn new_with_native_work(
         original: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, MountSourceError> {
-        let allocation = original.claim_allocation(std::mem::size_of::<Self>() as u64, 1)
+        let allocation = original.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
         let mut value = Self::new();
         value._native_allocation = Some(allocation);
@@ -584,7 +582,7 @@ impl ViewGate {
                 result
             })?;
             if let Some(lease) = admitted { return Ok(lease); }
-            super::adapter::await_measured_lock_with_carrier(
+            super::adapter::await_lock(
                 notified, carrier, cancellation, lifetime,
             ).await?;
         }
@@ -668,7 +666,7 @@ impl ViewGate {
             let mut replacement = Vec::new();
             if replacement.try_reserve_exact(capacity).is_err() {
                 allocations.release(bytes).map_err(gate_allocation_error)?;
-                return Err(MountSourceError::Engine("view reader allocation failed".into()));
+                return Err(MountSourceError::Engine(std::borrow::Cow::Owned("view reader allocation failed".into())));
             }
             replacement.append(&mut state.reader_slots);
             state.reader_slots = replacement;
@@ -726,7 +724,7 @@ impl ViewGate {
         cancellation: &crate::CancellationToken, lifetime: Option<&crate::CancellationToken>,
     ) -> Result<ViewWriteLease, MountSourceError> {
         carrier.with_work(|work| work.check()).map_err(super::lazy::mount_demand_error)?;
-        super::adapter::await_measured_lock_with_carrier(
+        super::adapter::await_lock(
             self.write_stable(expected), carrier, cancellation, lifetime,
         ).await?
     }

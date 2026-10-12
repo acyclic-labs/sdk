@@ -7,15 +7,10 @@ import { NativeContracts } from "./native-contracts.js";
 import type { ResourceKind } from "./enums.js";
 export type { ResourceKind } from "./enums.js";
 import type { AgentId, Authority, OperationId, Scope, TaskId } from "./index.js";
-import { MAX_FORK_INHERITED_MESSAGES } from "./limits-contract.js";
 export {
-  MAX_FORK_AGENTS,
-  MAX_FORK_ATTACHMENT_MANIFEST_BYTES,
   MAX_FORK_INHERITED_BYTES,
   MAX_FORK_INHERITED_MESSAGES,
-  MAX_FORK_REFERENCE_BYTES,
   MAX_FORK_REFERENCES,
-  MAX_FORK_RESOURCES,
 } from "./limits-contract.js";
 
 type ResourceProvider<Kind extends ResourceKind> =
@@ -28,11 +23,6 @@ export interface ResourceRef<Kind extends ResourceKind = ResourceKind> {
   readonly provider: ResourceProvider<Kind>;
   readonly key: readonly number[];
   readonly version: string | null;
-}
-
-/** Validates and detaches a provider-owned immutable resource address in Rust. */
-export async function resourceRef<Kind extends ResourceKind>(value: ResourceRef<Kind>): Promise<ResourceRef<Kind>> {
-  return (await NativeContracts.create()).validate("resource_ref", value);
 }
 
 export type ResourceRevision =
@@ -136,28 +126,13 @@ export type Capture =
   | Readonly<{ kind: "unsupported"; value: string }>
   | Readonly<{ kind: "in_flight" | "indeterminate"; value: OperationId }>;
 
-/** Replaceable owner of one exact provider's selected fork revision. An
- * uncertain effect rejects so preparation can reconcile the same operation. */
-export interface ForkCaptureProvider {
-  readonly provider: ProviderRef;
-  capture(request: ForkRequest, selection: ForkSelection): Promise<Capture>;
-  /** A missing observation is unresolved, never permission to repeat a side effect. */
-  reconcile(request: ForkRequest, selection: ForkSelection): Promise<Capture | null>;
+/** Exact parent projection bound to a publication provider. */
+export interface ForkParentSnapshot {
+  readonly parent: Authority<"conversation">;
+  readonly revision: bigint;
 }
 
-/** Parent-bound owner of an idempotent multi-resource preparation. */
-export interface ForkPreparer {
-  /** Exact parent projection captured at binding; later revisions need a new binding. */
-  parentSnapshot(): Readonly<{ parent: Authority<"conversation">; revision: bigint }>;
-  prepare(request: ForkRequest): Promise<ForkReport>;
-  reconcile(request: ForkRequest): Promise<ForkReport | null>;
-}
-
-/** Trusted parent-owned publication boundary. The provider must authenticate
- * both signed scopes, append the exact seed at the parent revision, and durably
- * bind or replay the fresh child with a causal link to that append before it
- * returns success. An uncertain reply is observed by operation ID, never
- * recaptured. The facade validates identity, not the provider's internal state. */
+/** Authenticate both scopes, atomically publish seed/child at the parent revision, and replay uncertain replies by operation ID. */
 export interface ForkPublisher {
   parent(): Authority<"conversation">;
   spawnFromReport(report: ForkReport): Promise<ForkSeed>;
@@ -204,24 +179,6 @@ export interface ForkSeed extends Omit<ForkRequest, "selections" | "preparation"
   /** Manifest bytes and listed members are independently read-authorized. */
   readonly attachment_manifests: readonly FileRef[];
 }
-
-/** Rust alone converts the complete capture report to its child-visible seed. */
-export async function forkSeed(report: ForkReport): Promise<ForkSeed> {
-  checkInheritedMessageLimit(report.inherited_through_sequence);
-  return (await NativeContracts.create()).forkSeed(report);
-}
-
-export async function validateForkRequest(request: ForkRequest): Promise<void> {
-  (await NativeContracts.create()).validate("fork_request", request);
-}
-
-export async function validateForkSeed(seed: ForkSeed): Promise<void> {
-  (await NativeContracts.create()).validate("fork_seed", seed);
-}
-export async function validateForkReport(report: ForkReport): Promise<void> {
-  checkInheritedMessageLimit(report.inherited_through_sequence);
-  (await NativeContracts.create()).validate("fork_report", report);
-}
 /** Pinned refs that the owning provider may authorize for an attached reader.
  * This is an access plan, not a bearer token or a byte-resolution grant. */
 export async function forkReadableReferences(seed: ForkSeed, reader: AgentId): Promise<readonly FileRef[]> {
@@ -251,10 +208,4 @@ export async function forkReadableReferences(seed: ForkSeed, reader: AgentId): P
     if (ownerRead || sharedRead || projectRead) refs.set(identity(manifest), manifest);
   }
   return Object.freeze([...refs.values()]);
-}
-
-function checkInheritedMessageLimit(sequence: bigint): void {
-  if (sequence > MAX_FORK_INHERITED_MESSAGES) {
-    throw new TypeError("inherited message limit exceeds protocol cap");
-  }
 }
