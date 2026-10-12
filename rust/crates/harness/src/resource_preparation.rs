@@ -509,7 +509,7 @@ pub struct CreatedContentBinding {
 }
 
 #[cfg(feature = "filesystem")]
-pub(crate) trait ScratchCreationIdentity: Send + Sync {
+pub(crate) trait ScratchCreationIdentity: acyclic_stream::ProviderPlatform {
     fn original_task(&self) -> crate::TaskId;
     fn agent(&self) -> crate::AgentId;
     fn volume(&self) -> &crate::conversation::VolumeRef;

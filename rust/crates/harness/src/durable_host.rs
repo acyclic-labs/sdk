@@ -1299,8 +1299,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 let comparisons = (request.resources.len() as u64)
                     .checked_mul(request.child.resource_proofs.len() as u64)
                     .and_then(|comparisons| comparisons.checked_add(1))
-                    .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                        reason: "preparation identity comparison work overflows" })?;
+                    .ok_or_else(|| admission_boundary(&None, crate::wire::ErrorCode::Invalid,
+                        "preparation identity comparison work overflows"))?;
                 observer.codec_charge(crate::contract::JsonCodecCharge::Work {
                     bytes: input.len() as u64, items: comparisons,
                 })?;
@@ -2494,12 +2494,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let path = crate::contract::preparation_format(
             format_args!("harness/v2/workflows/{}", owner.workflow_admission().operation_id), io)?;
         let _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
-        let workflow = crate::store::operations::stream(&owner.stream(), &path, &mut work)?;
-        let tail = crate::store::operations::bounds_with_work(&owner.stream(), workflow.stream.path(), &mut work).await?
+        let (workflow, _workflow_hold) = crate::store::operations::stream(&owner.stream(), &path, &mut work)?;
+        let tail = crate::store::operations::bounds_with_work(&owner.stream(), workflow.path(), &mut work).await?
             .map_err(|error| crate::distributed::sdk_error(error, &work))?.tail;
         let index = tail.checked_sub(1).ok_or_else(|| admission_boundary(&work,
             crate::wire::ErrorCode::Unauthorized, "parcel receive checkpoint is absent"))?;
-        let latest = self.read_mail_workflow_record(owner, &workflow.stream, index, io).await?;
+        let latest = self.read_mail_workflow_record(owner, &workflow, index, io).await?;
         let prior;
         let receive = if let [command] = latest.transition.commands.as_slice()
             && command.operation_id == receive_operation
@@ -2527,7 +2527,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             let prior_index = latest.prior.revision.checked_sub(1).ok_or_else(|| admission_boundary(&work,
                 crate::wire::ErrorCode::Unauthorized, "parcel receive outbox is absent"))?;
-            prior = self.read_mail_workflow_record(owner, &workflow.stream, prior_index, io).await?;
+            prior = self.read_mail_workflow_record(owner, &workflow, prior_index, io).await?;
             let [command] = prior.transition.commands.as_slice() else {
                 return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
                     "parcel requires a sole receive outbox"));

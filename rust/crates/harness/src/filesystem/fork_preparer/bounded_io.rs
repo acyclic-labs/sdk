@@ -775,10 +775,10 @@ impl PreparationIo {
     }
 
     /// Builds the original serde JSON graph directly.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn value_json<T: Serialize>(
         &self, source: &T, maximum_bytes: u64,
     ) -> Result<serde_json::Value> {
+        #[cfg(not(target_arch = "wasm32"))]
         if self.original_native_work().is_none() {
             return Err(self.invalid("native JSON graph conversion requires original work"));
         }
@@ -843,14 +843,20 @@ impl PreparationIo {
         Ok(retain_decoded(decoded))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn value_decode_preparation<T: PreparationRecord>(
         &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
     ) -> Result<(T, DecodeReservation<'_>)> {
-        self.value_decode_with_schema(
+        #[cfg(target_arch = "wasm32")]
+        {
+            let bytes = self.encode(source, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+            let _bytes = self.guard_bytes(&bytes)?;
+            self.decode_preparation(&bytes, code)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        { self.value_decode_with_schema(
             source, code, T::json_value_schema(), T::diagnostic_label_bytes(),
             |shape| T::decode_owned_allowance(shape, 0, shape.input_bytes(), Some(code)),
-        )
+        ) }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1315,7 +1321,7 @@ pub(in crate::filesystem) async fn publish_generation<A, O, F, Fut>(
     key: &IdempotencyKey, io: Option<&PreparationIo>, before_publication: &mut F,
 ) -> Result<acyclic_fs::Generation<A, O>>
 where A: AsyncAuthorityStore, O: AsyncObjectStore,
-    F: FnMut() -> Fut + Send, Fut: Future<Output = Result<()>> + Send,
+    F: FnMut() -> Fut + acyclic_stream::ProviderTask, Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
 {
     let Some(io) = io else {
         return host.apply_generation_guarded(reference, expected, mutations, key, before_publication).await;

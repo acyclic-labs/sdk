@@ -121,7 +121,7 @@ impl MemoryStore {
         if path.len() as u64 > self.maximum_path_bytes {
             return Err(Error::Invalid("staged file exceeds harness limits".into()));
         }
-        let descriptor = FileDescriptor::from_bytes(bytes, media_type)?;
+        let descriptor = FileDescriptor::from_bytes(bytes, media_type, &mut None)?;
         let digest = canonical_json_digest(&(
             &path,
             descriptor.sha256(),
@@ -134,7 +134,7 @@ impl MemoryStore {
             path,
             blake3::Hash::from_bytes(digest).to_hex().to_string(),
             descriptor,
-            display_name,
+            display_name, &mut None,
         )?;
         self.retain_reference(&reference, bytes, update_path, None)?;
         Ok(reference)
@@ -424,7 +424,7 @@ impl MemoryStore {
 
     #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
     pub(crate) fn has(&self, file: &FileRef) -> Result<bool> {
-        file.validate()?;
+        file.validate(&mut None)?;
         if file.volume() != &self.volume {
             return Ok(false);
         }

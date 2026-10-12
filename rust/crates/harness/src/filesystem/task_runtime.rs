@@ -539,7 +539,7 @@ where
             volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
         } else { volume.validate(&mut None)?; }
         #[cfg(target_arch = "wasm32")]
-        volume.validate()?;
+        volume.validate(&mut None)?;
         if maximum_payload_bytes == 0 {
             return Err(match io {
                 Some(_) => observed::boundary(io, crate::wire::ErrorCode::Invalid,

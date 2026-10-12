@@ -3887,8 +3887,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mut guard: F,
     ) -> Result<((GenerationRef, DirectoryPage), acyclic_fs::NativeAllocation)>
     where
-        F: FnMut() -> Fut + Send,
-        Fut: Future<Output = Result<()>> + Send,
+        F: FnMut() -> Fut + acyclic_stream::ProviderTask,
+        Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
     {
         volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
         if volume.provider() != &self.provider {
@@ -4298,8 +4298,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         before_publication: &mut F,
     ) -> Result<Generation<A, O>>
     where
-        F: FnMut() -> Fut + Send,
-        Fut: std::future::Future<Output = Result<()>> + Send,
+        F: FnMut() -> Fut + acyclic_stream::ProviderTask,
+        Fut: std::future::Future<Output = Result<()>> + acyclic_stream::ProviderTask,
     {
         before_publication().await?;
         let workspace = self.open(workspace).await?;
@@ -4507,7 +4507,7 @@ fn content_identity_path_io(path: &str, absolute: bool, prefix: &str, io: Option
     Ok(encoded)
 }
 
-fn map_error(error: WorkspaceError) -> Error {
+pub(crate) fn map_error(error: WorkspaceError) -> Error {
     match error {
         WorkspaceError::NotFound => Error::NotFound("workspace path".into()),
         WorkspaceError::RetentionConflict
