@@ -359,7 +359,7 @@ impl Owned<TransactionState> {
                 store, entries, None, 1, DecodeLimits::for_volume(config), accounting, cancellation.clone(), None,
             ).await.map_err(|error| {
                 if is_original(accounting) { error } else {
-                    GenerationMutationError::Directory(super::list::map_error(super::persistent_pagination::project_failure(error))).into()
+                    GenerationMutationError::Directory(super::persistent_pagination::project_failure(error)).into()
                 }
             })?;
             let listing = Owned { value: listing, allocation };

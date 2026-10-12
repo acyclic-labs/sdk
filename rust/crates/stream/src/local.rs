@@ -2302,7 +2302,8 @@ fn checksum(
 mod tests {
     use super::*;
 
-    use crate::test_meter::{Meter, NativeDenial, TestClock};
+    use crate::test_meter::{Meter, NativeDenial};
+    use crate::memory::TestClock;
 
     #[derive(Debug)]
     enum NativeGuardFailure {

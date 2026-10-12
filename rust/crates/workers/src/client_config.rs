@@ -142,9 +142,6 @@ impl tonic::service::Interceptor for BearerAuth {
 
 pub(crate) struct Validated {
     pub endpoint: String,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub token: String,
-    #[cfg(target_arch = "wasm32")]
     pub authorization: BearerAuth,
     pub metadata: MetadataMap,
     pub maximum: usize,
@@ -171,8 +168,6 @@ impl WorkersClientOptions {
         }
         let authorization =
             BearerAuth::new(&self.token).map_err(|()| invalid("invalid bearer credential"))?;
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(authorization);
         let maximum = self.maximum_message_bytes.unwrap_or(MAX_MESSAGE_BYTES);
         if maximum == 0 || maximum > MAX_MESSAGE_BYTES {
             return Err(invalid("message ceiling must be within 1..=16 MiB"));
@@ -194,9 +189,6 @@ impl WorkersClientOptions {
         let metadata = append_metadata(MetadataMap::new(), self.metadata)?;
         Ok(Validated {
             endpoint: self.endpoint.trim_end_matches('/').to_owned(),
-            #[cfg(not(target_arch = "wasm32"))]
-            token: self.token,
-            #[cfg(target_arch = "wasm32")]
             authorization,
             metadata,
             maximum: maximum as usize,

@@ -650,10 +650,11 @@ async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
         Arc::new(FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES)?),
         Arc::new(StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?),
     ], &mut None)?);
-    StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
+    let mut aggregate = StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
         .with_content_verifier(content).with_fork_verifier(forks)
-        .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(files)))
-        .with_limits(config.limits)
+        .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(files)));
+    aggregate.set_limits(config.limits)?;
+    Ok(aggregate)
 }
 
 async fn claim(runtime: &Runtime, task: TaskId, worker: &Worker) -> Result<WorkLease> {

@@ -27,7 +27,7 @@ impl Journal {
                 let temporary = crate::physical::local_path(&self.root.path, TEMPORARY, publication.meter.as_ref())?;
                 let destination =
                     crate::physical::local_path(&self.root.path, "mutations.log", publication.meter.as_ref())?;
-                let mut file = crate::physical::open_publication(&temporary.path, &publication)?;
+                let mut file = crate::physical::open_publication(&temporary.value, &publication)?;
                 let header = publication.encode(&self.header)?;
                 let header_length = u32::try_from(header.len())
                     .map_err(|_| Error::from(QuotaExceeded))?;
@@ -69,11 +69,11 @@ impl Journal {
                 if let Err(error) = self.root.replace_journal(|| {
                     match &publication.meter {
                         Some(meter) => acyclic_native_runtime::durable_rename(
-                            &temporary.path, &destination.path,
+                            &temporary.value, &destination.value,
                             acyclic_native_runtime::RenameMode::Replace, Some(meter),
                         ),
                         None => acyclic_native_runtime::durable_rename(
-                            &temporary.path, &destination.path,
+                            &temporary.value, &destination.value,
                             acyclic_native_runtime::RenameMode::Replace, None,
                         ),
                     }
