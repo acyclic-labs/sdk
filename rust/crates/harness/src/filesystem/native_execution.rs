@@ -2907,8 +2907,8 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
             self.read_client(), &path, &mut observer,
         ).await? {
             Ok(bounds) => bounds,
-            Err(error) if matches!(error.source(), acyclic_stream::StreamError::NotFound) => return Ok(None),
-            Err(error) => return Err(error.into_error(&observer)),
+            Err(error) if matches!(crate::distributed::sdk_source(&error), acyclic_stream::StreamError::NotFound) => return Ok(None),
+            Err(error) => return Err(crate::distributed::sdk_error(error, &observer)),
         };
         let sequence = match bounds.tail.checked_sub(1) {
             Some(sequence) => sequence,
@@ -2919,7 +2919,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
         let stream = crate::store::operations::stream_with_work(self.read_client(), &path, &mut observer)?;
         let mut records = crate::store::operations::read_records_with_work(
             self.read_client(), &stream.stream, sequence, 1, &mut observer,
-        ).await?.map_err(|error| error.into_error(&observer))?;
+        ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;
         let record = records.next(&mut observer).await?
             .ok_or(preparation_error("missing materializer journal"))?;
         if record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
@@ -2980,10 +2980,8 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
             items_examined: items,
             ..acyclic_fs::WorkCounters::UNCHARGED
         })?;
-        let mut native_io = crate::store::history::native_work_io(&self.work)
-            .map_err(Error::from)?;
         let prepared = crate::distributed::PreparedMaterializationCommit::prepare(
-            owner, template, reservation, &self.work, &mut Some(&mut native_io),
+            owner, template, reservation, &self.work,
         ).await?;
         let future = crate::NativeFutureBundle::new(&self.work, || async move {
             let counters = prepared.completion_work()?;

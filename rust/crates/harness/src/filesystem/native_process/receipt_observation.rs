@@ -167,15 +167,15 @@ pub(super) async fn read<P: StreamProvider>(
     let mut observer = Some(&mut history_io as &mut dyn crate::store::history::HistoryIo);
     let bounds = match crate::store::operations::bounds_with_work(&client, path, &mut observer).await? {
         Ok(bounds) => bounds,
-        Err(error) if matches!(error.source(), StreamError::NotFound) => return Ok(None),
-        Err(error) => return Err(error.into_error(&observer)),
+        Err(error) if matches!(crate::distributed::sdk_source(&error), StreamError::NotFound) => return Ok(None),
+        Err(error) => return Err(crate::distributed::sdk_error(error, &observer)),
     };
     check(work)?;
     if !(1..=2).contains(&bounds.tail) { return Err(receipt_error("invalid native receipt length")); }
     let stream = crate::store::operations::stream_with_work(&client, path, &mut observer)?;
     let mut records = crate::store::operations::read_records_with_work(
         &client, &stream.stream, 0, bounds.tail as u32, &mut observer,
-    ).await?.map_err(|error| error.into_error(&observer))?;
+    ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;
     check(work)?;
     let first = records.next(&mut observer).await?.ok_or(receipt_error("missing native launch receipt"))?;
     if first.sequence != 0 { return Err(receipt_error("native receipt starts after launch")); }
