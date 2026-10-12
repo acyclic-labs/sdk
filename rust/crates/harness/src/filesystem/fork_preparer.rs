@@ -1082,7 +1082,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 Vec::new()
             };
             let inherited = controller
-                .materialize_inherited_conversation_continued(
+                .materialize_inherited_conversation(
                     &self.preparer.parent,
                     &private,
                     &private_observation.generation,

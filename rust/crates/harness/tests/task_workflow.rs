@@ -2006,8 +2006,8 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         target_head = host.apply(&target, None, &[WorkspaceMutation::PutFile {
             path: "/shared.txt".into(), bytes: b"target".as_slice().into(),
         }], &IdempotencyKey::new("target-edit")?).await?.generation;
-        let plan = controller.prepare_project_import(&source, &source_head).await?;
-        let JoinOutcome::Conflicted { conflicts, truncated } = controller.apply_project_merge(&plan, operation).await? else {
+        let plan = controller.prepare_project_import(&source, &source_head, None).await?;
+        let JoinOutcome::Conflicted { conflicts, truncated } = controller.apply_project_merge(&plan, operation, BTreeMap::new()).await?.0 else {
             return Err(Error::Invalid("custom merge must have a real conflict".into()));
         };
         let described = controller.describe_project_merge_conflicts(&plan, &conflicts, truncated).await?;
@@ -2047,7 +2047,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let candidate = acyclic_fs::decode_merge_candidate(record.next.state["candidate"].as_str()
             .ok_or_else(|| Error::Invalid("candidate missing".into()))?).map_err(|e| Error::Invalid(e.to_string()))?;
         let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
-        let plan = controller.prepare_project_import_at(&source, &source_head, &target_head).await?;
+        let plan = controller.prepare_project_import(&source, &source_head, Some(&target_head)).await?;
         let denied = issuer.issue("no-write", &Capabilities::new([source.capability(VolumeOperation::Read, &mut None)?]), Some(agent), None, &mut None).expect("scope proof");
         let unauthorized = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &denied, &project, None)?;
         assert!(unauthorized.apply_project_merge_candidate(&plan, operation, &candidate).await.is_err());
