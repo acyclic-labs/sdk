@@ -382,7 +382,7 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
     else {
         return Err("text join did not expose its conflict".into());
     };
-    let described = plan.describe_conflicts(&conflicts, truncated).await?;
+    let described = plan.describe_conflicts(conflicts.to_vec(), truncated).await?;
     assert_eq!(described.conflicts.len(), 1);
     assert_eq!(described.conflicts[0].path.as_deref(), Some("/shared"));
     assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Text);

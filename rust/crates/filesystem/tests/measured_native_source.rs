@@ -2,7 +2,7 @@
 #![cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 
 use acyclic_fs::demand::{
-    DemandDirectoryObserver, DemandError, DemandResult, DemandSource, FilteredDemandSource,
+    DemandDirectoryObserver, DemandError, DemandResult, DemandSource,
     SourceReference, native::NativeDemandSource,
 };
 use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, LogicalName, NameEncoding, NamespacePath};
@@ -33,14 +33,10 @@ fn finite_budget() -> Result<WorkBudget, serde_json::Error> {
 struct DirectoryObserver(AtomicUsize);
 
 impl DemandDirectoryObserver for DirectoryObserver {
-    fn observe_directory(
-        &self, _directory: &NamespacePath, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> DemandResult<()> {
-        cancellation.check().map_err(|_| OperationFailure::before_work(DemandError::Cancelled))?;
-        let work = WorkCounters { items_examined: 1, ..WorkCounters::default() };
-        work.verify(budget).map_err(|error| OperationFailure::before_work(DemandError::Work(error)))?;
+    fn observe_directory(&self, _directory: &NamespacePath, accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>) -> Result<(), DemandError> {
+        accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }).map_err(DemandError::from)?;
         self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(OperationReceipt { value: (), work })
+        Ok(())
     }
 }
 
@@ -413,13 +409,13 @@ async fn native_continuation_replays_consumed_entries_after_budget_denial() -> T
     assert!(matches!(failure.error, DemandError::Work(_)));
     assert_eq!(failure.work.source_entries_visited, 0);
     failure.work.verify(limited)?;
-    let mut names = first.value.entries.iter().map(|entry| entry.name().as_bytes().to_vec()).collect::<Vec<_>>();
+    let mut names = first.value.entries.iter().map(|entry| entry.name.as_bytes().to_vec()).collect::<Vec<_>>();
     let mut next = Some(cursor);
     while let Some(cursor) = next {
         let mut page = source.list_page(source.reference(), &path, Some(cursor), 2, budget, &token).await?;
         page.work.verify(budget)?;
         acyclic_fs::demand::accept_publication(&mut page.value.publication, page.work.remaining(budget)?, &token).await?;
-        names.extend(page.value.entries.iter().map(|entry| entry.name().as_bytes().to_vec()));
+        names.extend(page.value.entries.iter().map(|entry| entry.name.as_bytes().to_vec()));
         next = page.value.next;
     }
     names.sort();
@@ -447,7 +443,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
     let mut page = source.list_page(source.reference(), &requested("")?, None, 8, budget, &token).await?;
     acyclic_fs::demand::accept_publication(&mut page.value.publication, page.work.remaining(budget)?, &token).await?;
     assert_eq!(page.value.entries.len(), 1);
-    assert_eq!(page.value.entries[0].name(), &name);
+    assert_eq!(page.value.entries[0].name, name);
     page.work.verify(budget)?;
     let read = source.read_range(source.reference(), &path, node.version, 0, 6, budget, &token).await?;
     assert_eq!(read.value.bytes.as_ref(), b"opaque");
@@ -472,7 +468,7 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
     let directory = tempfile::tempdir()?;
     for name in ["a", "b", "c"] { std::fs::write(directory.path().join(name), b"actual")?; }
     let native = NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(directory.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let source = FilteredDemandSource::new(native, vec![requested("private")?, requested("excluded")?]);
+    let source = native.exclude(vec![requested("private")?, requested("excluded")?], WorkBudget::UNBOUNDED, &CancellationToken::new())?.value;
     let root = requested("")?;
     let token = CancellationToken::new();
     let budget = finite_budget()?;
@@ -493,7 +489,7 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
     next.work.verify(budget)?;
     assert!(next.value.next.is_none());
     let mut names = first.value.entries.iter().chain(next.value.entries.iter())
-        .map(|entry| entry.name().as_bytes().to_vec()).collect::<Vec<_>>();
+        .map(|entry| entry.name.as_bytes().to_vec()).collect::<Vec<_>>();
     names.sort();
     assert_eq!(names, [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
     Ok(())
@@ -513,15 +509,15 @@ async fn native_unpublished_pages_restore_initial_and_continuation_positions() -
         page.work.verify(budget)?;
         assert_eq!(page.work.source_bytes_read, 0);
         assert!(page.value.retained_bytes() > 0);
-        let expected = page.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>();
+        let expected = page.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>();
         drop(page);
         let mut retry = source.list_page(source.reference(), &root, position.clone(), 1, budget, &token).await?;
-        assert_eq!(retry.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>(), expected);
+        assert_eq!(retry.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>(), expected);
         let aborted = acyclic_fs::demand::abort_publication(&mut retry.value.publication, retry.work.remaining(budget)?)?;
         aborted.work.verify(retry.work.remaining(budget)?)?;
         retry.work.checked_add(aborted.work)?.verify(budget)?;
         let mut accepted = source.list_page(source.reference(), &root, position.clone(), 1, budget, &token).await?;
-        assert_eq!(accepted.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>(), expected);
+        assert_eq!(accepted.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>(), expected);
         let committed = acyclic_fs::demand::accept_publication(&mut accepted.value.publication, accepted.work.remaining(budget)?, &token).await?;
         accepted.work.checked_add(committed.work)?.verify(budget)?;
         position = accepted.value.next;
@@ -544,7 +540,7 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
         assert!(page.work.items_examined > 0);
         assert!(page.work.allocation_operations > 0);
         page.work.verify(budget)?;
-        let expected = page.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>();
+        let expected = page.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>();
         let projected = CancellationToken::new();
         let mut remaining = page.work.remaining(budget)?;
         if cancelled { projected.cancel(); } else { remaining.items_examined = 0; }
@@ -564,7 +560,7 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
         let retained = page.work.checked_add(*failure.work)?.checked_add(aborted.work)?;
         retained.verify(budget)?;
         let mut retry = source.list_page(source.reference(), &root, None, 2, budget, &live).await?;
-        assert_eq!(retry.value.entries.iter().map(|entry| entry.name().clone()).collect::<Vec<_>>(), expected);
+        assert_eq!(retry.value.entries.iter().map(|entry| entry.name.clone()).collect::<Vec<_>>(), expected);
         acyclic_fs::demand::abort_publication(&mut retry.value.publication, retry.work.remaining(budget)?)?;
     }
     let mut committed = source.list_page(source.reference(), &root, None, 2, budget, &live).await?;

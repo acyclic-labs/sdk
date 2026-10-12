@@ -359,7 +359,7 @@ pub(super) fn write_ordinary(
                             from_name,
                             &directory,
                             to_name,
-                            &mut crate::demand::NativeSourceWork::from_native_materialization_work(
+                            &mut crate::NativeMaterializationWork::clone(
                                 projection.work,
                             ),
                         )

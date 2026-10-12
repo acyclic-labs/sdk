@@ -68,7 +68,6 @@ impl TaskContext {
     }
 
     /// Runs one bounded, provider-neutral model request from live task code.
-
     #[allow(
         clippy::too_many_lines,
         reason = "keep authorization, token admission and bounded streaming in execution order"
@@ -197,7 +196,6 @@ impl TaskContext {
     }
 
     /// Adds a locally pinned policy layer.
-
     pub fn scoped_policy(&self, policy: Arc<dyn ToolPolicy>) -> Result<Self> {
         if self.durable_task.is_some() {
             return Err(Error::Unsupported(

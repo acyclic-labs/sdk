@@ -411,7 +411,7 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
             },
             &mut work
         ),
-        Err(crate::DemandError::WindowsMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     assert!(matches!(
         apply_windows_metadata(
@@ -426,7 +426,7 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
             },
             &mut work
         ),
-        Err(crate::DemandError::WindowsMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     assert!(
         root.open_windows_metadata_target(Path::new("../outside"), &mut work)

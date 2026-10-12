@@ -58,8 +58,7 @@ fn a_source_that_lost_changes_is_read_again_in_full() -> Result<(), Box<dyn std:
     }
     .source_changed(
         &[SourceChange::Everything],
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
+        &mut crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new()),
     )?;
     assert!(!view.unchanged_since(&a, None, stamp));
     assert!(view.lookup(&a)?.is_some());

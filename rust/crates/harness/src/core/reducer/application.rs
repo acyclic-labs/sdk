@@ -218,7 +218,9 @@ impl Reducer {
                     observer.admit_owned(reservation)?;
                     observer.retain_owned(reservation)?;
                 }
-                self.projection.forks.insert(seed.child.clone(), seed.as_ref().clone());
+                self.projection
+                    .forks
+                    .insert(seed.child.clone(), seed.as_ref().clone());
             }
             EventPayload::ProjectMergePublished { receipt } => {
                 self.require_conversation()?;
