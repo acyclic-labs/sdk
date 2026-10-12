@@ -13020,10 +13020,10 @@ mod tests {
             .open(&path)?;
         let mut writer = file.try_clone()?;
         let syncer = file.try_clone()?;
-        let gate = super::super::fuse::pause_next_write_after_admission();
+        let (admitted, release) = super::super::fuse::pause_next_write_after_admission();
         let writer_thread = std::thread::spawn(move || writer.write_all(b"new"));
         assert!(
-            gate.wait_until_admitted(Duration::from_secs(5)),
+            admitted.recv_timeout(Duration::from_secs(5)).is_ok(),
             "write must reach the per-handle gate"
         );
 
@@ -13041,7 +13041,7 @@ mod tests {
                 .is_err(),
             "fsync must not overtake a write admitted on the same handle"
         );
-        assert!(gate.release(), "release paused write");
+        assert!(release.send(()).is_ok(), "release paused write");
         writer_thread
             .join()
             .map_err(|_| std::io::Error::other("mounted writer panicked"))??;
