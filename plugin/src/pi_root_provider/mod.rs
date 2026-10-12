@@ -326,7 +326,7 @@ pub(crate) fn root_provider(
         || request.binding.agent_id != owner.policy().agent
         || journal_owner.as_ref().is_some_and(|current| {
             current.task_id() != request.binding.task_id
-                || preparation.context.context().durable_task_id() != Some(request.binding.task_id)
+                || preparation.context.durable_task_id() != Some(request.binding.task_id)
         })
         || !matches!(
             request.binding.scratch.allocation,

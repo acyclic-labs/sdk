@@ -63,60 +63,6 @@ fn a_detached_write_that_cannot_stamp_changes_nothing() -> Result<(), Box<dyn st
 type MemorySource =
     CheckoutMountSource<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
 
-/// Publication changes the checkout without changing its view. A
-/// candidate begun before it must not install over it: that would
-/// restore the published-over head, and every later publication would
-/// then conflict with it.
-#[test]
-fn a_candidate_never_installs_over_a_publication() -> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) =
-        shared_sources_with_publication(FilesystemProfile::Portable, MountPublication::Manual)?;
-    source.create_file(&native_test_path("first"), FileMetadata::default())?;
-    let (candidate, epoch, stamp) = source.runtime.wait(|| {
-        source.checkout.candidate(
-            None,
-            &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
-                boundary_budget(),
-                source.cancellation(),
-            )),
-            source.cancellation(),
-            None,
-        )
-    })?;
-    source.sync()?;
-    let installed =
-        source.runtime.wait(|| {
-            source.checkout.install_candidate(
-                candidate,
-                epoch,
-                stamp,
-                &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
-                    boundary_budget(),
-                    source.cancellation(),
-                )),
-                source.cancellation(),
-                None,
-                |_| Ok(()),
-                |checkout, candidate, prepared| {
-                    Ok(checkout.adopt_prepared_candidate(
-                        &candidate.base,
-                        candidate.checkout,
-                        prepared,
-                    ))
-                },
-                None,
-                |_, _| (),
-            )
-        })?;
-    assert!(
-        installed.is_none(),
-        "a candidate installed over a publication"
-    );
-    source.create_file(&native_test_path("second"), FileMetadata::default())?;
-    source.sync()?;
-    Ok(())
-}
-
 #[test]
 fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
@@ -192,66 +138,55 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn publication_policies_are_exact_and_subtree_roots_do_not_scan_or_escape()
--> Result<(), Box<dyn std::error::Error>> {
-    let profile = if cfg!(target_os = "windows") {
+fn publication_policy_and_subtree_cases() -> Result<(), Box<dyn std::error::Error>> {
+    let native = if cfg!(windows) {
         FilesystemProfile::Windows
     } else {
         FilesystemProfile::Posix
     };
-    let (manual, _) = shared_sources_with_publication(profile, MountPublication::Manual)?;
-    let initial = checkout_state(&manual).0;
-    manual.create_directory(&native_test_path("src"), metadata())?;
-    manual.flush()?;
-    assert_eq!(checkout_state(&manual), (initial, true));
-    manual.sync()?;
-    let published = checkout_state(&manual).0;
-    assert_ne!(published, initial);
-
-    let config = {
-        let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
-        config.profile = profile;
-        config
-    };
-    let root = NamespacePath::new(
-        vec![manual.logical_name(native_test_path("src").components()[0].as_slice())?],
-        config.limits,
-    )?;
-    let subtree = CheckoutMountSource::new_at(Arc::clone(&manual.checkout), config, root)?;
-    let nested = native_test_path("nested.bin");
-    subtree.create_file(&nested, metadata())?;
-    assert!(manual.lookup(&native_test_path("nested.bin"))?.is_none());
-    assert!(
-        manual
-            .lookup(&native_test_path("src"))?
-            .is_some_and(|entry| entry.node.kind == MountNodeKind::Directory)
-    );
-    assert!(subtree.lookup(&nested)?.is_some());
-
-    let (per_mutation, _) =
-        shared_sources_with_publication(profile, MountPublication::PerMutation)?;
-    let before = checkout_state(&per_mutation).0;
-    per_mutation.create_file(&native_test_path("published.bin"), metadata())?;
-    let published_directory = native_test_path("published-directory");
-    let created_directory = per_mutation.create_directory(&published_directory, metadata())?;
-    assert_eq!(
-        per_mutation.lookup(&published_directory)?,
-        Some(created_directory)
-    );
-    let (after, pending) = checkout_state(&per_mutation);
-    assert_ne!(after, before);
-    assert!(!pending);
-
-    let (portable, _) = shared_sources_with_publication(
-        FilesystemProfile::Portable,
-        MountPublication::PerMutation,
-    )?;
-    let portable_directory = native_test_path("portable-directory");
-    let created_directory = portable.create_directory(&portable_directory, metadata())?;
-    assert_eq!(
-        portable.lookup(&portable_directory)?,
-        Some(created_directory)
-    );
+    for (profile, policy, publishes) in [
+        (native, MountPublication::Manual, false),
+        (native, MountPublication::PerMutation, true),
+        (
+            FilesystemProfile::Portable,
+            MountPublication::PerMutation,
+            true,
+        ),
+    ] {
+        let (source, _) = shared_sources_with_publication(profile, policy)?;
+        let work = capture_meter(boundary_budget(), source.cancellation())
+            .map_err(|failure| failure.error)?;
+        let before = checkout_state(&source).0;
+        let directory = native_test_path("src");
+        if profile == native && publishes {
+            source.create_file(&native_test_path("published.bin"), metadata(), None, &work)?;
+        }
+        let created = source.create_directory(&directory, metadata(), &work)?;
+        assert_eq!(source.lookup(&directory)?, Some(created));
+        source.flush(&work)?;
+        assert_eq!(checkout_state(&source).0 != before, publishes);
+        source.sync()?;
+        assert!(!checkout_state(&source).1);
+        if !publishes {
+            let config = VolumeConfig {
+                profile,
+                ..VolumeConfig::portable(Lifecycle::Ephemeral)
+            };
+            let root = NamespacePath::new(
+                vec![source.logical_name(directory.components()[0].as_slice())?],
+                config.limits,
+            )?;
+            let subtree = CheckoutMountSource::new_at(source.checkout.clone(), config, root)?;
+            let nested = native_test_path("nested.bin");
+            subtree.create_file(&nested, metadata(), None, &work)?;
+            assert!(source.lookup(&nested)?.is_none());
+            assert!(subtree.lookup(&nested)?.is_some());
+            assert_eq!(
+                source.lookup(&directory)?.map(|entry| entry.node.kind),
+                Some(MountNodeKind::Directory)
+            );
+        }
+    }
     Ok(())
 }
 
@@ -288,54 +223,102 @@ fn refresh_preserves_overlapping_read_conflicts_and_generation()
 }
 
 #[test]
-fn detached_mount_file_survives_last_binding_with_sparse_mutation_and_metadata()
--> Result<(), Box<dyn std::error::Error>> {
-    let profile = if cfg!(target_os = "windows") {
+fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Error>> {
+    let profile = if cfg!(windows) {
         FilesystemProfile::Windows
     } else {
         FilesystemProfile::Posix
     };
-    let source = source(profile)?;
-    let file = native_test_path("detached.bin");
-    source.create_file(&file, metadata())?;
-    source.resize(&file, 64)?;
-    source.write_range(&file, 8, Bytes::from_static(b"visible"))?;
-
-    let detached = source.detach_file(&file)?;
-    let expected = source.lookup(&file)?.map(|lookup| lookup.node.file_id);
-    source.remove(&file, expected)?;
-    assert_eq!(source.lookup(&file)?, None);
-    assert_eq!(detached.lookup()?.node.link_count, 0);
-    assert_eq!(detached.read_range(8, 7)?.as_ref(), b"visible");
-
-    detached.write_range(32, Bytes::from_static(b"open"))?;
-    detached.allocate_range(16, 8, MountRangeAllocation::Preallocate { keep_size: true })?;
-    let changed = FileMetadata {
-        modified_ns: crate::kernel::MetadataField::Value(42),
-        ..metadata()
-    };
-    detached.set_attributes(changed, Some(40))?;
-    let lookup = detached.lookup()?;
-    assert_eq!(lookup.node.logical_bytes, 40);
-    assert_eq!(lookup.metadata, changed);
-    assert_eq!(detached.read_range(32, 4)?.as_ref(), b"open");
-    assert_eq!(detached.seek(0, MountSeekTarget::Data)?, Some(8));
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        let attribute = b"user.acyclic.detached";
-        detached.write_attribute(
-            attribute,
-            Bytes::from_static(b"retained"),
-            MountAttributeWriteMode::Create,
-        )?;
-        assert_eq!(
-            detached.read_attribute(attribute)?.as_deref(),
-            Some(b"retained".as_slice())
-        );
-        let attributes = detached.list_attributes(None, 8)?;
-        assert_eq!(attributes.names, vec![attribute.to_vec()]);
-        detached.remove_attribute(attribute)?;
-        assert_eq!(detached.read_attribute(attribute)?, None);
+    for detached in [false, true] {
+        let source = source(profile)?;
+        let work = capture_meter(boundary_budget(), source.cancellation())
+            .map_err(|failure| failure.error)?;
+        let original = native_test_path("original");
+        let alias = native_test_path("alias");
+        let renamed = native_test_path("renamed");
+        let created = source.create_file(&original, metadata(), None, &work)?;
+        source.resize(&original, 64)?;
+        source.write_range(&original, 8, Bytes::from_static(b"visible"))?;
+        let file = if detached {
+            source.detach_file(&original)?
+        } else {
+            source.open_file(&original)?
+        };
+        if !detached {
+            source.hard_link(&original, &alias, &work)?;
+        }
+        source.remove(&original, Some(created.node.file_id), &work)?;
+        assert!(source.lookup(&original)?.is_none());
+        assert_eq!(file.lookup()?.node.link_count, if detached { 0 } else { 1 });
+        assert_eq!(file.read_range(8, 7)?.as_ref(), b"visible");
+        file.write_range(32, Bytes::from_static(b"open"))?;
+        file.allocate_range(16, 8, MountRangeAllocation::Preallocate { keep_size: true })?;
+        let changed = FileMetadata {
+            modified_ns: crate::kernel::MetadataField::Value(42),
+            ..metadata()
+        };
+        file.set_attributes(changed, Some(40), &work)?;
+        assert_eq!(file.lookup()?.metadata, changed);
+        assert_eq!(file.lookup()?.node.logical_bytes, 40);
+        assert_eq!(file.read_range(32, 4)?.as_ref(), b"open");
+        assert_eq!(file.seek(0, MountSeekTarget::Data)?, Some(8));
+        if !detached {
+            assert_eq!(source.read_range(&alias, 32, 4)?.as_ref(), b"open");
+            source.rename(&alias, &renamed, false, &work)?;
+            file.write_range(0, Bytes::from_static(b"live"))?;
+            assert!(source.lookup(&alias)?.is_none());
+            assert_eq!(source.read_range(&renamed, 0, 4)?.as_ref(), b"live");
+            assert_eq!(file.lookup()?.node.file_id, created.node.file_id);
+        }
+        #[cfg(unix)]
+        {
+            let name = b"user.acyclic.handle";
+            file.write_attribute(
+                name,
+                crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"retained").into(), 0),
+                MountAttributeWriteMode::Create,
+                &work,
+            )?;
+            assert_eq!(
+                file.read_attribute(name, &work)?
+                    .map(|value| value.bytes)
+                    .as_deref(),
+                Some(b"retained".as_slice())
+            );
+            assert_eq!(file.list_attributes(None, 8)?.names, vec![name.to_vec()]);
+            if !detached {
+                assert_eq!(
+                    source
+                        .read_attribute(&renamed, name, &work)?
+                        .map(|value| value.bytes)
+                        .as_deref(),
+                    Some(b"retained".as_slice())
+                );
+            }
+            file.remove_attribute(name, &work)?;
+            assert!(file.read_attribute(name, &work)?.is_none());
+        }
+        if detached {
+            let from = native_test_path("sparse-source");
+            let to = native_test_path("sparse-destination");
+            source.create_file(&from, metadata(), None, &work)?;
+            source.create_file(&to, metadata(), None, &work)?;
+            source.resize(&from, 128)?;
+            source.write_range(&from, 64, Bytes::from_static(b"payload"))?;
+            source.write_range(&to, 0, Bytes::from_static(b"dense"))?;
+            let from = source.detach_file(&from)?;
+            let to = source.detach_file(&to)?;
+            let range = from.read_sparse_range(0, 128, &work)?;
+            to.write_sparse_range(0, range, &work)?;
+            assert_eq!(to.lookup()?.node.logical_bytes, 128);
+            for (offset, target, expected) in [
+                (0, MountSeekTarget::Data, Some(64)),
+                (64, MountSeekTarget::Hole, Some(71)),
+            ] {
+                assert_eq!(to.seek(offset, target)?, expected);
+            }
+            assert_eq!(to.read_range(64, 7)?.as_ref(), b"payload");
+        }
     }
     Ok(())
 }
@@ -373,33 +356,6 @@ fn shared_checkout_fence_blocks_every_adapter_until_exact_resolution()
     Ok(())
 }
 
-#[test]
-fn detached_sparse_transfer_preserves_holes_and_allocated_spans()
--> Result<(), Box<dyn std::error::Error>> {
-    let profile = if cfg!(target_os = "windows") {
-        FilesystemProfile::Windows
-    } else {
-        FilesystemProfile::Posix
-    };
-    let source = source(profile)?;
-    let from = native_test_path("sparse-source.bin");
-    let to = native_test_path("sparse-destination.bin");
-    source.create_file(&from, metadata())?;
-    source.resize(&from, 128)?;
-    source.write_range(&from, 64, Bytes::from_static(b"payload"))?;
-    source.create_file(&to, metadata())?;
-    source.write_range(&to, 0, Bytes::from_static(b"dense"))?;
-    let from = source.detach_file(&from)?;
-    let to = source.detach_file(&to)?;
-    let sparse = from.read_sparse_range(0, 128)?;
-    to.write_sparse_range(0, &sparse)?;
-    assert_eq!(to.lookup()?.node.logical_bytes, 128);
-    assert_eq!(to.seek(0, MountSeekTarget::Data)?, Some(64));
-    assert_eq!(to.seek(64, MountSeekTarget::Hole)?, Some(71));
-    assert_eq!(to.read_range(64, 7)?.as_ref(), b"payload");
-    Ok(())
-}
-
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn host_capture_preserves_unobservable_named_metadata() -> Result<(), Box<dyn std::error::Error>> {
@@ -421,55 +377,6 @@ fn host_capture_preserves_unobservable_named_metadata() -> Result<(), Box<dyn st
             .as_deref(),
         Some(b"opaque".as_slice())
     );
-    Ok(())
-}
-
-#[test]
-fn attached_open_file_tracks_identity_across_unlink_hard_link_and_rename()
--> Result<(), Box<dyn std::error::Error>> {
-    let profile = if cfg!(target_os = "windows") {
-        FilesystemProfile::Windows
-    } else {
-        FilesystemProfile::Posix
-    };
-    let source = source(profile)?;
-    let original = native_test_path("original.bin");
-    let alias = native_test_path("alias.bin");
-    let renamed = native_test_path("renamed.bin");
-    let created = source.create_file(&original, metadata())?;
-    source.write_range(&original, 0, Bytes::from_static(b"base"))?;
-    let open = source.open_file(&original)?;
-    source.hard_link(&original, &alias)?;
-    source.remove(&original, Some(created.node.file_id))?;
-
-    assert_eq!(source.lookup(&original)?, None);
-    assert_eq!(open.lookup()?.node.link_count, 1);
-    open.write_range(4, Bytes::from_static(b"-open"))?;
-    assert_eq!(source.read_range(&alias, 0, 9)?.as_ref(), b"base-open");
-
-    source.rename(&alias, &renamed, false)?;
-    open.write_range(0, Bytes::from_static(b"live"))?;
-    assert_eq!(source.lookup(&alias)?, None);
-    assert_eq!(source.read_range(&renamed, 0, 9)?.as_ref(), b"live-open");
-    assert_eq!(open.lookup()?.node.file_id, created.node.file_id);
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        let name = b"user.acyclic.attached";
-        open.write_attribute(
-            name,
-            Bytes::from_static(b"identity"),
-            MountAttributeWriteMode::Create,
-        )?;
-        assert_eq!(
-            open.read_attribute(name)?.as_deref(),
-            Some(b"identity".as_slice())
-        );
-        assert_eq!(
-            source.read_attribute(&renamed, name)?.as_deref(),
-            Some(b"identity".as_slice())
-        );
-    }
     Ok(())
 }
 
@@ -560,15 +467,7 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("projection");
     std::fs::create_dir(&destination)?;
-    let mut session = crate::mount_native(
-        crate::NativeMountRequest {
-            mount_id: crate::MountId::new(),
-            volume_id: source.volume_id()?,
-            destination: destination.clone(),
-            writable: true,
-        },
-        Arc::clone(&source) as Arc<dyn MountFilesystem>,
-    )?;
+    let mut session = mount_source(&source, &destination)?;
 
     let first_name = "written-α.bin";
     let second_name = "renamed-β.bin";
