@@ -28,10 +28,19 @@ pub(super) fn validate_task_plan<P: StreamProvider>(
     owner: &crate::durable_host::TaskJournalOwner<P>,
     plan: &TaskEffectPlan,
     planning: bool,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    owner.require_effect_grants(&plan.provider, planning)?;
-    owner.validate_input_file(&plan.request)?;
-    owner.validate_input_file(&plan.result_schema)
+    owner.require_effect_grants(&plan.provider, planning, work)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let io = work
+        .as_deref()
+        .and_then(|io| io.original_native_work())
+        .map(crate::executor::PreparationIo::from_native_work)
+        .transpose()?;
+    #[cfg(target_arch = "wasm32")]
+    let io = None;
+    owner.validate_input_file(&plan.request, io.as_ref())?;
+    owner.validate_input_file(&plan.result_schema, io.as_ref())
 }
 
 impl<P: StreamProvider> ConversationEffectHost<P> {
