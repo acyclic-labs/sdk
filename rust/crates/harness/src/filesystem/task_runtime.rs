@@ -921,7 +921,7 @@ where
         .with_turn(operation, turn);
         let mut replay = ExecutionReplay::new(operation);
         let mut latest = None;
-        while let Some(page) = replay.next_page(&journal).await? {
+        while let Some(page) = replay.next_page(&journal, None).await? {
             self.host
                 .verify_model_history(task, operation, page.iter(), &mut None)
                 .await?;
@@ -952,16 +952,10 @@ where
                 matches!(event,
                 ExecutionEvent::ModelStarted { step: recorded, purpose: crate::executor::ModelPurpose::Response, .. }
                 | ExecutionEvent::Model { step: recorded, purpose: crate::executor::ModelPurpose::Response, .. } if *recorded == step)
-            },
+            }, None,
         )
         .await?;
-        let retained = retained_model_step(
-            &journal,
-            &records,
-            step,
-            crate::executor::ModelPurpose::Response,
-            limits,
-        )
+        let retained = retained_model_step(&journal, &records, step, crate::executor::ModelPurpose::Response, limits, None)
         .await?;
         if !retained.admission.completed() {
             return Err(Error::Indeterminate(operation));
@@ -988,7 +982,7 @@ where
                         | ExecutionEvent::ToolCompleted { step: recorded, call_id, .. }
                         | ExecutionEvent::ToolFailed { step: recorded, call_id, .. }
                         if *recorded == step && call_id == &invocation.call_id)
-                })
+                }, None)
                 .await?;
                 if records
                     .iter()
@@ -1000,13 +994,7 @@ where
                     .iter()
                     .any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
                 {
-                    completed_tool_projection(
-                        &journal,
-                        &records,
-                        step,
-                        &invocation,
-                        &request.request().tools,
-                    )
+                    completed_tool_projection(&journal, &records, step, &invocation, &request.request().tools, None, None)
                     .await?;
                     continue;
                 }
@@ -1066,7 +1054,7 @@ where
         let (journal, operation) = self.readonly_execution_journal_with_native_work(task, turn, work).await?;
         let mut replay = ExecutionReplay::new(operation);
         let mut latest = None;
-        while let Some(page) = replay.next_page_with_io(journal.as_ref(), Some(&io)).await? {
+        while let Some(page) = replay.next_page(journal.as_ref(), Some(&io)).await? {
             self.host.verify_model_history(task, operation, (&page).iter(), &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             for record in page {
                 if let ExecutionEvent::ModelStarted { step, purpose: ModelPurpose::Response, .. } = record.event {

@@ -282,7 +282,7 @@ where
         2
     );
     let segment = ModelPrefix::select(&completed, previous)?;
-    let wire: Value = serde_json::from_slice(&segment.canonical_bytes()?)
+    let wire: Value = serde_json::from_slice(&segment.canonical_bytes(None)?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(
         wire.get("messages").and_then(Value::as_array).map(Vec::len),

@@ -1383,7 +1383,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Invalid,
                 "session declaration must be a root"));
         }
-        limits.validate_with_work(custody.work())?;
+        limits.validate(custody.work())?;
         validate_idempotency_key(idempotency_key.as_str(), custody.work())?;
         let operation_id = spec.operation_id;
         let declaration_key = crate::core::copy_text(idempotency_key.as_str(), &mut custody)?;
