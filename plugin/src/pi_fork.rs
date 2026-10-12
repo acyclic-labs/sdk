@@ -2824,8 +2824,8 @@ fn native_workspace_error(
         Option<acyclic_fs::NativeAllocation>,
     ),
 ) -> Error {
-    crate::pi_lazy_capture::native_lazy_error(acyclic_fs::LazyWorkspaceError::NativeWorkspaceCause(
-        acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause { source, custody },
+    crate::pi_lazy_capture::native_lazy_error(acyclic_fs::LazyWorkspaceError::NativeWorkspace(
+        source, custody,
     ))
 }
 
