@@ -32,6 +32,7 @@ fn root_lazy_mutations(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
 struct RootPublicationGuard<'a> {
     lease: &'a dyn crate::resource_preparation::CreatedTaskLease,
 }
@@ -131,6 +132,7 @@ where
             let result = self
                 .lazy
                 .validate_snapshot(snapshot, &mut accounting)
+                .await
                 .map_err(Error::from);
             io.sdk((&io).finish(result, &accounting))
         })

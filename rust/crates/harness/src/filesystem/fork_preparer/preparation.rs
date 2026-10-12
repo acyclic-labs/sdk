@@ -98,7 +98,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let private_key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:{request_digest}:scratch", request.operation_id),
                     work,
                 )
@@ -133,7 +133,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let project_key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
             |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("fork:{}:{request_digest}:project", request.operation_id),
                     work,
                 )
@@ -158,7 +158,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 let key = IdempotencyKey::new(crate::executor::with_history_io(
                     self.io.as_ref(),
                     |work| {
-                        crate::contract::preparation_format(
+                        crate::executor::preparation_format(
                             format_args!("fork:{}:{request_digest}:result", request.operation_id),
                             work,
                         )
@@ -205,7 +205,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             let context_key = IdempotencyKey::new(crate::executor::with_history_io(
                 self.io.as_ref(),
                 |work| {
-                    crate::contract::preparation_format(
+                    crate::executor::preparation_format(
                         format_args!("fork:{}:{request_digest}:context", request.operation_id),
                         work,
                     )
@@ -281,7 +281,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             let key = IdempotencyKey::new(crate::executor::with_history_io(
                 self.io.as_ref(),
                 |work| {
-                    crate::contract::preparation_format(
+                    crate::executor::preparation_format(
                         format_args!("fork:{}:{request_digest}:context", request.operation_id),
                         work,
                     )

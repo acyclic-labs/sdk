@@ -59,7 +59,7 @@ impl LazyDirectoryCursor {
         self.directory
             .retained_bytes()
             .checked_add(match &self.phase {
-                LazyDirectoryPhase::Source(c) => c.as_ref().map_or(0, SourceCursor::retained_bytes),
+                LazyDirectoryPhase::Source(_) => 0,
                 LazyDirectoryPhase::Authored(n) => {
                     n.as_ref().map_or(0, |n| n.retained_bytes() as u64)
                 }
@@ -76,22 +76,7 @@ impl LazyDirectoryCursor {
         let phase = (|| {
             Ok::<_, LazyWorkspaceError>(match &self.phase {
                 LazyDirectoryPhase::Source(Some(cursor)) => {
-                    let bytes = cursor.retained_bytes();
-                    let copied = WorkCounters {
-                        bytes_copied: bytes,
-                        ..WorkCounters::UNCHARGED
-                    };
-                    ctx.admit(copied)?;
-                    let mut guard = ctx.claim_owned(bytes, self.directory.depth() as u64 + 1)?;
-                    let mut cursor = Clone::clone(cursor);
-                    ctx.reconcile_owned(&mut guard, bytes, cursor.retained_bytes())?;
-                    ctx.record_completed(copied)?;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let KernelOwnedAllocation::NativeOriginal(allocation) = &mut guard {
-                        cursor.attach_native_allocation(allocation)?;
-                    }
-                    owned.allocation.absorb(&mut guard)?;
-                    LazyDirectoryPhase::Source(Some(cursor))
+                    LazyDirectoryPhase::Source(Some(Clone::clone(cursor)))
                 }
                 LazyDirectoryPhase::Authored(Some(name)) => {
                     let (name, mut guard) = name.clone_with_accounting(ctx, cancellation(ctx))?;
@@ -166,7 +151,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         maximum: u32,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyDirectoryPage, bool, KernelOwnedAllocation), LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx)?;
+        self.validate_snapshot(cut, ctx).await?;
         let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
         let mut checkout = self
             .checkout(
@@ -400,12 +385,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                             .or_else(|| {
                                 authored_directory.then_some(LazyDirectoryPhase::Authored(None))
                             });
-                        let transfer = match &next {
-                            Some(LazyDirectoryPhase::Source(Some(c))) => c.retained_bytes(),
-                            _ => 0,
-                        };
                         drop(page);
-                        crate::kernel::retire_allocation(source_guard, retained - transfer, ctx)?;
+                        crate::kernel::retire_allocation(source_guard, retained, ctx)?;
                         return Ok((entries, next.map(|phase| (phase, failure.allocation))));
                     }
                     LazyDirectoryPhase::Authored(after) => {
@@ -516,7 +497,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let result = async {
             for entry in page.entries.iter() {
                 let mut slot = (false, true, None);
-                if let Some(child) = self.child_path(directory, entry.name(), ctx)? {
+                if let Some(child) = self.child_path(directory, &entry.name, ctx)? {
                     let result = async {
                         let fact = self.overlay_fact(state.overlay, &child.value, ctx).await?;
                         slot.1 = fact.is_none();
@@ -562,8 +543,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 if *hidden {
                     continue;
                 }
-                let (name, mut guard) =
-                    entry.name().clone_with_accounting(ctx, cancellation(ctx))?;
+                let (name, mut guard) = entry.name.clone_with_accounting(ctx, cancellation(ctx))?;
                 entries.bytes += name.retained_bytes() as u64;
                 entries.allocation.absorb(&mut guard)?;
                 entries.value.push(LazyDirectoryEntry {

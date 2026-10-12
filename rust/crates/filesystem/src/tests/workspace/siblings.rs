@@ -169,7 +169,7 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
         let applied = match outcome {
             JoinOutcome::Applied(_) => true,
             JoinOutcome::Conflicted { conflicts, .. } => {
-                let described = plan.describe_conflicts(&conflicts, false).await?;
+                let described = plan.describe_conflicts(conflicts.to_vec(), false).await?;
                 panic!("{label} join conflicted: {:?}", described.conflicts);
             }
             _ => false,
@@ -252,7 +252,7 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
         {
             JoinOutcome::Applied(_) => {}
             JoinOutcome::Conflicted { conflicts, .. } => {
-                let described = plan.describe_conflicts(&conflicts, false).await?;
+                let described = plan.describe_conflicts(conflicts.to_vec(), false).await?;
                 panic!("join conflicted: {:?}", described.conflicts);
             }
             _ => panic!("join did not apply"),
@@ -322,7 +322,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
             {
                 JoinOutcome::Applied(_) => Vec::new(),
                 JoinOutcome::Conflicted { conflicts, .. } => plan
-                    .describe_conflicts(&conflicts, false)
+                    .describe_conflicts(conflicts.to_vec(), false)
                     .await?
                     .conflicts
                     .into_iter()
@@ -360,7 +360,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
         // Folded into the file main already holds: nothing left to publish.
         JoinOutcome::NoChanges(_) => {}
         JoinOutcome::Conflicted { conflicts, .. } => {
-            let described = plan.describe_conflicts(&conflicts, false).await?;
+            let described = plan.describe_conflicts(conflicts.to_vec(), false).await?;
             panic!(
                 "an identical independent creation must fold: {:?}",
                 described.conflicts
@@ -487,7 +487,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
             )
             .await?;
         if let JoinOutcome::Conflicted { conflicts, .. } = outcome {
-            let described = plan.describe_conflicts(&conflicts, false).await?;
+            let described = plan.describe_conflicts(conflicts.to_vec(), false).await?;
             panic!("sibling join conflicted: {:?}", described.conflicts);
         }
     }
@@ -510,7 +510,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
 
     // Authored metadata changed both ways is a conflict, reported as such.
     let base = main.head(B, &cancel).await?.value;
-    let third = fork("sibling-times-third", &base).await?;
+    let third = fork("sibling-times-third", &base).await?.value;
     for (workspace, mode) in [(&main, 0o700), (&third, 0o770)] {
         let mut transaction = workspace
             .begin_transaction(IdempotencyKey::new(), B, &cancel)
@@ -547,7 +547,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
     else {
         return Err("a mode conflict on the shared directory was not reported".into());
     };
-    let described = plan.describe_conflicts(&conflicts, truncated).await?;
+    let described = plan.describe_conflicts(conflicts.to_vec(), truncated).await?;
     assert_eq!(described.conflicts.len(), 1);
     assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Metadata);
     Ok(())

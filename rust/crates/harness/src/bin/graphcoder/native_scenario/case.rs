@@ -7,12 +7,8 @@ pub(super) async fn prepare_case(
     negative_control: Option<PathBuf>,
     cancellation: &acyclic_fs::CancellationToken,
 ) -> Result<PathBuf> {
-    tokio::fs::create_dir_all(root)
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let root = tokio::fs::canonicalize(root)
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    tokio::fs::create_dir_all(root).await.map_err(storage)?;
+    let root = tokio::fs::canonicalize(root).await.map_err(storage)?;
     // Never mix qualification identities with a previous or caller-owned store.
     match tokio::fs::create_dir(root.join("inputs")).await {
         Ok(()) => {}
@@ -21,7 +17,7 @@ pub(super) async fn prepare_case(
                 "scenario inputs already exist; use a fresh directory".into(),
             ));
         }
-        Err(error) => return Err(Error::Storage(error.to_string())),
+        Err(error) => return Err(storage(error)),
     }
     let deployment = format!("{ISSUER}.{}", uuid::Uuid::new_v4());
     let filesystem_provider = ProviderRef::new(
@@ -129,23 +125,21 @@ pub(super) async fn prepare_case(
     )?);
     let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&config.filesystem_root))
         .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
+        .map_err(storage)?;
     let native_root = root.join("native-project");
-    tokio::fs::create_dir(&native_root)
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    tokio::fs::create_dir(&native_root).await.map_err(storage)?;
     tokio::fs::write(
         native_root.join("sentinel.txt"),
         b"host original imported sentinel\n",
     )
     .await
-    .map_err(|error| Error::Storage(error.to_string()))?;
+    .map_err(storage)?;
     tokio::fs::write(
         native_root.join("concurrent-user.txt"),
         b"host original concurrent file\n",
     )
     .await
-    .map_err(|error| Error::Storage(error.to_string()))?;
+    .map_err(storage)?;
     let imported = filesystem
         .attach_directory(
             project.storage_name(&mut None)?,
@@ -164,18 +158,15 @@ pub(super) async fn prepare_case(
                 "genuine bounded native source import failed: {error}"
             ))
         })?;
-    let imported_generation = imported
-        .head()
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    let imported_generation = imported.head().await.map_err(storage)?;
     imported_generation
         .pin("graphcoder-native-original-baseline")
         .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
+        .map_err(storage)?;
     let native_operation_directory = root.join("native-writeback-operation");
     tokio::fs::create_dir(&native_operation_directory)
         .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
+        .map_err(storage)?;
     let files = FilesystemHost::new(filesystem.clone(), &filesystem_provider, None)?;
     files.create_volume(&private).await?;
     files.create_volume(&project).await?;
@@ -211,8 +202,7 @@ pub(super) async fn prepare_case(
             mailbox_operation: None,
             selected_output_volume: None,
         };
-        let bytes =
-            serde_json::to_vec(&input).map_err(|error| Error::Invalid(error.to_string()))?;
+        let bytes = serde_json::to_vec(&input).map_err(invalid)?;
         let file = files
             .put_content(
                 &project,
@@ -248,7 +238,7 @@ pub(super) async fn prepare_case(
     let stream = Arc::new(
         LocalStream::open(&config.stream_root, Default::default())
             .await
-            .map_err(|error| Error::Storage(error.to_string()))?,
+            .map_err(storage)?,
     );
     let runtime =
         crate::native::runtime(&config, stream.clone(), files.clone(), owner.verifier()?).await?;
@@ -387,7 +377,7 @@ pub(super) async fn prepare_case(
         .logical_revision()
         .checked_add(1)
         .ok_or_else(|| Error::Invalid("merge notice sequence overflow".into()))?;
-    producer.config.tools.merges.push(NativeToolMerge {
+    producer.config.tools.merges.push(ConfiguredRecursiveMerge {
         caller: left.task,
         source: grandchild.task,
         notice: ConversationMessage {
@@ -444,7 +434,7 @@ pub(super) async fn prepare_case(
     };
     tokio::fs::write(&cursor_path, cursor_frame.encode_to_vec())
         .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
+        .map_err(storage)?;
     let config_path = root.join("native-config.json");
     let target_workspace = filesystem
         .open_workspace(
@@ -453,22 +443,20 @@ pub(super) async fn prepare_case(
             &acyclic_fs::CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .map_err(|error| Error::Storage(error.to_string()))?;
+        .map_err(|failure| storage(failure.error))?
+        .value;
     let target_generation = target_workspace
         .head(
             acyclic_fs::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .map_err(|error| Error::Storage(error.to_string()))?;
+        .map_err(|failure| storage(failure.error))?
+        .value;
     target_generation
         .pin("graphcoder-native-exact-approved-target")
         .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
+        .map_err(storage)?;
     let publication_operation = OperationId::new();
     let source_root_identity = acyclic_fs::capture_root_identity(&native_root)
         .map_err(|error| {

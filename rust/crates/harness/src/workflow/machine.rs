@@ -18,7 +18,7 @@ impl MachineIdentity {
         for label in [&self.name, &self.version] {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
-                observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             if !crate::contract::is_valid_component_label(label) {
                 return Err(crate::scheduler::diagnostic(
@@ -108,10 +108,7 @@ impl MachineRegistry {
         for (identity, machine) in &self.0 {
             copied.insert(identity.copy_fields(&mut quota)?, Arc::clone(machine));
         }
-        work.remaining().map_err(|cause| Error::NativeWork {
-            cause,
-            custody: None,
-        })?;
+        work.remaining()?;
         quota.transfer();
         drop(quota);
         Ok((Self(copied), observer.into_custody()?))
@@ -139,7 +136,7 @@ impl MachineRegistry {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let identity = machine.identity();
         identity.validate(work)?;
-        crate::contract::compile_json_schema(machine.state_schema(), "machine state", work)?;
+        crate::executor::compile_json_schema(machine.state_schema(), "machine state", work)?;
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let key = identity.copy_fields(&mut quota)?;
         if self.0.contains_key(&key) {
@@ -174,8 +171,8 @@ impl MachineRegistry {
     ) -> Result<Option<&Arc<dyn ResumableMachine>>> {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
-            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
-            observer.codec_charge(crate::contract::JsonCodecCharge::Work {
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                 bytes: identity.name.len() as u64 + identity.version.len() as u64 + 32,
                 items: self.0.len() as u64,
             })?;
@@ -222,25 +219,13 @@ impl MachineRegistry {
             cfg!(all(feature = "filesystem", not(target_arch = "wasm32"))) && io.is_some(),
         )?;
         with_history_io(io, |work| {
-            crate::contract::validate_json_schema_value(
+            crate::executor::validate_json_schema_value(
                 machine.state_schema(),
                 &checkpoint.state,
                 "machine state",
                 work,
             )
         })
-    }
-
-    /// Validates a checkpoint on its original ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_checkpoint_with_native_work(
-        &self,
-        checkpoint: &MachineCheckpoint,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let io = PreparationIo::from_native_work(work)?;
-        let result = self.validate_checkpoint(checkpoint, Some(&io));
-        finish_native_io(result, io, 0).map(|_| ())
     }
 
     /// Initializes paid schema-checked state.
@@ -258,7 +243,7 @@ impl MachineRegistry {
             let retained = custody.bytes();
             io.absorb_native_custody(custody)?;
             with_history_io(Some(&io), |work| {
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     machine.state_schema(),
                     &state,
                     "machine state",
@@ -284,7 +269,7 @@ impl MachineRegistry {
             cfg!(all(feature = "filesystem", not(target_arch = "wasm32"))) && io.is_some(),
         )?;
         with_history_io(io, |work| {
-            crate::contract::validate_json_schema_value(
+            crate::executor::validate_json_schema_value(
                 machine.state_schema(),
                 &checkpoint.state,
                 "machine state",
@@ -312,7 +297,7 @@ impl MachineRegistry {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let transition = machine.transition(&checkpoint.state, &input)?;
         with_history_io(io, |work| {
-            crate::contract::validate_json_schema_value(
+            crate::executor::validate_json_schema_value(
                 machine.state_schema(),
                 &transition.state,
                 "machine state",
@@ -359,8 +344,10 @@ impl MachineRegistry {
                     Cow::Borrowed(&record.input)
                 };
             let (next, transition, retained, _) = self.step(checkpoint, input, io)?;
-            if next != record.next || transition != record.transition {
-                return Err(error(
+            if record.checkpoint()? != (&next.machine, next.revision, &next.state)
+                || transition != record.transition
+            {
+                return Err(stock_boundary(
                     io,
                     Conflict,
                     "workflow history disagrees with its pinned machine",

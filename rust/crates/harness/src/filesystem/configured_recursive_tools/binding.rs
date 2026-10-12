@@ -43,7 +43,7 @@ where
             owner.require_mail_scope_with_native_work(context.scope(), work)?;
             let (owner_task, owner_fence) = owner.task_binding();
             if owner_task != binding.0
-                || &owner_fence != binding.1
+                || owner_fence != binding.1
                 || owner.authenticated_binding_agent(&mut Some(
                     &mut crate::store::HistoryWork::new(
                         crate::filesystem::PreparationIo::from_native_work(work)?,
@@ -159,7 +159,7 @@ where
         for snapshot in volumes {
             if let Some(io) = io {
                 io.codec_charge(
-                    crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 },
+                    crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 },
                     true,
                 )?;
             }

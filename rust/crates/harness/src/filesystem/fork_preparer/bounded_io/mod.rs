@@ -464,7 +464,7 @@ impl PreparationIo {
         let hex = blake3::Hash::from_bytes(hash).to_hex();
         self.charge(encoding)?;
         crate::executor::with_history_io(Some(self), |work| {
-            crate::contract::preparation_format(format_args!("{prefix}{hex}"), work)
+            crate::executor::preparation_format(format_args!("{prefix}{hex}"), work)
         })
     }
     pub(crate) fn contains_capability<T: Serialize>(

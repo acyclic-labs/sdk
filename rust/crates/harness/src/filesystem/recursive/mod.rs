@@ -48,7 +48,7 @@ impl ForkToolArguments {
     ) -> Result<TaskId> {
         limits.validate(work)?;
         if let Some(observer) = work.as_deref_mut() {
-            observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
         if self.msg.len() as u64 > limits.file_bytes {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

@@ -2,8 +2,10 @@
 #![allow(missing_docs, reason = "private installed-binary scenario")]
 mod case;
 mod producer;
-use crate::native::{AuthorityBinding, Config, Files, ForkSourceConfig, Runtime};
-use crate::native_tools::{NativeToolCaller, NativeToolFork, NativeToolMerge};
+use crate::native::{
+    AuthorityBinding, Config, Files, ForkSourceConfig, HISTORY_LIMITS, Runtime, invalid, storage,
+};
+use crate::native_tools::{NativeToolCaller, NativeToolFork};
 use crate::native_writeback::NativePublicationConfig;
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
@@ -15,18 +17,18 @@ use acyclic_harness::{
     distributed::{WorkLease, WorkPull, Worker},
     executor::TurnOutput,
     filesystem::{
-        FORK_PREPARE_TASK_COMMAND_KIND, FilesystemContentVerifier, FilesystemForkVerifier,
-        FilesystemHost, FilesystemProjectMergeVerifier, ForkPreparationLimits, ForkToolArguments,
-        MODEL_TASK_COMMAND_KIND, ModelTaskCommand, RecursiveForkConfig, RecursiveSourceSnapshot,
-        StreamHistoryForkVerifier, fork_preparation_request, recursive_fork_source, workspace_ref,
+        ConfiguredRecursiveMerge, FORK_PREPARE_TASK_COMMAND_KIND, FilesystemHost,
+        ForkPreparationLimits, ForkToolArguments, MODEL_TASK_COMMAND_KIND, ModelTaskCommand,
+        RecursiveForkConfig, RecursiveSourceSnapshot, fork_preparation_request,
+        recursive_fork_source, workspace_ref,
     },
-    fork::{CompositeForkVerifier, ForkReport},
+    fork::ForkReport,
     model::ModelContent,
     resource_preparation::ResourcePreparationRequest,
     resources::ProviderRef,
     runtime::{RuntimeTask, TaskAdmissionRecord, TaskDefinition, TaskRunLimits, TaskStateProvider},
     scheduler::{LeaseFence, SessionLimits},
-    store::{HistoryReadLimits, StreamAggregate},
+    store::StreamAggregate,
     workflow::WorkflowCommand,
 };
 use acyclic_stream::LocalStream;
@@ -42,6 +44,11 @@ const ISSUER: &str = "graphcoder-explicit-trusted-local-qualification";
 // Public qualification authority.
 const TEST_KEY: [u8; 32] = [91; 32];
 const PAYLOAD_BYTES: u64 = crate::terminal::MAX_FRAME_BYTES as u64;
+const FORK_LIMITS: ForkPreparationLimits = ForkPreparationLimits {
+    resources: 3,
+    work: 16 * 1024 * 1024,
+    bytes: 16 * 1024 * 1024,
+};
 const COMMON_GRANTS: &[&str] = &[
     "operation:declare",
     "operation:observe",
@@ -110,36 +117,8 @@ async fn aggregate(
     owner: &AuthorityBinding,
     config: &Config,
 ) -> Result<StreamAggregate<LocalStream>> {
-    let verifier = owner.verifier()?;
-    let content = FilesystemContentVerifier::new(
-        files.clone(),
-        &verifier,
-        &owner.scope,
-        PAYLOAD_BYTES,
-        None,
-    )?;
-    let forks = CompositeForkVerifier::new(
-        &[
-            FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES, None, None)?,
-            StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?,
-        ],
-        &mut None,
-    )?;
-    let mut aggregate = StreamAggregate::open(
-        stream,
-        owner.authority.clone(),
-        verifier,
-        SchemaRegistry::new(),
-        None,
-        acyclic_harness::store::default_projection_read_limits(),
-        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
-        None,
-        &mut None,
-    )
-    .await?
-    .with_content_verifier(content)
-    .with_fork_verifier(forks)
-    .with_merge_verifier(FilesystemProjectMergeVerifier::new(files, None)?);
+    let mut aggregate =
+        crate::native::open_aggregate(stream, &files, &config.stream_provider, owner).await?;
     aggregate.set_limits(config.limits)?;
     Ok(aggregate)
 }
@@ -172,11 +151,8 @@ fn admitted_task<T: Send + 'static>(admission: Admission<RuntimeTask<T>>) -> Res
     }
 }
 async fn persist(path: &Path, value: &impl Serialize) -> Result<()> {
-    let bytes =
-        serde_json::to_vec_pretty(value).map_err(|error| Error::Invalid(error.to_string()))?;
-    tokio::fs::write(path, bytes)
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))
+    let bytes = serde_json::to_vec_pretty(value).map_err(invalid)?;
+    tokio::fs::write(path, bytes).await.map_err(storage)
 }
 
 async fn write(

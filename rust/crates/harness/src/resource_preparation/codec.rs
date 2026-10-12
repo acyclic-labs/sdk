@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    contract::{
+    executor::json::{
         JsonBounds, JsonCodecCharge, JsonValueSchema, canonical_json_digest as digest,
         json_from_value_bounded as from_value, json_typed_value_decode_owned_bytes as allowance,
     },

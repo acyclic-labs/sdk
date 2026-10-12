@@ -45,8 +45,8 @@ impl PreparationRecord for CommandResults {
         crate::filesystem::default_tools::recursive_decode_slot_bytes::<Self>()
             + std::mem::size_of::<CommandResult>() as u64
     }
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::ForkPreparationCommandResults
+    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::ForkPreparationCommandResults
     }
 }
 
@@ -105,7 +105,7 @@ impl ForkPreparationMachine {
             &State::Ready {
                 command,
                 request_digest: crate::executor::with_history_io(io, |work| {
-                    crate::contract::canonical_json_digest(&request.payload, u64::MAX, work)
+                    crate::executor::json::canonical_json_digest(&request.payload, u64::MAX, work)
                 })?,
             },
             io,
@@ -163,7 +163,7 @@ impl ForkPreparationMachine {
                         crate::executor::with_history_io(io, |work| report.validate(work))?;
                         if report.request.operation_id != operation_id
                             || crate::executor::with_history_io(io, |work| {
-                                crate::contract::canonical_json_digest(
+                                crate::executor::json::canonical_json_digest(
                                     &report.request,
                                     u64::MAX,
                                     work,

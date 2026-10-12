@@ -32,25 +32,46 @@ impl NativeMcpHttpProvider {
             }
             let method = reqwest::Method::from_bytes(request.method.as_bytes())
                 .map_err(|e| Error::Invalid(e.to_string()))?;
-            let mut builder = self.0.request(method, &request.endpoint)
+            let mut builder = self
+                .0
+                .request(method, &request.endpoint)
                 .timeout(Duration::from_millis(u64::from(request.timeout_ms)))
                 .body(request.body);
-            for (key, value) in request.headers { builder = builder.header(key, value); }
-            if let Some(bearer) = bearer { builder = builder.header(reqwest::header::AUTHORIZATION, bearer); }
-            let response = builder.send().await.map_err(|_| Error::Indeterminate(operation))?;
+            for (key, value) in request.headers {
+                builder = builder.header(key, value);
+            }
+            if let Some(bearer) = bearer {
+                builder = builder.header(reqwest::header::AUTHORIZATION, bearer);
+            }
+            let response = builder
+                .send()
+                .await
+                .map_err(|_| Error::Indeterminate(operation))?;
             let status = response.status().as_u16();
-            let headers = response.headers().iter().map(|(key, value)| {
-                value.to_str().map(|value| (key.as_str().to_owned(), value.to_owned()))
-                    .map_err(|e| Error::Invalid(e.to_string()))
-            }).collect::<Result<_>>()?;
+            let headers = response
+                .headers()
+                .iter()
+                .map(|(key, value)| {
+                    value
+                        .to_str()
+                        .map(|value| (key.as_str().to_owned(), value.to_owned()))
+                        .map_err(|e| Error::Invalid(e.to_string()))
+                })
+                .collect::<Result<_>>()?;
             let mut received = 0_usize;
             let body = response.bytes_stream().map(move |chunk| {
                 let chunk = chunk.map_err(|_| Error::Indeterminate(operation))?;
                 received = received.saturating_add(chunk.len());
-                if received as u64 > u64::from(request.maximum_response_bytes) { return Err(Error::Indeterminate(operation)); }
+                if received as u64 > u64::from(request.maximum_response_bytes) {
+                    return Err(Error::Indeterminate(operation));
+                }
                 Ok(chunk)
             });
-            Ok(McpHttpResponse { status, headers, body: Box::pin(body) })
+            Ok(McpHttpResponse {
+                status,
+                headers,
+                body: Box::pin(body),
+            })
         })
     }
 }
@@ -185,12 +206,13 @@ mod tests {
                 Some("session".into()),
                 8192,
                 1000,
+                None,
             )?;
             let result = transport.call(operation, "echo", json!({}), None).await;
             assert!(transport.reconcile(operation, None).await?.is_none());
             server.await.map_err(|e| Error::Storage(e.to_string()))??;
             if matches!(mode, "json" | "sse") {
-                assert_eq!(result?.content[0]["text"], "local");
+                assert_eq!(result?["content"][0]["text"], "local");
             } else {
                 assert!(matches!(result, Err(Error::Indeterminate(_))));
             }

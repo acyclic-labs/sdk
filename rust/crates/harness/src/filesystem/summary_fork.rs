@@ -30,13 +30,13 @@ pub(super) fn summary_keys(
 ) -> Result<[IdempotencyKey; 2]> {
     Ok([
         IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!("{}:summary-payloads", key.as_str()),
                 work,
             )
         })?)?,
         IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!("{}:summary-context", key.as_str()),
                 work,
             )
@@ -61,7 +61,7 @@ pub(super) fn split_references<'a>(
         .chain(prepared.context().metadata.values())
     {
         let key = crate::executor::with_history_io(io, |work| {
-            crate::contract::canonical_json_digest(file, u64::MAX, work)
+            crate::executor::json::canonical_json_digest(file, u64::MAX, work)
         })?;
         let selected = if crate::conversation::is_internal_path(file.path())
             && !crate::conversation::is_inherited_context_path(file.path())
@@ -102,7 +102,7 @@ fn rewritten_context(
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         if let Some(copy) = replacements.get(&crate::executor::with_history_io(io, |work| {
-            crate::contract::canonical_json_digest(file, u64::MAX, work)
+            crate::executor::json::canonical_json_digest(file, u64::MAX, work)
         })?) {
             let retired_bytes = io.map(|_| file.logical_owned_bytes()).transpose()?;
             let copy = crate::executor::with_history_io(io, |work| copy.copy(work))?;
@@ -178,7 +178,7 @@ fn copy_references(
         }
         let encoded = fork_preparer_io::hex_key(key, io)?;
         let path = crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!(".system/inherited-conversation/summary-payloads/{encoded}"),
                 work,
             )
@@ -514,7 +514,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 let encoded = fork_preparer_io::hex_key(key, io)?;
                 writes.push(WorkspaceMutation::PutFile {
                     path: crate::executor::with_history_io(io, |work| {
-                        crate::contract::preparation_format(
+                        crate::executor::preparation_format(
                             format_args!(
                                 "/.system/inherited-conversation/summary-payloads/{encoded}"
                             ),

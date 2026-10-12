@@ -69,7 +69,7 @@ fn canonical_admission<'de, D: serde::Deserializer<'de>>(
 }
 
 /// An explicit read-only Project import and its canonical notice.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfiguredRecursiveMerge {
     pub caller: TaskId,

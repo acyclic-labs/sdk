@@ -11,12 +11,6 @@ fn publication(scheduler: &Scheduler, outcome: Outcome<FileRef>) -> SchedulerEve
     }
 }
 
-fn rejected(scheduler: &mut Scheduler, event: &SchedulerEvent) {
-    let before = scheduler.clone();
-    assert!(scheduler.apply(event, &mut None).is_err());
-    assert_eq!(*scheduler, before);
-}
-
 #[test]
 fn join_slot_order_survives_reversed_completion_and_rejects_swapped_digest() -> Result<()> {
     let mut scheduler = two_slot_parent(Orchestration::Join)?;

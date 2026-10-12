@@ -4,14 +4,14 @@ use crate::materializer::NativeWorkReservation;
 
 #[derive(Default)]
 pub(super) struct Observers {
-    pub(super) entries: Vec<(Weak<dyn ViewObserver>, Option<NativeMountAllocationCustody>)>,
-    custody: Option<NativeMountAllocationCustody>,
+    pub(super) entries: Vec<(Weak<dyn ViewObserver>, Option<std::sync::Arc<NativeMountAllocationCustody>>)>,
+    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
     pending: Option<PendingNotification>,
 }
 
 struct PendingNotification {
     live: Vec<Arc<dyn ViewObserver>>,
-    custody: Option<NativeMountAllocationCustody>,
+    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
     completion: NativeWorkReservation,
 }
 
@@ -33,24 +33,13 @@ impl Drop for PreparedEverythingNotification {
 }
 
 impl Observers {
-    pub(super) fn work(&self) -> Result<crate::WorkCounters, MountSourceError> {
-        let count = self.entries.len() as u64;
-        Ok(crate::WorkCounters {
-            items_examined: count.checked_mul(2).ok_or(crate::WorkError::Overflow)?,
-            bytes_copied: count
-                .checked_mul(std::mem::size_of::<Arc<dyn ViewObserver>>() as u64)
-                .ok_or(crate::WorkError::Overflow)?,
-            ..crate::WorkCounters::UNCHARGED
-        })
-    }
-
     pub(super) fn live(
         &self,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<
         (
             Vec<Arc<dyn ViewObserver>>,
-            Option<NativeMountAllocationCustody>,
+            Option<std::sync::Arc<NativeMountAllocationCustody>>,
         ),
         MountSourceError,
     > {
@@ -92,14 +81,13 @@ impl ViewLedger {
             .pending
             .as_ref()
             .map(|pending| {
-                pending.completion.work().reserve_work(crate::WorkCounters {
-                    items_examined: 2,
-                    bytes_copied: std::mem::size_of::<Arc<dyn ViewObserver>>() as u64,
-                    ..crate::WorkCounters::UNCHARGED
-                })
+                pending
+                    .completion
+                    .work()
+                    .reserve_work(notification_work(1)?)
+                    .map_err(MountSourceError::NativeWork)
             })
-            .transpose()
-            .map_err(MountSourceError::NativeWork)?;
+            .transpose()?;
         storage::charge(carrier, scan_work(hub.entries.len() as u64))?;
         hub.entries
             .retain(|(observer, _)| observer.strong_count() != 0);
@@ -129,7 +117,7 @@ impl ViewLedger {
             carrier,
             copy_work(std::mem::size_of::<(
                 Weak<dyn ViewObserver>,
-                Option<NativeMountAllocationCustody>,
+                Option<std::sync::Arc<NativeMountAllocationCustody>>,
             )>() as u64),
         )?;
         if let Some(pending) = &mut hub.pending {
@@ -160,7 +148,7 @@ impl ViewLedger {
         hub.entries
             .retain(|(observer, _)| observer.strong_count() != 0);
         let completion = original
-            .reserve_work(hub.work()?)
+            .reserve_work(notification_work(hub.entries.len() as u64)?)
             .map_err(MountSourceError::NativeWork)?;
         let (live, custody) = storage::vector(
             hub.entries.len(),
@@ -215,4 +203,14 @@ impl PreparedEverythingNotification {
             observer.view_changed(position, ViewOrigin::current());
         }
     }
+}
+
+fn notification_work(count: u64) -> Result<crate::WorkCounters, MountSourceError> {
+    Ok(crate::WorkCounters {
+        items_examined: count.checked_mul(2).ok_or(crate::WorkError::Overflow)?,
+        bytes_copied: count
+            .checked_mul(std::mem::size_of::<Arc<dyn ViewObserver>>() as u64)
+            .ok_or(crate::WorkError::Overflow)?,
+        ..crate::WorkCounters::UNCHARGED
+    })
 }

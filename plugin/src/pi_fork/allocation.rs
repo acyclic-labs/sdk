@@ -134,9 +134,9 @@ impl<'a> PiForkCoordinator<'a> {
                 work,
             )?;
             let parent_verifier = {
-                let mut io = native_work_io(work)?;
+                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                 let value = parent_authority.0.1.verifier(&mut Some(&mut io))?;
-                (value, io.into_custody())
+                (value, io.into_custody()?)
             };
             let child_authority = self.owner.conversation_authority_with_native_work(
                 plan.request.child.task_id(),
@@ -145,9 +145,9 @@ impl<'a> PiForkCoordinator<'a> {
                 work,
             )?;
             let child_verifier = {
-                let mut io = native_work_io(work)?;
+                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                 let value = child_authority.0.1.verifier(&mut Some(&mut io))?;
-                (value, io.into_custody())
+                (value, io.into_custody()?)
             };
             let parent = acyclic_harness::store::HistoryReader::new_with_native_work(
                 &self.stream,
@@ -199,7 +199,7 @@ impl<'a> PiForkCoordinator<'a> {
         cancel: &CancellationToken,
     ) -> Result<()> {
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         {
             let work = &self.work;
@@ -209,13 +209,13 @@ impl<'a> PiForkCoordinator<'a> {
                 FORK_PLAN_DIAGNOSTIC_LABEL_BYTES,
             )?;
             let name = {
-                let mut io = native_work_io(work)?;
+                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                 let value = request
                     .0
                     .preparation
                     .child_project_volume
                     .storage_name(&mut Some(&mut io))?;
-                (value, io.into_custody())
+                (value, io.into_custody()?)
             };
             let prepared = source
                 .prepare_fork_snapshot_with_native_work(
@@ -234,7 +234,7 @@ impl<'a> PiForkCoordinator<'a> {
                 });
             }
             (owner)
-                .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
                 .await?;
             return Ok(());
         }
@@ -309,7 +309,7 @@ impl<'a> PiForkCoordinator<'a> {
             )
             .await?;
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         let snapshot = Snapshot::decode_with_native_work(
             checkpoint.as_ref(),
@@ -324,9 +324,9 @@ impl<'a> PiForkCoordinator<'a> {
             });
         }
         let verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let reducer = Reducer::restore_native(snapshot, verifier.0, SchemaRegistry::new(), work)?;
         let source_read = match &request.0.authorized_source {
@@ -347,9 +347,9 @@ impl<'a> PiForkCoordinator<'a> {
             Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
         )?;
         let verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let provider = acyclic_harness::resources::ProviderRef::new_with_native_work(
             "local", "stream", "1", work,
@@ -381,7 +381,7 @@ impl<'a> PiForkCoordinator<'a> {
             });
         }
         (owner)
-            .verify(false, &mut Some(&mut native_work_io(&self.work)?))
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         Ok(preparer)
     }

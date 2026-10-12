@@ -106,7 +106,7 @@ impl ToolDefinition {
             &self.output_schema,
             &self.projection_schema,
         ] {
-            crate::contract::compile_json_schema(schema, "tool", work)?;
+            crate::executor::compile_json_schema(schema, "tool", work)?;
         }
         Ok(())
     }
@@ -117,7 +117,7 @@ impl ToolDefinition {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() {
-            io.codec_charge(crate::contract::JsonCodecCharge::Work {
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                 bytes: 0,
                 items: (name.len() as u64)
                     .saturating_add(revision.len() as u64)
@@ -158,7 +158,7 @@ impl ToolDefinition {
             && let Some(work) = io.original_native_work()
         {
             let decode = crate::filesystem::PreparationIo::from_native_work(work)?;
-            crate::executor::with_history_io(Some(&decode), |work| crate::contract::validate_json_schema_value(&self.projection_schema, value, "tool projection", work))?;
+            crate::executor::with_history_io(Some(&decode), |work| crate::executor::validate_json_schema_value(&self.projection_schema, value, "tool projection", work))?;
             let content: crate::model::ToolResultContent =
                 decode.value_decode(value, crate::wire::ErrorCode::Invalid)?;
             crate::executor::with_history_io(Some(&decode), |work| {
@@ -168,7 +168,7 @@ impl ToolDefinition {
             io.absorb_native_custody(decode.into_native_custody(retained)?)?;
             return Ok(content);
         }
-        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&self.projection_schema, value, "tool projection", work))?;
+        crate::executor::with_history_io(io, |work| crate::executor::validate_json_schema_value(&self.projection_schema, value, "tool projection", work))?;
         let content = crate::model::ToolResultContent::deserialize(value).map_err(|error| {
             Error::Invalid(format!("tool projection envelope is invalid: {error}"))
         })?;
@@ -179,7 +179,7 @@ impl ToolDefinition {
     /// Immutable approval identity for the exact model-visible definition.
     pub fn digest(&self) -> Result<[u8; 32]> {
         self.validate(&mut None)?;
-        crate::contract::canonical_json_digest(self, u64::MAX, &mut None)
+        crate::executor::json::canonical_json_digest(self, u64::MAX, &mut None)
     }
 }
 
@@ -219,7 +219,7 @@ impl crate::filesystem::UploadRecord for ToolDefinition {
             &self.projection_schema,
         ] {
             bytes = bytes
-                .checked_add(crate::contract::json_value_logical_owned_bytes(value)?)
+                .checked_add(crate::executor::json::json_value_logical_owned_bytes(value)?)
                 .ok_or(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Invalid,
                     reason: "tool definition schema ownership overflow",

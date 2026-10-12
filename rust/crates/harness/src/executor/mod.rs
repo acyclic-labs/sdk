@@ -28,7 +28,7 @@ use std::sync::Arc;
 mod headless;
 mod native_stock;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use native_stock::NativeStockExecutor;
+pub(crate) use native_stock::NativeStockExecutor;
 use native_stock::*;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use native_stock::{
@@ -511,3 +511,9 @@ pub(crate) struct ModelEventAdmission {
 
 #[cfg(test)]
 mod tests;
+
+mod validation;
+pub(crate) use validation::{compile_json_schema, preparation_format, validate_json_schema_value};
+
+/// Bounded JSON shared by the existing IO adapters.
+pub mod json;

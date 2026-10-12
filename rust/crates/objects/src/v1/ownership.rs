@@ -160,7 +160,7 @@ pub(crate) fn native_input_meter<T>(
 #[cfg(not(target_arch = "wasm32"))]
 pub struct ObjectsNativeRequest<T> {
     pub(crate) data: T,
-    guard: Box<dyn Send + Sync>,
+    _guard: Box<dyn Send + Sync>,
     allocation: acyclic_native_runtime::ReadAllocation,
 }
 
@@ -182,7 +182,7 @@ impl<T> ObjectsNativeRequest<T> {
         let (data, guard) = request;
         Ok(Self {
             data,
-            guard: Box::new(guard),
+            _guard: Box::new(guard),
             allocation,
         })
     }
@@ -190,18 +190,5 @@ impl<T> ObjectsNativeRequest<T> {
     /// Borrows request data without detaching its original ownership.
     pub const fn data(&self) -> &T {
         &self.data
-    }
-
-    pub(crate) fn map<U>(self, map: impl FnOnce(T) -> U) -> ObjectsNativeRequest<U> {
-        let Self {
-            data,
-            guard,
-            allocation,
-        } = self;
-        ObjectsNativeRequest {
-            data: map(data),
-            guard,
-            allocation,
-        }
     }
 }

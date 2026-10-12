@@ -305,7 +305,7 @@ pub(in crate::filesystem) fn fork_request(
         None => stream_provider.clone(),
     };
     let version = crate::executor::with_history_io(io, |work| {
-        crate::contract::preparation_format(format_args!("{}", parent.revision()), work)
+        crate::executor::preparation_format(format_args!("{}", parent.revision()), work)
     })?;
     let reference = crate::executor::with_history_io(io, |work| {
         StreamRef::from_resource_with_work(

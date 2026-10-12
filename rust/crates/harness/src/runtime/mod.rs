@@ -44,10 +44,8 @@ use std::{
     },
 };
 /// Default number of direct children requested by the SDK facade.
-
 pub const DEFAULT_CHILD_PAGE: usize = 256;
 /// Default number of entries requested by the private-directory SDK facade.
-
 pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_context;
@@ -81,15 +79,14 @@ pub use tools::*;
 mod dependencies;
 pub use dependencies::*;
 mod children;
-pub use children::*;
+pub(crate) use children::*;
 mod context_open;
-pub use context_open::*;
+pub(crate) use context_open::*;
 mod admission_execution;
 mod fork_binding;
 mod host_binding;
 mod reattachment;
 mod startup;
-pub use reattachment::*;
 mod task_context;
 pub use task_context::*;
 mod content_read;

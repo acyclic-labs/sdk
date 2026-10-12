@@ -169,7 +169,11 @@ impl TaskContext {
                 "task context metadata custody differs from its original source",
             ));
         }
-        let mut slot = match work.claim(0, 1, WorkCounters::UNCHARGED) {
+        let mut slot = match work.claim(
+            (2 * std::mem::size_of::<usize>()) as u64,
+            1,
+            WorkCounters::UNCHARGED,
+        ) {
             Ok(slot) => slot,
             Err(cause) => {
                 drop(self);
@@ -299,12 +303,8 @@ impl TaskContext {
             owned_interactions: self.owned_interactions.clone(),
             owned_mailbox: self.owned_mailbox.clone(),
             output_content: Some(binding.clone()),
-            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            native_root_output: self.native_root_output.clone(),
             model_steps: Arc::clone(&self.model_steps),
             native_metadata_source: None,
-            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            working_view: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         };
@@ -319,115 +319,7 @@ impl TaskContext {
             .as_mut()
             .expect("projected native metadata source")
             .purpose = purpose;
-        let projected = context.into_native_shared(custody, work)?;
-        #[cfg(feature = "native-execution")]
-        if let Some(view) = self.working_view.get() {
-            let _ = projected.working_view.set(Arc::clone(view));
-        }
-        Ok(projected)
-    }
-
-    /// Attaches one genuinely prepared working view to its original issued dispatch context.
-    #[cfg(feature = "native-execution")]
-    pub async fn bind_working_view_with_native_work(
-        &self,
-        view: Arc<dyn crate::filesystem::NativeTaskWorkingView>,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        if !self.native_metadata_matches(work) {
-            return Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "task context has no original shared metadata custody",
-            ));
-        }
-
-        self.require_original_native_dispatch(work)?;
-        let (task, fence) = self.owned_task_binding_with_native_work(work)?;
-        if view.task_binding() != (task, fence)
-            || !view.original_native_work().shares_allocation_context(work)
-        {
-            return Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "working view differs from its original issued task",
-            ));
-        }
-        if self
-            .working_view
-            .get()
-            .is_some_and(|installed| !installed.same_identity(view.as_ref()))
-        {
-            return Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "working view cannot be rebound to a different preparation",
-            ));
-        }
-        view.verify_with_native_work(work)?.await?;
-        if self.working_view.get().is_some() {
-            return Ok(());
-        }
-        match self.working_view.set(view) {
-            Ok(()) => Ok(()),
-            Err(loser) => {
-                let same = self
-                    .working_view
-                    .get()
-                    .is_some_and(|winner| winner.same_identity(loser.as_ref()));
-                drop(loser);
-                if same {
-                    Ok(())
-                } else {
-                    Err(boundary(
-                        crate::wire::ErrorCode::Unauthorized,
-                        "working view lost installation to a different preparation",
-                    ))
-                }
-            }
-        }
-    }
-
-    /// Installs the original SDK-created root result destination once on this same issued context.
-    #[cfg(feature = "native-execution")]
-    pub async fn bind_root_output_context_with_native_work(
-        &self,
-        source: Arc<crate::filesystem::NativeRootOutputSource>,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        if !self.native_metadata_matches(work) {
-            return Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "task context has no original shared metadata custody",
-            ));
-        }
-
-        self.require_original_native_dispatch(work)?;
-        let installed = self.native_root_output.get();
-        if installed.is_some_and(|installed| !installed.0.same_identity(&source)) {
-            return Err(boundary(
-                crate::wire::ErrorCode::Conflict,
-                "root result destination differs from its original binding",
-            ));
-        }
-        source.verify_context_with_native_work(self, work).await?;
-        if installed.is_some() {
-            return Ok(());
-        }
-        let source = source.into_native_shared(work)?;
-        let content = source.retained_content_binding();
-        let binding = (source, content);
-        if let Err(binding) = self.native_root_output.set(binding) {
-            if self
-                .native_root_output
-                .get()
-                .is_some_and(|installed| installed.0.same_identity(&binding.0))
-            {
-                return Ok(());
-            }
-            return Err(boundary(
-                crate::wire::ErrorCode::Conflict,
-                "root result destination was bound to another original resource",
-            ));
-        }
-        Ok(())
+        context.into_native_shared(custody, work)
     }
 
     /// Borrows the original metadata ledger without granting resource authority.
@@ -520,155 +412,6 @@ impl ToolContext {
         })
     }
 
-    #[cfg(feature = "native-execution")]
-    fn accepted_native_working_view(
-        &self,
-        work: &NativeMaterializationWork,
-    ) -> Result<(&TaskContext, &dyn crate::filesystem::NativeTaskWorkingView)> {
-        let context = self.accepted_native_context(work)?;
-        let shared = self
-            .native_task()
-            .expect("validated original native tool context");
-        let view = shared.working_view.get().ok_or_else(|| {
-            boundary(
-                crate::wire::ErrorCode::NotFound,
-                "issued task has no prepared working view",
-            )
-        })?;
-        let (task, fence) = view.task_binding();
-        if !context.original_task_binding_matches(task, fence)
-            || !view.original_native_work().shares_allocation_context(work)
-        {
-            return Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "working metadata differs from the original issued task",
-            ));
-        }
-        Ok((context, view.as_ref()))
-    }
-
-    /// Borrows only the actual protected mount metadata before normalization.
-    #[cfg(feature = "native-execution")]
-    pub fn native_working_manifest_with_native_work(
-        &self,
-        work: &NativeMaterializationWork,
-    ) -> Result<&crate::filesystem::NativeViewManifest> {
-        self.accepted_native_working_view(work)
-            .map(|(_, view)| view.manifest())
-    }
-
-    #[cfg(feature = "native-execution")]
-    fn check_native_working_permission(
-        &self,
-        view: &dyn crate::filesystem::NativeTaskWorkingView,
-        relative: &std::path::Path,
-        operation: crate::conversation::VolumeOperation,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        let volume = view.volume_for_builtin_path(relative, operation, work)?;
-        let mut permission_io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(work)?,
-        );
-        let permission = volume.capability(operation, &mut Some(&mut permission_io))?;
-        let allowed = self.effective_scope().grants().contains(&permission);
-        drop(permission);
-        drop(permission_io);
-        if allowed {
-            Ok(())
-        } else {
-            Err(boundary(
-                crate::wire::ErrorCode::Unauthorized,
-                "effective tool scope cannot access the selected mounted volume",
-            ))
-        }
-    }
-
-    /// Borrows the original held namespace only inside an accepted tool callback.
-    #[cfg(feature = "native-execution")]
-    pub(crate) async fn native_working_view_with_native_work<'a>(
-        &'a self,
-        relative: &'a std::path::Path,
-        operation: crate::conversation::VolumeOperation,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<&'a dyn crate::filesystem::NativeTaskWorkingView> {
-        let (context, view) = self.accepted_native_working_view(work)?;
-        self.check_native_working_permission(view, relative, operation, work)?;
-        context
-            .verify_original_execution_owner_with_native_work(work)?
-            .await?;
-        view.verify_with_native_work(work)?.await?;
-        Ok(view)
-    }
-
-    /// Checks the accepted action's path and effective permission.
-    #[cfg(feature = "native-execution")]
-    pub async fn authorize_working_file_with_native_work(
-        &self,
-        relative: &std::path::Path,
-        operation: crate::conversation::VolumeOperation,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        self.native_working_view_with_native_work(relative, operation, work)
-            .await?;
-        Ok(())
-    }
-
-    /// Reads the held selection under this invocation's effective scope.
-    #[cfg(feature = "native-execution")]
-    pub async fn read_working_file_with_native_work(
-        &self,
-        relative: &std::path::Path,
-        maximum: usize,
-        work: &NativeMaterializationWork,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        let view = self
-            .native_working_view_with_native_work(
-                relative,
-                crate::conversation::VolumeOperation::Read,
-                work,
-            )
-            .await?;
-        view.read_builtin_file(self.operation_id, relative, maximum, work)?
-            .await
-    }
-
-    /// Mutates only the same selected held path after effective WRITE checks.
-    #[cfg(feature = "native-execution")]
-    pub async fn write_working_file_with_native_work(
-        &self,
-        relative: &std::path::Path,
-        content: &str,
-        create_parents: bool,
-        expected_sha256: Option<[u8; 32]>,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        if expected_sha256.is_some() {
-            let (_, view) = self.accepted_native_working_view(work)?;
-            self.check_native_working_permission(
-                view,
-                relative,
-                crate::conversation::VolumeOperation::Read,
-                work,
-            )?;
-        }
-        let view = self
-            .native_working_view_with_native_work(
-                relative,
-                crate::conversation::VolumeOperation::Write,
-                work,
-            )
-            .await?;
-        view.write_builtin_file(
-            self.operation_id,
-            relative,
-            content,
-            create_parents,
-            expected_sha256,
-            work,
-        )?
-        .await
-    }
-
     /// Checks stock restrictions against the effective scope.
     pub(crate) fn validate_stock_scope_with_native_work(
         &self,
@@ -695,7 +438,7 @@ impl ToolContext {
     ) -> Result<Self> {
         self.validate_stock_scope_with_native_work(requested, execution_limits, work)?;
         let original = self.effective_scope();
-        let grants = requested.grants.clone_with_native_work(work)?;
+        let grants = crate::Capabilities::copy(requested.grants.iter(), work)?;
         let mut narrowed = original.narrow_with_native_work(grants, execution_limits, work)?;
         narrowed.0 = narrowed.0.with_run_limits(
             requested.run_limits,

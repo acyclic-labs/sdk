@@ -1,7 +1,6 @@
 use super::*;
 
 /// Task-local execution bounds pinned separately from content/render limits.
-
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskRunLimits {
@@ -85,7 +84,6 @@ impl TaskRunLimits {
 }
 
 /// Effective runtime authority and bounds; child scopes may only narrow them.
-
 #[derive(Default)]
 pub struct RuntimeScope {
     pub(super) grants: Capabilities,
@@ -233,7 +231,7 @@ impl RuntimeScope {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let grants = self.grants.clone_with_native_work(work)?;
+        let grants = crate::Capabilities::copy(self.grants.iter(), work)?;
         self.clone_native_metadata(grants, self.limits, self.extensions_sealed, work)
     }
 
@@ -262,7 +260,7 @@ impl RuntimeScope {
                 .work()
                 .as_deref_mut()
                 .expect("proof vector copy observer")
-                .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                .codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             let (copied, retained) = proof.copy(quota.work())?;
             quota.adopt(retained)?;
             Ok(copied)
@@ -514,7 +512,7 @@ impl RuntimeScope {
         }
         for grant in admission.grants.iter() {
             if let Some(io) = work.as_deref_mut() {
-                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             if !self.grants.contains(grant)
                 && !access

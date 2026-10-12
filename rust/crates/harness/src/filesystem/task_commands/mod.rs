@@ -36,8 +36,8 @@ use tool::was_dispatched;
 macro_rules! command_record {
     ($($record:ty $(=> $schema:ident)?),+ $(,)?) => {
         $(impl super::PreparationRecord for $record {
-            $(fn json_value_schema() -> crate::contract::JsonValueSchema {
-                crate::contract::JsonValueSchema::$schema
+            $(fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+                crate::executor::json::JsonValueSchema::$schema
             })?
         })+
     };
@@ -433,7 +433,7 @@ fn tool_invocation(
 ) -> Result<ToolInvocation> {
     let grant_hold;
     let grant = crate::executor::with_history_io(io, |work| {
-        crate::contract::preparation_format(format_args!("tool:call:{}", definition.name), work)
+        crate::executor::preparation_format(format_args!("tool:call:{}", definition.name), work)
     })?;
     grant_hold = io
         .map(|io| io.guard_owned(grant.capacity() as u64))
@@ -448,7 +448,7 @@ fn tool_invocation(
     drop(grant);
     drop(grant_hold);
     crate::executor::with_history_io(io, |work| {
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &definition.input_schema,
             &arguments,
             "tool input",
@@ -461,7 +461,7 @@ fn tool_invocation(
     let invocation = ToolInvocation {
         operation_id: operation,
         call_id: crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(format_args!("{operation}"), work)
+            crate::executor::preparation_format(format_args!("{operation}"), work)
         })?,
         name: crate::executor::stock_string_copy(&definition.name, io)?,
         arguments,

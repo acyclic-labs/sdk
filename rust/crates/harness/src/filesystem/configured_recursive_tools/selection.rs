@@ -232,7 +232,7 @@ where
             }
             let chosen = self.caller(selected, io)?;
             if let Some(value) = &chosen.native_snapshot {
-                crate::contract::json_byte_length(
+                crate::executor::json::json_byte_length(
                     value,
                     context.scope().limits().file_bytes,
                     &mut None,

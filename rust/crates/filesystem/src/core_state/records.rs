@@ -376,11 +376,6 @@ pub(super) fn write_journaled<T: Serialize>(
         .allocation
         .as_ref()
         .map(|allocation| allocation.work());
-    let bytes = if work.is_none() {
-        Some(serde_json::to_vec(value)?)
-    } else {
-        None
-    };
     let file = match work {
         Some(work) => {
             let file = materialization_open_options(
@@ -402,10 +397,7 @@ pub(super) fn write_journaled<T: Serialize>(
         work,
         encoded: true,
     };
-    match bytes {
-        Some(bytes) => temporary.write_all(&bytes)?,
-        None => serde_json::to_writer(&mut temporary, value)?,
-    }
+    serde_json::to_writer(&mut temporary, value)?;
     match work {
         Some(work) => crate::native_host::sync_file_held(&temporary.file, &mut &*work)?,
         None => temporary.file.sync_all()?,

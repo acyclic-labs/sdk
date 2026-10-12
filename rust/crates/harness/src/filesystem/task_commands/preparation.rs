@@ -300,8 +300,8 @@ where
                             "native child requires original work",
                         )
                     })?;
-                    let bytes = (std::mem::size_of::<Value>() as u64)
-                        .checked_add(crate::contract::json_value_logical_owned_bytes(
+                    let input_bytes = (std::mem::size_of::<Value>() as u64)
+                        .checked_add(crate::executor::json::json_value_logical_owned_bytes(
                             &input.input,
                         )?)
                         .ok_or_else(|| {
@@ -311,7 +311,7 @@ where
                                 "child input ownership overflow",
                             )
                         })?;
-                    let custody = io.take_native_custody(bytes)?;
+                    let custody = io.take_native_custody(input_bytes)?;
                     let (admission, custody) = self
                         .runtime
                         .harness()
