@@ -25,9 +25,10 @@ All tools take an empty object:
 | --- | --- |
 | `identity_login` | Start device approval and return the URL and user code immediately. |
 | `identity_login_complete` | Wait for approval of the pending login, then save the session. |
+| `identity_signup` | Generate an Ed25519 key and solve hashcash for an agent registration; requires new or pending agent credentials. |
 | `identity_whoami` | Read the current identity, refreshing expired access automatically. |
 | `identity_orgs` | Read visible organizations, refreshing expired access automatically. |
-| `identity_refresh` | Rotate the stored refresh token. |
+| `identity_refresh` | Rotate the session refresh token or renew an agent-only certificate with its key. |
 
 Relay the approval URL and code to the user between the two login calls.
 Device codes remain inside the MCP process. Pending approvals are scoped to
@@ -40,6 +41,11 @@ including refreshes started by identity and organization reads. Oversized input
 frames and output errors also drain dispatched exchanges before returning the
 transport error. Credential locking and rotation use the same
 implementation as the CLI.
+
+Agent registration returns the created user and org identifiers and public
+certificate. Identity and org reads require OAuth device login, which upgrades
+an existing agent with a signed request. Signup preserves a pending private
+key if the server outcome is ambiguous; see [the API contract](identity-api.md).
 
 Successful tools return text JSON plus `structuredContent`. API failures are
 tool results with `isError: true`; unknown tools and invalid arguments are

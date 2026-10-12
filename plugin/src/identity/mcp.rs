@@ -139,14 +139,26 @@ impl Server {
                         return Err(error);
                     }
                 };
-                let session = store.write(&self.identity.endpoint, session);
+                let session = store.complete_login(&self.identity.endpoint, session, device);
                 self.pending = None;
                 let session = session?;
                 Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
             }
+            "identity_signup" if self.pending.is_some() => Err(Error::new(
+                "login_pending",
+                "complete the pending login before signup",
+            )),
+            "identity_signup" => self.identity.signup(&store).await,
             "identity_whoami" => self.identity.get(&store, "/v1/identity/session").await,
             "identity_orgs" => self.identity.get(&store, "/v1/identity/orgs").await,
             "identity_refresh" => {
+                if store
+                    .credentials(&self.identity.endpoint)?
+                    .session
+                    .is_none()
+                {
+                    return self.identity.renew_agent(&store).await;
+                }
                 let session = store.read(&self.identity.endpoint)?;
                 let session = self.identity.refresh(&store, &session).await?;
                 Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
@@ -164,9 +176,10 @@ fn tools() -> Vec<Value> {
     [
         ("identity_login", "Start device login. Show the returned URL and code to the user, then call identity_login_complete."),
         ("identity_login_complete", "Wait for device approval and save the session started by identity_login."),
+        ("identity_signup", "Create a tiny-tier agent identity using Ed25519 and hashcash; accepts new or pending agent credentials."),
         ("identity_whoami", "Show the current signed-in identity; refresh expired access automatically."),
         ("identity_orgs", "List organizations visible to the signed-in identity."),
-        ("identity_refresh", "Rotate the stored session refresh token."),
+        ("identity_refresh", "Rotate the stored session refresh token or renew the agent certificate."),
     ].iter().map(|(name, description)| json!({"name": name, "description": description,
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
         "annotations": {"readOnlyHint": false, "destructiveHint": false,
@@ -368,6 +381,7 @@ mod tests {
             json: true,
             endpoint: "https://example.test".to_owned(),
             credentials: path,
+            agent: false,
         })
         .expect("server")
     }
@@ -408,7 +422,7 @@ mod tests {
                 .and_then(Value::as_array)
                 .expect("tools")
                 .len(),
-            5
+            6
         );
         let unknown = server
             .request(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -460,6 +474,23 @@ mod tests {
         .expect("device");
         server.pending = Some((device, tokio::time::Instant::now()));
         server.initialized = true;
+    }
+
+    #[tokio::test]
+    async fn signup_is_rejected_while_device_approval_is_pending() {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut server = server(directory.path().join("identity.json"));
+        pending(&mut server);
+        assert_eq!(
+            server
+                .call("identity_signup")
+                .await
+                .expect_err("pending login")
+                .code,
+            "login_pending"
+        );
+        assert!(server.pending.is_some());
+        assert!(!server.credentials.exists());
     }
 
     #[tokio::test]

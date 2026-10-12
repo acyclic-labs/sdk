@@ -209,6 +209,7 @@ async fn device_denial_and_local_expiry_are_terminal() {
         expires_in: 60,
         interval: 1,
         verifier: "test-verifier".to_owned(),
+        upgrade: None,
     };
     assert_eq!(
         fake.identity
@@ -569,5 +570,111 @@ fn credential_aliases_cannot_bypass_the_shared_lock_or_consumption() {
             .expect("reject linked original")
             .code,
         "credential_error"
+    );
+}
+
+fn agent_credentials(endpoint: &str) -> Credentials {
+    serde_json::from_value(json!({"endpoint": endpoint,
+        "session": {"access_token": "access", "refresh_token": "old-refresh", "expires_at": 0},
+        "agent": {"status": "active", "private_key": "retained-key", "registration": {
+            "user_id": "user", "org_id": "org", "key_id": "key", "account_id": "account",
+            "birth": "birth", "certificate": "certificate", "tier": "agent", "expires_at": 900}}
+    }))
+    .expect("agent credentials")
+}
+
+#[tokio::test]
+async fn failed_agent_rotation_save_preserves_key_without_spent_token() {
+    let directory = tempfile::tempdir().expect("directory");
+    let path = directory.path().join("identity.json");
+    let blocked = sidecar(&path, ".next");
+    let handler_path = path.clone();
+    let router = Router::new().fallback(move || {
+        let blocked = blocked.clone();
+        let path = handler_path.clone();
+        async move {
+            let disk: Credentials =
+                serde_json::from_slice(&fs::read(path).expect("read")).expect("credentials");
+            assert!(
+                disk.session.is_none(),
+                "token must be consumed before dispatch"
+            );
+            fs::create_dir(blocked).expect("block rotated save");
+            axum::Json(tokens("new-access", "new-refresh"))
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("serve");
+    });
+    let identity = Identity::new(&endpoint).expect("identity");
+    let store = Store::open(&path).expect("store");
+    store
+        .save(&agent_credentials(&endpoint))
+        .expect("save agent");
+    let previous = store.read(&endpoint).expect("session");
+    assert!(identity.refresh(&store, &previous).await.is_err());
+    assert_eq!(
+        store.read(&endpoint).err().expect("consumed").code,
+        "login_required"
+    );
+    let saved = fs::read_to_string(&path).expect("saved agent");
+    assert!(saved.contains("retained-key"));
+    assert!(!saved.contains("old-refresh"));
+    task.abort();
+}
+
+#[test]
+fn unsigned_login_never_upgrades_an_agent_added_after_login_started() {
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(&directory.path().join("identity.json")).expect("store");
+    let endpoint = "https://example.test";
+    store
+        .save(&agent_credentials(endpoint))
+        .expect("save agent added during approval");
+    let mut device: DeviceCode =
+        serde_json::from_value(json!({"device_code": "device", "user_code": "code",
+        "verification_uri": endpoint, "expires_in": 60, "interval": 1}))
+        .expect("device");
+    store
+        .complete_login(endpoint, session("access", "refresh", 900), &device)
+        .expect("unsigned login");
+    assert_eq!(
+        store
+            .credentials(endpoint)
+            .expect("credentials")
+            .agent
+            .expect("agent")
+            .registration()
+            .expect("registration")
+            .tier,
+        "agent"
+    );
+    device.upgrade = Some(("other-org".to_owned(), "key".to_owned()));
+    assert_eq!(
+        store
+            .complete_login(endpoint, session("access", "refresh", 900), &device)
+            .err()
+            .expect("mismatched agent")
+            .code,
+        "credentials_changed"
+    );
+    device.upgrade = Some(("org".to_owned(), "key".to_owned()));
+    store
+        .complete_login(endpoint, session("access", "refresh", 900), &device)
+        .expect("signed upgrade");
+    assert_eq!(
+        store
+            .credentials(endpoint)
+            .expect("credentials")
+            .agent
+            .expect("agent")
+            .registration()
+            .expect("registration")
+            .tier,
+        "oauth"
     );
 }
