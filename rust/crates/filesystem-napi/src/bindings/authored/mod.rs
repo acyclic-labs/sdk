@@ -101,13 +101,19 @@ impl NativeCheckout {
             .collect::<Result<Vec<_>>>()?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = Box::pin(checkout.apply_authored_transaction(
+        let future: std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = acyclic_fs::FsResult<acyclic_fs::AuthoredTransactionResult>,
+                    > + Send
+                    + '_,
+            >,
+        > = Box::pin(checkout.apply_authored_transaction(
             authored,
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
-        ))
-        .await
-        .map_err(napi_error)?;
+        ));
+        let receipt = future.await.map_err(napi_error)?;
         Ok(NativeTransactionResult {
             created_file_ids: receipt
                 .value
