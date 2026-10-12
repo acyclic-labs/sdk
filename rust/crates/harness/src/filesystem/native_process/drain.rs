@@ -95,7 +95,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         }
         crate::NativeFutureBundle::new(work, || async move {
             let mut custody = work.claim(std::mem::size_of::<NativeProcessDrainProof>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(Error::from)?;
-            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(Error::from)?;
+            cleanup_cancellation.check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled).map_err(Error::from)?;
             self.authenticate_cleanup_owner(work).await?;
             let (request, request_custody) = self.request(work).await?;
             if !same_manifest(&request.as_ref().view,
@@ -144,7 +144,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                     drop(bytes);
                 }
             }
-            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(Error::from)?;
+            cleanup_cancellation.check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled).map_err(Error::from)?;
             self.authenticate_cleanup_owner(work).await?;
             drop((request, request_custody));
             let held_view: Arc<dyn Any + Send + Sync> = view.clone();

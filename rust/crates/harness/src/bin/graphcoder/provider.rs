@@ -113,6 +113,11 @@ impl Deterministic {
         ledger.file.sync_all().map_err(io_error)?;
         ledger.bytes = next_bytes;
         ledger.records += 1;
+        drop(ledger);
+        if phase == "generate" && self.delay_ms > 0 {
+            eprintln!("graphcoder deterministic-dispatch operation={} step={} request={digest}",
+                dispatch.operation_id, dispatch.step);
+        }
         Ok(())
     }
 
@@ -189,11 +194,6 @@ impl ModelProvider for Deterministic {
         self.context_capacity_with_native_work(&request.request().model, work)?;
         NativeFutureBundle::new(work, || async move {
             self.observe_invocation("generate", dispatch, Some(work))?;
-            if self.delay_ms > 0 {
-                let digest = digest_hex(dispatch.request_digest);
-                eprintln!("graphcoder deterministic-dispatch operation={} step={} request={}",
-                    dispatch.operation_id, dispatch.step, std::str::from_utf8(&digest).expect("hex ASCII"));
-            }
             tokio::time::sleep(std::time::Duration::from_millis(u64::from(self.delay_ms))).await;
             let events = native_events(dispatch, work)?;
             NativeModelStream::new(work, || futures::stream::iter(events.into_iter().map(Ok)))
@@ -215,7 +215,7 @@ impl ModelProvider for Deterministic {
             }
             let capacity = complete.len() - observed.len();
             let bytes = (capacity * std::mem::size_of::<ModelEvent>()) as u64;
-            let mut custody = if bytes == 0 { work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)? } else { work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED)? };
+            let mut custody = work.claim(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?;
             let mut suffix = Vec::with_capacity(capacity);
             for mut item in complete.into_iter().skip(observed.len()) {
                 custody.absorb(&mut item.1)?;
@@ -264,10 +264,6 @@ impl ModelProvider for Deterministic {
         let delay_ms = self.delay_ms;
         Box::pin(futures::stream::once(async move {
             self.observe_invocation("generate", dispatch, None)?;
-            if delay_ms > 0 {
-                eprintln!("graphcoder deterministic-dispatch operation={} step={} request={}",
-                    dispatch.operation_id, dispatch.step, hex::encode(dispatch.request_digest));
-            }
             tokio::time::sleep(std::time::Duration::from_millis(u64::from(delay_ms))).await;
             Ok(events(dispatch))
         }).flat_map(|result| match result {
