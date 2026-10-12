@@ -231,7 +231,7 @@ pub(crate) async fn apply_tree_mutations_with_accounting<S: crate::AsyncObjectSt
     let receipt = persistent_btree::apply_with_accounting::<S, TreeFormat, TreeMutation>(
         store, root, mutations, maximum_mutations, limits, accounting, cancellation,
     ).await?;
-    Ok(TreeMutationReceipt { root: receipt.root, work: receipt.work })
+    Ok(TreeMutationReceipt { root: receipt.value, work: receipt.work })
 }
 
 pub(super) fn project_tree_error(error: crate::FsError) -> TreeMutationError {

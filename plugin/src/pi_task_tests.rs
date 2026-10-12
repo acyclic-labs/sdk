@@ -42,6 +42,10 @@ fn preparation() -> WorkflowCommand {
     }
 }
 
+fn result(operation: OperationId, value: Outcome<FileRef>) -> Value {
+    json!({"commands":[{"operation_id":operation,"value":value}]})
+}
+
 fn binding() -> PiTaskBinding {
     let provider = ProviderRef::new("pi-recovery-test", "filesystem", "1").unwrap();
     let agent_id = AgentId::from_bytes([31; 16]);
@@ -618,8 +622,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
         binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work,
     ).await.unwrap();
     assert!(matches!(accepted.0, Admission::Accepted(_)));
-    drop(accepted.0);
-    drop(accepted.1);
+    drop(accepted);
     let admission = owner
         .runtime
         .task_host()
@@ -673,8 +676,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
         binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work,
     ).await.unwrap();
     assert!(matches!(accepted.0, Admission::Accepted(_)));
-    drop(accepted.0);
-    drop(accepted.1);
+    drop(accepted);
     assert!(
         owner
             .runtime
@@ -922,7 +924,7 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
     drop(observed);
     assert_eq!(query.live_allocation_bytes(), query_baseline);
     let report = fixture.prepare_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal,
-        &fixture.fence, &plan, fixture.source.clone(),
+        &fixture.fence, &plan, fixture.root_handle.workspace.clone(),
         crate::pi_root_provider::allocation_budget(), acyclic_fs::CancellationToken::new())
         .await.unwrap().unwrap();
     report.0.validate().unwrap();
@@ -974,7 +976,7 @@ async fn pi_real_preparation_changed_planned_binding_parent_and_foreign_key_fail
     let mut stale = fixture.fence.clone();
     stale.reservation_id = "stale-original-parent-fence".into();
     assert!(fixture.prepare_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &stale,
-        &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
+        &plan, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(),
         acyclic_fs::CancellationToken::new()).await.is_err());
     assert!(fixture.runtime.runtime.task_host().observe_admission(
         plan.request.child.task_id()).await.is_err());
@@ -1047,7 +1049,7 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
         &fixture.stream, 0, 1024).await.unwrap();
     assert!(accounting.len() < 1024);
     assert!(!accounting.iter().any(|record| matches!(
-        &record.event, acyclic_harness::scheduler::SchedulerEvent::ModelDispatchClaimed { .. }
+        record, acyclic_harness::scheduler::SchedulerEvent::ModelDispatchClaimed { .. }
     )), "passive native root controls must not charge harness model attempts");
 }
 
@@ -1128,10 +1130,6 @@ mod native_transition {
         workflow::WorkflowJournal,
     };
 
-    fn result(operation: OperationId, value: Outcome<FileRef>) -> Value {
-        json!({"commands":[{"operation_id":operation,"value":value}]})
-    }
-
     fn step(
         machine: &PiTaskMachine, state: &Value, input: &Value,
         work: &NativeMaterializationWork,
@@ -1186,8 +1184,7 @@ mod native_transition {
             let actual = step(&machine, &state, &input, &work).unwrap();
             assert_eq!(actual.0, MachineTransition { state: state_next, commands, status });
             assert!(actual.1.work().shares_ledger(&work));
-            drop(actual.0);
-            drop(actual.1);
+            drop(actual);
             assert_eq!(work.live_allocation_bytes(), work_baseline);
         }
         for state in [
