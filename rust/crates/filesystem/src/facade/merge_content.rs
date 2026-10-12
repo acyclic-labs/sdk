@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     pub(crate) async fn workspace_conflict_record(
         &self,
         workspace: &Volume<A, O>,
@@ -37,7 +36,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(lookup.value)
     }
 
-
     pub(crate) async fn workspace_conflict_bytes(
         &self,
         workspace: &Volume<A, O>,
@@ -71,7 +69,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .map_err(WorkspaceError::engine)?;
         Ok(Some(read.bytes))
     }
-
 
     /// Whether two single-link records hold one file state: the same kind,
     pub(crate) async fn same_file_state(
@@ -111,7 +108,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         Ok(metadata.first() == metadata.get(1))
     }
-
 
     pub(crate) async fn stage_merge_regular_record(
         &self,

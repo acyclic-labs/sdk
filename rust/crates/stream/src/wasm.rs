@@ -183,7 +183,7 @@ impl WasmStream {
                     .await
                     .map_err(js_error)?;
                 match response {
-                    Some(value) => wire_codec::observation_to_wire(value).encode_to_vec(),
+                    Some(value) => wire::InspectIdempotencyResponse { observation: Some(wire_codec::observation_wire(value)) }.encode_to_vec(),
                     None => wire::InspectIdempotencyResponse { observation: None }.encode_to_vec(),
                 }
             }
