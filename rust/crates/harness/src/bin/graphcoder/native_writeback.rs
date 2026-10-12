@@ -39,7 +39,7 @@ pub struct NativePublicationConfig {
 }
 
 fn verifier(binding: &AuthorityBinding) -> Result<AuthorityVerifier> {
-    let verifier = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone()).verifier();
+    let verifier = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
     verifier.verify(&binding.scope)?;
     Ok(verifier)
 }
@@ -386,7 +386,7 @@ impl NativeSession {
             Some(agent) => issuer.root_for_agent(agent, label, capabilities),
             None => issuer.root(label, capabilities),
         };
-        let aggregate = StreamAggregate::open(&self.stream, binding.owner.authority.clone(), issuer.verifier(), SchemaRegistry::default()).await?;
+        let aggregate = StreamAggregate::open(&self.stream, binding.owner.authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::default()).await?;
         let operation = decision_operation(binding.operation_id, approved);
         let action = Action::ResolveInteraction { resolution: InteractionResolution {
             id: ticket.id, expected_version: 1,
@@ -423,18 +423,11 @@ fn publication_digest(binding: &NativePublicationConfig, journal: &Materializati
 }
 
 fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    struct Limit(u64);
-    impl std::io::Write for Limit {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 = self.0.checked_sub(bytes.len() as u64).ok_or_else(|| std::io::Error::other("publication JSON exceeds finite terminal bound"))?;
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-    }
-    serde_json::to_writer(&mut Limit(MAX_FRAME_BYTES as u64), value).map_err(invalid)?;
-    let mut value = serde_json::to_value(value).map_err(invalid)?;
-    value.sort_all_objects();
-    serde_json::to_vec(&value).map_err(invalid)
+    acyclic_harness::canonical_json_bytes_bounded(value, acyclic_harness::JsonBounds {
+        maximum_bytes: MAX_FRAME_BYTES as u64,
+        maximum_items: u64::MAX,
+        maximum_depth: u32::MAX,
+    }, None, &mut |_| Ok(()))
 }
 
 fn fs_operation(operation: OperationId) -> acyclic_fs::OperationId { acyclic_fs::OperationId::from_bytes(operation.into_bytes()) }

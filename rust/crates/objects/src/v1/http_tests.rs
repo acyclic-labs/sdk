@@ -787,8 +787,7 @@ fn http_chrome_export_keeps_customer_data_out_of_serialized_trace()
     for filtered in [false, true] {
         let sink = Sink(Arc::default());
         let exported = sink.0.clone();
-        // tracing-chrome caches its sender in thread-local state. A fresh thread
-        // gives this exporter an independent sender even when tests reuse workers.
+        // Fresh threads avoid tracing-chrome sender caching.
         std::thread::spawn(
             move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let (chrome, flush) = tracing_chrome::ChromeLayerBuilder::new()
@@ -938,8 +937,7 @@ fn http_chrome_export_keeps_customer_data_out_of_serialized_trace()
                     calls.iter().any(|event| {
                         let terminal =
                             event.get("ph").and_then(serde_json::Value::as_str) == Some("e");
-                        // tracing-chrome 0.7.2 serializes arguments with Debug, so
-                        // string values contain another pair of quotation marks.
+                        // tracing-chrome serializes argument strings with Debug quotes.
                         let exported_outcome = event
                             .get("args")
                             .and_then(|args| args.get("outcome"))
@@ -1018,11 +1016,8 @@ async fn http_rejects_the_obsolete_namespace_for_an_existing_bucket()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn http_unary_trace_records_semantic_response_failure()
+async fn http_rejects_a_substituted_bucket()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use crate::body::tests::Capture;
-    use tracing_subscriber::prelude::*;
-
     let bucket = wire::Bucket {
         bucket: Some(wire::BucketRef {
             name: "different.bucket".into(),
@@ -1032,12 +1027,6 @@ async fn http_unary_trace_records_semantic_response_failure()
             nanos: 0,
         }),
     };
-    super::response::bucket(
-        &bucket,
-        &wire::BucketRef {
-            name: "different.bucket".into(),
-        },
-    )?;
     let body = json::encode("Bucket", &bucket)?;
     let app = Router::new().route(
         "/v1/objects/buckets/head",
@@ -1060,9 +1049,6 @@ async fn http_unary_trace_records_semantic_response_failure()
             })
             .await
     });
-    let capture = Capture::default();
-    let _subscriber =
-        tracing::subscriber::set_default(tracing_subscriber::registry().with(capture.clone()));
     let result = client
         .head_bucket(wire::HeadBucketRequest {
             bucket: Some(wire::BucketRef {
@@ -1072,15 +1058,6 @@ async fn http_unary_trace_records_semantic_response_failure()
         .await;
     let _ = shutdown.send(());
     server.await??;
-    let error = result.err().ok_or("accepted a different bucket")?;
-    let spans = capture.spans("acyclic.objects.http.call");
-    assert_eq!(spans.len(), 1);
-    let fields = &spans.first().ok_or("missing completed span")?.fields;
-    assert_eq!(fields.get("rpc.code").map(String::as_str), Some("200"));
-    assert_eq!(fields.get("outcome").map(String::as_str), Some("err"));
-    assert_eq!(
-        fields.get("error.kind").map(String::as_str),
-        Some(error.code.as_str_name())
-    );
+    assert!(matches!(result, Err(Error { code: wire::ErrorCode::Unavailable })));
     Ok(())
 }

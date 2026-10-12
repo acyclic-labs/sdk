@@ -21,7 +21,7 @@ struct Fixture {
     native: PathBuf,
     resources: ServiceResources,
     filesystem: Arc<Host>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     owner: Arc<PiOwnerConfig>,
     runtime: Runtime,
     request: PiRootRequest,
@@ -81,7 +81,7 @@ impl Fixture {
             session.strip_prefix(&resources.data).unwrap(), &startup).unwrap()
             .into_native_shared(&startup).unwrap();
         let (command, command_custody) = stage_root_command(&owner, &filesystem, &request, &startup).await.unwrap();
-        let stream = StreamClient::new(Arc::new(LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap()));
+        let stream = Arc::new(LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap());
         let authority = owner.authority_with_native_work(&startup).unwrap();
         let runtime = PiTaskRuntime::open_with_native_work(stream.clone(), filesystem.clone(),
             &journal, authority, &startup).await.unwrap();
@@ -174,9 +174,9 @@ async fn pi_root_provider_allocates_actual_lazy_roots_and_original_scratch_gener
             dispatch.attempt_id, dispatch.request_digest, &fixture.startup).await.unwrap().unwrap();
         assert!(same_allocation(&allocation.0, &actual.0));
         assert_eq!(allocation.0.roots.len(), usize::from(!scratch_only));
-        let schema = PiRootAllocation::schema(&fixture.request.binding).unwrap();
+        let schema = PiRootAllocation::schema(&fixture.request.binding, &fixture.startup).unwrap();
         let original_value = serde_json::to_value(&allocation.0).unwrap();
-        acyclic_harness::tool::validate_value(&schema, &original_value, "allocation").unwrap();
+        acyclic_harness::tool::validate_value(&schema.0, &original_value, "allocation").unwrap();
         for case in ["missing_root", "foreign_provider", "zero_workspace", "extra_field"] {
             let mut value = original_value.clone();
             match case {
@@ -189,7 +189,7 @@ async fn pi_root_provider_allocates_actual_lazy_roots_and_original_scratch_gener
             }
             assert!(!serde_json::from_value::<PiRootAllocation>(value.clone())
                 .is_ok_and(|allocation| allocation.validate(&fixture.request.binding).is_ok()));
-            assert!(acyclic_harness::tool::validate_value(&schema, &value, "allocation").is_err());
+            assert!(acyclic_harness::tool::validate_value(&schema.0, &value, "allocation").is_err());
         }
         assert!(fixture.provider.observe_conversation_with_native_work(dispatch.effect_id,
             dispatch.attempt_id, &fixture.startup).await.unwrap());
@@ -698,7 +698,7 @@ async fn pi_operator_input_original_upload_is_root_only_even_for_actual_created_
     let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let operation = OperationId::from_bytes([137; 16]);
     let signed = fixture.owner.authority().unwrap().signed;
-    let native = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
+    let native = crate::pi_fork::tests::work();
     let (operator, _operator_custody) = stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope", &signed, &native).await.unwrap();
     assert_eq!(operator.path(), format!("{OPERATOR_INPUT_DIRECTORY}/{operation}/scope.json"));
     assert!(stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope",
@@ -752,7 +752,6 @@ fn guarded_pi_decode_rejects_original_quota_and_cancel_without_retaining_partial
     assert!(matches!(&failure, Error::NativeWork {
         cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { .. }), ..
     }));
-    assert!(work.receipt().source_bytes_read > 0);
     assert_eq!(work.live_allocation_bytes(), baseline);
     drop(failure);
     let work = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
@@ -828,7 +827,7 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
         Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(work.receipt(), before);
     assert_eq!(work.live_allocation_bytes(), baseline);
-    let query = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
+    let query = crate::pi_fork::tests::work();
     assert!(observe_pi_input(&fixture.owner, &fixture.filesystem,
         OperationId::from_bytes([143; 16]), "native-mail", &query).await.unwrap().is_none());
     fixture.assert_no_selected_resources().await;

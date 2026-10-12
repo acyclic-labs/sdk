@@ -562,10 +562,10 @@ fn wait_for_child(
     let deadline = Instant::now() + timeout;
     loop {
         if captured_child_output_exceeds_limit(&child)? {
-            child.process.terminate()?;
+            child.process.terminate(None)?;
             return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
         }
-        if let Some(status) = child.process.try_wait()? {
+        if let Some(status) = child.process.try_wait(None)? {
             return captured_child_output(status, &mut child.stdout, &mut child.stderr);
         }
         if Instant::now() >= deadline {
@@ -1260,7 +1260,7 @@ fn run_parallel_io_children(mount: &Path, count: usize) -> Result<(), Failure> {
                 )
                 .into());
             }
-            let Some(status) = child.process.try_wait()? else {
+            let Some(status) = child.process.try_wait(None)? else {
                 continue;
             };
             let mut child = children
@@ -1295,7 +1295,7 @@ fn terminate_captured_children(children: &mut [Option<CapturedChild>]) -> String
         let Some(mut child) = child.take() else {
             continue;
         };
-        if let Err(error) = child.process.terminate() {
+        if let Err(error) = child.process.terminate(None) {
             failures.push(format!("child {index}: {error}"));
         }
     }
@@ -1538,7 +1538,7 @@ fn replace(source: &Path, destination: &Path) -> Result<(), Failure> {
     acyclic_native_runtime::durable_rename(
         source,
         destination,
-        acyclic_native_runtime::RenameMode::Replace,
+        acyclic_native_runtime::RenameMode::Replace, None,
     )?;
     Ok(())
 }
@@ -1646,12 +1646,12 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
     let deadline = Instant::now() + Duration::from_secs(30);
     while !ready.exists() && Instant::now() < deadline {
         if captured_child_output_exceeds_limit(&child)? {
-            child.process.terminate()?;
+            child.process.terminate(None)?;
             return Err(
                 format!("crash child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into(),
             );
         }
-        if let Some(status) = child.process.try_wait()? {
+        if let Some(status) = child.process.try_wait(None)? {
             let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
             return Err(format!(
                 "crash child exited before readiness ({}): {}{}",
@@ -1664,11 +1664,11 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
         std::thread::sleep(Duration::from_millis(10));
     }
     if !ready.exists() {
-        child.process.terminate()?;
+        child.process.terminate(None)?;
         return Err("crash child did not mount within 30 seconds".into());
     }
     eprintln!("qualification phase: crash child ready; termination starting");
-    child.process.terminate()?;
+    child.process.terminate(None)?;
     eprintln!("qualification phase: crash child terminated; recovery starting");
     #[cfg(windows)]
     {

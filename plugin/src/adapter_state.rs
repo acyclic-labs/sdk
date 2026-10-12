@@ -264,20 +264,6 @@ pub(crate) fn save_state(
     StateSlots::read(data)?.0.save(data, state, survives)
 }
 
-/// When the session last completed a save, for newest-first recovery order.
-pub(crate) fn state_modified(data: &Path) -> std::time::SystemTime {
-    ADAPTER_STATE_SLOTS
-        .iter()
-        .filter_map(|slot| {
-            data.join(slot)
-                .metadata()
-                .and_then(|metadata| metadata.modified())
-                .ok()
-        })
-        .max()
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-}
-
 pub(crate) fn validate_state_version(state: &AdapterState) -> Result<(), String> {
     if state.version == ADAPTER_STATE_VERSION {
         Ok(())

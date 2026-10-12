@@ -8,7 +8,7 @@ use acyclic_harness::{IdempotencyKey,
     filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
     runtime::TaskRunLimits, scheduler::SessionLimits,
     workflow::{MachineIdentity, MachineStatus, MachineTransition, ResumableMachine}};
-use acyclic_stream::{LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStreamLimits};
 use sha2::{Digest as _, Sha256};
 use std::path::PathBuf;
 
@@ -26,7 +26,7 @@ pub(crate) struct Fixture {
     pub(crate) owner: Arc<PiOwnerConfig>,
     pub(crate) runtime: Arc<Runtime>,
     pub(crate) filesystem: Arc<Filesystem>,
-    pub(crate) stream: StreamClient<LocalStream>,
+    pub(crate) stream: std::sync::Arc<LocalStream>,
     pub(crate) resources: ServiceResources,
     pub(crate) source: Arc<LocalLazyWorkspace>,
     root_handle: crate::pi_root_provider::PiRootHandle,
@@ -95,7 +95,7 @@ impl Fixture {
         let owner = PiOwnerConfig::load_with_native_work(&private_root, &relative_session, &startup_work).unwrap()
             .into_native_shared(&startup_work).unwrap();
         let command = crate::pi_root_inputs::stage_root_command(&owner, &filesystem, &request, &startup_work).await.unwrap();
-        let stream = StreamClient::new(Arc::new(LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap()));
+        let stream = Arc::new(LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap());
         let runtime = Arc::new(Runtime::open_with_native_work(stream.clone(), filesystem.clone(), &journal_volume,
             owner.authority_with_native_work(&startup_work).unwrap(), &startup_work).await.unwrap());
         let _root_admission = runtime.admit_root_with_native_work(root_binding, request.root.clone(), command.0, &startup_work).await.unwrap();
@@ -494,7 +494,7 @@ async fn cancellation_and_owner_replacement_never_admit_a_child() {
     assert!(fixture.runtime.runtime.task_host().observe_admission(plan.request.child.task_id()).await.is_err());
     let replacement = PiOwnerConfig::new(fixture.owner.policy(), None, &crate::pi_fork::tests::work()).unwrap();
     assert!(PiForkCoordinator::new(fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
-        &fixture.resources, Arc::new(replacement), &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap()).is_err());
+        &fixture.resources, Arc::new(replacement), &crate::pi_fork::tests::work()).is_err());
     assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
 }
 
@@ -597,11 +597,11 @@ async fn explicit_root_sibling_and_descendant_sources_use_operation_read_proofs_
 #[tokio::test]
 async fn actual_stream_and_task_registry_restart_reconciles_original_creator_proofs_and_publication() {
     let fixture = Fixture::new(None).await;
-    let observation_work = acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();
+    let observation_work = crate::pi_fork::tests::work();
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let first = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence, &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
-    let stream = StreamClient::new(Arc::new(LocalStream::open(fixture.resources.session_directory("fork-root").join("stream"),
-        LocalStreamLimits::default()).await.unwrap()));
+    let stream = Arc::new(LocalStream::open(fixture.resources.session_directory("fork-root").join("stream"),
+        LocalStreamLimits::default()).await.unwrap());
     let runtime = Arc::new(Runtime::open_with_native_work(stream.clone(), fixture.filesystem.clone(),
         &fixture.owner.policy().journal, fixture.owner.authority_with_native_work(&observation_work).unwrap(),
         &observation_work).await.unwrap());
@@ -632,7 +632,7 @@ async fn cold_pre_first_dispatch_restores_only_under_actual_child_owner_and_exis
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let first = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence, &plan,
         fixture.source.clone(), crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
-    let work = acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();
+    let work = crate::pi_fork::tests::work();
     let coordinator = PiForkCoordinator::new(fixture.runtime.clone(), fixture.filesystem.clone(),
         fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &work).unwrap();
     let worker_name = work.display("cold-native-child-owner").unwrap();
@@ -665,7 +665,7 @@ async fn cold_pre_first_dispatch_restores_only_under_actual_child_owner_and_exis
 #[tokio::test]
 async fn root_freeze_uses_actual_original_callback_context_and_watcher_epoch() {
     let fixture = Fixture::new(None).await;
-    let work = acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();
+    let work = crate::pi_fork::tests::work();
     let coordinator = PiForkCoordinator::new(fixture.runtime.clone(), fixture.filesystem.clone(),
         fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &work).unwrap();
     let context = fixture.current_context_with(&coordinator, &fixture.context, &fixture.journal, &fixture.fence).await.unwrap();

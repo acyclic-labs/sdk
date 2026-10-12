@@ -196,7 +196,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
 #[tokio::test]
 async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen() {
     use acyclic_harness::{Admission, OperationId, effect_host::TaskEffectPlan};
-    use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+    use acyclic_stream::{LocalStream, LocalStreamLimits};
     use std::sync::Arc;
     let session = tempfile::tempdir().unwrap();
     let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
@@ -251,7 +251,7 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
     .unwrap();
     assert_eq!(
         schema,
-        crate::pi_root_allocation::PiRootAllocation::schema(&request.binding).unwrap()
+        crate::pi_root_allocation::PiRootAllocation::schema(&request.binding, &work).unwrap().0
     );
     let original_request = stage_root_request(&owner, &filesystem, &request, &work).await.unwrap();
     assert_eq!(
@@ -270,11 +270,11 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
         serde_json::to_value(&request).unwrap()
     );
     let filesystem = Arc::new(filesystem);
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(session.path().join("stream"), LocalStreamLimits::default())
             .await
             .unwrap(),
-    ));
+    );
     let runtime = crate::pi_runtime::PiTaskRuntime::open_with_native_work(
         stream, filesystem.clone(), &owner.policy.journal,
         owner.authority_with_native_work(&work).unwrap(), &work,
@@ -597,6 +597,13 @@ async fn pi_root_startup_quota_and_cancellation_do_not_publish_inputs() {
         Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(_), .. })));
     assert_eq!(limited.live_allocation_bytes(), baseline);
     assert_eq!(workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id(), original);
+    let unhashed = NativeMaterializationWork::new(WorkBudget {
+        bytes_hashed: 0, ..crate::pi_root_provider::allocation_budget()
+    }, &CancellationToken::new()).unwrap();
+    let before = unhashed.receipt();
+    assert!(matches!(stage_root_command(&owner, &filesystem, &request, &unhashed).await,
+        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(_), .. })));
+    assert_eq!(unhashed.receipt(), before);
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let before = work.receipt();

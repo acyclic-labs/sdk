@@ -55,8 +55,9 @@ impl Interceptor for BearerAuth {
 type Client =
     wire::machines_service_client::MachinesServiceClient<InterceptedService<Channel, BearerAuth>>;
 
+/// Authenticated remote Machines provider.
 #[derive(Clone)]
-struct GrpcProvider {
+pub struct GrpcProvider {
     client: Client,
 }
 
@@ -80,7 +81,7 @@ fn owner_private_socket(
     Ok(metadata)
 }
 
-impl Machines {
+impl GrpcProvider {
     /// Connects to the endpoint and credentials named by `ACYCLIC_MACHINES_ENDPOINT`, `ACYCLIC_MACHINES_CA_FILE`, `ACYCLIC_MACHINES_CERT_FILE`, and `ACYCLIC_MACHINES_KEY_FILE`.
     pub async fn from_env() -> Result<Self, ProviderError> {
         Self::from_env_auth(BearerAuth::default()).await
@@ -250,7 +251,7 @@ impl Machines {
             wire::machines_service_client::MachinesServiceClient::with_interceptor(channel, auth)
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
-        Self::new(Arc::new(GrpcProvider { client }))
+        Self { client }
     }
 }
 
@@ -957,8 +958,7 @@ impl GrpcProvider {
                                     Ok(Err(error)) if !retryable_watch_error(&error) => {
                                         return Err(watch_error(key, &error));
                                     }
-                                    // Silence, EOF and transient interruption trigger inspection of
-                                    // the same admitted operation, never a replacement mutation.
+                                    // Inspect the admitted operation after interruption; never resubmit.
                                     _ => break,
                                 }
                             }
@@ -2089,7 +2089,7 @@ mod tests {
             let (machines, shutdown, server) = serve_operation_service(service).await?;
             let outcome = tokio::time::timeout(
                 Duration::from_secs(10),
-                Machine::new(machines, machine).suspend(key),
+                suspend_machine(&machines, machine, key),
             )
             .await?;
             let _ = shutdown.send(());
@@ -2120,7 +2120,7 @@ mod tests {
             let (machines, shutdown, server) = serve_operation_service(service).await?;
             let outcome = tokio::time::timeout(
                 Duration::from_secs(10),
-                Machine::new(machines, machine).suspend(key),
+                suspend_machine(&machines, machine, key),
             )
             .await?;
             let _ = shutdown.send(());
@@ -2156,7 +2156,7 @@ mod tests {
         let key = service.expected_key;
         let (machines, shutdown, server) = serve_operation_service(service).await?;
         let outcome = tokio::time::timeout(Duration::from_secs(75),
-            Machine::new(machines, machine).suspend(key)).await?;
+            suspend_machine(&machines, machine, key)).await?;
         let _ = shutdown.send(());
         server.await??;
         outcome?;
@@ -2172,8 +2172,7 @@ mod tests {
             vec![WatchReply::Silent], vec![]);
         let key = service.expected_key;
         let (machines, shutdown, server) = serve_operation_service(service).await?;
-        let machine = Machine::new(machines, machine);
-        let mut wait = Box::pin(machine.suspend(key));
+        let mut wait = Box::pin(suspend_machine(&machines, machine, key));
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 tokio::select! {
@@ -2211,7 +2210,7 @@ mod tests {
             let key = service.expected_key;
             let (machines, shutdown, server) = serve_operation_service(service).await?;
             let outcome = tokio::time::timeout(Duration::from_secs(5),
-                Machine::new(machines, machine).suspend(key)).await?;
+                suspend_machine(&machines, machine, key)).await?;
             let _ = shutdown.send(());
             server.await??;
             assert_eq!(outcome, Err(expected.unwrap_or(ProviderError::Indeterminate(key))));
@@ -2223,7 +2222,7 @@ mod tests {
         service: OperationService,
     ) -> Result<
         (
-            Machines,
+            GrpcProvider,
             tokio::sync::oneshot::Sender<()>,
             tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
         ),
@@ -2258,7 +2257,7 @@ mod tests {
             .connect()
             .await?;
         Ok((
-            Machines::grpc_with_auth(channel, BearerAuth::new("opaque.account+/=")?),
+            GrpcProvider::grpc_with_auth(channel, BearerAuth::new("opaque.account+/=")?),
             shutdown_tx,
             server,
         ))
@@ -2475,17 +2474,17 @@ mod tests {
             private_key: client_key_pem.as_bytes(),
         };
         let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
-            let denied = Machines::connect(&endpoint, tls()).await?;
-            assert!(denied.operation_for(key).await.is_err());
+            let denied = GrpcProvider::connect(&endpoint, tls()).await?;
+            assert!(denied.recover_operation(key).await.is_err());
             let machines =
-                Machines::connect_with_bearer(&endpoint, tls(), "opaque.account+/=").await?;
-            assert_eq!(machines.clone().operation_for(key).await?, operation);
+                GrpcProvider::connect_with_bearer(&endpoint, tls(), "opaque.account+/=").await?;
+            assert_eq!(machines.clone().recover_operation(key).await?, operation);
             assert_eq!(
                 machines.clone().inspect_operation(operation).await?.phase,
                 OperationPhase::Succeeded
             );
             assert_eq!(
-                machines.clone().cancel_operation(operation).await?.phase,
+                machines.clone().cancel(operation).await?.phase,
                 OperationPhase::Cancelled
             );
             let mut watch = machines.clone().watch_operation(operation).await?;
@@ -2557,17 +2556,17 @@ mod tests {
                 .await
         });
         let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
-            let denied = Machines::connect_local(&socket).await?;
-            assert!(denied.operation_for(key).await.is_err());
+            let denied = GrpcProvider::connect_local(&socket).await?;
+            assert!(denied.recover_operation(key).await.is_err());
             let machines =
-                Machines::connect_local_with_bearer(&socket, "opaque.account+/=").await?;
-            assert_eq!(machines.clone().operation_for(key).await?, operation);
+                GrpcProvider::connect_local_with_bearer(&socket, "opaque.account+/=").await?;
+            assert_eq!(machines.clone().recover_operation(key).await?, operation);
             assert_eq!(
                 machines.clone().inspect_operation(operation).await?.phase,
                 OperationPhase::Succeeded
             );
             assert_eq!(
-                machines.clone().cancel_operation(operation).await?.phase,
+                machines.clone().cancel(operation).await?.phase,
                 OperationPhase::Cancelled
             );
             let mut watch = machines.clone().watch_operation(operation).await?;
@@ -2627,7 +2626,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_transport_rejects_plaintext_before_connecting() {
-        let result = Machines::connect(
+        let result = GrpcProvider::connect(
             "http://example.invalid",
             Tls {
                 ca: b"",
@@ -2657,7 +2656,7 @@ mod tests {
         let (machines, shutdown, server) = serve_operation_service(service).await?;
 
         assert_eq!(
-            machines.operation_for(key).await,
+            machines.recover_operation(key).await,
             Err(ProviderError::Rejected(
                 "recovery operation identity was substituted".into()
             ))
@@ -2691,7 +2690,7 @@ mod tests {
         };
         let (machines, shutdown, server) = serve_operation_service(service).await?;
 
-        assert_eq!(machines.operation_for(key).await?, operation);
+        assert_eq!(machines.recover_operation(key).await?, operation);
         assert_eq!(
             machines.inspect_operation(operation).await?,
             OperationObservation {
@@ -2700,7 +2699,7 @@ mod tests {
             }
         );
         assert_eq!(
-            machines.cancel_operation(operation).await?,
+            machines.cancel(operation).await?,
             OperationObservation {
                 id: operation,
                 phase: OperationPhase::Cancelled,
@@ -2775,9 +2774,7 @@ mod tests {
             watch: WatchReply::Items(Vec::new()),
         };
         let (machines, shutdown, server) = serve_operation_service(service).await?;
-        // With one live dispatcher, a callsite that a concurrent test reaches
-        // first caches only that thread's (absent) interest; a second one
-        // makes every callsite consult this test's subscriber too.
+        // Two dispatchers make concurrent callsites recheck this subscriber.
         let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         let seen = Seen::default();
         let default = tracing::subscriber::set_default(
@@ -2835,7 +2832,7 @@ mod tests {
             Err(ProviderError::Rejected(message)) if message.contains("identity was substituted")
         ));
         assert!(matches!(
-            machines.cancel_operation(operation).await,
+            machines.cancel(operation).await,
             Err(ProviderError::Rejected(message)) if message.contains("identity was substituted")
         ));
         let mut watch = machines.watch_operation(operation).await?;
@@ -3059,7 +3056,6 @@ mod tests {
         let (machines, shutdown, server) = serve_operation_service(service).await?;
         assert!(matches!(
             machines
-                .provider
                 .fork_machine(machine, NonZeroU32::MIN, key)
                 .await,
             Err(ProviderError::Unsupported(_))
@@ -3173,10 +3169,7 @@ mod tests {
 fn retryable_observation_error(value: &tonic::Status, unknown_observations: &mut u8) -> bool {
     match value.code() {
         tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Cancelled => true,
-        // Tonic maps local readiness failures to Unknown, as a server may also
-        // do for an unreadable journal. Reconcile a brief readiness failure,
-        // but return the retained key after repeated ambiguous errors without
-        // any validated native observation. No elapsed-time failure is inferred.
+        // Repeated ambiguous errors return the retained recovery key.
         tonic::Code::Unknown => {
             *unknown_observations = unknown_observations.saturating_add(1);
             *unknown_observations < MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS

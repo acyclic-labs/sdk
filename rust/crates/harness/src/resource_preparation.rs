@@ -173,7 +173,7 @@ impl ResourcePreparationRequest {
         }
         let (request, reserved, original) = decoded?;
         let checked = (|| {
-            request.validate_with_work(work)?;
+            request.validate(work)?;
             let retained = crate::contract::canonical_json_digest_with_work(
                 &request, request.maximum_bytes, work)?;
             if original != retained {
@@ -243,8 +243,8 @@ impl ResourcePreparationRequest {
         };
         let mut items = 0_u64;
         let mut retained = 0_u64;
-        let result = crate::contract::json_from_slice_bounded_trusted(
-            bytes, bounds, 0, &mut |next| {
+        let result = crate::contract::json_from_slice_bounded(std::marker::PhantomData,
+            bytes, bounds, 0, None, None, &mut |next| {
                 match next {
                     crate::contract::JsonCodecCharge::Work { items: count, .. } => {
                         items = items.checked_add(count)
@@ -283,25 +283,10 @@ impl ResourcePreparationRequest {
         }
     }
 
-    /// Checks the complete request before it can be bound to a task lease.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    /// Checks this borrowed request on the supplied original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut observer = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.validate_with_work(&mut Some(&mut observer))
-    }
-
-    /// Validates using the original caller's optional native observer.
-    pub(crate) fn validate_with_work(
+    /// Checks the complete request with the caller's optional work observer.
+    pub fn validate(
         &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
         self.provider.validate_with_work(work)?;
@@ -328,7 +313,7 @@ impl ResourcePreparationRequest {
             crate::contract::validate_json_byte_bound(self, self.maximum_bytes)?;
         }
         if let Some(checkpoint) = &self.source_checkpoint {
-            checkpoint.validate_with_work(work)?;
+            checkpoint.validate(work)?;
             if checkpoint.descriptor().byte_length() > self.maximum_bytes {
                 return Err(Self::invalid("source checkpoint exceeds preparation byte bound", work));
             }
@@ -341,7 +326,7 @@ impl ResourcePreparationRequest {
             if let Some(observer) = work.as_deref_mut() {
                 observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: index as u64 + 1 })?;
             }
-            file.validate_with_work(work)?;
+            file.validate(work)?;
             input_bytes = input_bytes.checked_add(file.descriptor().byte_length())
                 .ok_or_else(|| Self::invalid("child input reference byte bound overflow", work))?;
             if input_bytes > self.maximum_bytes || self.input_files[..index].contains(file) {
@@ -349,10 +334,10 @@ impl ResourcePreparationRequest {
             }
         }
         if let Some(authorization) = &self.read_authorization {
-            authorization.validate_with_work(work)?;
+            authorization.validate(work)?;
         }
         if let Some(command) = &self.command {
-            command.validate_with_work(work)?;
+            command.validate(work)?;
             if command.operation_id == self.child.operation_id {
                 return Err(Self::invalid(
                     "preparation effect and intended child identities must differ", work,
@@ -511,11 +496,8 @@ pub(crate) trait ResourcePreparationLease: acyclic_stream::ProviderPlatform {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn verify_lease_with_native_work<'a>(
-        &'a self, _settlement: bool, _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "preparation lease has no original-ledger verifier" })
-    }
+        &'a self, settlement: bool, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>>;
 }
 
 #[cfg(feature = "filesystem")]
@@ -559,18 +541,6 @@ pub enum CreatedResourceOperation {
     WriteVolume(crate::conversation::VolumeRef),
     /// Exact immutable inherited-file read delegated by an authenticated creator.
     ReadFile(crate::conversation::FileRef),
-}
-
-/// Canonical request label for an operation on one created resource.
-pub fn created_resource_capability(resource: &ResourceRef, operation: &str) -> Result<String> {
-    resource.validate()?;
-    if operation.is_empty() || operation.len() > crate::COMPONENT_LABEL_MAX_BYTES
-        || operation.chars().any(char::is_control)
-    {
-        return Err(Error::Invalid("created resource operation is invalid".into()));
-    }
-    let bytes = crate::contract::canonical_json_bytes(&(resource, operation))?;
-    Ok(format!("resource:created:{}", blake3::hash(&bytes).to_hex()))
 }
 
 /// Provider-authenticated content handles for an exact created volume.
@@ -783,7 +753,7 @@ impl CreatedResourceAccess {
                 created_access_step(work)?;
                 let label = match operation {
                     CreatedResourceOperation::Named(name) => {
-                        created_access_named_capability(&receipt.resource, name, work)?
+                        created_resource_capability(&receipt.resource, name, work)?
                     }
                     CreatedResourceOperation::ReadFile(file) => {
                         let label = created_access_file_capability(file, work)?;
@@ -1038,7 +1008,8 @@ fn created_access_receipt_temporary_bytes(receipt: &CreatedResourceReceipt) -> R
     Ok(bytes)
 }
 
-fn created_access_named_capability(
+/// Derives a created-resource capability on the caller's optional observer.
+pub fn created_resource_capability(
     resource: &ResourceRef, operation: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<String> {
@@ -1072,7 +1043,7 @@ fn created_access_file_capability(
     file: &crate::conversation::FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<String> {
-    file.validate_with_work(work)?;
+    file.validate(work)?;
     created_access_canonical_capability(file, "file:read:", work)
 }
 
@@ -1109,36 +1080,12 @@ pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
     #[cfg(feature = "filesystem")]
     fn verify_with_io<'a>(
         &'a self,
-        _io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        return Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "created publication lease has no original preparation verifier",
-        });
-        #[cfg(target_arch = "wasm32")]
-        Err(Error::Unsupported(String::new()))
-    }
+        io: &'a crate::filesystem::PreparationIo,
+    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>>;
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_with_native_work<'a>(
         &'a self,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "created publication lease has no original native-ledger verifier",
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn fence_with_native_work(
-        &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation)> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "created publication lease has no original native-ledger fence",
-        })
-    }
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>>;
 }

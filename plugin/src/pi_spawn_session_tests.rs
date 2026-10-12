@@ -46,7 +46,7 @@ async fn preparing_native_seed_is_pure_single_root_and_has_distinct_empty_privat
     let session = session(&fixture);
     let args = arguments(&session, &fixture);
     let caller = fixture.owner.policy().root_task;
-    let work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();
+    let work = crate::pi_fork::tests::work();
     let (commit, _commit_custody) = session.spawn_native_commit(caller, &args, &fixture.owner, &work).unwrap();
     let (again, _again_custody) = session.spawn_native_commit(caller, &args, &fixture.owner, &work).unwrap();
     assert!(_commit_custody.work().shares_ledger(&work));
@@ -80,13 +80,13 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     let mut session = session(&fixture);
     let args = arguments(&session, &fixture);
     let caller = fixture.owner.policy().root_task;
-    let intent_work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();
+    let intent_work = crate::pi_fork::tests::work();
     let (commit, _commit_custody) = session.spawn_native_commit(caller, &args, &fixture.owner, &intent_work).unwrap();
     assert!(_commit_custody.work().shares_ledger(&intent_work));
     fixture.commit = commit.clone();
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let operations = pi_fork::PiForkOperations::new(plan.original, &crate::pi_fork::tests::work()).unwrap();
-    let catalog_work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();
+    let catalog_work = crate::pi_fork::tests::work();
     let coordinator = pi_fork::PiForkCoordinator::new(fixture.runtime.clone(),
         fixture.filesystem.clone(), fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &catalog_work).unwrap();
     coordinator.admit_preparation(&fixture.context, &fixture.journal, &fixture.fence, &plan).await.unwrap();
@@ -133,7 +133,7 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     assert!(session.native.is_some());
     assert!(session.native_jobs.is_empty());
     let generations = session.slots.last_generation;
-    let query_work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();
+    let query_work = crate::pi_fork::tests::work();
     let (reply, custody) = session.spawn_commit(caller, &args, &fixture.owner, &query_work).await.unwrap();
     let reply_work = custody.work().clone();
     assert!(reply_work.shares_ledger(&query_work));
@@ -177,7 +177,7 @@ async fn selected_workspace_never_substitutes_foreign_native_cut_or_reserved_ali
     let args = arguments(&session, &fixture);
     let caller = fixture.owner.policy().root_task;
     let oversized_alias = "a".repeat(129);
-    let work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();
+    let work = crate::pi_fork::tests::work();
     for id in ["root", "fork-root", "slash/alias", "", oversized_alias.as_str()] {
         let mut changed = args.clone();
         changed["id"] = json!(id);
