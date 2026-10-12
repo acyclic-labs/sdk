@@ -5,7 +5,7 @@ use crate::cancellation::CancellationToken;
 use crate::foundation::{GenerationId, usize_to_u64};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStore, ObjectStoreError,
+    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
     object_digest,
 };
 use std::mem::size_of;
@@ -39,48 +39,7 @@ pub struct CheckpointReceipt {
 pub type CheckpointFailure = OperationFailure<CheckpointError>;
 
 /// Constructs an unpublished checkpoint or merge generation.
-pub fn build_checkpoint<S: ObjectStore>(
-    store: &S,
-    request: CheckpointRequest,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<CheckpointReceipt, CheckpointFailure> {
-    validate_request(request)?;
-    let (base, mut work) = read_root(store, request.base, limits, budget, WorkCounters::default())?;
-    let merge = match request.merge_parent {
-        Some(parent_id) => {
-            let (parent, next) = read_root(store, parent_id, limits, budget, work)?;
-            work = next;
-            validate_merge_parents(&base, &parent, work)?;
-            Some(parent_id)
-        }
-        None => None,
-    };
-    if merge.is_none() && request.file_table == base.file_table {
-        return Ok(reused_checkpoint(request.base, work));
-    }
-    let (object, encoded, prospective) = encode_checkpoint(request, &base, merge, work, budget)?;
-    let remaining = prospective
-        .remaining(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let receipt = store
-        .put(object, encoded.into(), remaining)
-        .map_err(|failure| failure.map_with_prior_work(prospective, Into::into))?;
-    work = prospective
-        .checked_add(receipt.work)
-        .map_err(|error| OperationFailure::new(error.into(), prospective))?;
-    work.verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    Ok(CheckpointReceipt {
-        root: object,
-        generation_id: GenerationId::new(object.digest),
-        reused_base: false,
-        work,
-    })
-}
-
-/// Asynchronously constructs an unpublished checkpoint or merge generation.
-pub async fn build_checkpoint_async<S: crate::async_storage::AsyncObjectStore>(
+pub async fn build_checkpoint<S: crate::async_storage::AsyncObjectStore>(
     store: &S,
     request: CheckpointRequest,
     limits: DecodeLimits,
@@ -332,27 +291,6 @@ fn encode_checkpoint(
         .verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
     Ok((object, encoded, prospective))
-}
-
-fn read_root<S: ObjectStore>(
-    store: &S,
-    object: ObjectId,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    work: WorkCounters,
-) -> Result<(GenerationRoot, WorkCounters), CheckpointFailure> {
-    let remaining = work
-        .remaining(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let receipt = store
-        .read(object, limits.maximum_object_bytes, remaining)
-        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-    let combined = work
-        .checked_add(receipt.work)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let root = decode_generation_root(&receipt.value, limits, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
-        .map_err(|error| OperationFailure::new(error.into(), combined))?;
-    Ok((root, combined))
 }
 
 async fn read_root_async<S: crate::async_storage::AsyncObjectStore>(

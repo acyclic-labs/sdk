@@ -70,7 +70,7 @@ async fn lookup_reads_one_frontier_and_authenticates_absence() -> Result<(), Box
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?;
-    assert_eq!(found.entry, Some(entry(3)?));
+    assert_eq!(found.value, Some(entry(3)?));
     assert_eq!(found.work.page_reads, 2);
     let absent = lookup_attribute(
         &store,
@@ -80,7 +80,7 @@ async fn lookup_reads_one_frontier_and_authenticates_absence() -> Result<(), Box
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?;
-    assert_eq!(absent.entry, None);
+    assert_eq!(absent.value, None);
     assert_eq!(absent.work.page_reads, 2);
 
     let names = vec![name(4)?, name(1)?, name(4)?, name(5)?];
@@ -94,7 +94,7 @@ async fn lookup_reads_one_frontier_and_authenticates_absence() -> Result<(), Box
         &CancellationToken::new(),
     ).await?;
     assert_eq!(
-        batch.entries,
+        batch.value,
         vec![Some(entry(4)?), Some(entry(1)?), Some(entry(4)?), None]
     );
     assert_eq!(batch.work.page_reads, 3);
@@ -114,7 +114,7 @@ async fn owned_attribute_pages_are_admitted_and_released_across_the_frontier()
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?;
-    assert_eq!(lookup.entry, Some(entry(4)?));
+    assert_eq!(lookup.value, Some(entry(4)?));
     assert_eq!(lookup.work.page_reads, 2);
     assert!(lookup.work.bytes_copied > 0);
     assert!(lookup.work.peak_allocation_bytes > 0);
@@ -378,7 +378,7 @@ async fn validation_and_boundary_queries_are_fail_closed_and_exact()
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         ).await?;
-        assert_eq!(lookup.entry, expected);
+        assert_eq!(lookup.value, expected);
         assert_eq!(lookup.work.page_reads, 2);
     }
 

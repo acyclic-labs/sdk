@@ -100,7 +100,7 @@ async fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     let AttributePage::Internal(children) = decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
@@ -132,7 +132,7 @@ async fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
         &CancellationToken::new(),
     ).await?;
     let bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     let AttributePage::Leaf(entries) = decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
@@ -166,7 +166,7 @@ async fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), B
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?;
-    assert_eq!(receipt.root, root);
+    assert_eq!(receipt.value, root);
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
     assert_eq!(receipt.work.backend_write_operations, 0);
@@ -221,7 +221,7 @@ async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dy
     ).await?;
     assert_eq!(receipt.work.page_writes, 3);
     let root_bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     assert!(root_bytes.len() <= 175);
     let AttributePage::Internal(children) = decode_attribute_page(&root_bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? else {
