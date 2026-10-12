@@ -5660,42 +5660,6 @@ fn workspace_allocation_error(error: crate::kernel::allocation::AllocationError)
     crate::collection::handle_allocation_error(error).into()
 }
 
-pub(crate) fn new_workspace_vec<T>(
-    capacity: usize,
-    allocations: &mut crate::kernel::allocation::AllocationLedger,
-    work: &mut crate::WorkCounters,
-    budget: crate::WorkBudget,
-    cancellation: &crate::CancellationToken,
-) -> Result<Vec<T>, WorkspaceError> {
-    let mut accounting = KernelAccounting::borrowed_standalone(allocations, work, budget, cancellation);
-    crate::kernel::Owned::<Vec<T>>::allocate(capacity, &mut accounting)
-        .map(|owned| owned.value).map_err(WorkspaceError::from)
-}
-
-pub(crate) fn grow_workspace_vec<T>(
-    values: &mut Vec<T>,
-    allocations: &mut crate::kernel::allocation::AllocationLedger,
-    work: &mut crate::WorkCounters,
-    budget: crate::WorkBudget,
-    cancellation: &crate::CancellationToken,
-) -> Result<(), WorkspaceError> {
-    if values.len() < values.capacity() { return Ok(()); }
-    cancellation.check()?;
-    let capacity = values.capacity().checked_mul(2).map(|value| value.max(1))
-        .ok_or(crate::WorkError::Overflow)?;
-    let copied = values.len().checked_mul(std::mem::size_of::<T>())
-        .ok_or(crate::WorkError::Overflow)? as u64;
-    let delta = crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::default() };
-    work.admit(&delta, &budget)?;
-    let mut replacement = new_workspace_vec(capacity, allocations, work, budget, cancellation)?;
-    work.charge(&delta, &budget)?;
-    let old_bytes = workspace_vec_bytes(values);
-    replacement.append(values);
-    *values = replacement;
-    allocations.release(old_bytes).map_err(workspace_allocation_error)?;
-    Ok(())
-}
-
 pub(crate) fn workspace_remaining(
     work: crate::WorkCounters,
     budget: crate::WorkBudget,

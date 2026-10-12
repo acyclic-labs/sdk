@@ -165,23 +165,6 @@ impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
     }
 }
 
-pub(crate) fn capture_file_record_state(
-    record: FileRecord,
-    budget: WorkBudget,
-    work: WorkCounters,
-    data_custody: Option<&super::ProofDataCustody>,
-    standing: u64,
-    cancellation: Option<&CancellationToken>,
-) -> Result<ProbeReceipt, ProbeFailure> {
-    let cached = data_custody.map_or(0, super::ProofDataCustody::operation_cache_bytes);
-    let standing = standing.max(cached);
-    let _scope = ProbeNameResidency::new(data_custody, standing - cached)
-        .map_err(|error| failed(error.into(), work))?;
-    project_accounted_capture(budget, work, standing, cancellation, |accounting| {
-        capture_file_record_state_with_accounting(record, accounting, cancellation, data_custody)
-    })
-}
-
 pub(crate) fn capture_file_record_state_with_accounting(
     record: FileRecord,
     accounting: &mut KernelAccounting<'_>,
@@ -195,90 +178,6 @@ pub(crate) fn capture_file_record_state_with_accounting(
         Owned::new(bytes, allocation, capacity),
         b"acyclic-fs-dependency-file-record-v1\0", accounting, cancellation, data_custody,
     )
-}
-
-pub(crate) fn capture_sparse_seek_state(
-    target: ExtentSeekTarget,
-    result: Option<u64>,
-    budget: WorkBudget,
-    mut work: WorkCounters,
-) -> Result<ProbeReceipt, ProbeFailure> {
-    let domain = b"acyclic-fs-dependency-sparse-seek-v1\0";
-    let completed = work.checked_add(WorkCounters {
-        bytes_encoded: 10,
-        bytes_hashed: 10 + usize_to_u64(domain.len()) + 8,
-        ..WorkCounters::default()
-    }).map_err(|error| failed(error.into(), work))?;
-    completed.verify(budget).map_err(|error| failed(error.into(), work))?;
-    let mut encoded = [0_u8; 10];
-    encoded[0] = match target {
-        ExtentSeekTarget::Data => 0,
-        ExtentSeekTarget::Hole => 1,
-    };
-    if let Some(offset) = result {
-        encoded[1] = 1;
-        encoded[2..].copy_from_slice(&offset.to_le_bytes());
-    }
-    let value = DependencyState::Present(semantic_digest(domain, &encoded));
-    work = completed;
-    Ok(ProbeReceipt { value, work })
-}
-
-fn capture_file_length_state(
-    record: FileRecord,
-    budget: WorkBudget,
-    mut work: WorkCounters,
-    data_custody: Option<&super::ProofDataCustody>,
-    cancellation: Option<&CancellationToken>,
-) -> Result<ProbeReceipt, ProbeFailure> {
-    let logical_bytes = match record.payload {
-        FilePayload::InlineRegular(data) => usize_to_u64(data.as_bytes().len()),
-        FilePayload::Regular { logical_bytes, .. } => logical_bytes,
-        FilePayload::Directory { .. }
-        | FilePayload::SymbolicLink { .. }
-        | FilePayload::Device { .. }
-        | FilePayload::Empty
-        | FilePayload::ReparsePoint { .. } => {
-            return capture_file_record_state(record, budget, work, data_custody, 0, cancellation);
-        }
-    };
-    if cancellation.is_some_and(CancellationToken::is_cancelled) {
-        return Err(failed(AuthenticatedProbeError::Cancelled, work));
-    }
-    let domain = b"acyclic-fs-dependency-file-length-v1\0";
-    let encoded = logical_bytes.to_le_bytes();
-    let delta = WorkCounters {
-        bytes_encoded: usize_to_u64(encoded.len()),
-        bytes_hashed: usize_to_u64(encoded.len())
-            .saturating_add(usize_to_u64(domain.len()))
-            .saturating_add(8),
-        ..WorkCounters::default()
-    };
-    work.charge(&delta, &budget).map_err(|error| failed(error.into(), work))?;
-    if let Some(owner) = data_custody {
-        owner.record_completed_leaf_work(delta).map_err(|error| failed(error.into(), work))?;
-    }
-    let value = DependencyState::Present(semantic_digest(domain, &encoded));
-    Ok(ProbeReceipt { value, work })
-}
-
-pub(crate) fn capture_directory_name_state(
-    entry: &super::TreeEntry,
-    budget: WorkBudget,
-    work: WorkCounters,
-    data_custody: Option<&super::ProofDataCustody>,
-    standing: u64,
-    cancellation: Option<&CancellationToken>,
-) -> Result<ProbeReceipt, ProbeFailure> {
-    let cached = data_custody.map_or(0, super::ProofDataCustody::operation_cache_bytes);
-    let external = standing.max(cached);
-    let standing = external.checked_add(usize_to_u64(entry.name.retained_bytes()))
-        .ok_or_else(|| failed(WorkError::Overflow.into(), work))?;
-    let _name = ProbeNameResidency::new(data_custody, external - cached)
-        .map_err(|error| failed(error.into(), work))?;
-    project_accounted_capture(budget, work, standing, cancellation, |accounting| {
-        capture_directory_name_state_with_accounting(entry, accounting, cancellation, data_custody)
-    })
 }
 
 pub(crate) fn capture_directory_name_state_with_accounting(
@@ -295,33 +194,6 @@ pub(crate) fn capture_directory_name_state_with_accounting(
         Owned::new(bytes, allocation, capacity),
         b"acyclic-fs-dependency-directory-name-v1\0", accounting, cancellation, data_custody,
     )
-}
-
-fn project_accounted_capture(
-    budget: WorkBudget, mut work: WorkCounters, standing: u64,
-    cancellation: Option<&CancellationToken>,
-    capture: impl FnOnce(&mut KernelAccounting<'_>) -> Result<DependencyState, crate::FsError>,
-) -> Result<ProbeReceipt, ProbeFailure> {
-    let unobserved = CancellationToken::new();
-    let mut allocations = super::allocation::AllocationLedger::default();
-    allocations.claim_bytes(standing, 0, &mut work, budget)
-        .map_err(|error| failed(error.into_work_or(AuthenticatedProbeError::AllocationFailed), work))?;
-    let result = capture(&mut KernelAccounting::borrowed_standalone(
-        &mut allocations, &mut work, budget, cancellation.unwrap_or(&unobserved),
-    ));
-    result.map(|value| ProbeReceipt { value, work }).map_err(|error| {
-        let error = match error {
-            crate::FsError::Probe(error) => error,
-            crate::FsError::Decode(error) => AuthenticatedProbeError::Decode(error),
-            crate::FsError::Work(error) => AuthenticatedProbeError::Work(error),
-            crate::FsError::Cancelled(_) => AuthenticatedProbeError::Cancelled,
-            crate::FsError::EncodedAllocationFailed(error) => AuthenticatedProbeError::EncodedAllocationFailed(error),
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::FsError::NativeKernel(error) => AuthenticatedProbeError::Storage(ObjectStoreError::Native(error)),
-            _ => unreachable!("standalone capture leaves return only typed decode, allocation, work, probe, native or cancellation errors"),
-        };
-        failed(error, work)
-    })
 }
 
 fn capture_encoded_state_with_accounting(
@@ -350,52 +222,6 @@ fn capture_encoded_state_with_accounting(
         Ok(value) => { retired?; Ok(value) }
     }
 }
-fn state_encoding_budget(work: WorkCounters, budget: WorkBudget, standing: u64) -> Result<WorkBudget, ProbeFailure> {
-    let mut remaining = work.remaining(budget).map_err(|error| failed(error.into(), work))?;
-    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(standing)
-        .ok_or_else(|| failed(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes", observed: standing, maximum: budget.peak_allocation_bytes,
-        }.into(), work))?;
-    Ok(remaining)
-}
-
-fn capture_directory_page_encoding(
-    entries: Vec<super::TreeEntry>, has_more: bool, maximum_entries: u32,
-    budget: WorkBudget, work: WorkCounters, data_custody: Option<&super::ProofDataCustody>,
-    cancellation: Option<&CancellationToken>,
-) -> Result<ProbeReceipt, ProbeFailure> {
-    let owned = usize_to_u64(entries.capacity()).checked_mul(size_of::<super::TreeEntry>() as u64)
-        .and_then(|bytes| entries.iter().try_fold(bytes, |total, entry| {
-            total.checked_add(usize_to_u64(entry.name.retained_bytes()))
-        })).ok_or_else(|| failed(WorkError::Overflow.into(), work))?;
-    let cached = data_custody.map_or(0, super::ProofDataCustody::operation_cache_bytes);
-    let standing = cached.checked_add(owned).ok_or_else(|| failed(WorkError::Overflow.into(), work))?;
-    let _scope = ProbeNameResidency::new(data_custody, owned).map_err(|error| failed(error.into(), work))?;
-    // The moved entries are declared after their report guard: actual buffers
-    // are destroyed before their operation-residency registration retires.
-    let entries = entries;
-    let remaining = state_encoding_budget(work, budget, standing)?;
-    let encoded = crate::kernel::encode(remaining, cancellation, 0, |observe| super::tree::encode_tree_leaf_entries(&entries, maximum_entries, Some(u8::from(has_more)), None, observe, crate::kernel::EncodeError::AllocationFailed)).map_err(|failure| {
-        let completed = match work.with_backend(*failure.work, standing) {
-            Ok(completed) => completed,
-            Err(error) => return failed(error.into(), work),
-        };
-        if let Some(owner) = data_custody {
-            if let Err(error) = owner.record_completed_leaf_work(*failure.work) {
-                return failed(error.into(), completed);
-            }
-        }
-        let error = match failure.error {
-            super::EncodeError::Canonical(error) => error.into(),
-            super::EncodeError::Work(error) => error.into(),
-            super::EncodeError::Cancelled(_) => AuthenticatedProbeError::Cancelled,
-            super::EncodeError::AllocationFailed(error) => AuthenticatedProbeError::EncodedAllocationFailed(error),
-        };
-        failed(error, completed)
-    })?;
-    capture_encoded_state(encoded, b"acyclic-fs-dependency-directory-page-v1\0", budget, work, standing, data_custody, cancellation)
-}
-
 struct ProbeNameResidency<'a> {
     token: Option<&'a super::ProofDataCustody>,
     bytes: u64,
@@ -412,32 +238,6 @@ impl Drop for ProbeNameResidency<'_> {
     fn drop(&mut self) {
         if let Some(token) = self.token { token.release_operation_cache_bytes(self.bytes); }
     }
-}
-
-fn capture_encoded_state(
-    encoded: crate::OperationReceipt<Vec<u8>>, domain: &[u8], budget: WorkBudget,
-    work: WorkCounters, standing: u64, data_custody: Option<&super::ProofDataCustody>,
-    cancellation: Option<&CancellationToken>,
-) -> Result<ProbeReceipt, ProbeFailure> {
-    if let Some(owner) = data_custody {
-        owner.record_completed_leaf_work(encoded.work).map_err(|error| failed(error.into(), work))?;
-    }
-    let mut work = work.with_backend(encoded.work, standing).map_err(|error| failed(error.into(), work))?;
-    work.verify(budget).map_err(|error| failed(error.into(), work))?;
-    if cancellation.is_some_and(CancellationToken::is_cancelled) {
-        return Err(failed(AuthenticatedProbeError::Cancelled, work));
-    }
-    let hash = WorkCounters {
-        bytes_hashed: usize_to_u64(encoded.value.len()).checked_add(usize_to_u64(domain.len()))
-            .and_then(|bytes| bytes.checked_add(8)).ok_or_else(|| failed(WorkError::Overflow.into(), work))?,
-        ..WorkCounters::default()
-    };
-    work.charge(&hash, &budget).map_err(|error| failed(error.into(), work))?;
-    if let Some(owner) = data_custody {
-        owner.record_completed_leaf_work(hash).map_err(|error| failed(error.into(), work))?;
-    }
-    let value = DependencyState::Present(semantic_digest(domain, &encoded.value));
-    Ok(ProbeReceipt { value, work })
 }
 
 struct ProbeSummaryCache<K, V> {

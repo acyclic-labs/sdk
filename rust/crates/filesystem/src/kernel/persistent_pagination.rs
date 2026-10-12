@@ -113,17 +113,6 @@ where S: AsyncObjectStore, F: Format {
     ).await
 }
 
-pub(crate) async fn paginate_async_at_or_after<S, F>(
-    store: &S, root: ObjectId, at: &F::Key, maximum_values: u32,
-    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
-    data_custody: Option<&super::ProofDataCustody>,
-) -> Result<Receipt<F::Value>, Failure>
-where S: AsyncObjectStore, F: Format {
-    paginate_async_with_bound::<S, F>(
-        store, root, Some(at), true, maximum_values, limits, budget, cancellation, data_custody,
-    ).await
-}
-
 #[allow(clippy::too_many_arguments, reason = "independent authenticated cursor inputs")]
 async fn paginate_async_with_bound<S, F>(
     store: &S, root: ObjectId, after: Option<&F::Key>, inclusive: bool,
