@@ -787,6 +787,7 @@ pub fn validate_task_requirements_wasm(
         &tools,
         &environment,
         &input.grants.into_iter().collect(),
+        None,
     )
     .map_err(js_error)
 }
