@@ -30,9 +30,9 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<(HistoryPage, acyclic_fs::NativeAllocation)> {
         let mut native_io = super::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let read = self.read_page_with_work(cursor, limits, false, Some(&mut native_io)).await?;
+        let (page, _, _, _) = self.read_page_with_work(cursor, limits, false, Some(&mut native_io)).await?;
         native_io.return_staged_output()?;
-        Ok((read.page, native_io.into_custody()))
+        Ok((page, native_io.into_custody()))
     }
 
     /// Reads the original authenticated immutable operation locator and event.
@@ -117,7 +117,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         let result = async {
             work.preflight()?;
             self.read_page_with_work(cursor, limits, false, Some(&mut work))
-                .await.map(|read| read.page)
+                .await.map(|(page, _, _, _)| page)
         }.await;
         work.finish(result)
     }

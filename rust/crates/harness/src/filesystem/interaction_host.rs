@@ -245,7 +245,7 @@ where
         };
         let reference = self.stage(id, "request", request, io).await?;
         let ticket = InteractionTicket {
-            id: interaction_uuid(id)?,
+            id: Uuid::from_bytes(id.into_bytes()),
             kind: request.kind(),
             request: reference,
             deadline_unix_ms,
@@ -286,28 +286,12 @@ where
         result
     }
 
-    /// Replays the exact conversation and admits one typed open event.
+    /// Replays the conversation and admits one typed open event.
     pub async fn open(
-        &self,
-        operation_id: OperationId,
-        scope: Scope,
-        ticket: InteractionTicket,
-    ) -> Result<ApplyResult> {
-        self.execute_open_with_io(operation_id, &scope, &ticket, None, None).await
-    }
-
-    pub(crate) async fn open_request_with_io(
-        &self, operation_id: OperationId, ticket: &InteractionTicket,
-        owner: Option<&crate::durable_host::TaskJournalOwner<P>>, io: Option<&PreparationIo>,
-    ) -> Result<()> {
-        self.execute_open_with_io(operation_id, &self.owner_scope, ticket, owner, io)
-            .await.map(|_| ())
-    }
-
-    async fn execute_open_with_io(
-        &self, operation_id: OperationId, scope: &Scope, ticket: &InteractionTicket,
+        &self, operation_id: OperationId, scope: Option<&Scope>, ticket: &InteractionTicket,
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>, io: Option<&PreparationIo>,
     ) -> Result<ApplyResult> {
+        let scope = scope.unwrap_or(&self.owner_scope);
         loop {
             let attempt_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -328,7 +312,7 @@ where
                     io, crate::wire::ErrorCode::Invalid, "committed interaction revision is zero"))?,
                 None => aggregate.reducer().revision(),
             };
-            let scope = self.clone_scope_with_io(scope, io)?;
+            let scope = scope.clone_with_work(&mut work)?;
             let command_ticket = ticket.clone_with_work(&mut work)?;
             let idempotency_key = IdempotencyKey::new(interaction_text(
                 "interaction:", Some(operation_id.into_bytes()), "", "", "", io)?)?;
@@ -362,34 +346,45 @@ where
         }
     }
 
-    fn clone_scope_with_io(&self, scope: &Scope, io: Option<&PreparationIo>) -> Result<Scope> {
+    /// Resolves with the exact responder grant and current version.
+    pub async fn resolve(
+        &self, operation_id: OperationId, scope: &Scope,
+        resolution: InteractionResolution, io: Option<&PreparationIo>,
+    ) -> Result<ApplyResult> {
+        let aggregate_hold;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let mut aggregate = self.aggregate(io).await?;
+        aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
+                "interaction aggregate custody underflows"))?)).transpose()?;
+        let command_hold;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        scope.clone_with_work(&mut work)
-    }
-
-    /// Resolves only with the exact interaction responder grant and current version.
-    pub async fn resolve(
-        &self,
-        operation_id: OperationId,
-        scope: Scope,
-        resolution: InteractionResolution,
-    ) -> Result<ApplyResult> {
-        self.execute(
-            operation_id,
-            scope,
-            Action::ResolveInteraction { resolution }, None)
-        .await
-    }
-
-    pub(crate) async fn resolve_with_io(
-        &self, operation_id: OperationId, scope: &Scope,
-        resolution: InteractionResolution, io: Option<&PreparationIo>,
-    ) -> Result<()> {
-        let scope = self.clone_scope_with_io(scope, io)?;
-        self.execute(operation_id, scope, Action::ResolveInteraction { resolution }, io)
-            .await.map(|_| ())
+        let scope = scope.clone_with_work(&mut work)?;
+        let (committed, _) = crate::store::operations::find_operation_bounded_with_work(
+            &self.stream, &self.authority, &self.verifier, operation_id,
+            2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut work,
+        ).await?;
+        let expected_revision = match committed {
+            Some(event) => event.revision.checked_sub(1).ok_or_else(|| interaction_boundary(
+                io, crate::wire::ErrorCode::Invalid, "committed interaction revision is zero"))?,
+            None => aggregate.reducer().revision(),
+        };
+        let idempotency_key = IdempotencyKey::new(interaction_text(
+            "interaction:", Some(operation_id.into_bytes()), "", "", "", io)?)?;
+        command_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
+                "interaction command custody underflows"))?)).transpose()?;
+        let command = Command {
+            operation_id, idempotency_key, expected_revision, scope, causal_parent: None, action: Action::ResolveInteraction { resolution },
+        };
+        let result = aggregate.execute_with_work(command, &mut work).await;
+        drop(aggregate);
+        drop(aggregate_hold);
+        drop(command_hold);
+        result
     }
 
     /// Validates and stages a response, then resolves the conversation.
@@ -422,7 +417,7 @@ where
             detail: None,
         };
         resolution.validate(&ticket)?;
-        ResolutionReceipt::from_apply_result(self.resolve(operation_id, scope, resolution).await?)
+        ResolutionReceipt::from_apply_result(self.resolve(operation_id, &scope, resolution, None).await?)
     }
 
     /// Resolves an approval of the ticket's exact operation and argument digest.
@@ -456,7 +451,7 @@ where
             detail,
         };
         resolution.validate(&ticket)?;
-        ResolutionReceipt::from_apply_result(self.resolve(operation_id, scope, resolution).await?)
+        ResolutionReceipt::from_apply_result(self.resolve(operation_id, &scope, resolution, None).await?)
     }
 
     async fn open_resolution(
@@ -508,7 +503,7 @@ where
                 "interaction aggregate custody underflows"))?)).transpose()?;
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let value = aggregate.reducer().interaction(&interaction_uuid(id)?)
+        let value = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes()))
             .map(|(ticket, resolution)| -> Result<_> {
                 let ticket = crate::core::native_interaction_ticket_clone_with_custody(ticket, &mut work)?.0;
                 let resolution = resolution.as_ref().map(|value|
@@ -532,7 +527,7 @@ where
                 "interaction aggregate custody underflows"))?)).transpose()?;
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let outcome = aggregate.reducer().interaction(&interaction_uuid(id)?)
+        let outcome = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes()))
             .and_then(|(_, resolution)| resolution.as_ref())
             .map(|resolution| resolution.outcome.clone_with_work(&mut work))
             .transpose()?;
@@ -551,7 +546,7 @@ where
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
-        let Some((ticket, _)) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
+        let Some((ticket, _)) = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes())) else {
             return Ok(None);
         };
         let request = match io {
@@ -561,7 +556,7 @@ where
                 let bytes_hold;
                 let bytes = self.host.read_pinned_io(&ticket.request, self.maximum_bytes, Some(io)).await?;
                 bytes_hold = io.guard_bytes(&bytes)?;
-                let request = io.decode_preparation::<Interaction>(&bytes)?;
+                let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
                 let mut borrowed = io.history_io();
                 ticket.validate_decoded_request_with_work(&request, &mut Some(&mut borrowed))?;
                 let request = request.into_retained();
@@ -590,7 +585,7 @@ where
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
-        let Some((_, Some(resolution))) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
+        let Some((_, Some(resolution))) = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes())) else {
             return Ok(None);
         };
         let reference = if detail { resolution.detail.as_ref() } else {
@@ -621,44 +616,6 @@ where
     }
 
 
-    async fn execute(
-        &self, operation_id: OperationId, scope: Scope, action: Action, io: Option<&PreparationIo>,
-    ) -> Result<ApplyResult> {
-        let aggregate_hold;
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let mut aggregate = self.aggregate(io).await?;
-        aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
-            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
-                "interaction aggregate custody underflows"))?)).transpose()?;
-        let command_hold;
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let mut borrowed = io.map(PreparationIo::history_io);
-        let mut work = borrowed.as_mut().map(
-            |work| work as &mut dyn crate::store::history::HistoryIo);
-        let (committed, _) = crate::store::operations::find_operation_bounded_with_work(
-            &self.stream, &self.authority, &self.verifier, operation_id,
-            2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut work,
-        ).await?;
-        let expected_revision = match committed {
-            Some(event) => event.revision.checked_sub(1).ok_or_else(|| interaction_boundary(
-                io, crate::wire::ErrorCode::Invalid, "committed interaction revision is zero"))?,
-            None => aggregate.reducer().revision(),
-        };
-        let idempotency_key = IdempotencyKey::new(interaction_text(
-            "interaction:", Some(operation_id.into_bytes()), "", "", "", io)?)?;
-        command_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
-            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
-                "interaction command custody underflows"))?)).transpose()?;
-        let command = Command {
-            operation_id, idempotency_key, expected_revision, scope, causal_parent: None, action,
-        };
-        let result = aggregate.execute_with_work(command, &mut work).await;
-        drop(aggregate);
-        drop(aggregate_hold);
-        drop(command_hold);
-        result
-    }
-
     pub(super) async fn verify_approval_with_io(
         &self, id: InteractionId, operation: OperationId, digest: [u8; 32],
         io: Option<&PreparationIo>,
@@ -669,7 +626,7 @@ where
         replay_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "approval replay custody underflows"))?)).transpose()?;
-        let Some((ticket, Some(resolution))) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
+        let Some((ticket, Some(resolution))) = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes())) else {
             return Err(interaction_boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "tool installation lacks a resolved approval"));
         };
@@ -692,7 +649,7 @@ where
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let request = match io {
             Some(io) => {
-                let request = io.decode_preparation::<Interaction>(&bytes)?;
+                let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
                 ticket.validate_decoded_request_with_work(&request, &mut work)?;
                 request.into_retained()
             }
@@ -716,7 +673,7 @@ where
                     "approval decision bytes custody underflows"))?)).transpose()?;
             match io {
                 Some(io) => {
-                    let response = io.decode_preparation::<InteractionResponse>(&bytes)?;
+                    let response = io.decode_preparation::<InteractionResponse>(&bytes, crate::wire::ErrorCode::Storage)?;
                     ticket.validate_decoded_decision_with_work(
                         &request, &resolution.outcome, detail, &response, &mut work)?;
                 }
@@ -810,10 +767,6 @@ where
         drop(bytes_hold);
         result
     }
-}
-
-fn interaction_uuid(id: InteractionId) -> Result<Uuid> {
-    Ok(Uuid::from_bytes(id.into_bytes()))
 }
 
 pub(super) fn interaction_boundary(

@@ -718,7 +718,7 @@ impl ForkPreparationMachine {
             digest: preparation_implementation_digest(Some(&io))?,
         };
         let schema;
-        (schema, custody) = io.decode_preparation::<Value>(PREPARATION_STATE_SCHEMA)?.into_native_parts()?;
+        (schema, custody) = io.decode_preparation::<Value>(PREPARATION_STATE_SCHEMA, crate::wire::ErrorCode::Storage)?.into_native_parts()?;
         metadata = io.take_native_custody(io.owned_bytes()?)?;
         custody.absorb(&mut metadata).map_err(Error::from)?;
         Ok(Arc::new(Self { identity, schema, _native_custody: Some(custody) }))
@@ -851,15 +851,6 @@ impl ForkPreparationMachine {
 
 fn preparation_payload_digest<T: Serialize>(value: &T, io: Option<&super::PreparationIo>) -> Result<[u8; 32]> {
     let Some(io) = io else { return crate::contract::canonical_json_digest(value); };
-    let mut observer = io.history_io();
-    let bytes = crate::store::history::canonical_bytes_with_work(
-        value, io.remaining()?.bytes_encoded, &mut Some(&mut observer),
-    )?;
-    use crate::store::history::HistoryIo as _;
-    observer.hashed_bytes(bytes.len() as u64)?;
-    let digest = *blake3::hash(&bytes).as_bytes();
-    let owned = bytes.capacity() as u64;
-    drop(bytes);
-    observer.release_owned(owned)?;
-    Ok(digest)
+    crate::contract::canonical_json_digest_with_work(
+        value, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))
 }

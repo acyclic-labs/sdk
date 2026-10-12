@@ -127,7 +127,7 @@ where
                     return Err(observed::boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "native reconciliation differs from original task binding"));
                 }
                 let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
-                let payload = io.decode_preparation::<serde_json::Value>(&body)?.into_retained();
+                let payload = io.decode_preparation::<serde_json::Value>(&body, crate::wire::ErrorCode::Storage)?.into_retained();
                 drop(body);
                 commands.reconcile_with_native_work(
                     std::sync::Arc::clone(shared), observed::clone_fence(&fence, Some(io))?,

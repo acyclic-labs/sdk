@@ -11,7 +11,7 @@ use acyclic_harness::conversation::{
 use acyclic_harness::executor::{Executor, StockExecutor, TurnInput};
 use acyclic_harness::filesystem::MemoryHarnessStorage;
 use acyclic_harness::model::{
-    FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelDispatch,
+    FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelDispatch,
     ModelEvent, ModelMessage, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
 };
 use acyclic_harness::tool::{ToolDefinition, ToolRegistry};
@@ -91,10 +91,7 @@ impl ModelProvider for SummaryModel {
         ]))
     }
 
-    fn reconcile<'a>(
-        &'a self,
-        _: ModelAttempt,
-    ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, _dispatch: acyclic_harness::model::ModelDispatch, _observed: &'a [acyclic_harness::model::ModelEvent]) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async { Err(Error::Unsupported("no uncertain fixture attempt".into())) })
     }
 }
