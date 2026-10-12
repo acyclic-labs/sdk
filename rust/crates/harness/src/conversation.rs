@@ -2330,7 +2330,7 @@ impl ConversationState {
         if cut <= self.resident_after_sequence() || self.pending_user.is_some() {
             return self.copy(work, retain);
         }
-        crate::projection::validate_model_context_selection_at_revision_with_work(
+        crate::projection::validate_model_context_selection(
             self, selection, cut, work)?;
         let mut temporary = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut calls = BTreeSet::new();

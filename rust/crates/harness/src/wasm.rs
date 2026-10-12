@@ -28,7 +28,7 @@ use crate::{
     model::{ModelContent, ModelEvent, ModelMessage},
     projection::{
         SelectedModelContext, select_model_context,
-        validate_model_context_selection_at_revision,
+        validate_model_context_selection,
     },
     resources::{ProviderRef, ResourceRef},
     runtime::{
@@ -1899,7 +1899,7 @@ pub fn validate_model_context_selection_wasm(
 ) -> Result<(), JsValue> {
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
-    validate_model_context_selection_at_revision(&conversation, &selection, selection.conversation_revision, None)
+    validate_model_context_selection(&conversation, &selection, selection.conversation_revision, &mut None)
     .map_err(js_error)
 }
 

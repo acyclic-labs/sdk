@@ -1650,10 +1650,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let available_bytes = if custody.work().is_some() { available.logical_owned_bytes()? } else { 0 };
         custody.adopt(available_bytes)?;
         let selected = match target {
-            Some(target) => self
-                .scheduler
-                .operation_ready_for(target, &available, &worker.labels, owner)
-                .then_some(target),
+            Some(target) => self.scheduler.operation(target)
+                .filter(|operation| self.scheduler.is_ready(operation, &available, &worker.labels, owner))
+                .map(|_| target),
             None => self
                 .scheduler
                 .ready(&available, &worker.labels, owner).next(),
