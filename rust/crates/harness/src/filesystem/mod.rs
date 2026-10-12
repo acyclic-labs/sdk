@@ -3264,6 +3264,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             .map_err(|error| Error::Storage(error.to_string()))
     }
 
+    /// Validates and publishes an admitted custom candidate under parent authority.
+    pub async fn apply_project_merge_candidate(
+        &self,
+        plan: &ParentMergePlan<A, O>,
+        operation_id: crate::OperationId,
+        candidate: &acyclic_fs::UnpublishedMergeCandidate,
+    ) -> Result<JoinOutcome<A, O>> {
+        self.require_merge_plan(plan)?;
+        plan.plan
+            .apply_candidate(Self::merge_options(plan, project_join_key(operation_id)?), candidate)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))
+    }
+
     fn require_merge_plan(&self, plan: &ParentMergePlan<A, O>) -> Result<()> {
         self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
         if plan.parent_project != self.project || plan.parent_scope != self.scope {
