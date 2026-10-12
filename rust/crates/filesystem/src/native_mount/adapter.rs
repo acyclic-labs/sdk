@@ -2508,7 +2508,7 @@ impl<A, O> SharedCheckout<A, O> {
             loan.restore().await;
             return Ok(false);
         }
-        match self.ledger.prepare_everything_notification(meter) {
+        match self.ledger.prepare_everything_notification(mounted) {
             Ok(notification) => loan.notification = Some(notification),
             Err(error) => {
                 loan.restore().await;
@@ -2621,7 +2621,7 @@ impl<A, O> SharedCheckout<A, O> {
         let meter = mounted.native_read_meter();
         let mut carrier = NativeDemandCarrier::Native(mounted);
         let mut loan = self.publication_loan_with_carrier(&mut carrier, cancellation, lifetime).await?;
-        match self.ledger.prepare_everything_notification(meter) {
+        match self.ledger.prepare_everything_notification(mounted) {
             Ok(notification) => loan.notification = Some(notification),
             Err(error) => {
                 loan.restore().await;

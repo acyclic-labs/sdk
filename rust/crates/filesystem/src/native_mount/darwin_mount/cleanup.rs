@@ -1,5 +1,5 @@
 use super::*;
-use crate::materializer::NativeOwnedCleanupCredit;
+use crate::materializer::NativeWorkReservation;
 use std::future::Future;
 use std::task::Poll;
 
@@ -30,9 +30,8 @@ impl DirectDetach {
         } else {
             None
         };
-        let meter = if resources.is_some() {
-            NativeOwnedCleanupCredit::from_reserved(original.reserve_work(WRITE_WORK)?)?
-                .runtime_meter()
+        let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = if resources.is_some() {
+            NativeWorkReservation::into_runtime_credit(original.reserve_work(WRITE_WORK)?)?
         } else {
             original.runtime_meter()
         };
@@ -80,10 +79,7 @@ impl DirectDetach {
             return Err(NativeMountError::ControlPending);
         }
         let completed = work.cpu(scan_work(1), || -> Result<_, NativeMountError> {
-            if work
-                .cleanup
-                .is_some_and(|loan| loan.cancellation().is_none())
-            {
+            if work.cleanup.is_some_and(|loan| loan.wait.is_none()) {
                 work.read()?;
                 let task = self.task.take().ok_or(NativeMountError::ControlPending)?;
                 Ok(Poll::Ready(task.wait(None, std::future::pending(), || {})))
@@ -126,7 +122,7 @@ impl Diskutil {
             acyclic_native_runtime::ProcessTree::TERMINATION_TIMEOUT,
             acyclic_native_runtime::ProcessTree::TERMINATION_POLL_INTERVAL,
         )?;
-        let credit = NativeOwnedCleanupCredit::from_reserved(
+        let credit = NativeWorkReservation::into_runtime_credit(
             original.reserve_work(crate::WorkCounters {
                 backend_read_operations: termination
                     .checked_mul(5)
@@ -148,7 +144,7 @@ impl Diskutil {
         Ok(Self {
             tree: None,
             frame: Some(frame),
-            meter: credit.runtime_meter(),
+            meter: credit,
             original: original.allocation_work(),
             deadline: Instant::now(),
             failed_spawn: false,
@@ -329,9 +325,7 @@ impl DarwinRecoveryControl {
             return Ok(true);
         }
         if timed_out {
-            return Err(NativeMountError::DarwinTeardown(
-                DarwinTeardownFailure::DiskutilTimedOut,
-            ));
+            return Err(NativeMountError::Io(std::io::ErrorKind::TimedOut.into()));
         }
         if let Some(status) = status.filter(|status| !status.success()) {
             return Err(NativeMountError::DarwinTeardown(
@@ -341,8 +335,8 @@ impl DarwinRecoveryControl {
         let deadline = Instant::now() + DISKUTIL_VISIBILITY_TIMEOUT;
         while probe.mounted(destination, work)? {
             if Instant::now() >= deadline {
-                return Err(NativeMountError::DarwinTeardown(
-                    DarwinTeardownFailure::MountStillVisible,
+                return Err(NativeMountError::Lifecycle(
+                    "Darwin mount remains visible after unmount",
                 ));
             }
             work.read()?;

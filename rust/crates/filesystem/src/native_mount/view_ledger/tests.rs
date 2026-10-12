@@ -247,10 +247,7 @@ fn node_admission_precedes_mutation_and_completion_survives_late_cancellation()
     )
     .map_err(|(error, _)| error)?;
     let accepted = ledger.prepare_node_change(node, &original)?;
-    original.clone().charge(crate::WorkCounters {
-        items_examined: 1,
-        ..crate::WorkCounters::UNCHARGED
-    })?;
+    original.clone().charge(scan_work(1))?;
     cancellation.cancel();
     accepted.record()?;
     assert!(!ledger.node_unchanged_since(node, before, &mut setup)?);
@@ -266,7 +263,9 @@ fn publication_delivers_to_final_live_observers_and_funds_late_registration()
     let early: Arc<dyn super::ViewObserver> = Arc::new(Counted::default());
     let dead = Arc::downgrade(&early);
     ledger.observe(dead.clone(), &mut NativeDemandCarrier::Borrowed(&mut setup))?;
-    let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(work())));
+    let original = crate::NativeMaterializationWork::from_meter(Arc::new(
+        crate::demand::NativeDemandReadMeter(Mutex::new(work())),
+    ));
     let notification = ledger.prepare_everything_notification(&original)?;
     drop(early);
     assert!(dead.upgrade().is_none());
@@ -280,6 +279,37 @@ fn publication_delivers_to_final_live_observers_and_funds_late_registration()
     assert_eq!(counted.0.load(std::sync::atomic::Ordering::Relaxed), 1);
     let next = ledger.prepare_everything_notification(&original)?;
     drop(next);
+    assert!(ledger.prepare_everything_notification(&original).is_ok());
+    Ok(())
+}
+
+#[test]
+fn publication_notification_keeps_the_resource_byte_limit() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut setup = work();
+    let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut setup))?;
+    let observer: Arc<dyn super::ViewObserver> = Arc::new(Counted::default());
+    ledger.observe(
+        Arc::downgrade(&observer),
+        &mut NativeDemandCarrier::Borrowed(&mut setup),
+    )?;
+    let original = crate::NativeMaterializationWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(cause, _)| cause)?;
+    let limited = original.native_volume_work(crate::WorkBudget {
+        bytes_copied: 0,
+        ..crate::WorkBudget::UNBOUNDED
+    })?;
+    let before = ledger.stamp();
+    assert!(matches!(
+        ledger.prepare_everything_notification(&limited),
+        Err(super::MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::Work(_)
+        ))
+    ));
+    assert_eq!(ledger.stamp(), before);
     assert!(ledger.prepare_everything_notification(&original).is_ok());
     Ok(())
 }

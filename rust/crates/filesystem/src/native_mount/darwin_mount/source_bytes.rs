@@ -10,7 +10,7 @@ pub(super) fn source_bytes(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| use_bytes(&bytes)));
     drop(bytes);
     if !intrinsic {
-        work.native_read_meter().lock().release(capacity)?;
+        work.state.lock().release(capacity)?;
     }
     match result {
         Ok(result) => result,

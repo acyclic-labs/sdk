@@ -122,8 +122,8 @@ impl MountProbe {
                 .ok_or(crate::WorkError::Overflow)?;
             if required > self.mounts.capacity() {
                 if work.cleanup.is_some() {
-                    return Err(NativeMountError::DarwinTeardown(
-                        DarwinTeardownFailure::MountTableCapacityExceeded,
+                    return Err(NativeMountError::Lifecycle(
+                        "Darwin mount table exceeds its prepaid capacity",
                     ));
                 }
                 reserve_buffer(&mut self.mounts, required, work.original)?;
@@ -144,8 +144,8 @@ impl MountProbe {
             }
             if count as usize >= self.mounts.capacity() {
                 if work.cleanup.is_some() {
-                    return Err(NativeMountError::DarwinTeardown(
-                        DarwinTeardownFailure::MountTableCapacityExceeded,
+                    return Err(NativeMountError::Lifecycle(
+                        "Darwin mount table exceeds its prepaid capacity",
                     ));
                 }
                 reserve_buffer(
@@ -186,12 +186,6 @@ impl MountProbe {
         fd: c_int,
         work: &ProbeWork<'_, '_>,
     ) -> Result<usize, NativeMountError> {
-        work.read()?;
-        let mut metadata = MaybeUninit::<libc::stat>::uninit();
-        // SAFETY: fd is open and metadata is writable.
-        if unsafe { libc::fstat(fd, metadata.as_mut_ptr()) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
         work.read()?;
         // SAFETY: F_GETPATH writes at most PATH_MAX bytes into this backing.
         if unsafe { libc::fcntl(fd, libc::F_GETPATH, self.normalized.as_mut_ptr()) } < 0 {
@@ -244,18 +238,7 @@ fn reserve_buffer<T>(
     count: usize,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
-    let bytes = count
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(crate::WorkError::Overflow)?;
-    let mut replacement = owned(work, bytes as u64, || {
-        let mut value = Vec::new();
-        value.try_reserve_exact(count)?;
-        Ok(value)
-    })?;
-    if let Some(allocation) = &mut replacement.allocation {
-        allocation
-            .reconcile_capacity((replacement.value.capacity() * std::mem::size_of::<T>()) as u64)?;
-    }
+    let replacement = vector(work, count)?;
     drop(std::mem::replace(buffer, replacement));
     Ok(())
 }

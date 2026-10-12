@@ -20,7 +20,7 @@ impl DarwinMountContext {
             || inodes.insert(root_file_id, ROOT_INODE),
         )?;
         let (handler_budget, handler_cancellation) = {
-            let meter = work.native_read_meter().lock();
+            let meter = work.state.lock();
             (meter.budget, meter.cancellation().clone())
         };
         Ok(Self {
@@ -38,7 +38,6 @@ impl DarwinMountContext {
             forgotten: AtomicU64::new(0),
             files: RwLock::new(DarwinOwned::empty(HashMap::new())),
             directories: Mutex::new(DarwinOwned::empty(HashMap::new())),
-            directory_checkpoints: Mutex::new(DarwinOwned::empty(HashMap::new())),
             ledger: FlushLedger::new(),
             changes: ChangeLabels::new(),
             origin: ViewOrigin::new(),
@@ -56,7 +55,6 @@ impl DarwinMountContext {
                 1,
                 crate::WorkCounters::UNCHARGED,
             )?,
-            allocation_custody: None,
         })
     }
 

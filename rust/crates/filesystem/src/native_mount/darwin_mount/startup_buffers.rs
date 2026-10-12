@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) struct StartupBuffers {
-    pub(super) destination: DarwinOwned<CString>,
+    pub(super) destination: Arc<DarwinOwned<CString>>,
     pub(super) pointers: [usize; 7],
 }
 
@@ -12,13 +12,18 @@ impl StartupBuffers {
         named_attributes: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        let destination =
+        let mut destination =
             native_name(destination.as_os_str().as_bytes(), work).map_err(|error| match error {
                 NativeMountError::Io(error) if error.raw_os_error() == Some(libc::EIO) => {
                     driver_errno(libc::EINVAL)
                 }
                 error => error,
             })?;
+        destination.claim_more(
+            (std::mem::size_of::<DarwinOwned<CString>>() + 2 * std::mem::size_of::<usize>()) as u64,
+            work,
+        )?;
+        let destination = Arc::new(destination);
         let options = [
             Some(c"nobrowse"),
             (!writable).then_some(c"ro"),

@@ -3,13 +3,14 @@
 use super::{MountSourceError, adapter::NativeDemandCarrier};
 use crate::FileId;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
-use notifications::ViewObservers;
+use notifications::Observers;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use storage::ChangeMap;
+pub(super) use storage::{copy_work, same_work, scan_work};
 use unicode_normalization::UnicodeNormalization as _;
 mod node_change;
 mod notifications;
@@ -176,7 +177,7 @@ pub(crate) struct ViewLedger {
     bindings: ChangeMap,
     directories: ChangeMap,
     nodes: ChangeMap,
-    observers: ViewObservers,
+    observers: Mutex<Observers>,
     _custody: Option<crate::demand::NativeMountAllocationCustody>,
 }
 
@@ -203,14 +204,12 @@ impl ViewLedger {
         change: &ViewChange<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError> {
-        let observers = self.observers.live(carrier)?;
-        storage::charge(
-            carrier,
-            crate::WorkCounters {
-                items_examined: observers.0.len() as u64,
-                ..crate::WorkCounters::UNCHARGED
-            },
-        )?;
+        let observers = self
+            .observers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .live(carrier)?;
+        storage::charge(carrier, scan_work(observers.0.len() as u64))?;
         let position = ViewStamp::next();
         let recorded = (|| {
             match change {
@@ -263,12 +262,11 @@ impl ViewLedger {
             Ok::<_, MountSourceError>(())
         })();
         position.record_in(&self.latest);
-        let origin = ViewOrigin::current();
         for observer in &observers.0 {
             if matches!(change, ViewChange::Unconfirmed) {
                 observer.view_unconfirmed(position);
             } else {
-                observer.view_changed(position, origin);
+                observer.view_changed(position, ViewOrigin::current());
             }
         }
         recorded
@@ -374,11 +372,8 @@ impl ViewLedger {
         stamp: ViewStamp,
         work: &mut crate::demand::DemandWork,
     ) -> Result<bool, MountSourceError> {
-        work.charge(crate::WorkCounters {
-            items_examined: 3,
-            ..crate::WorkCounters::UNCHARGED
-        })
-        .map_err(super::lazy::mount_demand_error)?;
+        work.charge(scan_work(3))
+            .map_err(super::lazy::mount_demand_error)?;
         Ok(stamp.precedes_none_of(&self.unconfirmed)
             && stamp.precedes_none_of(&self.everything)
             && self
@@ -548,11 +543,8 @@ fn admitted_names<T>(
             );
         }
     }
-    work.charge(crate::WorkCounters {
-        items_examined: items,
-        ..crate::WorkCounters::UNCHARGED
-    })
-    .map_err(super::lazy::mount_demand_error)?;
+    work.charge(scan_work(items))
+        .map_err(super::lazy::mount_demand_error)?;
     if scratch != 0 {
         work.allocate(scratch)
             .map_err(super::lazy::mount_demand_error)?;

@@ -21,14 +21,12 @@ impl ViewLedger {
     ) -> Result<PreparedNativeNodeChange<'_>, MountSourceError> {
         let prepared = (|| {
             let mut carrier = NativeDemandCarrier::Native(original);
-            let observers = self.observers.live(&mut carrier)?;
-            storage::charge(
-                &mut carrier,
-                crate::WorkCounters {
-                    items_examined: 1,
-                    ..crate::WorkCounters::UNCHARGED
-                },
-            )?;
+            let observers = self
+                .observers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .live(&mut carrier)?;
+            storage::charge(&mut carrier, scan_work(1))?;
             let key = key_of(&file_id);
             let positions = self.nodes.prepare(key, &mut carrier)?;
             let mut maximum = positions.work(key)?;
@@ -69,7 +67,7 @@ impl PreparedNativeNodeChange<'_> {
             mut positions,
             key,
             observers,
-            mut completion,
+            completion,
         } = self;
         let actual = positions
             .work(key)
@@ -78,21 +76,18 @@ impl PreparedNativeNodeChange<'_> {
         positions.record(key, position);
         drop(positions);
         position.record_in(&ledger.latest);
-        let mut result = completion
+        let mut recorded = completion
             .record_completed(actual)
             .map_err(MountSourceError::NativeWork);
         for observer in &observers.0 {
-            let visit = completion
-                .record_completed(crate::WorkCounters {
-                    items_examined: 1,
-                    ..crate::WorkCounters::UNCHARGED
-                })
+            let visited = completion
+                .record_completed(scan_work(1))
                 .map_err(MountSourceError::NativeWork);
-            if result.is_ok() {
-                result = visit;
+            if recorded.is_ok() {
+                recorded = visited;
             }
             observer.view_changed(position, ViewOrigin::current());
         }
-        result
+        recorded
     }
 }

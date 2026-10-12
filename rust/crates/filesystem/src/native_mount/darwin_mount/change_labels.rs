@@ -37,23 +37,7 @@ impl ChangeLabels {
         if labels.len() > MAXIMUM_VERIFIED_LABELS {
             return Ok(None);
         }
-        let bytes = labels
-            .len()
-            .checked_mul(std::mem::size_of::<(DarwinOwned<MountPath>, MountLookup)>())
-            .ok_or(crate::WorkError::Overflow)? as u64;
-        let mut rows = owned(work, bytes, || {
-            let mut rows = Vec::new();
-            rows.try_reserve_exact(labels.len())?;
-            Ok(rows)
-        })?;
-        if let Some(allocation) = &mut rows.allocation {
-            allocation.reconcile_capacity(
-                rows.value
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<(DarwinOwned<MountPath>, MountLookup)>())
-                    .ok_or(crate::WorkError::Overflow)? as u64,
-            )?;
-        }
+        let mut rows = vector(work, labels.len())?;
         for issued in labels.values() {
             let path = clone_path(&issued.path, work)?;
             copying(

@@ -7,7 +7,6 @@ impl DarwinMountContext {
         written: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<u64, NativeMountError> {
-        let stamp = self.cache_stamp(work)?;
         let lookup = self.lookup(path, work)?;
         match lookup.node.kind {
             MountNodeKind::Regular => {}
@@ -15,7 +14,6 @@ impl DarwinMountContext {
             _ => return Err(driver_errno(libc::EINVAL)),
         }
         let handle = self.allocate_handle().map_err(driver_errno)?;
-        let observation = shared(work, Mutex::new(FileObservation { stamp, lookup }))?;
         let written = shared(work, AtomicU64::new(written))?;
         let mut files = self.files.write().map_err(|_| driver_errno(libc::EIO))?;
         grow_map(&mut files, work)?;
@@ -28,7 +26,6 @@ impl DarwinMountContext {
                     FileHandle {
                         file_id: lookup.node.file_id,
                         file: None,
-                        observation,
                         written,
                     },
                 )
@@ -167,34 +164,26 @@ impl DarwinMountContext {
         if handle == 0 {
             return self.lookup(path, work);
         }
-        let observation = {
+        let (file_id, file) = {
             let files = self.files.read().map_err(|_| driver_errno(libc::EIO))?;
             work.charge(scan_work(files.capacity() as u64))?;
-            Arc::clone(
-                &files
-                    .get(&handle)
-                    .ok_or_else(|| driver_errno(libc::ESTALE))?
-                    .observation,
+            let entry = files
+                .get(&handle)
+                .ok_or_else(|| driver_errno(libc::ESTALE))?;
+            (
+                entry.file_id,
+                entry
+                    .file
+                    .as_ref()
+                    .map(|(file, custody)| (Arc::clone(file), custody.clone())),
             )
         };
-        {
-            let observation = observation.lock().map_err(|_| driver_errno(libc::EIO))?;
-            if let Some(stamp) = observation.stamp
-                && self.unchanged_since(path, Some(observation.lookup.node.file_id), stamp, work)?
-            {
-                return Ok(observation.lookup);
-            }
-        }
-        let stamp = self.cache_stamp(work)?;
-        let lookup = self
-            .file_target(path, handle, work)?
-            .file
-            .0
-            .lookup_with_meter(work)?;
-        if stamp.is_some() {
-            let mut observation = observation.lock().map_err(|_| driver_errno(libc::EIO))?;
-            observation.stamp = stamp;
-            observation.lookup = lookup;
+        let lookup = match file {
+            Some((file, _custody)) => file.lookup_with_meter(work)?,
+            None => self.lookup(path, work)?,
+        };
+        if lookup.node.file_id != file_id {
+            return Err(driver_errno(libc::ESTALE));
         }
         Ok(lookup)
     }
