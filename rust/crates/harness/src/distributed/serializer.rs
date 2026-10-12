@@ -84,7 +84,7 @@ pub(super) fn encode(
     let mut bytes = Vec::new();
     if let Some(work) = custody.work().as_deref_mut() {
         work.admit_encoding(length as u64)?;
-        work.reserve_bytes(&mut bytes, length)?;
+        crate::store::history::reserve(&mut bytes, length, work)?;
         custody.adopt(bytes.capacity() as u64)?;
     } else {
         bytes.reserve_exact(length);

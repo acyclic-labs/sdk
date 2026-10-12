@@ -334,6 +334,10 @@ impl AgentHarness {
             native_root_output: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            working_view: std::sync::OnceLock::new(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_custody: None,
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let (Some(work), Some(custody)) = (native_work, custody.as_ref()) {
@@ -356,18 +360,12 @@ impl AgentHarness {
         operation: OperationId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        (&admitted.limits).validate(&mut Some(
-            &mut crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork {
-                cause,
-                custody: None,
-            })?,
-        ))?;
-        (&admitted.run_limits).validate(&mut Some(
-            &mut crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork {
-                cause,
-                custody: None,
-            })?,
-        ))?;
+        (&admitted.limits).validate(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )))?;
+        (&admitted.run_limits).validate(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )))?;
         let created = admitted.created_access.as_ref();
         if let Some(access) = created {
             work.charge(acyclic_fs::WorkCounters {

@@ -1,4 +1,4 @@
-use super::{NativeTaskContext, RuntimeScope};
+use super::{RuntimeScope, TaskContext};
 use crate::{
     Error, Result,
     conversation::{VolumeOperation, VolumeRef},
@@ -46,14 +46,14 @@ pub trait NativeVolumePublicationGuard: Send + Sync {
     ) -> Result<crate::NativeFutureBundle<'a, ()>>;
 }
 
-impl NativeTaskContext {
+impl TaskContext {
     /// Authenticates the actual SDK-issued fresh-dispatch context before copying its immutable scope.
     pub async fn volume_callback_guard_with_native_work<P: StreamProvider + 'static>(
         &self,
         owner: &Arc<TaskJournalOwner<P>>,
         work: &NativeMaterializationWork,
     ) -> Result<NativeVolumeCallbackGuard<P>> {
-        let context = self.context();
+        let context = self;
         context.require_original_native_dispatch(work)?;
         if !self.native_metadata_matches(work) || !owner.native_shared_work_matches(work) {
             return Err(denied(
@@ -74,7 +74,9 @@ impl NativeTaskContext {
         owner
             .verify(
                 false,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )),
             )
             .await?;
 
@@ -120,9 +122,11 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
                 acyclic_fs::WorkCounters::default(),
             )
             .map_err(native_error)?;
-        let mut observer = crate::store::history::native_work_io(work)?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let volume = volume.copy(&mut Some(&mut observer))?;
-        let mut volume_custody = observer.into_custody();
+        let mut volume_custody = observer.into_custody()?;
         if let Err(cause) = custody.absorb(&mut volume_custody) {
             drop(volume);
             return Err(native_error(cause));
@@ -179,13 +183,17 @@ fn require_volume<P: StreamProvider>(
     original.0.require_volume_grant(
         volume,
         VolumeOperation::Read,
-        &mut Some(&mut crate::store::history::native_work_io(work)?),
+        &mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )),
     )?;
     if writable {
         original.0.require_volume_grant(
             volume,
             VolumeOperation::Write,
-            &mut Some(&mut crate::store::history::native_work_io(work)?),
+            &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )),
         )?;
     }
     Ok(())
@@ -213,7 +221,9 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
             .0
             .verify(
                 false,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )),
             )
             .await?;
         require_volume(&self.original, &self.volume, self.writable, work)

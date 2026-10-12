@@ -70,12 +70,19 @@ impl MachineRegistry {
     /// Copies key metadata on the original ledger, sharing implementations.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn copy(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let mut observer = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let bytes = (self.0.len() as u64)
-            .checked_mul(std::mem::size_of::<((String, String, [u8; 32]), Arc<dyn ResumableMachine>)>() as u64)
+            .checked_mul(
+                std::mem::size_of::<((String, String, [u8; 32]), Arc<dyn ResumableMachine>)>()
+                    as u64,
+            )
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
-            .ok_or(Error::NativeBoundary { code: Invalid, reason: "registry metadata ownership overflows" })?;
+            .ok_or(Error::NativeBoundary {
+                code: Invalid,
+                reason: "registry metadata ownership overflows",
+            })?;
         let mut observed = Some(&mut observer as &mut dyn crate::store::HistoryIo);
         let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, bytes)?;
         let mut copied = BTreeMap::new();
@@ -84,10 +91,11 @@ impl MachineRegistry {
             let version = crate::core::copy_text(version, &mut quota)?;
             copied.insert((name, version, *digest), Arc::clone(machine));
         }
-        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.remaining()
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         quota.transfer();
         drop(quota);
-        Ok((Self(copied), observer.into_custody()))
+        Ok((Self(copied), observer.into_custody()?))
     }
 
     /// Registers a validated exact implementation.
