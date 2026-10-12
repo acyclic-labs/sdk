@@ -196,14 +196,43 @@ async fn read_frame(
     Ok(Some(std::mem::take(line)))
 }
 
-async fn send_response(
-    output: &mut (impl tokio::io::AsyncWrite + Unpin),
+fn queue_response(
+    responses: &mut std::collections::VecDeque<Vec<u8>>,
     response: &Value,
 ) -> io::Result<()> {
+    if responses.len() >= 32 {
+        return Err(io::Error::other("MCP output queue is full"));
+    }
     let mut bytes = serde_json::to_vec(response)?;
     bytes.push(b'\n');
-    output.write_all(&bytes).await?;
-    output.flush().await
+    responses.push_back(bytes);
+    Ok(())
+}
+
+async fn write_response(
+    output: &mut (impl tokio::io::AsyncWrite + Unpin),
+    responses: &mut std::collections::VecDeque<Vec<u8>>,
+    written: &mut usize,
+) -> io::Result<()> {
+    let Some(bytes) = responses.front() else {
+        return Ok(());
+    };
+    let remaining = bytes
+        .get(*written..)
+        .ok_or_else(|| io::Error::other("invalid MCP output offset"))?;
+    if remaining.is_empty() {
+        output.flush().await?;
+        responses.pop_front();
+        *written = 0;
+    } else {
+        let count = output.write(remaining).await?;
+        if count == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        // write is cancellation-safe; retain partial progress across select iterations.
+        *written += count;
+    }
+    Ok(())
 }
 
 async fn transport(
@@ -213,9 +242,27 @@ async fn transport(
 ) -> Result<(), io::Error> {
     let mut input = tokio::io::BufReader::new(input);
     let mut line = Vec::new();
-    while let Some(frame) = read_frame(&mut input, &mut line).await? {
+    let mut responses = std::collections::VecDeque::new();
+    let mut written = 0;
+    loop {
+        let frame = loop {
+            tokio::select! {
+                biased;
+                result = write_response(&mut output, &mut responses, &mut written), if !responses.is_empty() => { result?; }
+                frame = read_frame(&mut input, &mut line) => break frame?,
+            }
+        };
+        let Some(frame) = frame else {
+            while !responses.is_empty() {
+                write_response(&mut output, &mut responses, &mut written).await?;
+            }
+            return Ok(());
+        };
         let Ok(request) = serde_json::from_slice::<Value>(&frame) else {
-            send_response(&mut output, &rpc_error(&Value::Null, -32700, "Parse error")).await?;
+            queue_response(
+                &mut responses,
+                &rpc_error(&Value::Null, -32700, "Parse error"),
+            )?;
             continue;
         };
         let login_completion = request.pointer("/params/name").and_then(Value::as_str)
@@ -245,22 +292,25 @@ async fn transport(
                 response = &mut operation => {
                     completed = true;
                     if !cancelled && let Some(response) = response {
-                        send_response(&mut output, &response).await?;
+                        queue_response(&mut responses, &response)?;
                     }
                     break;
+                }
+                result = write_response(&mut output, &mut responses, &mut written), if !responses.is_empty() => {
+                    result?;
                 }
                 frame = read_frame(&mut input, &mut line) => {
                     let Some(frame) = frame? else {
                         return Ok(true);
                     };
                     let Ok(incoming) = serde_json::from_slice::<Value>(&frame) else {
-                            send_response(&mut output, &rpc_error(&Value::Null, -32700, "Parse error")).await?;
+                            queue_response(&mut responses, &rpc_error(&Value::Null, -32700, "Parse error"))?;
                             continue;
                     };
                     let method = incoming.get("method").and_then(Value::as_str);
                     let id = incoming.get("id");
                     if incoming.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
-                        send_response(&mut output, &rpc_error(id.unwrap_or(&Value::Null), -32600, "Invalid Request")).await?;
+                        queue_response(&mut responses, &rpc_error(id.unwrap_or(&Value::Null), -32600, "Invalid Request"))?;
                     } else if id.is_none() {
                         if method == Some("notifications/cancelled")
                             && incoming.pointer("/params/requestId").is_some()
@@ -268,7 +318,7 @@ async fn transport(
                             if !cancelled {
                                 if let Some(sender) = cancellation.take() { let _ = sender.send(()); }
                                 cancelled = true;
-                                send_response(&mut output, &rpc_error(request.get("id").unwrap_or(&Value::Null), -32800, "Request cancelled")).await?;
+                                queue_response(&mut responses, &rpc_error(request.get("id").unwrap_or(&Value::Null), -32800, "Request cancelled"))?;
                             }
                             if !finish_on_cancel { break; }
                         }
@@ -280,7 +330,7 @@ async fn transport(
                         } else {
                             rpc_error(id, -32000, "Identity operation in progress")
                         };
-                        send_response(&mut output, &response).await?;
+                        queue_response(&mut responses, &response)?;
                     }
                 }
             }
@@ -301,7 +351,6 @@ async fn transport(
             Err(error) => return Err(error),
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -640,6 +689,201 @@ mod tests {
         }
     }
 
+    struct PausedOutput<W> {
+        output: W,
+        paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        stalled: std::sync::Arc<tokio::sync::Notify>,
+        waker: std::sync::Arc<std::sync::Mutex<Option<std::task::Waker>>>,
+    }
+
+    impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for PausedOutput<W> {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            if self.paused.load(std::sync::atomic::Ordering::Relaxed) {
+                *self.waker.lock().expect("writer waker") = Some(context.waker().clone());
+                self.stalled.notify_one();
+                return std::task::Poll::Pending;
+            }
+            let bytes = bytes.get(..bytes.len().min(7)).expect("bounded write");
+            std::pin::Pin::new(&mut self.output).poll_write(context, bytes)
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.output).poll_flush(context)
+        }
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.output).poll_shutdown(context)
+        }
+    }
+
+    #[tokio::test]
+    async fn blocked_output_keeps_consumed_device_and_refresh_exchanges_progressing() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use tokio::io::AsyncReadExt as _;
+        for (login, eof) in [(false, false), (true, false), (false, true)] {
+            let consumed = Arc::new(tokio::sync::Notify::new());
+            let released = Arc::new(tokio::sync::Notify::new());
+            let notify = consumed.clone();
+            let release = released.clone();
+            let router = axum::Router::new().fallback(move || {
+                let notify = notify.clone();
+                let release = release.clone();
+                async move {
+                    notify.notify_one();
+                    release.notified().await;
+                    axum::Json(json!({"access_token": "issued", "refresh_token": "rotated",
+                        "token_type": "Bearer", "expires_in": 900}))
+                }
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+            let http = tokio::spawn(async move {
+                axum::serve(listener, router).await.expect("serve");
+            });
+            let directory = tempfile::tempdir().expect("directory");
+            let path = directory.path().join("identity.json");
+            let mut server = server(path.clone());
+            server.identity = Identity::new(&endpoint).expect("identity");
+            pending(&mut server);
+            if !login {
+                Store::open(&path)
+                    .expect("store")
+                    .write(
+                        &endpoint,
+                        Session {
+                            access_token: "expired".to_owned(),
+                            refresh_token: "original".to_owned(),
+                            expires_at: 0,
+                        },
+                    )
+                    .expect("seed");
+            }
+            let (mut client, connection) = tokio::io::duplex(64 * 1024);
+            let (input, output) = tokio::io::split(connection);
+            let paused = Arc::new(AtomicBool::new(true));
+            let stalled = Arc::new(tokio::sync::Notify::new());
+            let waker = Arc::new(std::sync::Mutex::new(None));
+            let task = tokio::spawn(transport(
+                server,
+                input,
+                PausedOutput {
+                    output,
+                    paused: paused.clone(),
+                    stalled: stalled.clone(),
+                    waker: waker.clone(),
+                },
+            ));
+            let name = if login {
+                "identity_login_complete"
+            } else {
+                "identity_refresh"
+            };
+            client
+                .write_all(
+                    format!(
+                        "{}\n",
+                        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": name}})
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("request");
+            tokio::time::timeout(Duration::from_secs(3), consumed.notified())
+                .await
+                .expect("consumed");
+            client
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
+                .await
+                .expect("ping");
+            tokio::time::timeout(Duration::from_secs(3), stalled.notified())
+                .await
+                .expect("writer pending");
+            if eof {
+                client
+                    .shutdown()
+                    .await
+                    .expect("EOF while writer is pending");
+            }
+            released.notify_one();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if fs::read(&path)
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                        .and_then(|value| {
+                            value
+                                .pointer("/session/refresh_token")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .as_deref()
+                        == Some("rotated")
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("credentials saved while stdout remains pending");
+            assert!(paused.load(Ordering::Relaxed));
+            if eof {
+                paused.store(false, Ordering::Relaxed);
+                if let Some(waker) = waker.lock().expect("writer waker").take() {
+                    waker.wake();
+                }
+                tokio::time::timeout(Duration::from_secs(3), task)
+                    .await
+                    .expect("EOF drained after persistence")
+                    .expect("transport task")
+                    .expect("EOF transport");
+                http.abort();
+                continue;
+            }
+            assert!(!task.is_finished());
+            client.shutdown().await.expect("EOF");
+            paused.store(false, Ordering::Relaxed);
+            if let Some(waker) = waker.lock().expect("writer waker").take() {
+                waker.wake();
+            }
+            let mut output = String::new();
+            tokio::time::timeout(Duration::from_secs(3), client.read_to_string(&mut output))
+                .await
+                .expect("output resumed")
+                .expect("read");
+            task.await.expect("transport task").expect("transport");
+            let responses = output
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).expect("JSON"))
+                .collect::<Vec<_>>();
+            assert!(
+                responses
+                    .iter()
+                    .any(|value| value.get("id") == Some(&json!(1)))
+            );
+            assert!(
+                responses
+                    .iter()
+                    .any(|value| value.get("id") == Some(&json!(2)))
+            );
+            http.abort();
+        }
+    }
+
     #[tokio::test]
     async fn transport_errors_drain_consumed_device_and_refresh_exchanges() {
         use std::sync::{
@@ -774,5 +1018,79 @@ mod tests {
                 http.abort();
             }
         }
+    }
+    #[tokio::test]
+    async fn interrupted_pending_response_keeps_approval_for_retry() {
+        use tokio::io::AsyncReadExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+        let http = tokio::spawn(async move {
+            for interrupted in [true, false] {
+                let (socket, _) = listener.accept().await.expect("connection");
+                let mut stream = tokio::io::BufReader::new(socket);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    stream.read_line(&mut line).await.expect("request headers");
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().expect("length");
+                    }
+                }
+                stream
+                    .read_exact(&mut vec![0; length])
+                    .await
+                    .expect("request body");
+                let response = if interrupted {
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 128\r\nConnection: close\r\n\r\n{\"error\":\"authorization_pending\"".to_owned()
+                } else {
+                    let body = json!({"access_token": "issued", "refresh_token": "rotated", "token_type": "Bearer", "expires_in": 900}).to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                stream
+                    .get_mut()
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("response");
+                stream
+                    .get_mut()
+                    .shutdown()
+                    .await
+                    .expect("close truncated body");
+            }
+        });
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("identity.json");
+        let mut server = server(path.clone());
+        server.identity = Identity::new(&endpoint).expect("identity");
+        pending(&mut server);
+        let error = server
+            .call("identity_login_complete")
+            .await
+            .expect_err("download interrupted");
+        assert_eq!(error.code, "transport_error");
+        assert_eq!(error.status, Some(StatusCode::BAD_REQUEST));
+        assert!(server.pending.is_some());
+        server
+            .call("identity_login_complete")
+            .await
+            .expect("same approval completes");
+        assert!(server.pending.is_none());
+        assert_eq!(
+            Store::open(&path)
+                .expect("store")
+                .read(&endpoint)
+                .expect("saved")
+                .refresh_token,
+            "rotated"
+        );
+        http.await.expect("fake server");
     }
 }

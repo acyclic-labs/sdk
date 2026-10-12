@@ -365,7 +365,14 @@ impl Identity {
 
     async fn decode(response: reqwest::Response) -> Result<Value, Error> {
         let status = response.status();
-        let value: Value = response.json().await.map_err(|_| {
+        let bytes = response.bytes().await.map_err(|_| {
+            Error::http(
+                "transport_error",
+                "identity response body download failed",
+                status,
+            )
+        })?;
+        let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
             Error::http(
                 "invalid_response",
                 format!("identity returned non-JSON (HTTP {status})"),
