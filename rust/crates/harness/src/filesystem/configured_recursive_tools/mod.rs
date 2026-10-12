@@ -181,7 +181,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     io.original_native_work().expect("native source IO")).await?;
                 return Ok(owner);
             }
-            if io.is_some() { return Err(crate::filesystem::fork_preparer_io::failure(io,
+            if io.is_some() { return Err(stock_boundary(io,
                 crate::wire::ErrorCode::Unsupported, "finite recursive source requires original native work")); }
             self.authenticate_caller(context, false).await?;
             self.runtime(None)?.recursive_tool_owner(context, tool, invocation, cancellation, None).await
@@ -198,7 +198,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 io.absorb_native_custody(custody)?;
                 return Ok(value);
             }
-            if io.is_some() { return Err(crate::filesystem::fork_preparer_io::failure(io,
+            if io.is_some() { return Err(stock_boundary(io,
                 crate::wire::ErrorCode::Unsupported, "finite recursive source requires original native work")); }
             self.select_source(context, arguments, cancellation).await
         })
@@ -215,7 +215,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 io.absorb_native_custody(custody)?;
                 return Ok(value);
             }
-            if io.is_some() { return Err(crate::filesystem::fork_preparer_io::failure(io,
+            if io.is_some() { return Err(stock_boundary(io,
                 crate::wire::ErrorCode::Unsupported, "finite recursive source requires original native work")); }
             self.fork_binding(context, arguments, intent, original, cancellation).await
         })
@@ -253,7 +253,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 io.absorb_native_custody(custody)?;
                 return Ok(value);
             }
-            if io.is_some() { return Err(crate::filesystem::fork_preparer_io::failure(io,
+            if io.is_some() { return Err(stock_boundary(io,
                 crate::wire::ErrorCode::Unsupported, "finite recursive source requires original native work")); }
             self.merge_binding(context, arguments, original, cancellation).await
         })
@@ -306,3 +306,5 @@ fn checkpoint_operation(effect: OperationId) -> OperationId {
 }
 fn invalid_json(error: serde_json::Error) -> Error { Error::Invalid(error.to_string()) }
 fn work_error(error: acyclic_fs::WorkError) -> Error { Error::Storage(error.to_string()) }
+
+use crate::executor::{stock_boundary};

@@ -69,11 +69,11 @@ where
                 work_per_volume: options.work_per_volume,
             };
             let (mut mappings, mut mappings_custody) = allocate(&work, |io| {
-                crate::filesystem::fork_preparer_io::vector(bindings.len(), Some(io))
+                crate::model::vec_with_capacity(bindings.len(), Some(io))
             })?;
             output_custody.absorb(&mut mappings_custody)?;
             let (mut binding_work, binding_work_custody) = allocate(&work, |io| {
-                crate::filesystem::fork_preparer_io::vector(bindings.len(), Some(io))
+                crate::model::vec_with_capacity(bindings.len(), Some(io))
             })?;
             for (index, binding) in bindings.iter().enumerate() {
                 work.charge(acyclic_fs::WorkCounters {
@@ -182,7 +182,7 @@ where
                 acyclic_fs::WorkCounters::UNCHARGED,
             )?;
             let (mut preserved, mut preserved_slots) = allocate(work, |io| {
-                crate::filesystem::fork_preparer_io::vector(lazy_count, Some(io))
+                crate::model::vec_with_capacity(lazy_count, Some(io))
             })?;
             preserved_custody.absorb(&mut preserved_slots)?;
             for (index, binding) in bindings.iter().enumerate() {
@@ -210,10 +210,10 @@ where
             let operation = NativePreparationRoot::operation(owner.task_binding().0, &work)?;
             let retained = materializer.load(operation).await.map_err(Error::from)?;
             let (mut generations, generations_custody) = allocate(&work, |io| {
-                crate::filesystem::fork_preparer_io::vector(bindings.len(), Some(io))
+                crate::model::vec_with_capacity(bindings.len(), Some(io))
             })?;
             let (mut selection, mut plan_custody) = allocate(&work, |io| {
-                crate::filesystem::fork_preparer_io::vector(bindings.len(), Some(io))
+                crate::model::vec_with_capacity(bindings.len(), Some(io))
             })?;
             for (binding, volume_work) in bindings.iter().zip(&binding_work) {
                 owner
@@ -303,7 +303,7 @@ where
             };
             let manifest = &intent.manifest;
             let (mut top_level, top_custody) = allocate(&work, |io| {
-                crate::filesystem::fork_preparer_io::vector(bindings.len(), Some(io))
+                crate::model::vec_with_capacity(bindings.len(), Some(io))
             })?;
             for binding in bindings {
                 if matches!(binding.namespace, NativeVolumeNamespace::LazyMount { .. }) {
@@ -322,7 +322,7 @@ where
             top_level.sort_unstable();
             top_level.dedup();
             let (mut edits, mut edits_custody) = allocate(&work, |io| {
-                crate::filesystem::fork_preparer_io::vector(top_level.len(), Some(io))
+                crate::model::vec_with_capacity(top_level.len(), Some(io))
             })?;
             plan_custody.absorb(&mut edits_custody)?;
             for path in &top_level {
@@ -492,7 +492,7 @@ where
                 .backend()
                 .require_selected_root(&journal.plan.edits, &preserved)?;
             let (mut volumes, mut volumes_custody) = allocate(&work, |io| {
-                crate::filesystem::fork_preparer_io::vector::<PreparedVolume<A, O>>(
+                crate::model::vec_with_capacity::<PreparedVolume<A, O>>(
                     bindings.len(),
                     Some(io),
                 )

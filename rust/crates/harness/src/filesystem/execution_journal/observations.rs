@@ -66,7 +66,7 @@ where
             page_hold = match (io, before) {
                 (Some(io), Some(before)) => Some(io.guard_owned(
                     io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        crate::filesystem::fork_preparer_io::failure(
+                        stock_boundary(
                             Some(io),
                             crate::wire::ErrorCode::Invalid,
                             "execution page custody underflow",
@@ -248,7 +248,7 @@ where
     ) -> Result<bool> {
         self.require_operation(operation_id, io)?;
         if claim_id.is_empty() {
-            return Err(crate::filesystem::fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "execution journal compare-and-append is invalid",
@@ -268,7 +268,7 @@ where
             event: &'a ExecutionEvent,
         }
         let hash_input_bytes = 37_u64.checked_add(claim_id.len() as u64).ok_or_else(|| {
-            crate::filesystem::fork_preparer_io::failure(
+            stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "execution retry identity length overflows",
@@ -289,7 +289,7 @@ where
         let mut hash_input = String::with_capacity(hash_input_bytes as usize);
         use std::fmt::Write as _;
         write!(&mut hash_input, "{operation_id}:{claim_id}").map_err(|_| {
-            crate::filesystem::fork_preparer_io::failure(
+            stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "execution retry identity formatting failed",
@@ -564,3 +564,5 @@ where
         }
     }
 }
+
+use crate::executor::{stock_boundary};

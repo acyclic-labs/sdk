@@ -551,5 +551,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 pub(super) fn interaction_boundary(io: Option<&PreparationIo>, code: ErrorCode, reason: &'static str) -> Error {
     if code == ErrorCode::NotFound && io.is_none_or(|io| io.original_native_work().is_none()) {
         Error::NotFound(reason.into())
-    } else { super::fork_preparer_io::failure(io, code, reason) }
+    } else { stock_boundary(io, code, reason) }
 }
+
+use crate::executor::{stock_boundary};

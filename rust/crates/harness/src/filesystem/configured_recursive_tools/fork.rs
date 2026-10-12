@@ -160,7 +160,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let checkpoint = match original {
             Some(original) => Some(crate::executor::with_history_io(Some(&io), |work| {
                 original.request.source_checkpoint.as_ref().ok_or_else(||
-                    crate::filesystem::fork_preparer_io::failure(Some(&io), crate::wire::ErrorCode::Unauthorized,
+                    stock_boundary(Some(&io), crate::wire::ErrorCode::Unauthorized,
                         "original fork has no source checkpoint"))?.copy(work)
             })?),
             None => {
@@ -181,7 +181,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 };
                 let capture = SourceCheckpoint {
                     snapshot: pinned.0.reducer().snapshot(1, &mut Some(&mut io.history_io()))?.0,
-                    request, caller: caller.task, arguments: ForkToolArguments { id: arguments.id, msg: crate::filesystem::fork_preparer_io::clone_text(&arguments.msg, Some(&io))?, source: arguments.source },
+                    request, caller: caller.task, arguments: ForkToolArguments { id: arguments.id, msg: stock_string_copy(&arguments.msg, Some(&io))?, source: arguments.source },
                 };
                 let bytes_guard;
                 let bytes = io.encode(&capture, context.effective_scope().limits().file_bytes, false)?;
@@ -230,8 +230,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         io.absorb_native_custody(child.1)?;
         io.absorb_native_custody(claims.1)?;
         io.absorb_native_custody(source.1)?;
-        let child_message_pointer = crate::filesystem::fork_preparer_io::clone_text(&allocation.child_message_pointer, Some(&io))?;
-        let child_message_file_pointer = allocation.child_message_file_pointer.as_deref().map(|value| crate::filesystem::fork_preparer_io::clone_text(value, Some(&io))).transpose()?;
+        let child_message_pointer = stock_string_copy(&allocation.child_message_pointer, Some(&io))?;
+        let child_message_file_pointer = allocation.child_message_file_pointer.as_deref().map(|value| stock_string_copy(value, Some(&io))).transpose()?;
         let mut input_files = Vec::new();
         for file in &allocation.input_files {
             let file = crate::executor::with_history_io(Some(&io), |work| file.copy(work))?;
@@ -245,3 +245,5 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }, io.into_native_custody(retained)?))
     }
 }
+
+use crate::executor::{stock_boundary, stock_string_copy};

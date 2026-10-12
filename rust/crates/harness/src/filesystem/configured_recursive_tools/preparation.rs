@@ -61,11 +61,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         &self, binding: &ConfiguredRecursiveAuthorityBinding, request: &ForkRequest, snapshot: Snapshot,
         cancellation: &CancellationToken, io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<Reducer> {
-        use crate::filesystem::fork_preparer_io::failure;
+        use crate::executor::stock_boundary;
         use crate::wire::ErrorCode;
         if snapshot.authority != request.parent || snapshot.revision != request.parent_revision
             || &snapshot.authority != binding.authority() || snapshot.revision == 0 {
-            return Err(failure(io, ErrorCode::Unauthorized, "configured checkpoint differs from original caller cut"));
+            return Err(stock_boundary(io, ErrorCode::Unauthorized, "configured checkpoint differs from original caller cut"));
         }
         let check = || cancellation.check().map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
@@ -78,7 +78,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let mut history = io.map(crate::filesystem::PreparationIo::history_io);
         let mut observer = history.as_mut().map(|work| work as &mut dyn HistoryIo);
         let verifier = binding.issuer().verifier(&mut observer)?;
-        let expected = snapshot.events.last().ok_or_else(|| failure(io, ErrorCode::Unauthorized, "checkpoint has no canonical head"))?;
+        let expected = snapshot.events.last().ok_or_else(|| stock_boundary(io, ErrorCode::Unauthorized, "checkpoint has no canonical head"))?;
         let head_hold;
         let (head, _) = crate::store::operations::bounded_operation_with_retained_quota(
             &self.stream, binding.authority(), &verifier, expected.operation_id,
@@ -87,7 +87,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let head = (head, head_hold);
         check()?;
         if head.0.as_ref().map(|(event, _)| event) != Some(expected) {
-            return Err(failure(io, ErrorCode::Unauthorized, "checkpoint head differs from immutable canonical Stream event"));
+            return Err(stock_boundary(io, ErrorCode::Unauthorized, "checkpoint head differs from immutable canonical Stream event"));
         }
         drop(head);
         Reducer::restore(snapshot, verifier, SchemaRegistry::new(), &mut observer)

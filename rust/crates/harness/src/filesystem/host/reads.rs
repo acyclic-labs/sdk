@@ -210,7 +210,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::conversation::validate_content_path(path, work)
         })?;
         if name.len() > crate::conversation::MAX_LABEL_BYTES {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "file or volume label is invalid",
@@ -287,7 +287,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::conversation::validate_content_path(path, work)
         })?;
         if maximum_bytes == 0 {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "prefix read limit must be positive",
@@ -314,7 +314,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             return Err(io.invalid("prefix requires a regular file"));
         }
         let length = stat.logical_bytes.ok_or_else(|| {
-            fork_preparer_io::failure(
+            stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Storage,
                 "file length is missing",
@@ -351,7 +351,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Ok(())
         })?;
         if volume.provider() != &self.provider {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "private directory belongs to another provider or class",
@@ -398,10 +398,12 @@ pub(in crate::filesystem) async fn read_generation<
     )?;
     if io.original_native_work().is_none() {
         let capacity = bytes.retained_capacity().ok_or_else(|| {
-            fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Unsupported,
+            stock_boundary(Some(io), crate::wire::ErrorCode::Unsupported,
                 "content producer does not expose its owned capacity")
         })?;
         io.retain_owned(capacity as u64)?;
     }
     Ok(bytes)
 }
+
+use crate::executor::{stock_boundary};

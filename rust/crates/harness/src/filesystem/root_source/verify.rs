@@ -1,6 +1,7 @@
 
 use super::*;
-use crate::filesystem::fork_preparer_io::{self, failure};
+use crate::filesystem::fork_preparer_io;
+use crate::executor::stock_boundary;
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProjectSourceProvider<A, O> {
     async fn verify_source(
@@ -12,22 +13,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             if io.and_then(crate::filesystem::PreparationIo::original_native_work).is_some() {
                 return Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None };
             }
-            failure(io, crate::wire::ErrorCode::Unauthorized, "project source operation cancelled")
+            stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "project source operation cancelled")
         });
         if io.is_some() { check()?; }
         if context.owner != &self.owner || context.graph_root != self.graph_root || !context.created_project_authenticated {
-            return Err(failure(io, crate::wire::ErrorCode::Unauthorized, "project source lacks this graph's authenticated creator"));
+            return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "project source lacks this graph's authenticated creator"));
         }
         if self.native_source(&snapshot.project).is_some() && snapshot.native_snapshot.is_none() {
-            return Err(failure(io, crate::wire::ErrorCode::Unauthorized, "bound lazy project requires its original native snapshot"));
+            return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "bound lazy project requires its original native snapshot"));
         }
         if io.is_none() { snapshot.project.validate(&mut None)?; snapshot.generation.validate(&mut None)?; }
         if snapshot.project.class() != VolumeClass::Project || snapshot.project.provider() != &self.host.provider
             || snapshot.generation.as_resource().provider() != &self.host.provider {
-            return Err(failure(io, crate::wire::ErrorCode::Unauthorized, "project source belongs to another namespace or provider"));
+            return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "project source belongs to another namespace or provider"));
         }
         let budget = source_budget(context.maximum_work, context.maximum_bytes)
-            .map_err(|_| failure(io, crate::wire::ErrorCode::Invalid, "project source requires finite positive admission"))?;
+            .map_err(|_| stock_boundary(io, crate::wire::ErrorCode::Invalid, "project source requires finite positive admission"))?;
         let ordinary;
         let io = match io {
             Some(io) => io,
@@ -35,7 +36,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         };
         io.check_cancellation()?;
         if !io.contains_capability(&context.source.grants, &snapshot.project, "volume:read:")? {
-            return Err(failure(Some(io), crate::wire::ErrorCode::Unauthorized, "selected source admission lacks original project read authority"));
+            return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "selected source admission lacks original project read authority"));
         }
         let reference_hold;
         let before = io.owned_bytes()?;
@@ -51,10 +52,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         let generation_id = selected.id();
         drop(selected);
         if let Some(value) = &snapshot.native_snapshot {
-            let lazy = self.native_source(&snapshot.project).ok_or_else(|| failure(
+            let lazy = self.native_source(&snapshot.project).ok_or_else(|| stock_boundary(
                 Some(io), crate::wire::ErrorCode::Unauthorized, "native source has no original provider binding"))?;
             if lazy.backing.workspace_id() != opened.id() {
-                return Err(failure(Some(io), crate::wire::ErrorCode::Unauthorized, "native source names another original workspace"));
+                return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "native source names another original workspace"));
             }
             let bounds = JsonBounds { maximum_bytes: context.maximum_bytes, maximum_items: context.maximum_work, maximum_depth: 32 };
             let encoded_hold;
@@ -70,7 +71,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             drop(encoded);
             drop(encoded_hold);
             if frozen.workspace_id != opened.id() || frozen.authored_generation != generation_id {
-                return Err(failure(Some(io), crate::wire::ErrorCode::Unauthorized, "native capture does not match the selected generation"));
+                return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "native capture does not match the selected generation"));
             }
             lazy.backing.validate(frozen, io)?.await?;
             #[cfg(not(target_arch = "wasm32"))]
@@ -116,7 +117,9 @@ fn source_json<T: serde::Serialize>(
                 Error::NativeEncode { code, source, custody: Some(diagnostic) },
             error => error,
         })?;
-        return crate::filesystem::fork_preparer_io::source_bytes_from_vec(bytes, Some(io));
+        return crate::executor::with_history_io(Some(io), |work| {
+            crate::store::operations::owned_bytes_from_retained_vec(bytes, work).map(|(bytes, _)| bytes)
+        });
     }
     canonical_json_bytes_bounded(value, bounds, None, &mut |charge| io.codec_charge(charge, true)).map(Into::into)
 }

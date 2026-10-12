@@ -137,7 +137,7 @@ pub(in crate::filesystem) fn fork_request(
     })?;
     let generation = match io { Some(io) => generation.clone_with_io(io)?, None => generation.clone() };
     let private_generation = match io { Some(io) => private_generation.clone_with_io(io)?, None => private_generation.clone() };
-    let mut selections = crate::filesystem::fork_preparer_io::vector(3, io)?;
+    let mut selections = crate::model::vec_with_capacity(3, io)?;
     selections.push(crate::fork::ForkSelection { required: true, revision: ResourceRevision::History(reference) });
     selections.push(crate::fork::ForkSelection { required: true, revision: ResourceRevision::Project { volume: project, generation } });
     selections.push(crate::fork::ForkSelection { required: true, revision: ResourceRevision::PrivateVolume {

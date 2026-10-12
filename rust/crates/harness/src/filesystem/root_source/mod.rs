@@ -62,7 +62,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     io.retain_owned(std::mem::size_of::<Self>() as u64)?;
                     Some(io.take_native_custody(
                         io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                            super::fork_preparer_io::failure(
+                            stock_boundary(
                                 Some(io),
                                 crate::wire::ErrorCode::Invalid,
                                 "root source custody underflows",
@@ -146,3 +146,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .and_then(|proof| proof.native_source.as_ref())
     }
 }
+
+use crate::executor::{stock_boundary};

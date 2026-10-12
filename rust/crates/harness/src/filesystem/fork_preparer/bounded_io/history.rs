@@ -23,7 +23,7 @@ impl PreparationIo {
         if target <= values.capacity() {
             return Err(self.invalid("history vector exceeds declared maximum"));
         }
-        reserve(values, target, Some(self))
+        PreparationIo::reserve(values, target, Some(self))
     }
     pub(crate) fn history_future<'a, T, F>(
         &'a self,
@@ -127,7 +127,7 @@ impl HistoryIo for &PreparationIo {
         })
     }
     fn clone_text(&mut self, text: &str) -> Result<String> {
-        clone_text(text, Some(self))
+        stock_string_copy(text, Some(self))
     }
     fn reserve_events(
         &mut self,
@@ -317,3 +317,5 @@ impl HistoryIo for &PreparationIo {
         })
     }
 }
+
+use crate::executor::stock_string_copy;

@@ -487,26 +487,17 @@ where
         let mut accounting_failure = None;
         let result: Result<()> = async {
             let (output, mut output_custody) = allocate(work, |io| {
-                crate::filesystem::fork_preparer_io::vector(
-                    self.preparation.manifest.volumes.len(),
-                    Some(io),
-                )
+                crate::model::vec_with_capacity(self.preparation.manifest.volumes.len(), Some(io))
             })?;
             custody.absorb(&mut output_custody)?;
             completed = output;
             let (proofs, mut proofs_custody) = allocate(work, |io| {
-                crate::filesystem::fork_preparer_io::vector(
-                    self.preparation.manifest.volumes.len(),
-                    Some(io),
-                )
+                crate::model::vec_with_capacity(self.preparation.manifest.volumes.len(), Some(io))
             })?;
             custody.absorb(&mut proofs_custody)?;
             published = proofs;
             let (copies, copies_custody) = allocate(work, |io| {
-                crate::filesystem::fork_preparer_io::vector(
-                    self.preparation.manifest.volumes.len(),
-                    Some(io),
-                )
+                crate::model::vec_with_capacity(self.preparation.manifest.volumes.len(), Some(io))
             })?;
             mapping_storage = Some(copies_custody);
             mappings = copies;

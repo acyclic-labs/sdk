@@ -7,8 +7,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         allocation: &ConfiguredRecursiveFork, arguments: &ForkToolArguments,
         source: &RetainedSourceBinding<A, O>, io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<(TaskAdmissionRecord, Scope)> {
-        use crate::filesystem::fork_preparer_io::{failure, vector, clone_text, reference_key};
-        let mut child = 'child: {
+                let mut child = 'child: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
                 let work = io.original_native_work().ok_or_else(|| io.invalid("child claims require original work"))?;
@@ -19,7 +18,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             break 'child allocation.admission.clone();
         };
         if child.parent != Some(caller.task) || allocation.child.scope.agent() != Some(arguments.id) {
-            return Err(failure(io, crate::wire::ErrorCode::Unauthorized, "child allocation differs from original caller or agent"));
+            return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "child allocation differs from original caller or agent"));
         }
         #[cfg(not(target_arch = "wasm32"))]
         let reference_io = io.map(|io| crate::filesystem::PreparationIo::from_native_work(
@@ -36,13 +35,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let extra = (2 + usize::from(allocation.result_volume.is_some())).checked_mul(2)
             .and_then(|count| count.checked_add(allocation.input_files.len()))
             .and_then(|count| count.checked_add(references.len()))
-            .ok_or_else(|| failure(io, crate::wire::ErrorCode::Invalid, "child claim slots overflow"))?;
+            .ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid, "child claim slots overflow"))?;
         let capacity = |count: usize| count.checked_add(extra)
-            .ok_or_else(|| failure(io, crate::wire::ErrorCode::Invalid, "child claim slots overflow"));
-        let mut grants = vector(capacity(child.grants.iter().count())?, io)?;
-        let mut scoped = vector(capacity(allocation.child.scope.capabilities().iter().count())?, io)?;
+            .ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid, "child claim slots overflow"));
+        let mut grants = crate::model::vec_with_capacity(capacity(child.grants.iter().count())?, io)?;
+        let mut scoped = crate::model::vec_with_capacity(capacity(allocation.child.scope.capabilities().iter().count())?, io)?;
         let append = |values: &mut Vec<String>, value: &str| -> Result<()> {
-            values.push(clone_text(value, io)?);
+            values.push(stock_string_copy(value, io)?);
             Ok(())
         };
         for grant in child.grants.iter() { append(&mut grants, grant)?; }
@@ -59,20 +58,20 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         for file in &allocation.input_files {
             self.delegate_file(context, file, io).await?;
             let hold;
-            let grant = reference_key(file, io)?;
+            let grant = match io { Some(io) => io.capability(file, "file:read:"), None => file.read_capability() }?;
             hold = io.map(|io| io.guard_owned(grant.capacity() as u64)).transpose()?;
             let grant = (grant, hold);
             append(&mut grants, &grant.0)?; append(&mut scoped, &grant.0)?;
         }
         for reference in &references {
             if reference.reader != arguments.id {
-                return Err(failure(io, crate::wire::ErrorCode::Unauthorized, "inherited reference targets another child reader"));
+                return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "inherited reference targets another child reader"));
             }
             for file in std::iter::once(&reference.file).chain(reference.attachment_manifest.as_ref()) {
                 self.delegate_file(context, file, io).await?;
             }
             let hold;
-            let grant = reference_key(&reference.file, io)?;
+            let grant = match io { Some(io) => io.capability(&reference.file, "file:read:"), None => &reference.file.read_capability() }?;
             hold = io.map(|io| io.guard_owned(grant.capacity() as u64)).transpose()?;
             let grant = (grant, hold);
             append(&mut grants, &grant.0)?; append(&mut scoped, &grant.0)?;
@@ -105,7 +104,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         io: Option<&crate::filesystem::PreparationIo>) -> Result<()> {
         if !crate::executor::with_history_io(io, |work|
             crate::runtime::read_granted_with_work(context.scope().grants(), file, work))? {
-            return Err(crate::filesystem::fork_preparer_io::failure(io, crate::wire::ErrorCode::Unauthorized,
+            return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "current tool scope cannot delegate this file"));
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -292,7 +291,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let (admission, _admission_hold) = claims.0.0.clone_with_native_work(work)?;
             allocation_digest(allocation, admission, &claims.0.1, Some(&io))?
         };
-        let retained_arguments = ForkToolArguments { id: arguments.id, msg: crate::filesystem::fork_preparer_io::clone_text(&arguments.msg, Some(&io))?, source: arguments.source };
+        let retained_arguments = ForkToolArguments { id: arguments.id, msg: stock_string_copy(&arguments.msg, Some(&io))?, source: arguments.source };
         let history = io.history_io();
         history.absorb_native_custody(source.1)?;
         drop(history);
@@ -303,3 +302,5 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }, io.into_native_custody(retained)?))
     }
 }
+
+use crate::executor::{stock_boundary, stock_string_copy};

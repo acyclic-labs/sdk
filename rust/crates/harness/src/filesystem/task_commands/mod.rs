@@ -482,7 +482,7 @@ fn tool_invocation(
     let invocation = ToolInvocation {
         operation_id: operation,
         call_id: crate::contract::preparation_format(format_args!("{operation}"), io)?,
-        name: super::fork_preparer_io::clone_text(&definition.name, io)?,
+        name: stock_string_copy(&definition.name, io)?,
         arguments,
     };
     crate::executor::with_history_io(io, |work| {
@@ -538,3 +538,5 @@ fn child_operation(
     bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
     Ok(OperationId::from_bytes(bytes))
 }
+
+use crate::executor::{stock_string_copy};

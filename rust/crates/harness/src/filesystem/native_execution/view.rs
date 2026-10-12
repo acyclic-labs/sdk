@@ -98,7 +98,7 @@ where
                 acyclic_fs::WorkCounters::UNCHARGED,
             )?;
             let (mut scopes, mut vector_custody) = allocate(work, |io| {
-                crate::filesystem::fork_preparer_io::vector(count, Some(io))
+                crate::model::vec_with_capacity(count, Some(io))
             })?;
             custody.absorb(&mut vector_custody)?;
             for volume in &self.volumes {
@@ -247,7 +247,7 @@ where
                     acyclic_fs::WorkCounters::UNCHARGED,
                 )?;
                 let (mounts, mut vector_custody) = allocate(work, |io| {
-                    crate::filesystem::fork_preparer_io::vector(self.volumes.len(), Some(io))
+                    crate::model::vec_with_capacity(self.volumes.len(), Some(io))
                 })?;
                 custody.absorb(&mut vector_custody)?;
                 wait.check()

@@ -30,30 +30,11 @@ async fn birth<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let held;
     let name = bounded_io::volume_storage_name(volume, Some(io))?;
     held = io.guard_owned(name.capacity() as u64)?;
-    let result = match io.original_native_work() {
-        Some(work) => host
-            .filesystem
-            .workspace_for_creation_operation_with_native_work(
-                &name,
-                config,
-                operation,
-                work,
-                io.cancellation(),
-            )
-            .await
-            .map_err(|(source, custody)| Error::NativeWorkspace { source, custody }),
-        None => io.receive(
-            host.filesystem
-                .workspace_for_creation_operation(
-                    &name,
-                    config,
-                    operation,
-                    io.remaining()?,
-                    io.cancellation(),
-                )
-                .await,
-        ),
-    };
+    let result = io.sdk(
+        host.filesystem
+            .workspace_for_creation_operation(&name, config, operation, io, io.cancellation())
+            .await,
+    );
     drop(name);
     drop(held);
     result
@@ -118,7 +99,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             if role == RootBootstrapContentRole::Scratch
                 && volume.owner() != &VolumeOwner::Agent(witness.binding().agent())
             {
-                return Err(bounded_io::failure(
+                return Err(stock_boundary(
                     Some(&io),
                     crate::wire::ErrorCode::Unauthorized,
                     "Root Scratch differs from its original actor",
@@ -148,14 +129,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let born = birth(&self.host, volume, config, operation, &io)
                 .await?
                 .ok_or_else(|| {
-                    bounded_io::failure(
+                    stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "Root bootstrap has no protected Filesystem birth",
                     )
                 })?;
             if born.id() != initial_generation {
-                return Err(bounded_io::failure(
+                return Err(stock_boundary(
                     Some(&io),
                     crate::wire::ErrorCode::Unauthorized,
                     "Root bootstrap differs from its actual initial generation",
@@ -171,7 +152,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     || snapshot.workspace_id != born.workspace_id()
                     || snapshot.authored_generation != selected.id()
                 {
-                    return Err(bounded_io::failure(
+                    return Err(stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "Root import differs from its original workspace or selected generation",
@@ -232,10 +213,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             hex::encode_to_slice(graph_root.into_bytes(), &mut identity)
                 .map_err(|_| io.invalid("Root allocation identity encoding failed"))?;
             let suffix = std::str::from_utf8(&identity).expect("hex is ASCII");
-            let creation = IdempotencyKey::new(crate::contract::preparation_format(
-                format_args!("root-bootstrap-journal:{suffix}"),
-                Some(&io),
-            )?)?;
+            let creation =
+                IdempotencyKey::new(crate::executor::with_history_io(Some(&io), |work| {
+                    crate::contract::preparation_format(
+                        format_args!("root-bootstrap-journal:{suffix}"),
+                        work,
+                    )
+                })?)?;
             let lifecycle = if self.host.filesystem.capabilities().durable {
                 acyclic_fs::Lifecycle::Durable
             } else {
@@ -244,17 +228,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let operation = acyclic_fs::OperationId::from_bytes(
                 bounded_io::operation_key(&creation, Some(&io))?.into_bytes(),
             );
-            self.host
-                .filesystem
-                .create_workspace_with_operation_with_native_work(
-                    name,
-                    acyclic_fs::VolumeConfig::portable(lifecycle),
-                    operation,
-                    work,
-                    work.cancellation(),
-                )
-                .await
-                .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            io.sdk(
+                self.host
+                    .filesystem
+                    .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+                        name,
+                        acyclic_fs::VolumeConfig::portable(lifecycle),
+                        operation,
+                        &io,
+                        io.cancellation(),
+                        None,
+                    )
+                    .await,
+            )?;
             match bounded_io::read(
                 &self.host,
                 &journal,
@@ -265,7 +251,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .await
             {
                 Ok(_) => {
-                    return Err(bounded_io::failure(
+                    return Err(stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "child allocation cannot be claimed as original Root bootstrap",
@@ -289,7 +275,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             };
             if let Some(prior) = prior {
                 if prior != record {
-                    return Err(bounded_io::failure(
+                    return Err(stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Conflict,
                         "original Root bootstrap association changed",
@@ -297,11 +283,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 }
             } else {
                 let observed = bounded_io::resolve(&self.host, &journal, Some(&io)).await?;
-                let key = IdempotencyKey::new(crate::contract::preparation_format(
-                    format_args!("root-bootstrap-claim:{suffix}"),
-                    Some(&io),
-                )?)?;
-                let path = bounded_io::clone_text("/root-bootstrap.json", Some(&io))?;
+                let key =
+                    IdempotencyKey::new(crate::executor::with_history_io(Some(&io), |work| {
+                        crate::contract::preparation_format(
+                            format_args!("root-bootstrap-claim:{suffix}"),
+                            work,
+                        )
+                    })?)?;
+                let path = stock_string_copy("/root-bootstrap.json", Some(&io))?;
                 match bounded_io::apply_generation(
                     &self.host,
                     &journal,
@@ -329,7 +318,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 .await?
                     != record
                 {
-                    return Err(bounded_io::failure(
+                    return Err(stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Conflict,
                         "protected Root bootstrap association was not published exactly",
@@ -443,7 +432,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         drop(journal);
         drop(journal_hold);
         if !exact {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Unauthorized,
                 "protected original Root bootstrap association changed",
@@ -461,7 +450,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .as_ref()
             .is_some_and(|birth| birth.id() == self.initial_generation)
         {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Unauthorized,
                 "Root content protected Filesystem birth changed",
@@ -478,7 +467,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let Some(source) = &self.native_source else {
             return Ok(None);
         };
-        let reject = |reason| bounded_io::failure(io, crate::wire::ErrorCode::Unauthorized, reason);
+        let reject = |reason| stock_boundary(io, crate::wire::ErrorCode::Unauthorized, reason);
         let snapshot = self
             .snapshot()
             .ok_or_else(|| reject("Root lazy content has no original frozen snapshot"))?;
@@ -545,7 +534,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             }
         };
         let lease = self.publication_lease.as_ref().ok_or_else(|| {
-            bounded_io::failure(
+            stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Unauthorized,
                 "Root lazy content has no original publication authority",
@@ -569,3 +558,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         .await
     }
 }
+
+use crate::executor::{stock_boundary, stock_string_copy};

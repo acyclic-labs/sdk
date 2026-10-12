@@ -60,7 +60,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObject
             .map(|(authorization, _)| authorization)).transpose()?;
     let request = ResourcePreparationRequest {
         provider, child, resources,
-        creation_grant: crate::filesystem::fork_preparer_io::clone_text("fork:publish", io)?,
+        creation_grant: stock_string_copy("fork:publish", io)?,
         maximum_resources: limits.resources, maximum_work: limits.work, maximum_bytes: limits.bytes,
         read_authorization, payload: encode(fork, io)?,
         command: Some(command), source_checkpoint, input_files,
@@ -69,3 +69,5 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObject
     Ok(request)
 }
 
+
+use crate::executor::{stock_string_copy};

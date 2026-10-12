@@ -244,7 +244,7 @@ where
             acyclic_fs::TransactionCommit::Conflict { .. }
             | acyclic_fs::TransactionCommit::Fenced
             | acyclic_fs::TransactionCommit::IdempotencyConflict => {
-                Err(crate::filesystem::fork_preparer_io::failure(
+                Err(stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Conflict,
                     "Root upload publication was rejected",
@@ -348,3 +348,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootNati
         })
     }
 }
+
+use crate::executor::{stock_boundary};

@@ -51,7 +51,7 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
         if bytes.len() as u64 > self.maximum_payload_bytes {
-            return Err(crate::filesystem::fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "execution journal payload exceeds limit",
@@ -63,7 +63,7 @@ where
         _identity_hold = io
             .map(|io| {
                 let retained = io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                    crate::filesystem::fork_preparer_io::failure(
+                    stock_boundary(
                         Some(io),
                         crate::wire::ErrorCode::Invalid,
                         "staging identity ownership underflow",
@@ -183,7 +183,7 @@ where
                 ));
             }
             let _bytes_hold;
-            crate::filesystem::fork_preparer_io::item(io, 0)?;
+            crate::model::charge_items(io, 1)?;
             let owned_bytes = self.load_content(reference, io).await?;
             _bytes_hold = io
                 .map(|io| io.guard_bytes(&owned_bytes))
@@ -206,7 +206,7 @@ where
                 _prepared_hold = match (io, before) {
                     (Some(io), Some(before)) => Some(io.guard_owned(
                         io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                            crate::filesystem::fork_preparer_io::failure(
+                            stock_boundary(
                                 Some(io),
                                 crate::wire::ErrorCode::Invalid,
                                 "prepared model request custody underflow",
@@ -216,7 +216,7 @@ where
                     _ => None,
                 };
                 if &prepared.request_digest() != request_digest {
-                    return Err(crate::filesystem::fork_preparer_io::failure(
+                    return Err(stock_boundary(
                         io,
                         crate::wire::ErrorCode::Invalid,
                         "model start digest differs from its retained request",
@@ -263,7 +263,7 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         if reference.descriptor().byte_length() > self.maximum_payload_bytes {
-            return Err(crate::filesystem::fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "turn input file exceeds journal limit",
@@ -287,7 +287,8 @@ where
                 .await;
         }
         if let Some(io) = io {
-            crate::filesystem::fork_preparer_io::item(Some(io), reference.logical_owned_bytes()?)?;
+            crate::model::charge_items(Some(io), 1)?;
+if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?; }
             reference.validate(&mut None)?;
             if reference.volume().class() == VolumeClass::AgentPrivate
                 && reference.volume().owner() != self.volume.owner()
@@ -330,7 +331,7 @@ where
                 .await?;
             _bytes_hold =
                 io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                    crate::filesystem::fork_preparer_io::failure(
+                    stock_boundary(
                         Some(io),
                         crate::wire::ErrorCode::Invalid,
                         "input file custody underflow",
@@ -366,9 +367,9 @@ where
     ) -> Result<()> {
         let mut count = 0_usize;
         for _ in content.file_refs() {
-            crate::filesystem::fork_preparer_io::item(io, 0)?;
+            crate::model::charge_items(io, 1)?;
             count = count.checked_add(1).ok_or_else(|| {
-                crate::filesystem::fork_preparer_io::failure(
+                stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "model reference count overflow",
@@ -382,7 +383,7 @@ where
                 Option<&crate::model::NativeConfigurationBinding>,
             )>() as u64)
             .ok_or_else(|| {
-                crate::filesystem::fork_preparer_io::failure(
+                stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "model reference ownership overflow",
@@ -403,7 +404,7 @@ where
                 owner.validate_input_file(file, io)?;
             }
             if file.descriptor().byte_length() > self.maximum_payload_bytes {
-                return Err(crate::filesystem::fork_preparer_io::failure(
+                return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "model content exceeds journal limit",
@@ -438,7 +439,7 @@ where
         for (file, _) in &references {
             let mut configuration = false;
             for (_, binding) in &references {
-                crate::filesystem::fork_preparer_io::item(io, 0)?;
+                crate::model::charge_items(io, 1)?;
                 if binding.is_some_and(|binding| &binding.configuration.content == *file) {
                     configuration = true;
                     break;
@@ -483,3 +484,5 @@ where
         Ok(())
     }
 }
+
+use crate::executor::{stock_boundary};

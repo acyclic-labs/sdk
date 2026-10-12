@@ -174,7 +174,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
             .unwrap_or_else(|| maximum_inherited_bytes.saturating_mul(1_024));
         let io = original.map(|(_, _, io)| io);
         if maximum_inherited_bytes == 0 || maximum_total_reference_bytes == 0 {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "fork reference limits must be positive",
@@ -205,7 +205,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         if original.is_some() {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "native fork verification is unavailable",
@@ -338,7 +338,7 @@ where
                     self.require_seed_file_with_io(seed, file, &io).await?;
                 }
                 if file.volume().provider() != &self.host.provider {
-                    return Err(fork_preparer_io::failure(
+                    return Err(stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "fork manifest belongs to another provider",
@@ -353,7 +353,7 @@ where
                     return Ok((bytes, 0));
                 }
                 let retained = bytes.retained_capacity().ok_or_else(|| {
-                    fork_preparer_io::failure(
+                    stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unsupported,
                         "manifest producer does not expose its admitted owned capacity",
@@ -394,7 +394,7 @@ where
                     self.require_seed_file_with_io(seed, file, &io).await?;
                 }
                 if file.volume().provider() != &self.host.provider {
-                    return Err(fork_preparer_io::failure(
+                    return Err(stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "fork file belongs to another provider",
@@ -540,3 +540,5 @@ where
 }
 
 mod seed;
+
+use crate::executor::{stock_boundary};

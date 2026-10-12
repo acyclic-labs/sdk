@@ -52,7 +52,10 @@ impl PreparationIo {
             Some(guard) => finish_encoding(guard, result),
             None => result,
         };
-        source_bytes_from_vec(result?, Some(self))
+        crate::executor::with_history_io(Some(self), |work| {
+            crate::store::operations::owned_bytes_from_retained_vec(result?, work)
+                .map(|(bytes, _)| bytes)
+        })
     }
 
     pub(crate) fn decode_json<T: UploadRecord>(&self, bytes: &[u8]) -> Result<T> {
@@ -346,4 +349,47 @@ impl PreparationIo {
         };
         self.charged(next)
     }
+}
+
+pub(in crate::filesystem) fn clone_bytes(
+    bytes: &[u8],
+    io: Option<&PreparationIo>,
+) -> Result<acyclic_stream::OwnedBytes> {
+    let output = crate::executor::with_history_io(io, |work| {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let output = crate::core::copy_copy_vector(bytes, &mut quota)?;
+        quota.transfer();
+        Ok::<_, Error>(output)
+    })?;
+    crate::executor::with_history_io(io, |work| {
+        crate::store::operations::owned_bytes_from_retained_vec(output, work)
+            .map(|(bytes, _)| bytes)
+    })
+}
+
+pub(in crate::filesystem) fn hex_key(bytes: &[u8], io: Option<&PreparationIo>) -> Result<String> {
+    let Some(io) = io else {
+        return Ok(hex::encode(bytes));
+    };
+    let capacity = bytes
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| io.invalid("hex key size overflow"))?;
+    let copied = WorkCounters {
+        bytes_copied: capacity as u64,
+        ..Default::default()
+    };
+    io.retain_owned(capacity as u64)?;
+    io.preflight(copied)?;
+    io.allocation_attempt(capacity as u64)?;
+    let mut text = String::new();
+    text.try_reserve_exact(capacity)
+        .map_err(Error::Allocation)?;
+    for byte in bytes {
+        text.push(b"0123456789abcdef"[(byte >> 4) as usize] as char);
+        text.push(b"0123456789abcdef"[(byte & 15) as usize] as char);
+    }
+    io.retain_owned((text.capacity() - capacity) as u64)?;
+    io.charge(copied)?;
+    Ok(text)
 }

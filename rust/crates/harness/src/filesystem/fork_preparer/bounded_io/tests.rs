@@ -212,8 +212,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             None,
             &IdempotencyKey::new("denied-source-read")?,
             None,
-            None,
-            #[cfg(not(target_arch = "wasm32"))]
             None
         )
         .await,
@@ -231,8 +229,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
             None,
             &IdempotencyKey::new("wrong-generation")?,
             None,
-            None,
-            #[cfg(not(target_arch = "wasm32"))]
             None
         )
         .await
@@ -259,8 +255,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
         None,
         &IdempotencyKey::new("pinned-selected-fork")?,
         None,
-        None,
-        #[cfg(not(target_arch = "wasm32"))]
         None,
     )
     .await?;

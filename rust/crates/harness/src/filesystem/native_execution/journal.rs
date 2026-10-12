@@ -478,7 +478,7 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
             ));
         }
         let (mut output, output_custody) = allocate(&self.work, |io| {
-            crate::filesystem::fork_preparer_io::vector::<u8>(maximum_bytes, Some(io))
+            crate::model::vec_with_capacity::<u8>(maximum_bytes, Some(io))
         })?;
         let initialized = acyclic_fs::WorkCounters {
             bytes_copied: output.capacity() as u64,

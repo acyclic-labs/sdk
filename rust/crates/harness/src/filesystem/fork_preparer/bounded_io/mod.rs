@@ -7,13 +7,11 @@ use acyclic_fs::{
 use std::sync::Mutex;
 mod codec;
 mod history;
-mod metadata;
 mod quota;
 mod records;
 mod sdk;
 #[cfg(test)]
 mod tests;
-pub(in crate::filesystem) use metadata::*;
 use quota::finish_decode;
 use quota::finish_encoding;
 #[cfg(not(target_arch = "wasm32"))]
@@ -24,8 +22,9 @@ use records::{decode_allowance_error, decode_allowance_with_code};
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::filesystem) use sdk::publish_native;
 pub(in crate::filesystem) use sdk::{
-    apply_generation, apply_generation_task_guarded, create, fork, generation, generation_ref,
-    open, operation_generation, publish_generation, read, resolve, retain,
+    apply_generation, apply_generation_task_guarded, content_workspace, create, fork, generation,
+    generation_ref, open, operation_generation, operation_key, publish_generation, read, resolve,
+    retain, volume_storage_name,
 };
 
 /// Work and retained ownership for one preparation attempt.
@@ -177,7 +176,7 @@ impl PreparationIo {
         })
     }
     pub(crate) fn invalid(&self, reason: &'static str) -> Error {
-        failure(Some(self), crate::wire::ErrorCode::Invalid, reason)
+        stock_boundary(Some(self), crate::wire::ErrorCode::Invalid, reason)
     }
     pub(crate) fn receipt(&self) -> WorkCounters {
         match self {
@@ -449,3 +448,77 @@ impl PreparationIo {
             .map_err(|error| OperationFailure::new(error, self.receipt()))
     }
 }
+
+pub(in crate::filesystem) use codec::{clone_bytes, hex_key};
+impl PreparationIo {
+    pub(crate) fn reserve<T>(
+        values: &mut Vec<T>,
+        capacity: usize,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if capacity <= values.capacity() {
+            return Ok(());
+        }
+        let old = values.capacity();
+        let bytes = (capacity - old)
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "vector capacity overflow",
+                )
+            })? as u64;
+        let copied = WorkCounters {
+            bytes_copied: (values.len() * std::mem::size_of::<T>()) as u64,
+            ..Default::default()
+        };
+        if let Some(io) = io {
+            io.retain_owned(bytes)?;
+            io.preflight(copied)?;
+            io.allocation_attempt(bytes)?;
+        }
+        values
+            .try_reserve_exact(capacity - values.len())
+            .map_err(Error::Allocation)?;
+        if let Some(io) = io {
+            io.retain_owned(((values.capacity() - capacity) * std::mem::size_of::<T>()) as u64)?;
+            io.charge(copied)?;
+        }
+        Ok(())
+    }
+}
+impl PreparationIo {
+    pub(crate) fn capability<T: Serialize>(&self, value: &T, prefix: &str) -> Result<String> {
+        let hash = crate::executor::preparation_digest(value, Some(self))?;
+        let encoding = WorkCounters {
+            bytes_encoded: if self.original_native_work().is_some() {
+                64
+            } else {
+                0
+            },
+            ..Default::default()
+        };
+        self.preflight(encoding)?;
+        let hex = blake3::Hash::from_bytes(hash).to_hex();
+        self.charge(encoding)?;
+        crate::executor::with_history_io(Some(self), |work| {
+            crate::contract::preparation_format(format_args!("{prefix}{hex}"), work)
+        })
+    }
+    pub(crate) fn contains_capability<T: Serialize>(
+        &self,
+        grants: &crate::Capabilities,
+        value: &T,
+        prefix: &str,
+    ) -> Result<bool> {
+        let text = self.capability(value, prefix)?;
+        let held = self.guard_owned(text.capacity() as u64)?;
+        let granted = grants.contains(&text);
+        drop(text);
+        drop(held);
+        Ok(granted)
+    }
+}
+
+use crate::executor::stock_boundary;

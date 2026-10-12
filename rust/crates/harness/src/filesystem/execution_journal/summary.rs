@@ -247,13 +247,13 @@ impl ExecutionSummary {
 
     pub(super) fn quiescent(&self, io: Option<&PreparationIo>) -> Result<bool> {
         for model in self.models.values() {
-            crate::filesystem::fork_preparer_io::item(io, 0)?;
+            crate::model::charge_items(io, 1)?;
             if model.is_some() {
                 return Ok(false);
             }
         }
         for settled in self.tools.values() {
-            crate::filesystem::fork_preparer_io::item(io, 0)?;
+            crate::model::charge_items(io, 1)?;
             if !settled {
                 return Ok(false);
             }
