@@ -12,14 +12,9 @@ use acyclic_harness::{
     runtime::{RuntimeScope, TaskRunLimits},
     scheduler::SessionLimits,
 };
-use acyclic_native_runtime::{Durability, sync_file, sync_parent};
 use acyclic_stream::StreamProvider;
 use serde::{Deserialize, Serialize};
-use std::{
-    io::{self, Read},
-    path::Path,
-    sync::Arc,
-};
+use std::{io, path::Path, sync::Arc};
 
 #[path = "pi_owner_protection.rs"]
 mod protection;
@@ -104,24 +99,19 @@ impl PiOwnerPolicy {
         &self,
         work: &NativeMaterializationWork,
     ) -> Result<(Self, NativeAllocation)> {
-        let slot = work
-            .claim(
-                std::mem::size_of::<Self>() as u64,
-                0,
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )
-            .map_err(native_work_error)?;
-        let journal = {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
-            let value = self.journal.copy(&mut Some(&mut io))?;
-            (value, io.into_custody())
-        };
+        let slot = work.claim(
+            std::mem::size_of::<Self>() as u64,
+            0,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
+        let mut io = acyclic_harness::store::native_work_io(work)?;
+        let journal = self.journal.copy(&mut Some(&mut io))?;
         let grants = self.grants.clone_with_native_work(work)?;
         combine_native_metadata((
             Self {
                 root_task: self.root_task,
                 agent: self.agent,
-                journal: journal.0,
+                journal,
                 grants: grants.0,
                 limits: self.limits,
                 run_limits: self.run_limits,
@@ -130,7 +120,7 @@ impl PiOwnerPolicy {
                 maximum_payload_bytes: self.maximum_payload_bytes,
             },
             slot,
-            [journal.1, grants.1],
+            [io.into_custody(), grants.1],
         ))
     }
 }
@@ -173,13 +163,11 @@ impl PiOwnerConfig {
         runtime: Option<&super::pi_native::PiNativeHostRuntime>,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
-        let custody = work
-            .claim(
-                std::mem::size_of::<Self>() as u64,
-                0,
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )
-            .map_err(native_work_error)?;
+        let custody = work.claim(
+            std::mem::size_of::<Self>() as u64,
+            0,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
         let policy = policy.clone_with_native_work(work)?;
         let runtime = runtime
             .map(|runtime| runtime.clone_with_native_work(work))
@@ -204,23 +192,20 @@ impl PiOwnerConfig {
             ._native_custody
             .as_mut()
             .unwrap()
-            .absorb(&mut owned.1)
-            .map_err(native_work_error)?;
+            .absorb(&mut owned.1)?;
         if let Some(runtime_custody) = &mut owned.2 {
             owned
                 .0
                 ._native_custody
                 .as_mut()
                 .unwrap()
-                .absorb(runtime_custody)
-                .map_err(native_work_error)?;
+                .absorb(runtime_custody)?;
         }
         if let Some(runtime) = owned.0.native_runtime.take() {
             owned.0.native_runtime = Some(runtime.sanitize(work)?);
         }
-        let authority = owned.0.authority_with_native_work(work)?;
-        drop(authority.0);
-        drop(authority.1);
+        let authority = owned.0.authority(work)?;
+        drop(authority);
         Ok(owned.0)
     }
 
@@ -232,8 +217,7 @@ impl PiOwnerConfig {
 
     /// Moves a genuinely native owner into shared host custody without copying credentials.
     pub(crate) fn into_native_shared(self, work: &NativeMaterializationWork) -> Result<Arc<Self>> {
-        work.admit(acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(native_work_error)?;
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         if !self._native_custody.as_ref().is_some_and(|custody| {
             custody.matches_work(work) && custody.bytes() >= std::mem::size_of::<Self>() as u64
         }) {
@@ -244,184 +228,75 @@ impl PiOwnerConfig {
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1,
             ..acyclic_fs::WorkCounters::UNCHARGED
-        })
-        .map_err(native_work_error)?;
+        })?;
         Ok(Arc::new(self))
     }
 
-    pub(crate) fn authority(&self) -> Result<PiRuntimeAuthority> {
-        if self.version != 1 || self.key == [0; 32] || self.policy.agent.into_bytes() == [0; 16] {
-            return Err(invalid("invalid Pi owner configuration"));
-        }
-        let journal_grants = [
-            self.policy
-                .journal
-                .capability(VolumeOperation::Read, &mut None)?,
-            self.policy
-                .journal
-                .capability(VolumeOperation::Write, &mut None)?,
-        ];
-        let issuer = AuthorityIssuer::new(
-            ISSUER,
-            self.key,
-            Authority {
-                kind: AggregateKind::Task,
-                id: self.policy.root_task.to_string(),
-            },
-        );
-        let storage_grants = Capabilities::new(
-            self.policy
-                .grants
-                .iter()
-                .map(str::to_owned)
-                .chain(journal_grants),
-        );
-        let authority = PiRuntimeAuthority {
-            verifier: issuer.verifier(&mut None)?,
-            signed: issuer
-                .issue(
-                    &self.policy.root_task.to_string(),
-                    &storage_grants,
-                    Some(self.policy.agent),
-                    None,
-                    &mut None,
-                )
-                .expect("scope proof"),
-            scope: RuntimeScope::new(self.policy.grants.clone(), self.policy.limits)?
-                .with_run_limits(self.policy.run_limits, &mut None)?,
-            session_limits: self.policy.session_limits,
-            concurrency: self.policy.concurrency,
-            maximum_payload_bytes: self.policy.maximum_payload_bytes,
-            issuer,
-        };
-        authority.validate(&self.policy.journal)?;
-        Ok(authority)
-    }
-
-    /// Constructs the same protected authority using the original native ledger.
-    pub(crate) fn authority_with_native_work(
-        &self,
-        work: &NativeMaterializationWork,
-    ) -> Result<(PiRuntimeAuthority, NativeAllocation)> {
-        work.admit(acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(native_work_error)?;
+    /// Issues authority on the caller's original ledger.
+    pub(crate) fn authority(&self, work: &NativeMaterializationWork) -> Result<PiRuntimeAuthority> {
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         if self.version != 1 || self.key == [0; 32] || self.policy.agent.into_bytes() == [0; 16] {
             return Err(native_invalid("invalid Pi owner configuration"));
         }
-        self.policy.session_limits.validate(&mut Some(
-            &mut acyclic_harness::store::native_work_io(work)?,
-        ))?;
-        let journal_grants = [
-            {
-                let mut io = acyclic_harness::store::native_work_io(work)?;
-                let value = self
-                    .policy
+        let storage = {
+            let mut io = acyclic_harness::store::native_work_io(work)?;
+            self.policy.session_limits.validate(&mut Some(&mut io))?;
+            let grants = [
+                self.policy
                     .journal
-                    .capability(VolumeOperation::Read, &mut Some(&mut io))?;
-                (value, io.into_custody())
-            },
-            {
-                let mut io = acyclic_harness::store::native_work_io(work)?;
-                let value = self
-                    .policy
+                    .capability(VolumeOperation::Read, &mut Some(&mut io))?,
+                self.policy
                     .journal
-                    .capability(VolumeOperation::Write, &mut Some(&mut io))?;
-                (value, io.into_custody())
-            },
-        ];
-        let storage = Capabilities::new_with_native_work(
-            self.policy
-                .grants
-                .iter()
-                .chain(journal_grants.iter().map(|grant| grant.0.as_str())),
-            work,
-        )?;
+                    .capability(VolumeOperation::Write, &mut Some(&mut io))?,
+            ];
+            Capabilities::new_with_native_work(
+                self.policy
+                    .grants
+                    .iter()
+                    .chain(grants.iter().map(String::as_str)),
+                work,
+            )?
+        };
         let issuer =
             self.issuer_with_native_work(AggregateKind::Task, self.policy.root_task, work)?;
-        let verifier = {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
-            let value = issuer.0.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
-        };
-        let signed = {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
-            let scope = issuer.0.issue(
-                &verifier.0.audience().id,
-                &storage.0,
-                Some(self.policy.agent),
-                None,
-                &mut Some(&mut io),
-            )?;
-            (scope, io.into_custody())
-        };
-        drop(storage.0);
-        drop(storage.1);
-        drop(journal_grants);
+        let mut io = acyclic_harness::store::native_work_io(work)?;
+        let verifier = issuer.0.verifier(&mut Some(&mut io))?;
+        let signed = issuer.0.issue(
+            &verifier.audience().id,
+            &storage.0,
+            Some(self.policy.agent),
+            None,
+            &mut Some(&mut io),
+        )?;
+        drop(storage);
         let mut scope = RuntimeScope::new_with_native_work(
             self.policy.grants.clone_with_native_work(work)?,
             self.policy.limits,
             work,
         )?;
-        scope.0 = scope.0.with_run_limits(
-            self.policy.run_limits,
+        scope.0 = scope
+            .0
+            .with_run_limits(self.policy.run_limits, &mut Some(&mut io))?;
+        let ((issuer, verifier, signed, scope), custody) = combine_native_metadata((
+            (issuer.0, verifier, signed, scope.0),
+            issuer.1,
+            [io.into_custody(), scope.1],
+        ))?;
+        let authority = PiRuntimeAuthority {
+            issuer,
+            verifier,
+            signed,
+            scope,
+            session_limits: self.policy.session_limits,
+            concurrency: self.policy.concurrency,
+            maximum_payload_bytes: self.policy.maximum_payload_bytes,
+            custody,
+        };
+        authority.validate(
+            &self.policy.journal,
             &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )?;
-        let owned = (
-            PiRuntimeAuthority {
-                issuer: issuer.0,
-                verifier: verifier.0,
-                signed: signed.0,
-                scope: scope.0,
-                session_limits: self.policy.session_limits,
-                concurrency: self.policy.concurrency,
-                maximum_payload_bytes: self.policy.maximum_payload_bytes,
-            },
-            issuer.1,
-            [verifier.1, signed.1, scope.1],
-        );
-        owned
-            .0
-            .validate_with_native_work(&self.policy.journal, work)?;
-        combine_native_metadata(owned)
-    }
-
-    /// Authorizes through the SDK's original journal owner and protected-key verifier.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "original source selection and owner remain explicit"
-    )]
-    pub(crate) async fn authorize_project_source_with_native_work<P: StreamProvider + 'static>(
-        &self,
-        caller_owner: &Arc<acyclic_harness::durable_host::TaskJournalOwner<P>>,
-        context: &acyclic_harness::runtime::TaskContext,
-        provider: &dyn acyclic_harness::source_authorization::RootProjectSourceProvider,
-        source_task: TaskId,
-        operation: acyclic_harness::OperationId,
-        snapshot: &acyclic_harness::source_authorization::ProjectSourceSnapshot,
-        maximum_work: u64,
-        maximum_bytes: u64,
-        work: &NativeMaterializationWork,
-    ) -> Result<(
-        acyclic_harness::source_authorization::ProjectSourceReadHandle,
-        NativeAllocation,
-    )> {
-        let authority = self.authority_with_native_work(work)?;
-        let authorization = caller_owner
-            .authorize_project_source_with_native_work(
-                context,
-                &authority.0.issuer,
-                provider,
-                source_task,
-                operation,
-                snapshot,
-                maximum_work,
-                maximum_bytes,
-                work,
-            )?
-            .await;
-        drop(authority.0);
-        drop(authority.1);
-        authorization
+        Ok(authority)
     }
 
     fn issuer_with_native_work(
@@ -430,13 +305,12 @@ impl PiOwnerConfig {
         task: TaskId,
         work: &NativeMaterializationWork,
     ) -> Result<(AuthorityIssuer, NativeAllocation)> {
-        let audience = work.display(&task).map_err(native_work_error)?;
-        let id = work.display(ISSUER).map_err(native_work_error)?;
+        let audience = work.display(&task)?;
+        let id = work.display(ISSUER)?;
         work.charge(acyclic_fs::WorkCounters {
             bytes_copied: self.key.len() as u64,
             ..acyclic_fs::WorkCounters::UNCHARGED
-        })
-        .map_err(native_work_error)?;
+        })?;
         combine_native_metadata((
             AuthorityIssuer::new(
                 id.0,
@@ -455,13 +329,12 @@ impl PiOwnerConfig {
         &self,
         work: &NativeMaterializationWork,
     ) -> Result<(acyclic_harness::core::AuthorityVerifier, NativeAllocation)> {
-        let original = self.authority_with_native_work(work)?;
-        drop(original.0);
-        drop(original.1);
+        let original = self.authority(work)?;
+        drop(original);
         let issuer =
             self.issuer_with_native_work(AggregateKind::Conversation, self.policy.root_task, work)?;
         let verifier = {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let mut io = acyclic_harness::store::history::native_work_io(work)?;
             let value = issuer.0.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -518,10 +391,9 @@ impl PiOwnerConfig {
         (Authority, AuthorityIssuer, acyclic_harness::core::Scope),
         NativeAllocation,
     )> {
-        let original = self.authority_with_native_work(work)?;
-        drop(original.0);
-        drop(original.1);
-        let audience_id = work.display(&task).map_err(native_work_error)?;
+        let original = self.authority(work)?;
+        drop(original);
+        let audience_id = work.display(&task)?;
         let audience = (
             Authority {
                 kind: AggregateKind::Conversation,
@@ -530,21 +402,17 @@ impl PiOwnerConfig {
             audience_id.1,
         );
         let issuer = self.issuer_with_native_work(AggregateKind::Conversation, task, work)?;
-        let scope_id = work.display(&scope_id).map_err(native_work_error)?;
-        let scope = {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
-            let scope =
-                issuer
-                    .0
-                    .issue(&scope_id.0, grants, Some(agent), None, &mut Some(&mut io))?;
-            (scope, io.into_custody())
-        };
+        let scope_id = work.display(&scope_id)?;
+        let mut io = acyclic_harness::store::native_work_io(work)?;
+        let scope = issuer
+            .0
+            .issue(&scope_id.0, grants, Some(agent), None, &mut Some(&mut io))?;
         drop(scope_id.0);
         drop(scope_id.1);
         combine_native_metadata((
-            (audience.0, issuer.0, scope.0),
+            (audience.0, issuer.0, scope),
             audience.1,
-            [issuer.1, scope.1],
+            [issuer.1, io.into_custody()],
         ))
     }
 
@@ -578,11 +446,9 @@ impl PiOwnerConfig {
         session: &Path,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
-        let authority = self.authority_with_native_work(work)?;
-        drop(authority.0);
-        drop(authority.1);
-        work.validate_private_state_directory(root, session)
-            .map_err(native_work_error)?;
+        let authority = self.authority(work)?;
+        drop(authority);
+        work.validate_private_state_directory(root, session)?;
         let plain = super::pi_root_provider::guarded_pi_bytes(self, MAXIMUM_OWNER_BYTES, work)?;
         let plain = NativeOwnerPlaintext {
             bytes: plain.0,
@@ -590,7 +456,7 @@ impl PiOwnerConfig {
         };
         let protected = protection::protect_with_copy(&plain.bytes, |bytes| work.copy_bytes(bytes));
         drop(plain);
-        let protected = protected.map_err(native_work_error)?;
+        let protected = protected?;
         let protected = NativeOwnerPlaintext {
             bytes: protected.0,
             _custody: protected.1,
@@ -603,18 +469,11 @@ impl PiOwnerConfig {
         work.charge(acyclic_fs::WorkCounters {
             bytes_hashed: protected.bytes.len() as u64,
             ..acyclic_fs::WorkCounters::UNCHARGED
-        })
-        .map_err(native_work_error)?;
+        })?;
         let digest = blake3::hash(&protected.bytes);
-        let leaf = work
-            .display(&format_args!(".pi-owner-{}.next", uuid::Uuid::new_v4()))
-            .map_err(native_work_error)?;
-        let temporary = work
-            .path(session, Some(Path::new(&leaf.0)))
-            .map_err(native_work_error)?;
-        let destination = work
-            .path(session, Some(Path::new(OWNER_FILE)))
-            .map_err(native_work_error)?;
+        let leaf = work.display(&format_args!(".pi-owner-{}.next", uuid::Uuid::new_v4()))?;
+        let temporary = work.join_path(session, Path::new(&leaf.0))?;
+        let destination = work.join_path(session, Path::new(OWNER_FILE))?;
         work.publish_private_state_file_with_native_work(
             root,
             &temporary.0,
@@ -625,11 +484,11 @@ impl PiOwnerConfig {
                 protected.bytes.as_slice(),
             ],
         )
-        .map_err(native_work_error)
+        .map_err(acyclic_harness::Error::from)
     }
 
     /// Reopens the original protected credential record with the request's borrowed native work.
-    pub(crate) fn load_with_native_work(
+    pub(crate) fn load(
         root: &acyclic_fs::NativeHostPrivateStateRoot,
         session: &Path,
         work: &NativeMaterializationWork,
@@ -652,25 +511,17 @@ impl PiOwnerConfig {
         work: &NativeMaterializationWork,
         readonly: bool,
     ) -> Result<Self> {
-        work.admit(acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(native_work_error)?;
-        work.validate_private_state_directory(root, session)
-            .map_err(native_work_error)?;
-        let path = work
-            .path(session, Some(Path::new(OWNER_FILE)))
-            .map_err(native_work_error)?;
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
+        work.validate_private_state_directory(root, session)?;
+        let path = work.join_path(session, Path::new(OWNER_FILE))?;
         let mode = if readonly {
             acyclic_fs::NativeStateFileMode::Readonly
         } else {
             acyclic_fs::NativeStateFileMode::ReadWriteExisting
         };
-        let mut file = work
-            .open_state_file_with_native_work(root, &path.0, mode)
-            .map_err(native_work_error)?;
-        file.validate_private_owner().map_err(native_work_error)?;
-        let bytes = file
-            .read_owned(MAXIMUM_OWNER_BYTES as usize)
-            .map_err(native_work_error)?;
+        let mut file = work.open_state_file_with_native_work(root, &path.0, mode)?;
+        file.validate_private_owner()?;
+        let bytes = file.read_owned(MAXIMUM_OWNER_BYTES as usize)?;
         let bytes = NativeOwnerPlaintext {
             bytes: bytes.0,
             _custody: bytes.1,
@@ -688,13 +539,11 @@ impl PiOwnerConfig {
         work.charge(acyclic_fs::WorkCounters {
             bytes_hashed: protected.len() as u64,
             ..acyclic_fs::WorkCounters::UNCHARGED
-        })
-        .map_err(native_work_error)?;
+        })?;
         if digest != blake3::hash(protected).as_bytes() {
             return Err(native_invalid("Pi owner configuration digest differs"));
         }
-        let plain = protection::unprotect_with_copy(protected, |bytes| work.copy_bytes(bytes))
-            .map_err(native_work_error)?;
+        let plain = protection::unprotect_with_copy(protected, |bytes| work.copy_bytes(bytes))?;
         let plain = NativeOwnerPlaintext {
             bytes: plain.0,
             _custody: plain.1,
@@ -711,48 +560,12 @@ impl PiOwnerConfig {
         drop(plain);
         let (mut owner, custody) = owner?;
         owner._native_custody = Some(custody);
-        let authority = owner.authority_with_native_work(work)?;
-        drop(authority.0);
-        drop(authority.1);
+        let authority = owner.authority(work)?;
+        drop(authority);
         if !readonly {
-            file.sync_file().map_err(native_work_error)?;
-            file.sync_parent().map_err(native_work_error)?;
+            file.sync_file()?;
+            file.sync_parent()?;
         }
-        Ok(owner)
-    }
-
-    pub(crate) fn load(session: &Path) -> Result<Self> {
-        protection::validate_directory(session).map_err(storage)?;
-        let file = protection::open_private(&session.join(OWNER_FILE)).map_err(storage)?;
-        let mut bytes = Vec::new();
-        (&file)
-            .take(MAXIMUM_OWNER_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(storage)?;
-        if bytes.len() as u64 > MAXIMUM_OWNER_BYTES {
-            return Err(invalid("Pi owner file exceeds its byte bound"));
-        }
-        let (magic, rest) = bytes
-            .split_first_chunk::<8>()
-            .ok_or_else(|| invalid("truncated Pi owner file"))?;
-        let (digest, protected) = rest
-            .split_first_chunk::<32>()
-            .ok_or_else(|| invalid("truncated Pi owner file"))?;
-        if magic != OWNER_MAGIC || digest != blake3::hash(protected).as_bytes() {
-            return Err(invalid("Pi owner file integrity check failed"));
-        }
-        let mut plain = protection::unprotect(protected).map_err(storage)?;
-        let decoded = if plain.len() as u64 > MAXIMUM_OWNER_BYTES {
-            Err(invalid("Pi owner configuration exceeds its byte bound"))
-        } else {
-            serde_json::from_slice::<Self>(&plain)
-                .map_err(|_| invalid("Pi owner configuration is not valid JSON"))
-        };
-        plain.fill(0);
-        let owner = decoded?;
-        owner.authority()?;
-        sync_file(&file, Durability::Full).map_err(storage)?;
-        sync_parent(session, Durability::Full).map_err(storage)?;
         Ok(owner)
     }
 }
@@ -769,16 +582,11 @@ impl Drop for NativeOwnerPlaintext {
 }
 
 fn native_owner_io(source: io::Error) -> Error {
-    native_work_error(acyclic_fs::NativeTreeMaterializationError::Io(source))
+    acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Io(source))
 }
 
 fn invalid(message: &str) -> Error {
     Error::Invalid(message.to_owned())
-}
-
-// Only ordinary credential producers use this explicit host-storage mapping.
-fn storage(error: io::Error) -> Error {
-    Error::Storage(error.to_string())
 }
 
 #[cfg(test)]
@@ -825,17 +633,10 @@ fn combine_native_metadata<T, const N: usize>(
     mut owned: (T, NativeAllocation, [NativeAllocation; N]),
 ) -> Result<(T, NativeAllocation)> {
     for additional in &mut owned.2 {
-        owned.1.absorb(additional).map_err(native_work_error)?;
+        owned.1.absorb(additional)?;
     }
     let (value, custody, _retired) = owned;
     Ok((value, custody))
-}
-
-fn native_work_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork {
-        cause,
-        custody: None,
-    }
 }
 
 fn native_invalid(reason: &'static str) -> Error {
