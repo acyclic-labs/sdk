@@ -716,105 +716,59 @@ impl ModelContent {
     pub(crate) fn visit_file_bindings<'a>(
         &'a self, mut visit: impl FnMut(&'a FileRef, Option<&'a NativeConfigurationBinding>) -> Result<()>,
     ) -> Result<()> {
-        let mut file = |reference: &'a FileRef, policy: &'a FileProjectionPolicy| -> Result<()> {
-            visit(reference, None)?;
+        for (file, policy) in self.file_parts() {
+            visit(file, None)?;
             if let FileProjectionPolicy::Native(policy) = policy
                 && let Some(binding) = &policy.configuration {
                 visit(&binding.configuration.content, Some(binding))?;
-            }
-            Ok(())
-        };
-        for part in self.parts() {
-            match part {
-                ModelContentPart::File { file: reference, policy } => file(reference, policy)?,
-                ModelContentPart::ToolResult { content: ToolResultContent::Parts { parts }, .. } => {
-                    for part in parts {
-                        if let ModelDataPart::File { file: reference, policy } = part { file(reference, policy)?; }
-                    }
-                }
-                _ => {}
             }
         }
         Ok(())
     }
 
+    fn file_parts(&self) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
+        self.parts().iter().flat_map(|part| {
+            let direct = match part {
+                ModelContentPart::File { file, policy } => Some((file, policy)),
+                _ => None,
+            };
+            let data = match part {
+                ModelContentPart::ToolResult { content: ToolResultContent::Parts { parts }, .. } => parts.as_slice(),
+                _ => &[],
+            };
+            direct.into_iter().chain(data.iter().filter_map(|part| match part {
+                ModelDataPart::File { file, policy } => Some((file, policy)),
+                _ => None,
+            }))
+        })
+    }
+
     /// Returns ordered media refs followed by their immutable option refs.
     #[must_use]
     pub fn file_refs(&self) -> Vec<&FileRef> {
-        let mut files = Vec::new();
-        for part in self.parts() {
-            match part {
-                ModelContentPart::File { file, policy } => policy.append_refs(file, &mut files),
-                ModelContentPart::ToolResult {
-                    content: ToolResultContent::Parts { parts },
-                    ..
-                } => {
-                    for part in parts {
-                        if let ModelDataPart::File { file, policy } = part {
-                            policy.append_refs(file, &mut files);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        files
+        self.file_parts().flat_map(|(file, policy)| {
+            let configuration = match policy {
+                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref()
+                    .map(|binding| &binding.configuration.content),
+                _ => None,
+            };
+            std::iter::once(file).chain(configuration)
+        }).collect()
     }
 
     /// Detects native media in ordinary data and paired result data.
     #[must_use]
     pub fn contains_native_media(&self) -> bool {
-        self.parts().iter().any(|part| match part {
-            ModelContentPart::File {
-                policy: FileProjectionPolicy::Native(_),
-                ..
-            } => true,
-            ModelContentPart::ToolResult {
-                content: ToolResultContent::Parts { parts },
-                ..
-            } => parts.iter().any(|part| {
-                matches!(
-                    part,
-                    ModelDataPart::File {
-                        policy: FileProjectionPolicy::Native(_),
-                        ..
-                    }
-                )
-            }),
-            _ => false,
-        })
+        self.file_parts().any(|(_, policy)| matches!(policy, FileProjectionPolicy::Native(_)))
     }
 
     /// Claims that the original authenticated host must verify before dispatch.
     #[must_use]
     pub fn native_configurations(&self) -> Vec<&NativeConfigurationBinding> {
-        let mut bindings = Vec::new();
-        for part in self.parts() {
-            match part {
-                ModelContentPart::File {
-                    policy: FileProjectionPolicy::Native(policy),
-                    ..
-                } => {
-                    bindings.extend(policy.configuration.iter());
-                }
-                ModelContentPart::ToolResult {
-                    content: ToolResultContent::Parts { parts },
-                    ..
-                } => {
-                    for part in parts {
-                        if let ModelDataPart::File {
-                            policy: FileProjectionPolicy::Native(policy),
-                            ..
-                        } = part
-                        {
-                            bindings.extend(policy.configuration.iter());
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        bindings
+        self.file_parts().filter_map(|(_, policy)| match policy {
+            FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
+            _ => None,
+        }).collect()
     }
 }
 
@@ -1137,14 +1091,7 @@ impl FileProjectionPolicy {
         } else { Ok(()) }
     }
 
-    fn append_refs<'a>(&'a self, file: &'a FileRef, files: &mut Vec<&'a FileRef>) {
-        files.push(file);
-        if let Self::Native(policy) = self
-            && let Some(binding) = &policy.configuration
-        {
-            files.push(&binding.configuration.content);
-        }
-    }
+
 }
 
 impl ToolResultContent {
@@ -1158,14 +1105,7 @@ impl ToolResultContent {
                 for part in parts {
                     let payload = match part {
                         ModelDataPart::Text { text } => text.capacity() as u64,
-                        ModelDataPart::File { file, policy } => {
-                            let file = file.logical_owned_bytes()?;
-                            let policy = match policy {
-                                FileProjectionPolicy::Native(policy) => model_native_policy_owned_bytes(policy)?,
-                                FileProjectionPolicy::Reference | FileProjectionPolicy::BoundedFull => 0,
-                            };
-                            model_owned_add(file, policy)?
-                        }
+                        ModelDataPart::File { file, policy } => model_file_payload_bytes(file, policy)?,
                     };
                     bytes = model_owned_add(bytes, payload)?;
                 }
@@ -2387,7 +2327,7 @@ mod tests {
             model: Model::new("mock", "exact", "pinned", json!({}))?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
-                content: ModelContent::Text("é\0🦀\r\n".into()),
+                content: ModelContent::Text("ÃƒÂ©\0Ã°Å¸Â¦â‚¬\r\n".into()),
             }],
             tools: vec![crate::tool::ToolDefinition {
                 name: "echo".into(),
@@ -2408,7 +2348,7 @@ mod tests {
                 content: ModelContent::Part(ModelContentPart::ToolCall {
                     call_id: "call-1".into(),
                     name: "echo".into(),
-                    arguments: json!("é"),
+                    arguments: json!("ÃƒÂ©"),
                 }),
             },
             ModelMessage {
@@ -2416,7 +2356,7 @@ mod tests {
                 content: ModelContent::Part(ModelContentPart::ToolResult {
                     call_id: "call-1".into(),
                     name: "echo".into(),
-                    content: ToolResultContent::Json { value: json!("é") },
+                    content: ToolResultContent::Json { value: json!("ÃƒÂ©") },
                 }),
             },
         ]);
@@ -2493,14 +2433,14 @@ mod tests {
         let mut reader = PrefixReader::default();
         let attachment = store_prefix_bytes(
             &mut reader,
-            "attachment é".as_bytes().to_vec(),
+            "attachment ÃƒÂ©".as_bytes().to_vec(),
             "text/plain",
             77,
         )?;
         let mut root = request()?;
         root.messages[0].content = ModelContent::Parts(vec![
             ModelContentPart::Text {
-                text: "é\0🦀\r\n".into(),
+                text: "ÃƒÂ©\0Ã°Å¸Â¦â‚¬\r\n".into(),
             },
             ModelContentPart::File {
                 file: attachment.clone(),
@@ -2515,7 +2455,7 @@ mod tests {
             next.messages.push(ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text(format!(
-                    "child {depth}: é\0🦀; parent scratch retained"
+                    "child {depth}: ÃƒÂ©\0Ã°Å¸Â¦â‚¬; parent scratch retained"
                 )),
             });
             let next = PreparedModelRequest::prepare(next, limits, None)?;
@@ -2634,11 +2574,11 @@ mod tests {
     fn complete_tool_projection_envelopes_enforce_the_exact_render_bound() -> Result<()> {
         for content in [
             ToolResultContent::Json {
-                value: json!("é\0🦀"),
+                value: json!("ÃƒÂ©\0Ã°Å¸Â¦â‚¬"),
             },
             ToolResultContent::Parts {
                 parts: vec![ModelDataPart::Text {
-                    text: "é\0🦀".into(),
+                    text: "ÃƒÂ©\0Ã°Å¸Â¦â‚¬".into(),
                 }],
             },
         ] {

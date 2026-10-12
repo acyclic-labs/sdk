@@ -234,7 +234,7 @@ impl ResumableTool {
             ))?,
             initial,
         };
-        admission.validate()?;
+        admission.validate(None)?;
         Ok(admission)
     }
 

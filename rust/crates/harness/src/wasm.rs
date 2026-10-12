@@ -1907,11 +1907,7 @@ pub fn validate_model_context_selection_wasm(
 ) -> Result<(), JsValue> {
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
-    validate_model_context_selection_at_revision(
-        &conversation,
-        &selection,
-        selection.conversation_revision,
-    )
+    validate_model_context_selection_at_revision(&conversation, &selection, selection.conversation_revision, None)
     .map_err(js_error)
 }
 

@@ -236,9 +236,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     writeln!(output, "terminal-mode stdin-is-terminal={stdin_is_terminal} interactive={interactive} headless={headless} process-id={}",
         std::process::id())?;
     writeln!(output, "{}", if fixture_mode {
-        "GraphCoder — fixture wire; UI playback only, no durable effects"
+        "GraphCoder â€” fixture wire; UI playback only, no durable effects"
     } else {
-        "GraphCoder — actual local Harness runtime; deterministic request-digest provider; live-model/native-process adapters unavailable"
+        "GraphCoder â€” actual local Harness runtime; deterministic request-digest provider; live-model/native-process adapters unavailable"
     })?;
     loop {
         if interactive { write!(output, "{}> ", if fixture_mode { "fixture" } else { "graphcoder" })?; }
@@ -326,7 +326,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             if !workers.is_empty() {
                 return Err(Error::Conflict("active worker handles must settle or the process must close before native reopen; no implicit cancellation".into()));
             }
-            let config = api.native()?.config();
+            let config = api.native()?.config.clone();
             drop(backend.take());
             *backend = Some(Backend::Native(std::sync::Arc::new(native::NativeSession::open(config).await?)));
             return Ok("native providers reopened; no admission or effect resent\n".into());

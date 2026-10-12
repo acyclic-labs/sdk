@@ -1354,7 +1354,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             });
             let mut receipt_custody = work.retain_owned((std::mem::size_of::<RootBootstrapContentReceipt>()
                 - std::mem::size_of::<crate::resource_preparation::RootBootstrapContentRequest>()) as u64)?;
-            let (request, mut request_custody) = request.clone_with_native_work(work)?;
+            let (request, mut request_custody) = request.copy(work)?;
             receipt_custody.absorb(&mut request_custody).map_err(|cause| Error::NativeWork {
                 cause, custody: Some(request_custody),
             })?;
@@ -2007,7 +2007,7 @@ mod tests {
             &owner, &admission, token.witness.binding(), &work,
         ).await?;
         for control in 0..5 {
-            let (mut request, request_custody) = token.request().clone_with_native_work(&work)?;
+            let (mut request, request_custody) = token.request().copy(&work)?;
             match control {
                 0 => request.graph_root = TaskId::from_bytes([181; 16]),
                 1 => request.root_operation = OperationId::from_bytes([182; 16]),
