@@ -39,7 +39,9 @@ use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
+#[path = "task_runtime/default_tools.rs"]
 mod default_tools;
+#[path = "task_runtime/headless.rs"]
 mod headless;
 
 type BrowserRuntime =
