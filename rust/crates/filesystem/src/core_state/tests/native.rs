@@ -166,9 +166,9 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
     .expect_err("resource substitution");
     assert!(matches!(
         error.0,
-        crate::lineage::WorkspaceLineageError::Store(
-            LocalCoreStateStoreError::NativeLedgerMismatch
-        )
+        crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
+            crate::LazyWorkspaceError::NativeLedgerMismatch
+        ))
     ));
     assert_eq!(work.receipt(), before);
     let forged = (
