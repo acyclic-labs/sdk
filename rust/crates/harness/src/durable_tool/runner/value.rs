@@ -89,7 +89,7 @@ pub(super) fn tool_validate_projection(
     {
         let bytes = content.logical_owned_bytes()?;
         drop(content);
-        return io.release(bytes);
+        return io.release(bytes).map_err(Into::into);
     }
     drop(content);
     Ok(())

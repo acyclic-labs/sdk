@@ -228,10 +228,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             };
             let work = io.original_native_work().ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "Root bootstrap requires its original native ledger" })?;
             let volume = volume.copy(&mut Some(&mut io.history_io()))?;
-            let (generation, generation_custody) = GenerationRef::new_with_native_work(
-                &self.host.provider, &selected_generation.digest().into_bytes(), None, work,
+            let generation = bounded_io::generation_ref(
+                &self.host.provider, selected_generation, Some(&io),
             )?;
-            io.absorb_native_custody(generation_custody)?;
             let snapshot = if let Some(snapshot) = native_snapshot {
                 let remaining = io.remaining()?;
                 let value = crate::executor::json::json_value_bounded(&snapshot, crate::executor::json::JsonBounds {
@@ -351,7 +350,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let bytes_hold = io.guard_bytes(&bytes)?;
         let record = io.encode(&self.record(), MAX_REQUEST_BYTES, true)?;
         let record_hold = io.guard_bytes(&record)?;
-        let exact = bytes == record && *bounded_io::digest(&bytes, Some(io))?.as_bytes() == self.record_digest;
+        let exact = bytes == record && crate::model::hash_bytes(&bytes, Some(io))? == self.record_digest;
         drop((bytes, record));
         drop((bytes_hold, record_hold));
         drop(journal);

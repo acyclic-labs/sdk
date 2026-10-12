@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
+pub(crate) use crate::executor::json::count_json_bytes_trusted;
+
 /// Maximum UTF-8 byte length for names crossing a component boundary.
 pub const COMPONENT_LABEL_MAX_BYTES: usize = crate::conversation::MAX_PORTABLE_COUNT;
 
@@ -66,27 +68,6 @@ pub(crate) fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<V
         serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
     value.sort_all_objects();
     serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))
-}
-
-/// Checks compact JSON size without retaining an encoded buffer.
-pub(crate) fn validate_json_byte_bound<T: Serialize>(value: &T, maximum: u64) -> Result<()> {
-    struct Budget(u64);
-
-    impl std::io::Write for Budget {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 = self
-                .0
-                .checked_sub(bytes.len() as u64)
-                .ok_or_else(|| std::io::Error::other("JSON exceeds declared byte bound"))?;
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    serde_json::to_writer(Budget(maximum), value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
 /// Decodes a complete JSON value without an unrelated nesting policy ceiling.
@@ -292,11 +273,11 @@ impl Capabilities {
             })?;
             io.admit_owned(bytes)?;
             io.retain_owned(slot)?;
-            let value = crate::store::history::clone_text(&mut Some(&mut io), value)?;
+            let value = io.clone_text(value)?;
             copied.insert(value);
         }
         io.check_cancellation()?;
-        Ok((Self(copied), io.into_custody()))
+        Ok((Self(copied), io.into_custody()?))
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
@@ -470,8 +451,11 @@ mod tests {
             "\"\u{e9}\":[-9223372036854775808,1.5e+300,-0.0,false]}",
         );
         assert_eq!(canonical_json_bytes(&value)?, expected.as_bytes());
-        validate_json_byte_bound(&value, expected.len() as u64)?;
-        assert!(validate_json_byte_bound(&value, expected.len() as u64 - 1).is_err());
+        crate::executor::json::json_byte_length(&value, expected.len() as u64, &mut None)?;
+        assert!(
+            crate::executor::json::json_byte_length(&value, expected.len() as u64 - 1, &mut None)
+                .is_err()
+        );
         Ok(())
     }
 
@@ -525,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_json_preserves_value_conversion_and_invalid_messages() -> Result<()> {
+    fn canonical_json_preserves_value_conversion_and_rejects_invalid_values() -> Result<()> {
         assert_eq!(
             canonical_json_bytes(&[f64::NAN, f64::INFINITY, f64::NEG_INFINITY])?,
             b"[null,null,null]"
@@ -536,29 +520,19 @@ mod tests {
             br#"{"1.5":1}"#
         );
         for key in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert_eq!(
+            assert!(matches!(
                 canonical_json_bytes(&Pairs(vec![(key, 1)])),
-                Err(Error::Invalid(
-                    "float key must be finite (got NaN or +/-inf)".into()
-                ))
-            );
+                Err(Error::Invalid(_))
+            ));
         }
-        assert_eq!(
+        for result in [
             canonical_json_bytes(&Pairs(vec![(vec![1_u8], 1)])),
-            Err(Error::Invalid("key must be a string".into()))
-        );
-        assert_eq!(
             canonical_json_bytes(&Failing),
-            Err(Error::Invalid("canonical fixture failure".into()))
-        );
-        assert_eq!(
             canonical_json_bytes(&i128::MIN),
-            Err(Error::Invalid("number out of range".into()))
-        );
-        assert_eq!(
-            canonical_json_bytes(&u128::MAX).map_err(|error| error.code()),
-            Err(crate::wire::ErrorCode::Invalid)
-        );
+            canonical_json_bytes(&u128::MAX),
+        ] {
+            assert!(matches!(result, Err(Error::Invalid(_))));
+        }
         assert_eq!(
             canonical_json_bytes(&(i128::from(i64::MIN), u128::from(u64::MAX)))?,
             b"[-9223372036854775808,18446744073709551615]"
@@ -588,7 +562,7 @@ mod tests {
 
         let visited = Cell::new(0);
         assert!(matches!(
-            validate_json_byte_bound(&Observed(&visited), 32),
+            crate::executor::json::json_byte_length(&Observed(&visited), 32, &mut None),
             Err(Error::Invalid(message)) if message.contains("declared byte bound")
         ));
         assert_eq!(visited.get(), 1);

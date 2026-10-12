@@ -82,14 +82,14 @@ pub(in crate::executor) fn stock_tool_lookup<'a>(
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if io.and_then(PreparationIo::original_native_work).is_some() {
         return registry
-            .get(name, io)?
+            .get(name, None, io)?
             .ok_or_else(|| crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::NotFound,
                 reason: "tool is not bound to this stock composition",
             });
     }
     registry
-        .get(name, io)?
+        .get(name, None, io)?
         .ok_or_else(|| Error::NotFound(format!("tool {name}")))
 }
 

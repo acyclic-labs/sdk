@@ -65,11 +65,11 @@ export type NativeFileRef = Omit<FileRef, "descriptor"> & Readonly<{
   descriptor: Omit<FileDescriptor, "byte_length"> & Readonly<{ byte_length: number | bigint }>;
 }>;
 export interface NativeSelectedModelContext {
-  readonly selection: Readonly<{
+  readonly selection: {
     readonly conversation_revision: bigint;
     readonly message_ids: readonly ConversationMessageId[];
     readonly checkpoint?: NativeFileRef;
-  }>;
+  };
   readonly messages: readonly Readonly<{
     role: ModelRoleWire;
     content: ModelContentWire;

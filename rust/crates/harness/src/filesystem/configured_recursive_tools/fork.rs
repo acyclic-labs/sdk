@@ -1,7 +1,8 @@
+use crate::executor::stock_boundary;
 use super::*;
 use crate::filesystem::{
     PreparationIo,
-    fork_preparer_io::{self, failure},
+    fork_preparer_io,
 };
 use crate::wire::ErrorCode;
 
@@ -43,7 +44,7 @@ where
             || intent.request.preparation.child_private_volume != allocation.private_volume
             || intent.request.preparation.child_result_volume != allocation.result_volume
         {
-            return Err(failure(
+            return Err(stock_boundary(
                 io,
                 ErrorCode::Unauthorized,
                 "fork changed its committed source or allocation",
@@ -65,7 +66,7 @@ where
                 || original.child_message_pointer != allocation.child_message_pointer
                 || original.child_message_file_pointer != allocation.child_message_file_pointer
             {
-                return Err(failure(
+                return Err(stock_boundary(
                     io,
                     ErrorCode::Unauthorized,
                     "fork retry changed its retained original plan",
@@ -102,7 +103,7 @@ where
             .await?;
         if allocation_digest(allocation, &mut child, &child_scope, io)? != intent.allocation_digest
         {
-            return Err(failure(
+            return Err(stock_boundary(
                 io,
                 ErrorCode::Unauthorized,
                 "child claims changed after immutable source selection",
@@ -116,7 +117,7 @@ where
                     .source_checkpoint
                     .as_ref()
                     .ok_or_else(|| {
-                        failure(
+                        stock_boundary(
                             io,
                             ErrorCode::Unauthorized,
                             "original fork has no source checkpoint",
@@ -190,7 +191,7 @@ where
             _ => serde_json::from_slice(&bytes).map_err(invalid_json)?,
         };
         if record != *intent {
-            return Err(failure(
+            return Err(stock_boundary(
                 io,
                 ErrorCode::Unauthorized,
                 "published checkpoint differs from immutable source intent",

@@ -1,49 +1,35 @@
 use super::*;
 
-/// Explicit registry; no ambient or process-global provider catalog exists.
-#[derive(Default)]
+/// Explicit provider catalog and owner-mediated result reader.
 pub struct EffectRegistry {
     pub(super) providers: BTreeMap<String, Arc<dyn EffectProvider>>,
     pub(super) result_resolver: Option<Arc<dyn ContentResidencyVerifier>>,
-    // Payload fields drop before the original ledger's custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
-impl Clone for EffectRegistry {
-    fn clone(&self) -> Self {
-        Self {
-            providers: self.providers.clone(),
-            result_resolver: self.result_resolver.clone(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_metadata: None,
-        }
-    }
-}
-
 impl EffectRegistry {
-    /// Creates a catalog on optional original work.
-    pub fn new(work: crate::NativeWork<'_>) -> Result<Self> {
-        let registry = Self::default();
+    /// Creates a catalog with its result reader on optional original work.
+    pub fn new(
+        _work: crate::NativeWork<'_>,
+        result_resolver: Option<Arc<dyn ContentResidencyVerifier>>,
+    ) -> Result<Self> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = work {
-            return Ok(Self {
-                native_metadata: Some(
-                    work.claim(
-                        std::mem::size_of::<Self>() as u64,
-                        0,
-                        acyclic_fs::WorkCounters::UNCHARGED,
-                    )
-                    .map_err(|cause| Error::NativeWork {
-                        cause,
-                        custody: None,
-                    })?,
-                ),
-                ..registry
-            });
-        }
-        let _ = work;
-        Ok(registry)
+        let native_metadata = _work
+            .map(|work| {
+                work.claim(
+                    std::mem::size_of::<Self>() as u64,
+                    0,
+                    acyclic_fs::WorkCounters::UNCHARGED,
+                )
+            })
+            .transpose()?;
+        Ok(Self {
+            providers: BTreeMap::new(),
+            result_resolver,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_metadata,
+        })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -67,12 +53,9 @@ impl EffectRegistry {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// Copies catalog metadata on the original ledger.
-    pub fn clone_with_native_work(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
+    pub fn copy(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         use crate::store::history::HistoryIo as _;
-        let mut cloned = Self::new(Some(work))?;
+        let mut cloned = Self::new(Some(work), None)?;
         for (source, provider) in &self.providers {
             let mut io = crate::store::HistoryWork::new(
                 crate::filesystem::PreparationIo::from_native_work(work)?,
@@ -80,12 +63,13 @@ impl EffectRegistry {
             let slot = std::mem::size_of::<(String, Arc<dyn EffectProvider>)>() as u64;
             io.admit_owned(slot)?;
             io.retain_owned(slot)?;
+            let mut custody;
             let mut id = String::new();
             io.reserve_text(&mut id, source.len())?;
             io.admit_copy(source.len() as u64)?;
             id.push_str(source);
             io.copy_bytes(source.len() as u64)?;
-            let mut custody = io.into_custody()?;
+            custody = io.into_custody()?;
             cloned
                 .native_metadata
                 .as_mut()
@@ -101,75 +85,62 @@ impl EffectRegistry {
         Ok(cloned)
     }
 
-    /// Sets the owner-mediated result reader.
-    #[must_use]
-    pub fn with_result_resolver(mut self, resolver: Arc<dyn ContentResidencyVerifier>) -> Self {
-        self.result_resolver = Some(resolver);
-        self
-    }
-
     pub(crate) fn resolve(
         &self,
         effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<&Arc<dyn EffectProvider>> {
-        let provider_name = &effect.provider;
-        let effect_kind = &effect.effect_kind;
-        let guarantee = effect.guarantee;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-            self.require_native_metadata(native)?;
-            native
-                .charge(acyclic_fs::WorkCounters {
-                    items_examined: 1,
-                    ..Default::default()
-                })
-                .map_err(|cause| Error::NativeWork {
-                    cause,
-                    custody: None,
-                })?;
-            let provider =
-                self.providers
-                    .get(provider_name)
-                    .ok_or_else(|| Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unsupported,
-                        reason: "effect provider is not registered",
-                    })?;
-            if !provider.supports_guarantee_with_native_work(effect_kind, guarantee, native)? {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "effect provider does not support the pinned guarantee",
-                });
-            }
-            if guarantee == EffectGuarantee::ExactlyOnce && !provider.linearizable_reconciliation()
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "exactly-once requires linearizable provider reconciliation",
-                });
-            }
-            return Ok(provider);
-        }
-        if work.is_some() {
+        let native = work.as_deref().and_then(|io| io.original_native_work());
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let native: Option<()> = None;
+        if work.is_some() && native.is_none() {
             return Err(Error::Unsupported(
                 "effect observer has no original native ledger".into(),
             ));
         }
-        let provider = self.providers.get(provider_name).ok_or_else(|| {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = native {
+            self.require_native_metadata(native)?;
+            native.charge(acyclic_fs::WorkCounters {
+                items_examined: 1,
+                ..Default::default()
+            })?;
+        }
+        let provider = self.providers.get(&effect.provider).ok_or_else(|| {
             crate::effect_host::effect_error(
                 work,
                 crate::wire::ErrorCode::Unsupported,
                 "effect provider is not registered",
             )
         })?;
-        if !provider.guarantees(effect_kind).contains(&guarantee) {
-            return Err(Error::Unsupported(format!(
-                "provider {provider_name} does not support {guarantee:?} for {effect_kind}"
-            )));
+        let supported = 'guarantee: {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(native) = native {
+                break 'guarantee provider.supports_guarantee_with_native_work(
+                    &effect.effect_kind,
+                    effect.guarantee,
+                    native,
+                )?;
+            }
+            provider
+                .guarantees(&effect.effect_kind)
+                .contains(&effect.guarantee)
+        };
+        if !supported {
+            return Err(crate::effect_host::effect_error(
+                work,
+                crate::wire::ErrorCode::Unsupported,
+                "effect provider does not support the pinned guarantee",
+            ));
         }
-        if guarantee == EffectGuarantee::ExactlyOnce && !provider.linearizable_reconciliation() {
-            return Err(Error::Unsupported(
-                "exactly-once requires linearizable provider reconciliation".into(),
+        if effect.guarantee == EffectGuarantee::ExactlyOnce
+            && !provider.linearizable_reconciliation()
+        {
+            return Err(crate::effect_host::effect_error(
+                work,
+                crate::wire::ErrorCode::Unsupported,
+                "exactly-once requires linearizable provider reconciliation",
             ));
         }
         Ok(provider)
@@ -254,12 +225,13 @@ impl EffectRegistry {
             let slot = std::mem::size_of::<(String, Arc<dyn EffectProvider>)>() as u64;
             io.admit_owned(slot)?;
             io.retain_owned(slot)?;
+            let mut custody;
             let mut id = String::new();
             io.reserve_text(&mut id, source.len())?;
             io.admit_copy(source.len() as u64)?;
             id.push_str(source);
             io.copy_bytes(source.len() as u64)?;
-            let mut custody = io.into_custody()?;
+            custody = io.into_custody()?;
             self.native_metadata
                 .as_mut()
                 .expect("validated native catalog")

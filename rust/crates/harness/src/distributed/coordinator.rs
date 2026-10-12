@@ -228,7 +228,12 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         .into_iter()
         .flatten()
         {
-            crate::executor::validate_json_schema_value(schema, &value, "scheduler result", custody.work())?;
+            crate::executor::validate_json_schema_value(
+                schema,
+                &value,
+                "scheduler result",
+                custody.work(),
+            )?;
         }
         Ok(())
     }
@@ -413,7 +418,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 Ok(receipt.start == revision - 1)
             }
             Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
-            Err(error) if idle_execution.is_none() && coordinator_retry_conflict(&error) => {
+            Err(error) if idle_execution.is_none() && error.code() == wire::ErrorCode::Conflict => {
                 Err(error)
             }
             Err(error) => return Err(error),

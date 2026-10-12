@@ -1,5 +1,4 @@
-//! MCP protocol bindings and atomic catalog installation.
-
+//! MCP clients over the ordinary tool, execution and interaction owners.
 pub mod callbacks;
 mod catalog;
 pub mod http;
@@ -10,12 +9,10 @@ mod remote;
 mod rpc;
 pub mod services;
 pub mod stdio;
-
 pub use catalog::{McpCatalog, McpCatalogInstallation, McpDiscoveryPolicy, McpSchemaExposure};
 pub use protocol::{
     McpInitializeResult, McpToolDefinition, McpToolResult, McpToolTransport, McpToolsPage,
     PROTOCOL_VERSION,
 };
-
 #[cfg(test)]
 mod tests;

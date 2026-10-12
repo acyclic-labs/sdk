@@ -7,26 +7,6 @@ pub(super) struct Envelope<'a, P> {
     pub(super) method: &'a str,
     pub(super) params: P,
 }
-#[derive(Serialize)]
-pub(super) struct Empty {}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct InitializeParams {
-    pub(super) capabilities: Empty,
-    pub(super) client_info: ClientInfo,
-    pub(super) protocol_version: &'static str,
-}
-#[derive(Serialize)]
-pub(super) struct ClientInfo {
-    pub(super) name: &'static str,
-    pub(super) version: &'static str,
-}
-#[derive(Serialize)]
-pub(super) struct Initialized {
-    pub(super) jsonrpc: &'static str,
-    pub(super) method: &'static str,
-}
-
 #[cfg(test)]
 pub(super) fn line(value: &Value) -> Result<Vec<u8>> {
     Ok(encode_line(value, usize::MAX, None)?.0)
@@ -198,14 +178,36 @@ pub(super) fn codec_charge(
     }
 }
 
-pub(super) fn encode_line<T: Serialize>(
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn diagnostic(error: Error, mut custody: acyclic_fs::NativeAllocation) -> Error {
+    let Error::Invalid(message) = error else {
+        return error;
+    };
+    let release = custody
+        .bytes()
+        .checked_sub(message.capacity() as u64)
+        .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
+            acyclic_fs::WorkError::Overflow,
+        ))
+        .and_then(|bytes| custody.release(bytes));
+    if let Err(cause) = release {
+        return native_error(cause);
+    }
+    Error::NativeDiagnostic {
+        code: crate::wire::ErrorCode::Invalid,
+        message,
+        custody,
+    }
+}
+
+pub(super) fn encode_line<T: Serialize + ?Sized>(
     value: &T,
     maximum: usize,
     work: NativeWork<'_>,
 ) -> Result<(Vec<u8>, NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
-        let mut diagnostic = work
+        let diagnostic_custody = work
             .claim(
                 crate::executor::json::sdk_json_diagnostic_bytes()
                     .max(crate::executor::json::lexical_json_diagnostic_bytes()),
@@ -225,29 +227,8 @@ pub(super) fn encode_line<T: Serialize>(
             None,
             &mut |event| codec_charge(work, &mut custody, &mut quota, event),
         );
-        let bytes = match encoded {
-            Ok(bytes) => bytes,
-            Err(Error::Invalid(message)) => {
-                diagnostic
-                    .release(
-                        diagnostic
-                            .bytes()
-                            .checked_sub(message.capacity() as u64)
-                            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
-                                acyclic_fs::WorkError::Overflow,
-                            ))?,
-                    )
-                    .map_err(native_error)?;
-                return Err(Error::NativeDiagnostic {
-                    code: crate::wire::ErrorCode::Invalid,
-                    message,
-                    custody: diagnostic,
-                });
-            }
-            Err(error) => return Err(error),
-        };
+        let bytes = encoded.map_err(|error| diagnostic(error, diagnostic_custody))?;
         drop(quota);
-        drop(diagnostic);
         let mut write = (bytes, Some(custody));
         let capacity = write
             .0
@@ -288,7 +269,7 @@ pub(super) fn frame_admission(
             guard.resize(quota).map_err(native_error)?;
         }
         // Per-byte original cancellation and item admission before any serde.
-        let mut diagnostic = work
+        let diagnostic_custody = work
             .claim(
                 crate::executor::json::lexical_json_diagnostic_bytes(),
                 0,
@@ -312,27 +293,7 @@ pub(super) fn frame_admission(
                     .map_err(native_error),
                 _ => checkpoint(Some(work)),
             });
-        match scanned {
-            Err(Error::Invalid(message)) => {
-                diagnostic
-                    .release(
-                        diagnostic
-                            .bytes()
-                            .checked_sub(message.capacity() as u64)
-                            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
-                                acyclic_fs::WorkError::Overflow,
-                            ))?,
-                    )
-                    .map_err(native_error)?;
-                return Err(Error::NativeDiagnostic {
-                    code: crate::wire::ErrorCode::Invalid,
-                    message,
-                    custody: diagnostic,
-                });
-            }
-            Err(error) => return Err(error),
-            Ok(()) => {}
-        }
+        scanned.map_err(|error| diagnostic(error, diagnostic_custody))?;
     }
     Ok(custody)
 }

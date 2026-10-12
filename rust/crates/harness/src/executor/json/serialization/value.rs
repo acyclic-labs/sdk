@@ -33,7 +33,7 @@ pub(super) struct Scope<'a> {
     pub charge: &'a mut dyn FnMut(JsonCodecCharge) -> Result<()>,
     pub failed: Option<Error>,
     pub retained: u64,
-    items: u64,
+    pub(super) items: u64,
     bytes: u64,
 }
 impl Scope<'_> {
@@ -132,7 +132,11 @@ impl Scope<'_> {
                         items: 0,
                     })
                     .map_err(|_| std::io::ErrorKind::Interrupted)?;
-                self.bytes += bytes.len() as u64;
+                let Some(total) = self.bytes.checked_add(bytes.len() as u64) else {
+                    let _ = self.scope.bound::<()>("JSON byte count overflow");
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                };
+                self.bytes = total;
                 Ok(bytes.len())
             }
             fn flush(&mut self) -> std::io::Result<()> {
@@ -343,6 +347,9 @@ impl<'a, 'b> ser::Serializer for Builder<'a, 'b> {
         serialize_f64(f64)
     );
     fn serialize_char(self, value: char) -> Encoded<Value> {
+        if matches!(self.position, Position::Raw) {
+            return self.scope.bound("expected value");
+        }
         self.serialize_str(value.encode_utf8(&mut [0; 4]))
     }
     fn serialize_str(self, value: &str) -> Encoded<Value> {
@@ -428,6 +435,9 @@ impl<'a, 'b> ser::Serializer for Builder<'a, 'b> {
         _: u32,
         variant: &'static str,
     ) -> Encoded<Value> {
+        if matches!(self.position, Position::Raw) {
+            return self.scope.bound("expected value");
+        }
         self.serialize_str(variant)
     }
     fn serialize_newtype_struct<T: Serialize + ?Sized>(

@@ -123,11 +123,6 @@ export class NativeStreamProvider implements StreamProvider {
 
   get transport(): string { return this.client.transport(); }
 
-  /** Uses the Rust-owned worker for automatic receipts; this clone disables it. */
-  withoutDeliveryAcknowledgements(): NativeStreamProvider {
-    return new NativeStreamProvider(this.client.withoutDeliveryAcknowledgements(), this.module);
-  }
-
   async acknowledgeDelivery(deliveryToken: Uint8Array, cancellation?: NativeCancellation): Promise<void> {
     if (!(deliveryToken instanceof Uint8Array) || deliveryToken.byteLength !== 32) throw new StreamError("invalid_argument", "delivery token must contain exactly 32 bytes");
     const request = toBinary(wire.AcknowledgeDeliveryRequestSchema, create(wire.AcknowledgeDeliveryRequestSchema, { deliveryToken }));

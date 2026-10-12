@@ -7,11 +7,9 @@ use acyclic_harness::{
 };
 
 async fn composition(root: &std::path::Path) -> Result<Config> {
-    acyclic_native_runtime::initialize_native_io_services()
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
     #[cfg(feature = "native-execution")]
-    acyclic_fs::initialize_native_mount_services()
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    acyclic_fs::initialize_native_mount_services().map_err(storage)?;
     let provider = ProviderRef::new(
         "terminal-native-regression".into(),
         "filesystem".into(),
@@ -59,7 +57,7 @@ async fn composition(root: &std::path::Path) -> Result<Config> {
     let files = FilesystemHost::new(
         acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&filesystem_root))
             .await
-            .map_err(|error| Error::Storage(error.to_string()))?,
+            .map_err(storage)?,
         &provider,
         None,
     )?;
@@ -101,7 +99,7 @@ async fn composition(root: &std::path::Path) -> Result<Config> {
 #[tokio::test]
 async fn prompt_reference_retains_exact_publication_across_reopen_and_rejects_rebinding()
 -> Result<()> {
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let directory = tempfile::tempdir().map_err(storage)?;
     let mut config = composition(directory.path()).await?;
     let role = ContextAttribute::typed(
         "graphcoder.role".into(),
@@ -135,9 +133,9 @@ async fn prompt_reference_retains_exact_publication_across_reopen_and_rejects_re
     let session = NativeSession::open(config.clone()).await?;
     session.configure_context(update).await?;
     let retained = session.config().context;
-    let mut invalid = retained.clone();
-    invalid.attributes[0].value = serde_json::json!(7);
-    assert!(session.configure_context(invalid).await.is_err());
+    let mut rejected = retained.clone();
+    rejected.attributes[0].value = serde_json::json!(7);
+    assert!(session.configure_context(rejected).await.is_err());
     assert_eq!(session.config().context.attributes, retained.attributes);
     let command_operation = OperationId::from_bytes([66; 16]);
     let original = session
@@ -200,17 +198,17 @@ async fn prompt_reference_retains_exact_publication_across_reopen_and_rejects_re
     session.resume(lease.clone()).await?;
     use acyclic_harness::conversation::ContentResidencyVerifier as _;
     use acyclic_harness::executor::{ExecutionEvent, ExecutionJournal as _};
-    let invocations = std::fs::read_to_string(&session.config.model_invocation_ledger)
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    let invocations =
+        std::fs::read_to_string(&session.config.model_invocation_ledger).map_err(storage)?;
     let row: serde_json::Value = serde_json::from_str(
         invocations
             .lines()
             .next()
             .ok_or_else(|| Error::NotFound("model invocation".into()))?,
     )
-    .map_err(|error| Error::Invalid(error.to_string()))?;
-    let execution: OperationId = serde_json::from_value(row["operation_id"].clone())
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    .map_err(invalid)?;
+    let execution: OperationId =
+        serde_json::from_value(row["operation_id"].clone()).map_err(invalid)?;
     let owner = session
         .runtime
         .task_host()
@@ -236,7 +234,7 @@ async fn prompt_reference_retains_exact_publication_across_reopen_and_rejects_re
         })
         .ok_or_else(|| Error::NotFound("admitted model request".into()))?;
     let bytes = journal.read(&request).await?;
-    let actual = std::str::from_utf8(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    let actual = std::str::from_utf8(&bytes).map_err(invalid)?;
     assert!(actual.contains("implementor-2") && actual.contains("implementor"));
     assert!(!actual.contains("reviewer-1"));
     assert!(matches!(

@@ -184,7 +184,7 @@ pub(super) fn seal_checkout_with_permit_guarded_with_native_work<'a, A, O, T, F,
     operation_context: Option<crate::Digest>,
     operation_evidence: Option<acyclic_stream::OwnedBytes>,
     original_fingerprint_permit: Option<PublicationPermit>,
-) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<super::adapter::NativeSourcePublicationAck>, T>>
+) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(Option<OperationId>, crate::GenerationId)>, T>>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -194,7 +194,6 @@ where
 {
     Box::pin(async move {
         cancellation.check().map_err(|error| T::from(crate::FsError::Cancelled(error)))?;
-        use super::adapter::NativeSourcePublicationAck;
         let original_generation = checkout.generation_id();
         let mode = checkout.mode().mutations;
         if force && mode != crate::model::MutationMode::PrivateOverlay {
@@ -212,14 +211,14 @@ where
                     return Ok(match outcome {
                         LivePublicationObservation::Committed { generation_id, .. }
                         | LivePublicationObservation::AlreadyCommitted { generation_id, .. } =>
-                            Some(NativeSourcePublicationAck::Published { operation: operation_id, generation: generation_id }),
+                            Some((Some(operation_id), generation_id)),
                         LivePublicationObservation::Conflict { .. }
                         | LivePublicationObservation::Fenced { .. }
                         | LivePublicationObservation::IdempotencyConflict { .. } => None,
                     });
                 }
                 if !force && !checkout.has_pending_mutations() {
-                    return Ok(Some(NativeSourcePublicationAck::Unchanged { generation: original_generation }));
+                    return Ok(Some((None, original_generation)));
                 }
                 let attempts = if force { MAXIMUM_SAFE_REBASE_ATTEMPTS } else { 1 };
                 for _ in 0..attempts {
@@ -232,7 +231,7 @@ where
                     match outcome {
                         LivePublicationObservation::Committed { generation_id, .. }
                         | LivePublicationObservation::AlreadyCommitted { generation_id, .. } =>
-                            return Ok(Some(NativeSourcePublicationAck::Published { operation: operation_id, generation: generation_id })),
+                            return Ok(Some((Some(operation_id), generation_id))),
                         LivePublicationObservation::Conflict { .. } if force => {
                             let (decision, allocation) = checkout.rebase_head(
                                 checkout.volume_config().limits.maximum_checkout_dependencies,
@@ -252,7 +251,7 @@ where
             }
             crate::model::MutationMode::DirectLive if permit == PublicationPermit::Unrestricted => {
                 if !checkout.has_pending_mutations() {
-                    return Ok(Some(NativeSourcePublicationAck::Unchanged { generation: original_generation }));
+                    return Ok(Some((None, original_generation)));
                 }
                 let (outcome, allocation) = checkout.resume_live_with_native_work(
                     operation_id, 8, 256, permit, original, cancellation, before_publication, producer_custody,
@@ -261,7 +260,7 @@ where
                 let ack = match &outcome {
                     LiveMutationOutcome::Committed { generation_id, .. }
                     | LiveMutationOutcome::AlreadyCommitted { generation_id, .. } =>
-                        Some(NativeSourcePublicationAck::Published { operation: operation_id, generation: *generation_id }),
+                        Some((Some(operation_id), *generation_id)),
                     LiveMutationOutcome::Conflicted { .. }
                     | LiveMutationOutcome::RetryLimit { .. }
                     | LiveMutationOutcome::Fenced { .. }
@@ -448,7 +447,7 @@ mod tests {
             &mut |_: &crate::NativeMaterializationWork| async { Ok::<(), NativePublicationTestError>(()) },
             None, None, None, None,
         ).await?;
-        assert_eq!(ack, Some(super::super::adapter::NativeSourcePublicationAck::Unchanged { generation }));
+        assert_eq!(ack, Some((None, generation)));
         let after = original.receipt();
         assert_eq!(after.authority_records_appended, before.authority_records_appended);
         assert_eq!(after.backend_write_operations, before.backend_write_operations);
@@ -515,9 +514,7 @@ mod tests {
             &mut |_: &crate::NativeMaterializationWork| async { Ok::<(), NativePublicationTestError>(()) },
             None, Some(context), Some(evidence.clone()), None,
         ).await?;
-        assert_eq!(ack, Some(super::super::adapter::NativeSourcePublicationAck::Published {
-            operation, generation,
-        }));
+        assert_eq!(ack, Some((Some(operation), generation)));
         assert_eq!(original.receipt().authority_records_appended, appended);
         let durable =(async { let __authority_args = (crate::kernel::volume_authority_id(volume.id()), operation, &original, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = fs.authority().find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }.await)?;
         let durable = durable.ok_or("original append disappeared")?;

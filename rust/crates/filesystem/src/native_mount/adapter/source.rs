@@ -136,12 +136,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut inspector = if let Some(work) = inputs.carrier.original_native_work() {
             checkout.inspector(&work, &cancellation).map_err(fs_error)?
         } else {
-            let (budget, live) = inputs.carrier.with_work(|work| {
-                Ok::<_, MountSourceError>((
-                    work.remaining().map_err(super::lazy::mount_demand_error)?,
-                    work.live_allocation_bytes(),
-                ))
-            })?;
+            let (budget, live) = inputs.carrier.remaining()?;
             inputs.carrier.accept_with_prior_live(
                 checkout.inspector(budget, &cancellation),
                 live,
@@ -235,12 +230,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     .map_err(fs_error)?,
             }
         } else {
-            let (budget, live) = inputs.carrier.with_work(|work| {
-                Ok::<_, MountSourceError>((
-                    work.remaining().map_err(super::lazy::mount_demand_error)?,
-                    work.live_allocation_bytes(),
-                ))
-            })?;
+            let (budget, live) = inputs.carrier.remaining()?;
             let result = match range {
                 Some(range) => checkout
                     .read_file_range(&path, range, budget, &cancellation)
@@ -316,12 +306,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .await
                 .map_err(fs_error)
         } else {
-            let (budget, live) = inputs.carrier.with_work(|work| {
-                Ok::<_, MountSourceError>((
-                    work.remaining().map_err(super::lazy::mount_demand_error)?,
-                    work.live_allocation_bytes(),
-                ))
-            })?;
+            let (budget, live) = inputs.carrier.remaining()?;
             let result = checkout
                 .lookup_no_follow_with_metadata(path, budget, cancellation)
                 .await;
@@ -375,12 +360,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .await
                 .map_err(fs_error)?
         } else {
-            let (budget, live) = inputs.carrier.with_work(|work| {
-                Ok::<_, MountSourceError>((
-                    work.remaining().map_err(super::lazy::mount_demand_error)?,
-                    work.live_allocation_bytes(),
-                ))
-            })?;
+            let (budget, live) = inputs.carrier.remaining()?;
             let result = checkout
                 .read_file_record_by_id(file_id, budget, &cancellation)
                 .await;
@@ -395,35 +375,54 @@ impl<A, O> CheckoutMountSource<A, O> {
         Ok(record)
     }
 
-    pub(super) fn detached_file_from_record(
+    pub(super) async fn detached_file_from_record(
         &self,
         record: FileRecord,
         metadata: FileMetadata,
+        owner: CallbackOwner,
+        carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<Arc<CheckoutDetachedFile<A, O>>, MountSourceError>
     where
-        A: AsyncAuthorityStore + Send + Sync,
-        O: AsyncObjectStore + Send + Sync,
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
     {
-        let owner = ViewGate::callback_owner();
-        let file = self.runtime.wait(|| async {
-            Ok(self
-                .checkout
-                .observe(
-                    owner,
-                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
-                        boundary_budget(),
-                        &self.cancellation,
-                    )),
-                    &self.cancellation,
-                    None,
-                )
-                .await?
-                .detached_from_record(record, boundary_budget(), &self.cancellation)
-                .map_err(facade_error)?
-                .value)
-        })?;
+        let cancellation = carrier.cancellation();
+        let checkout = self
+            .checkout
+            .observe(owner, carrier, &cancellation, Some(&self.cancellation))
+            .await?;
+        let bytes = std::mem::size_of::<CheckoutDetachedFile<A, O>>() as u64;
+        let (file, allocation) = if let Some(work) = carrier.original_native_work() {
+            let allocation = work
+                .claim(bytes, 1, crate::WorkCounters::UNCHARGED)
+                .map_err(MountSourceError::NativeWork)?;
+            let file = checkout
+                .detached_from_record(record, &work, &cancellation)
+                .map_err(fs_error)?;
+            (file, Some(allocation))
+        } else {
+            let (budget, live) = carrier.remaining()?;
+            let file = carrier.accept_with_prior_live(
+                checkout.detached_from_record(record, budget, &cancellation),
+                live,
+                fs_error,
+            )?;
+            carrier
+                .with_work(|work| work.allocate(bytes))
+                .map_err(super::lazy::mount_demand_error)?;
+            (file, None)
+        };
+        if let Err(error) = carrier.check(&cancellation, Some(&self.cancellation)) {
+            drop(file);
+            if allocation.is_none() {
+                carrier
+                    .with_work(|work| work.release(bytes))
+                    .map_err(super::lazy::mount_demand_error)?;
+            }
+            return Err(error);
+        }
         Ok(Arc::new(CheckoutDetachedFile {
-            _native_allocation: None,
+            _native_allocation: allocation,
             state: tokio::sync::Mutex::new(DetachedMountState {
                 file,
                 metadata,
@@ -548,8 +547,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let work = match &self.native_original {
             Some(work) => work.clone(),
-            None => capture_meter(boundary_budget(), &self.cancellation)
-                .map_err(|failure| failure.error)?,
+            None => capture_meter(boundary_budget(), &self.cancellation)?,
         };
         self.checkout
             .publish(
@@ -557,9 +555,11 @@ impl<A, O> CheckoutMountSource<A, O> {
                 &work,
                 work.cancellation(),
                 Some(&self.cancellation),
-                self.native_callback_guard.clone(),
+                &mut source_publication_guard(self.native_callback_guard.clone(), Some(self.cancellation.clone())),
+                None,
+                &mut None,
             )
-            .await
+            .await.map_err(|(cause, _)| cause)
     }
 
     /// Safely advances a clean mounted checkout to the workspace head.

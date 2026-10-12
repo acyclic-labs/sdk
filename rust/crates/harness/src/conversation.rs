@@ -1230,7 +1230,7 @@ pub fn decode_attachment_manifest(
             fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut sequence: S) -> std::result::Result<Self::Value, S::Error> {
                 let mut items: Vec<Attachment> = Vec::new();
                 loop {
-                    guard::<_, S::Error>(self.io.remaining(), self.failure)?;
+                    guard::<_, S::Error>(self.io.remaining().map_err(Into::into), self.failure)?;
                     if items.len() == self.maximum {
                         if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
                             return guard::<_, S::Error>(

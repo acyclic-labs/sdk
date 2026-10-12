@@ -419,10 +419,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 };
                 let planned = self.register(planned).await?;
                 let child = parent
-                    .fork(
+                    .fork::<_, _, crate::WorkspaceError>(
                         destination.as_str(),
                         ForkOptions::from_generation(generation.clone(), idempotency_key),
-                    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+                    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), &mut |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
                     .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let initial_generation = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 if child.id() != child_id {

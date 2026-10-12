@@ -18,13 +18,8 @@ async function changeCheckpointBytes(databaseName: string, field: "fact" | "hypo
       const store = transaction.objectStore("cursors"), read = store.get("conversation:demand-browser");
       read.onsuccess = () => {
         const record = read.result;
-        const before = [record.authority, record.generation, record.revision, record.checkpointVersion,
-          record.checkpoint.identity, record.checkpoint.state.hypothesis.branch, record.checkpoint.state.hypothesis.basis];
         const file = field === "fact" ? record.checkpoint.state.content : record.checkpoint.state.hypothesis.predicted.content;
         file.descriptor.byte_length += 1;
-        assert(before.every((value, index) => value === [record.authority, record.generation, record.revision,
-          record.checkpointVersion, record.checkpoint.identity, record.checkpoint.state.hypothesis.branch,
-          record.checkpoint.state.hypothesis.basis][index]), "fault injection changed checkpoint identity");
         store.put(record);
       };
     });

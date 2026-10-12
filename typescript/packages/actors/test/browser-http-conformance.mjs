@@ -16,6 +16,7 @@ import * as objectsWire from "../../objects/generated/proto/objects/v1/objects_p
 import { MemoryObjectsV1 } from "../../objects/dist/v1.js";
 import { ObjectsV1Memory, objects_v1_http_type, decode_objects_v1_json, encode_objects_v1_json } from "../../objects/generated/wasm/acyclic_objects_wasm.js";
 import { MemoryStreamProvider } from "../../stream/dist/memory.js";
+import { StreamClient } from "../../stream/dist/client.js";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const require = createRequire(import.meta.url);
@@ -55,7 +56,7 @@ async function streamDispatch(route, input) {
     case "append": return stream.append(input.path, input.values, input.options);
     case "fork": return stream.fork(input.source, input.destination, input.options);
     case "read": { const records = []; for await (const record of stream.read(input.path, { from: input.from, limit: input.limit })) records.push(record); return records; }
-    case "children": { const children = []; for await (const child of stream.children(input.parent, input.limit)) children.push(child); return children; }
+    case "children": { const children = []; for await (const child of new StreamClient(stream).children(input.parent, input.limit)) children.push(child); return children; }
     case "children/page": return stream.childrenPage(input);
     case "commit": return stream.commit(input.request, input.options);
     case "commits/read": return stream.readCommit(input.commitId);

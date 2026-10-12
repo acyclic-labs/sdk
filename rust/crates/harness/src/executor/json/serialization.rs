@@ -23,15 +23,19 @@ impl std::io::Write for Writer<'_, '_> {
                 bytes: bytes.len() as u64,
                 items: 0,
             })?;
-            let mut charge = |event| (self.scope.charge)(event);
-            let charge = RefCell::new(&mut charge as &mut dyn FnMut(JsonCodecCharge) -> Result<()>);
-            for byte in bytes {
-                if let Err(error) =
-                    self.lexical
-                        .byte(*byte, self.scope.bounds, self.scope.code, &charge)
-                {
-                    self.scope.failed = Some(error);
-                    return Err(Failure::Stopped);
+            // A built Value already passed structural admission.
+            if self.scope.items == 0 {
+                let mut charge = |event| (self.scope.charge)(event);
+                let charge =
+                    RefCell::new(&mut charge as &mut dyn FnMut(JsonCodecCharge) -> Result<()>);
+                for byte in bytes {
+                    if let Err(error) =
+                        self.lexical
+                            .byte(*byte, self.scope.bounds, self.scope.code, &charge)
+                    {
+                        self.scope.failed = Some(error);
+                        return Err(Failure::Stopped);
+                    }
                 }
             }
             if let Some(output) = self.output.as_mut() {

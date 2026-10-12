@@ -62,7 +62,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let attempt = self.attempt(Some(preparation))?;
         self.check_request(request, attempt.io.as_ref(), Some(preparation.as_ref()))?;
         crate::NativeFutureBundle::new(work, || async move {
-            preparation.verify_creation_with_native_work(work)?.await?;
+            preparation.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             let io = attempt
                 .io
                 .as_ref()
@@ -88,7 +88,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         self.require_native_projection_work(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             preparation
-                .verify_reconciliation_with_native_work(work)?
+                .verify(true, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?
                 .await?;
             let attempt = self.attempt(Some(preparation))?;
             let io = attempt
@@ -98,7 +98,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             self.check_request(request, Some(io), Some(preparation.as_ref()))?;
             let report = attempt.reconcile(request).await?;
             preparation
-                .verify_reconciliation_with_native_work(work)?
+                .verify(true, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?
                 .await?;
             let retained = io.owned_bytes()?;
             let custody = io.take_native_custody(retained)?;
@@ -175,26 +175,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
 
     pub(super) async fn verify_task_lease(&self, settlement: bool) -> Result<()> {
         if let Some(preparation) = &self.task_preparation {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = self
-                .io
-                .as_ref()
-                .and_then(PreparationIo::original_native_work)
-            {
-                return if settlement {
-                    preparation
-                        .verify_reconciliation_with_native_work(work)?
-                        .await
-                } else {
-                    preparation.verify_creation_with_native_work(work)?.await
-                };
-            }
-            if settlement {
-                preparation.verify_reconciliation().await?;
-            } else {
-                preparation.verify_creation().await?;
-            }
+            preparation.verify(settlement, self.io.as_ref())?.await?;
         }
+
         Ok(())
     }
 

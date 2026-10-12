@@ -62,31 +62,31 @@ fn pinned_tool_revisions_require_explicit_model_selection() -> Result<()> {
             None,
         )?;
     }
-    assert!(tools.get("example.echo", None)?.is_none());
+    assert!(tools.get("example.echo", None, None)?.is_none());
     assert!(matches!(tools.definitions(None), Err(Error::Conflict(_))));
-    assert!(tools.get_version("example.echo", "1", None)?.is_some());
+    assert!(tools.get("example.echo", Some("1"), None)?.is_some());
     tools.select_model_version("example.echo", "2")?;
     assert_eq!(tools.definitions(None)?[0].revision, "2");
     assert_eq!(
         tools
-            .get("example.echo", None)?
+            .get("example.echo", None, None)?
             .map(|tool| tool.definition.revision.as_str()),
         Some("2")
     );
     tools.remove_from_model("example.echo")?;
     assert!(tools.definitions(None)?.is_empty());
-    assert!(tools.get("example.echo", None)?.is_none());
-    assert!(tools.get_version("example.echo", "1", None)?.is_some());
-    assert!(tools.get_version("example.echo", "2", None)?.is_some());
-    assert!(tools.get("example.echo@1", None)?.is_some());
+    assert!(tools.get("example.echo", None, None)?.is_none());
+    assert!(tools.get("example.echo", Some("1"), None)?.is_some());
+    assert!(tools.get("example.echo", Some("2"), None)?.is_some());
+    assert!(tools.get("example.echo@1", None, None)?.is_some());
     let mut replacement = tools
-        .get_version("example.echo", "1", None)?
+        .get("example.echo", Some("1"), None)?
         .ok_or_else(|| Error::NotFound("test tool".into()))?
         .clone();
     replacement.definition.revision = "3".into();
     tools.register((replacement, None), &mut None, None)?;
     assert!(tools.definitions(None)?.is_empty());
-    assert!(tools.get_version("example.echo", "3", None)?.is_some());
+    assert!(tools.get("example.echo", Some("3"), None)?.is_some());
     assert!(matches!(
         tools.remove_from_model("missing"),
         Err(Error::NotFound(_))
@@ -134,11 +134,34 @@ fn projection_contract_is_required_validated_and_pinned() -> Result<()> {
             )
             .is_err()
     );
-    crate::executor::validate_json_schema_value(&definition.output_schema, &json!({"count": 2}), "result", &mut None)?;
-    crate::executor::validate_json_schema_value(&definition.projection_schema, &json!({"kind":"json","value":"two"}), "projection", &mut None)?;
-    assert!(crate::executor::validate_json_schema_value(&definition.output_schema, &json!("two"), "result", &mut None).is_err());
+    crate::executor::validate_json_schema_value(
+        &definition.output_schema,
+        &json!({"count": 2}),
+        "result",
+        &mut None,
+    )?;
+    crate::executor::validate_json_schema_value(
+        &definition.projection_schema,
+        &json!({"kind":"json","value":"two"}),
+        "projection",
+        &mut None,
+    )?;
     assert!(
-        crate::executor::validate_json_schema_value(&definition.projection_schema, &json!({"count": 2}), "projection", &mut None)
+        crate::executor::validate_json_schema_value(
+            &definition.output_schema,
+            &json!("two"),
+            "result",
+            &mut None
+        )
+        .is_err()
+    );
+    assert!(
+        crate::executor::validate_json_schema_value(
+            &definition.projection_schema,
+            &json!({"count": 2}),
+            "projection",
+            &mut None
+        )
         .is_err()
     );
     let mut changed = definition.clone();
@@ -238,6 +261,6 @@ async fn scoped_install_requires_capability_and_exact_approval_operation() -> Re
             &approval,
         )
         .await?;
-    assert!(registry.get("example.echo", None)?.is_some());
+    assert!(registry.get("example.echo", None, None)?.is_some());
     Ok(())
 }

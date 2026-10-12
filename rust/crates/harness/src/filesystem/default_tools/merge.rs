@@ -265,7 +265,7 @@ where
             ));
         }
         let receipt_copy =
-            crate::executor::with_history_io(io, |work| receipt.clone_with_work_and_custody(work))?
+            crate::executor::with_history_io(io, |work| crate::wire_codec::CodecQuota::produce(work, |quota| receipt.copy(quota)))?
                 .0;
         let receipt_copy = recursive_box(receipt_copy, io)?;
         let key = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("recursive-merge-publication:{}", context.operation_id()), work))?;
