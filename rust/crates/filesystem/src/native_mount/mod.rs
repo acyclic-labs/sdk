@@ -152,7 +152,7 @@ fn errno(error: MountSourceError) -> i32 {
         MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => libc::EINVAL,
         MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => libc::EOPNOTSUPP,
         MountSourceError::Allocation(_) => libc::ENOMEM,
-        MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) =>
+        MountSourceError::Io(error, _) =>
             error.raw_os_error().unwrap_or(libc::EIO),
         MountSourceError::NativeWork(error) => native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => native_workspace_errno(error),
@@ -172,8 +172,7 @@ fn errno(error: MountSourceError) -> i32 {
         | MountSourceError::SelectedPublication(_) | MountSourceError::PublicationRetryLimit
         | MountSourceError::NativeRecordJson(_, _) | MountSourceError::NativeRecordLockTimeout(_, _)
         | MountSourceError::NativeRecordOwnershipConflict(_, _)
-        | MountSourceError::NativeRecordMaterializationInProgress
-        | MountSourceError::NativeRecordIntegrity | MountSourceError::NativeRecordContextTransaction(_, _)
+        | MountSourceError::NativeRecordContextTransaction(_, _)
         | MountSourceError::NativeRecordCorrupt(_, _) => libc::EIO,
         MountSourceError::Metadata(_) => libc::EIO,
         #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
@@ -359,7 +358,7 @@ pub trait MountOpenFile: Send + Sync + 'static {
     fn set_attributes(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
         work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Reads an owned named attribute without erasing capacity.
-    fn read_attribute_with_meter(&self, name: &[u8], work: &NativeMaterializationWork)
+    fn read_attribute(&self, name: &[u8], work: &NativeMaterializationWork)
         -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError>;
     /// Lists the actual owned native attribute page.
     fn list_attributes_with_meter(&self, cursor: Option<&[u8]>, maximum_entries: u32,
@@ -398,8 +397,6 @@ pub trait MountOpenFile: Send + Sync + 'static {
         length: u64,
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError>;
-    /// Reads one exact native named attribute.
-    fn read_attribute(&self, name: &[u8]) -> Result<Option<acyclic_stream::OwnedBytes>, MountSourceError>;
     /// Lists one bounded page of native named-attribute names.
     fn list_attributes(
         &self,
@@ -592,8 +589,8 @@ pub enum MountSourceError {
     /// The acknowledged operation has no original logical snapshot evidence.
     #[error("original selected-import snapshot is unavailable")]
     OriginalSnapshotUnavailable,
-    /// The acknowledged original native publication has not finished reconciliation.
-    #[error("original native publication is indeterminate")]
+    /// The original native operation has not finished reconciliation.
+    #[error("original native operation is indeterminate")]
     Indeterminate,
     /// The original SDK seal returned an exact semantic decision.
     #[error("selected import publication was not committed: {0:?}")]
@@ -601,9 +598,9 @@ pub enum MountSourceError {
     /// Canonical namespace validation retains its exact typed cause.
     #[error(transparent)]
     NamespacePath(crate::kernel::NamespacePathError),
-    /// Original native OS cause, moved without allocating a replacement error.
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
+    /// Original OS cause and any already funded diagnostic custody.
+    #[error("{0}")]
+    Io(#[source] std::io::Error, Option<crate::NativeAllocation>),
     /// This mount or callback was fenced or cancelled.
     #[error("mount callback is stale or cancelled")]
     Stale,
@@ -695,9 +692,6 @@ pub enum MountSourceError {
         /// Original constant reason, without string allocation.
         text: &'static str,
     },
-    /// Original record IO cause and its already funded data custody.
-    #[error("native record IO error: {0}")]
-    NativeRecordIo(#[source] std::io::Error, Option<crate::NativeAllocation>),
     /// Original owned native record parser cause; no diagnostic allocation.
     #[error("native record JSON error: {0}")]
     NativeRecordJson(#[source] serde_json::Error, Option<crate::NativeAllocation>),
@@ -707,12 +701,6 @@ pub enum MountSourceError {
     /// The existing record belongs to a different original owner.
     #[error("native record ownership conflict: {}", .0.display())]
     NativeRecordOwnershipConflict(PathBuf, Option<crate::NativeAllocation>),
-    /// The existing journal still holds an incomplete materialization.
-    #[error("native record materialization remains in progress")]
-    NativeRecordMaterializationInProgress,
-    /// Existing native record integrity verification failed.
-    #[error("native record integrity verification failed")]
-    NativeRecordIntegrity,
     /// Original context-transaction diagnostic already owned by its producer.
     #[error("native record context transaction failed: {0}")]
     NativeRecordContextTransaction(String, Option<crate::NativeAllocation>),
@@ -755,7 +743,7 @@ impl MountSourceError {
 
     pub(crate) fn native_allocation_mut(&mut self) -> Option<&mut Option<crate::NativeAllocation>> {
         match self {
-            Self::NativeRecordIo(_, allocation) | Self::NativeRecordJson(_, allocation)
+            Self::Io(_, allocation) | Self::NativeRecordJson(_, allocation)
             | Self::NativeRecordLockTimeout(_, allocation) | Self::NativeRecordOwnershipConflict(_, allocation)
             | Self::NativeRecordContextTransaction(_, allocation) | Self::NativeRecordCorrupt(_, allocation) =>
                 Some(allocation),
@@ -765,6 +753,10 @@ impl MountSourceError {
             _ => None,
         }
     }
+}
+
+impl From<std::io::Error> for MountSourceError {
+    fn from(error: std::io::Error) -> Self { Self::Io(error, None) }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1140,7 +1132,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
         piece: u32, sink: &mut NativeMountContentSink<'_>, work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Reads actual link bytes and retains their producer-known capacity.
-    fn read_link_with_meter(
+    fn read_link(
         &self, path: &MountPath, work: &NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
     /// Reads the exact range using the existing shared native queue.
@@ -1194,7 +1186,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn create_special(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>,
         metadata: FileMetadata, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
     /// Reads the exact owned attribute on the operative source invocation.
-    fn read_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &NativeMaterializationWork)
+    fn read_attribute(&self, path: &MountPath, name: &[u8], work: &NativeMaterializationWork)
         -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError>;
     /// Lists the actual owned attribute page.
     fn list_attributes_with_meter(&self, path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32,
@@ -1390,8 +1382,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
     }
     /// Captures one regular file as a detached path-independent open-file view.
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
-    /// Reads one symbolic link's exact opaque target bytes without following it.
-    fn read_link(&self, path: &MountPath) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
 
     /// Reads at most one exact logical range.
     fn read_range(
@@ -1416,12 +1406,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError>;
 
-    /// Reads one exact native named attribute.
-    fn read_attribute(
-        &self,
-        path: &MountPath,
-        name: &[u8],
-    ) -> Result<Option<acyclic_stream::OwnedBytes>, MountSourceError>;
     /// Lists one bounded page of native named-attribute names.
     fn list_attributes(
         &self,
@@ -1678,7 +1662,7 @@ impl From<MountSourceError> for NativeMountError {
     fn from(error: MountSourceError) -> Self {
         match error {
             MountSourceError::Work(error) => Self::Work(error),
-            MountSourceError::Io(error) => Self::Io(error),
+            MountSourceError::Io(error, None) => Self::Io(error),
             MountSourceError::NativeWork(error) => Self::Materialization(error),
             MountSourceError::Allocation(error) => Self::Allocation(error),
             MountSourceError::ServicesNotInitialized => Self::ServicesNotInitialized,

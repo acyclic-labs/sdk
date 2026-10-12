@@ -9,11 +9,11 @@ pub(super) async fn execute<P: StreamProvider>(
     authority: &NativeProcessAuthority, request: &Arc<NativeProcessRequest>,
     dispatch: &EffectDispatch, schema: &serde_json::Value,
     supervisor: &Arc<NativeSupervisorControl>, original: &NativeMaterializationWork,
-) -> Result<(NativeExecution, NativeAllocation)> {
+) -> Result<((EffectStatus, Option<crate::conversation::FileRef>, Vec<NativeProcessPublishedVolume>), NativeAllocation)> {
     finite_binding::require_view_family(view, original)?;
         let mut custody = Some(original.retain_owned(0)?);
         let mut publication_slot = None;
-        let result: Result<NativeExecution> = async {
+        let result: Result<_> = async {
             owner.verify_with_native_work(false, original).await?;
             grants(owner, &request.view, original)?;
             {
@@ -65,7 +65,7 @@ pub(super) async fn execute<P: StreamProvider>(
                 custody.as_mut().expect("original custody").absorb(&mut guard)?;
                 original.charge(WorkCounters { items_examined: 1,
                     ..WorkCounters::default() })?;
-                result.descriptor().verify(&bytes, &mut Some(&mut io.history_io()))?;
+                result.descriptor().verify(&bytes, &mut Some(&mut &io))?;
                 if result.descriptor().media_type() != "application/json" {
                     return Err(boundary(crate::wire::ErrorCode::Invalid, "native effect result must be JSON content"));
                 }
@@ -125,13 +125,12 @@ pub(super) async fn execute<P: StreamProvider>(
                     return Err(Error::NativePublication { failure: Box::write(slot, failure), custody: Some(custody) });
                 }
             }
-            Ok(if cleanup_completed {
-                NativeExecution { status: EffectStatus::Succeeded { result }, diagnostic: None,
-                    published }
+            let (status, diagnostic) = if cleanup_completed {
+                (EffectStatus::Succeeded { result }, None)
             } else {
-                NativeExecution { status: EffectStatus::Indeterminate, diagnostic: Some(result),
-                    published }
-            })
+                (EffectStatus::Indeterminate, Some(result))
+            };
+            Ok((status, diagnostic, published))
         }.await;
         match result {
             Ok(execution) => Ok((execution, custody.expect("successful execution retains its original payload"))),
@@ -227,10 +226,8 @@ async fn capture<P: StreamProvider>(
             check()?;
             capture_supervisor.record_quiescence(false)?;
             let mut process = None;
-            let spawned = {acyclic_native_runtime::spawn_process_tree_with_meter_custody(
-                    &mut command, original.runtime_meter(), &mut process,
-                )
-};
+            let spawned = acyclic_native_runtime::spawn_process_tree_with_meter_custody(
+                &mut command, original.runtime_meter(), &mut process);
             if let Err(error) = spawned {
                 if let Some(process) = process {
                     let retained = (process, scopes.0, scopes.1);
@@ -257,8 +254,9 @@ async fn capture<P: StreamProvider>(
                 let mut response_custody = None;
                 let observe = |chunk: &[u8]| {
                     response_custody.take();
-                    let bytes = {exchange.push(chunk, Some(&original)).map(|(bytes, guard)| { response_custody = guard; bytes })
-}.map_err(|error| root_failure(error, std::io::ErrorKind::Other))?;
+                    let bytes = exchange.push(chunk, Some(&original))
+                        .map(|(bytes, guard)| { response_custody = guard; bytes })
+                        .map_err(|error| root_failure(error, std::io::ErrorKind::Other))?;
                     Ok(acyclic_native_runtime::ProcessInput { bytes, complete: exchange.is_complete() })
                 };
                 let output = process.wait_with_output(timeout, maximum,
