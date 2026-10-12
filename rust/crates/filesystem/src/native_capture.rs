@@ -4,6 +4,7 @@ use crate::kernel::{
     FileKind, FileMetadata, FileRecord, LogicalName, MetadataField, NameEncoding, NamespacePath,
 };
 use crate::model::FilesystemProfile;
+use crate::demand::{DemandError, native_demand_error};
 use crate::native_host::NativeHostWork as _;
 use crate::native_host::{HostDataRange, HostRoot, HostStat, allocated_data_ranges};
 use crate::{
@@ -842,16 +843,12 @@ impl acyclic_native_runtime::NativeReadMeter for CapturedRuntimeReadMeter {
     fn release(&self, bytes: u64) { self.base.release(bytes); }
     fn admit_bytes(&self, maximum: usize) -> std::io::Result<()> { self.base.admit_bytes(maximum) }
     fn admit_read(&self, maximum: usize) -> std::io::Result<()> { self.base.admit_read(maximum) }
-    fn admit_operations(&self, count: u64) -> std::io::Result<()> { self.base.admit_operations(count) }
-    fn record_operations(&self, count: u64) -> std::io::Result<()> { self.base.record_operations(count) }
     fn record_read(&self, bytes: usize) -> std::io::Result<()> { self.base.record_read(bytes) }
     fn finish_read(&self, requested: usize, completed: usize) -> std::io::Result<()> {
         self.base.finish_read(requested, completed)
     }
     fn admit_write(&self, maximum: usize) -> std::io::Result<()> { self.base.admit_write(maximum) }
     fn record_write(&self, bytes: usize) -> std::io::Result<()> { self.base.record_write(bytes) }
-    fn admit_write_operations(&self, count: u64) -> std::io::Result<()> { self.base.admit_write_operations(count) }
-    fn record_write_operations(&self, count: u64) -> std::io::Result<()> { self.base.record_write_operations(count) }
     fn admit_durability(&self) -> std::io::Result<()> { self.base.admit_durability() }
     fn reserve_cleanup_write(&self) -> std::io::Result<u64> { self.base.reserve_cleanup_write() }
     fn cancel_cleanup_write(&self, reservation: u64) { self.base.cancel_cleanup_write(reservation); }
@@ -865,7 +862,7 @@ fn native_device_control_in_scope(
 ) -> Result<usize, DemandError> {
     acyclic_native_runtime::device_control_in_place(
         file, code, input, output, Some((scope.native.runtime_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Read)),
-    ).map_err(|error| scope.native.native_read_meter().take_native_io_failure()
+    ).map_err(|error| scope.native.state.take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error)))
 }
 
@@ -874,7 +871,7 @@ fn capture_scope_result<T>(
     result: Result<T, CaptureError>,
 ) -> Result<OperationReceipt<T>, OperationFailure<CaptureError>> {
     let released = scope.release();
-    let completed = scope.native.native_read_meter().lock().work;
+    let completed = scope.native.state.lock().work;
     result.and_then(|value| released.map(|()| value))
         .map(|value| OperationReceipt { value, work: completed })
         .map_err(|error| OperationFailure::new(error, completed))
@@ -1982,7 +1979,7 @@ pub(crate) async fn capture_baseline_with_native_work<A: AsyncAuthorityStore, O:
     cancellation: &CancellationToken,
     work: &crate::NativeMaterializationWork,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
-    let meter = work.native_read_meter();
+    let meter = &work.state;
     let completed = { meter.lock().work };
     if checkout.has_pending_mutations() {
         return Err(OperationFailure::new(CaptureError::DirtyCheckout, completed));
@@ -3770,15 +3767,13 @@ fn host_link_count(metadata: &HostStat) -> Result<u64, CaptureError> {
 /// The link count of the observed node, read by the same handle query as its identity, so it describes exactly the observed node.
 #[cfg(windows)]
 fn host_link_count(metadata: &HostStat) -> Result<u64, CaptureError> {
-    metadata.number_of_links()
-        .map(u64::from)
-        .ok_or_else(|| CaptureError::from(std::io::Error::other("host link count is unavailable")))
+    Ok(metadata.nlink())
 }
 
 impl HostSnapshot {
     fn from_metadata(metadata: &HostStat) -> Result<Self, CaptureError> {
         Ok(Self {
-            identity: metadata.identity().map_err(capture_demand_error)?,
+            identity: metadata.identity(),
             length: metadata.len(),
             metadata: capture_metadata(metadata),
         })
@@ -4061,7 +4056,7 @@ async fn settled_sparse_ranges(native: &std::sync::Arc<acyclic_native_runtime::N
                     .map_err(CaptureError::from)?;
                 let value = reader.read(wanted as usize, runtime, true)
                     .await.map_err(|error| {
-                        let cause = if let Some(cause) = meter.native.native_read_meter().take_native_io_failure() {
+                        let cause = if let Some(cause) = meter.native.state.take_native_io_failure() {
                             capture_demand_error(cause)
                         } else if error.kind() == std::io::ErrorKind::UnexpectedEof {
                             CaptureError::Kernel(crate::FsError::SourceSnapshotStale)
@@ -4074,13 +4069,13 @@ async fn settled_sparse_ranges(native: &std::sync::Arc<acyclic_native_runtime::N
             }).await?;
 
             let chunk = read;
-            let read_end = position + chunk.bytes.len() as u64;
+            let read_end = position + chunk.0.len() as u64;
             report_stands = { let scanned: Result<bool, CaptureError> = (|| {
                     let mut start = position;
                     while start < read_end {
                         meter.source().check().map_err(capture_demand_error)?;
                         let block_end = start.saturating_add(BLOCK - start % BLOCK).min(read_end);
-                        let block = chunk.bytes.get((start - position) as usize..(block_end - position) as usize)
+                        let block = chunk.0.get((start - position) as usize..(block_end - position) as usize)
                             .ok_or(CaptureError::InvalidOptions)?;
                         let mut nonzero = false;
                         for byte in block {
@@ -4181,7 +4176,7 @@ fn native_positional_file(
     result.map_err(|(error, file)| {
         // This is an ordinary std file, not an explicit SDK close operation. Retire its physical handle before projecting the original failure.
         drop(file);
-        capture_demand_error(original.native_read_meter().take_native_io_failure()
+        capture_demand_error(original.state.take_native_io_failure()
             .unwrap_or_else(|| native_demand_error(error)))
     })
 }
@@ -4216,7 +4211,7 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
         let runtime = capture_runtime_meter_owner(original, &self.capture_custody)?;
         let result = reader.read(maximum, runtime, true).await
             .map_err(|error| {
-                original.native_read_meter().take_native_io_failure()
+                original.state.take_native_io_failure()
                     .map(crate::materializer::native_materialization_work_error)
                     .map(crate::FsError::NativeKernel)
                     .unwrap_or_else(|| if error.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -4225,8 +4220,8 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
                         crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Io(error))
                     })
             })?;
-        if result.bytes.len() != maximum { return Err(crate::FsError::SourceSnapshotStale); }
-        destination[..maximum].copy_from_slice(&result.bytes);
+        if result.0.len() != maximum { return Err(crate::FsError::SourceSnapshotStale); }
+        destination[..maximum].copy_from_slice(&result.0);
         copy.record_completed(WorkCounters { bytes_copied: maximum as u64, ..WorkCounters::UNCHARGED })?;
         // The packet retains its buffer until the copy and late checks finish.
         drop(result);
@@ -4450,12 +4445,12 @@ mod windows_name_tests {
         };
         let valid = LogicalName::new(
             NameEncoding::PosixBytes,
-            "uni-Ã©ä¸­.txt".as_bytes().to_vec(),
+            "uni-ÃƒÂ©Ã¤Â¸Â­.txt".as_bytes().to_vec(),
             255,
         )?;
         assert_eq!(
             host_path(valid)?,
-            std::ffi::OsString::from("uni-Ã©ä¸­.txt")
+            std::ffi::OsString::from("uni-ÃƒÂ©Ã¤Â¸Â­.txt")
         );
 
         let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?;
@@ -4477,7 +4472,7 @@ mod windows_name_tests {
             maximum_component_bytes: 510,
             ..crate::model::VolumeLimits::default()
         };
-        let host = std::path::Path::new("src/Ã¼nÃ¯cÃ¸de/æ—¥æœ¬èªž.rs");
+        let host = std::path::Path::new("src/ÃƒÂ¼nÃƒÂ¯cÃƒÂ¸de/Ã¦â€”Â¥Ã¦Å“Â¬Ã¨ÂªÅ¾.rs");
         let namespace = host_path_to_namespace(host, FilesystemProfile::Windows, limits)?;
         assert_eq!(namespace_to_host_path(&namespace)?, host);
         Ok(())

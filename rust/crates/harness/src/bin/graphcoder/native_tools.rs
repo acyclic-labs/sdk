@@ -217,7 +217,7 @@ impl super::native::NativeSession {
         }).collect::<Result<Vec<_>>>()?;
         let existing_lazy = request.view.volumes.iter().map(|_| None).collect::<Vec<_>>();
         let view = NativeVolumeView::prepare(&owner, &guards, &allocation, &request.view.options,
-            &volumes, &existing_lazy, &work)?.await?.into_arc_with_native_work(&work)?;
+            &volumes, &existing_lazy, &work)?.await?;
         let mut process_io = native_work_io(&work).map_err(Error::from)?;
         let process_verifier = verifier.copy(&mut Some(&mut process_io))?;
         let authority = NativeProcessAuthority {

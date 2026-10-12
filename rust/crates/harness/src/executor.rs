@@ -4530,9 +4530,9 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     if let Some(io) = io {
         io.release(message_ids_bytes as u64)?;
     }
-    let retained = crate::context::place_messages_with_io(
+    let retained = crate::context::apply_context_projection(
         retained,
-        selected.messages,
+        selected.messages, crate::context::ContextRenderMode::Prompt,
         crate::context::ContextPlacement::Append,
         limits,
         io,

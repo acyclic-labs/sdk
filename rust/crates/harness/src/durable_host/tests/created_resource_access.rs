@@ -552,10 +552,10 @@ impl CreationFixture {
             &mut None,
         )?;
         let fs = Fs::memory();
-        let filesystem = Arc::new(FilesystemHost::new(
+        let filesystem = FilesystemHost::new(
             fs.clone(),
-            filesystem_provider.clone(),
-        )?);
+            &filesystem_provider, None,
+        )?;
         let payload_volume = VolumeRef::new(
             filesystem_provider.clone(),
             "scheduler".into(),
@@ -1535,7 +1535,7 @@ impl CreationFixture {
             read_authorization: fork.authorized_source.clone(),
         };
         let (preparation, _, _invocation) = self.prepare(&request).await?;
-        let report = preparer.prepare_for_task(fork, &preparation).await?;
+        let report = preparer.prepare_for_task(fork, &Arc::new(preparation)).await?;
         let seed = report.clone().into_seed(&mut None)?;
         Ok(PreparedFilesystemChild {
             request,

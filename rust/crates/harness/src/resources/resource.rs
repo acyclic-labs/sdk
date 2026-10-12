@@ -54,7 +54,7 @@ impl ResourceRef {
             self.version.as_ref().map_or(0, String::capacity),
         ])?
         .checked_add(self.provider.logical_owned_bytes()?)
-        .ok_or_else(ownership_overflow)
+        .ok_or_else(|| invalid("resource ownership overflows"))
     }
     pub(super) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
@@ -86,23 +86,11 @@ impl ResourceRef {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        if let Some(observer) = work.as_deref_mut() {
-            observer.check_cancellation()?;
-        }
         self.provider.validate(work)?;
         if self.key.is_empty() {
-            return Err(resource_validation_error("resource key is empty", work));
+            return Err(invalid("resource key is empty"));
         }
-        if self
-            .version
-            .as_ref()
-            .is_some_and(|value| value.is_empty() || value.chars().any(char::is_control))
-        {
-            return Err(resource_validation_error(
-                "resource version is invalid",
-                work,
-            ));
-        }
+        validate_text(self.version.as_deref(), work, "resource version is invalid")?;
         Ok(())
     }
 

@@ -52,7 +52,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             maximum_bytes,
             &mut crate::tool::edit::AlgorithmWork::ordinary(),
         )?;
-        let generation = self.file_generation(source)?;
+        let generation = self.file_generation(source, None)?;
         self.put_content(source.volume(), write, source.path(), result.as_bytes(), source.descriptor().media_type(), source.display_name(), maximum_bytes, idempotency_key, Some(&generation), None)
         .await
     }

@@ -1,7 +1,8 @@
 use super::*;
 macro_rules! typed_reference {
     ($name:ident, $kind:ident, $description:literal) => {
-        typed_reference!($name, $kind, $description, {            /// Creates a provider-owned typed reference.
+        typed_reference!($name, $kind, $description, {
+            /// Creates a provider-owned typed reference.
             pub fn new(
                 provider: ProviderRef,
                 key: Vec<u8>,
@@ -20,11 +21,17 @@ macro_rules! typed_reference {
         impl $name {
             $($constructor)*
 
-            pub(crate) fn from_resource_with_work(resource: ResourceRef,
-                work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-                let value = Self(resource); value.validate(work)?; Ok(value)
+            pub(crate) fn from_resource_with_work(
+                resource: ResourceRef,
+                work: &mut Option<&mut dyn HistoryIo>,
+            ) -> Result<Self> {
+                let value = Self(resource);
+                value.validate(work)?;
+                Ok(value)
             }
-            pub(crate) fn logical_owned_bytes(&self) -> Result<u64> { self.0.logical_owned_bytes() }
+            pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+                self.0.logical_owned_bytes()
+            }
             /// Borrows the shared provider-neutral representation.
             #[must_use]
             pub const fn as_resource(&self) -> &ResourceRef {
@@ -35,7 +42,7 @@ macro_rules! typed_reference {
             pub fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
                 self.0.validate(work)?;
                 if self.0.kind() != ResourceKind::$kind {
-                    return Err(resource_validation_error("typed resource kind mismatch", work));
+                    return Err(invalid("typed resource kind mismatch"));
                 }
                 Ok(())
             }
@@ -78,14 +85,11 @@ typed_reference!(
                 let mut observed = Some(&mut io as &mut dyn HistoryIo);
                 provider.validate(&mut observed)?;
                 if key.is_empty() {
-                    return Err(resource_validation_error(
-                        "resource key is empty",
-                        &observed,
-                    ));
+                    return Err(invalid("resource key is empty"));
                 }
                 validate_text(version, &mut observed, "resource version is invalid")?;
                 let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
-                let provider = provider.copy_fields(&mut quota)?;
+                let provider = crate::core::copy_provider(provider, &mut quota)?;
                 let key = crate::core::copy_copy_vector(key, &mut quota)?;
                 let version = version
                     .map(|v| crate::core::copy_text(v, &mut quota))

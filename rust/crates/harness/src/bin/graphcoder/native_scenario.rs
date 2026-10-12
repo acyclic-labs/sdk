@@ -154,7 +154,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         .map_err(|error| Error::Storage(error.to_string()))?;
     let native_operation_directory = root.join("native-writeback-operation");
     tokio::fs::create_dir(&native_operation_directory).await.map_err(|error| Error::Storage(error.to_string()))?;
-    let files = Arc::new(FilesystemHost::new(filesystem.clone(), filesystem_provider)?);
+    let files = FilesystemHost::new(filesystem.clone(), &filesystem_provider, None)?;
     files.create_volume(&private).await?;
     files.create_volume(&project).await?;
     // Known qualification prompts are real provider-owned command artifacts.
@@ -393,7 +393,7 @@ impl Producer {
             "application/json", "request.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-request")?, None, None).await?;
         let schema = self.files.put_content(&caller.private, &writer, "command/schema.json", br#"{"type":"object"}"#,
             "application/schema+json", "schema.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-schema")?, None, None).await?;
-        let digest = request.approval_digest(caller.task, operation)?;
+        let digest = request.approval_digest(caller.task, operation, None)?;
         let interaction = Interaction::approval("Run the exact native qualification command".into(), operation, digest)?;
         let prompt = self.files.put_content(&caller.private, &writer, "command/approval.json",
             &serde_json::to_vec(&interaction).map_err(|error| Error::Invalid(error.to_string()))?,

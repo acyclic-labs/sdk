@@ -84,24 +84,6 @@ impl EntryFacts {
     }
 }
 
-#[derive(Default)]
-pub(super) struct ProjectionCache {
-    pub(super) bindings: HashMap<MountPath, ReadOnlyBinding>,
-}
-
-impl ProjectionCache {
-    pub(super) fn clear(&mut self) {
-        self.bindings.clear();
-    }
-
-    pub(super) fn remember_binding(&mut self, path: MountPath, binding: ReadOnlyBinding) {
-        if self.bindings.len() >= MAXIMUM_CACHED_BINDINGS {
-            self.bindings.clear();
-        }
-        self.bindings.insert(path, binding);
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct WrittenEntry {
     pub(super) file_id: FileId,

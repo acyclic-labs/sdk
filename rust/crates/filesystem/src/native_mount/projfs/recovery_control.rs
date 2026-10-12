@@ -135,62 +135,30 @@ pub(in crate::native_mount) fn reparse_tag_held<W: NativeHostWork>(
 where
     NativeMountError: From<W::Error>,
 {
-    use windows::Win32::Foundation::{
-        ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE, ERROR_NOT_A_REPARSE_POINT, HANDLE,
-    };
-    use windows::Win32::Storage::FileSystem::MAXIMUM_REPARSE_DATA_BUFFER_SIZE;
-    use windows::Win32::System::{IO::DeviceIoControl, Ioctl::FSCTL_GET_REPARSE_POINT};
-    let mut buffer =
-        std::mem::MaybeUninit::<[u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize]>::uninit();
-    let mut returned = 0;
+    use windows::Win32::Foundation::ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE;
     let result = work.attempt_io(
         crate::WorkCounters {
             backend_read_operations: 1,
             ..crate::WorkCounters::UNCHARGED
         },
-        || {
-            // SAFETY: the live handle and ABI-sized output buffer remain resident.
-            unsafe {
-                DeviceIoControl(
-                    HANDLE(file.as_raw_handle()),
-                    FSCTL_GET_REPARSE_POINT,
-                    None,
-                    0,
-                    Some(buffer.as_mut_ptr().cast()),
-                    MAXIMUM_REPARSE_DATA_BUFFER_SIZE,
-                    Some(&raw mut returned),
-                    None,
-                )
+        || match reparse_data(file, |data| {
+            data.first_chunk().map(|tag| u32::from_le_bytes(*tag))
+        }) {
+            Err(error)
+                if error.raw_os_error()
+                    == Some(ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0 as i32) =>
+            {
+                Ok(Some(Some(
+                    windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS,
+                )))
             }
-            .map_err(std::io::Error::from)
+            result => result,
         },
     );
     match result {
-        Ok(()) if returned >= 4 => {
-            // SAFETY: a successful call initialized at least these four bytes.
-            Ok(Some(u32::from_le_bytes(unsafe {
-                buffer.as_ptr().cast::<[u8; 4]>().read()
-            })))
-        }
-        Ok(()) => Err(NativeMountError::Io(std::io::ErrorKind::InvalidData.into())),
-        Err(error) => {
-            let error = NativeMountError::from(error);
-            match error {
-                NativeMountError::Io(error)
-                    if error.raw_os_error() == Some(ERROR_NOT_A_REPARSE_POINT.0 as i32) =>
-                {
-                    Ok(None)
-                }
-                NativeMountError::Io(error)
-                    if error.raw_os_error()
-                        == Some(ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0 as i32) =>
-                {
-                    Ok(Some(
-                        windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS,
-                    ))
-                }
-                error => Err(error),
-            }
-        }
+        Ok(None) => Ok(None),
+        Ok(Some(Some(tag))) => Ok(Some(tag)),
+        Ok(Some(None)) => Err(NativeMountError::Io(std::io::ErrorKind::InvalidData.into())),
+        Err(error) => Err(error.into()),
     }
 }

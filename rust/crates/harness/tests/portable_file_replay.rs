@@ -157,10 +157,7 @@ impl ExecutionJournal for JournalSpy {
         self.writes.fetch_add(1, Ordering::SeqCst);
         self.inner.stage(operation, key, bytes, media_type)
     }
-    fn load<'a>(
-        &'a self,
-        file: &'a FileRef,
-    ) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+    fn load<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         self.inner.load(file)
     }
@@ -187,21 +184,15 @@ impl ExecutionJournal for JournalSpy {
     reason = "one retained admission and replay scenario keeps pre-I/O negative controls with its positive result"
 )]
 async fn portable_read_replay_checks_original_source_authority_before_journal_io() -> Result<()> {
-    let provider = ProviderRef::new(
-        "file-replay".into(),
-        "filesystem".into(),
-        "2".into(),
-        &mut None,
-    )?;
-    let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let provider = ProviderRef::new("file-replay".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let filesystem = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent = AgentId::from_bytes([81; 16]);
     let volume = VolumeRef::new(
         provider,
         "private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
-        &mut None,
-    )?;
+     &mut None)?;
     filesystem.create_volume(&volume).await?;
     let issuer = AuthorityIssuer::new(
         "file-replay",
@@ -212,37 +203,22 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         },
     );
     let read_grant = volume.capability(VolumeOperation::Read, &mut None)?;
-    let signed = issuer
-        .issue(
-            "owner",
-            &Capabilities::new([
-                "operation:declare".to_owned(),
-                "operation:observe".to_owned(),
-                "operation:cancel".to_owned(),
-                "task:spawn:fixture.file_replay@1".to_owned(),
-                "tool:call:acyclic.read_file".to_owned(),
-                "tool:call:acyclic.read_file_range".to_owned(),
-                "tool:call:acyclic.search_file".to_owned(),
-                "tool:call:acyclic.write_file".to_owned(),
-                "tool:call:acyclic.edit_file".to_owned(),
-                "tool:call:acyclic.patch_file".to_owned(),
-                read_grant.clone(),
-                volume.capability(VolumeOperation::Write, &mut None)?,
-            ]),
-            Some(agent),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let signed = issuer.issue("owner", &Capabilities::new([
+            "operation:declare".to_owned(),
+            "operation:observe".to_owned(),
+            "operation:cancel".to_owned(),
+            "task:spawn:fixture.file_replay@1".to_owned(),
+            "tool:call:acyclic.read_file".to_owned(),
+            "tool:call:acyclic.read_file_range".to_owned(),
+            "tool:call:acyclic.search_file".to_owned(),
+            "tool:call:acyclic.write_file".to_owned(),
+            "tool:call:acyclic.edit_file".to_owned(),
+            "tool:call:acyclic.patch_file".to_owned(),
+            read_grant.clone(),
+            volume.capability(VolumeOperation::Write, &mut None)?,
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
-    let writer = FilesystemContentPublisher::new(
-        filesystem.clone(),
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &signed,
-        65_536,
-        None,
-    )?;
+    let writer = FilesystemContentPublisher::new(filesystem.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
     let text = "original\r\n🦀 exact bytes\r\n";
     let source = writer
         .stage(
@@ -250,11 +226,8 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             "source.txt",
             text.as_bytes(),
             "text/plain",
-            "source.txt",
-            None,
-        )?
-        .await?
-        .0;
+            "source.txt", None,
+        )?.await?.0;
     let mut tool = files::read_file()?;
     let executor = Arc::new(FileExecutorSpy {
         inner: tool.executor.clone(),
@@ -344,12 +317,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     )?;
     let mut tasks = TaskRegistry::default();
     tasks.register(task_definition)?;
-    let task_definition = tasks.get_version::<u64, u64>(
-        "fixture.file_replay",
-        "1",
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        None,
-    )?;
+    let task_definition = tasks.get_version::<u64, u64>("fixture.file_replay", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine, &mut None)?;
     let stream = Arc::new(MemoryStream::default());
@@ -376,12 +344,8 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 model_steps: 1,
             },
             1,
-            65_536,
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
-            None,
-            &[],
-            &acyclic_harness::durable_tool::ResumableToolRegistry::default(),
-            None,
+            65_536, Arc::new(acyclic_stream::SystemUnixMillisClock), None, &[],
+            &acyclic_harness::durable_tool::ResumableToolRegistry::default(), None,
         )
         .await?;
         if !reopened {
@@ -402,13 +366,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             Some(runtime.task_host().clone()),
             None,
             Some(ContentBindings {
-                reader: FilesystemContentVerifier::new(
-                    filesystem.clone(),
-                    &issuer.verifier(&mut None).expect("verifier copy"),
-                    &signed,
-                    65_536,
-                    None,
-                )?,
+                reader: FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?,
                 writer: Some(writer.clone()),
             }),
             None,
@@ -421,11 +379,9 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 stream.clone(),
                 filesystem.clone(),
                 &volume,
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                &acyclic_harness::core::SchemaRegistry::new(),
+                &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
                 &signed,
-                65_536,
-                None,
+                65_536, None,
             )?),
             reads: AtomicUsize::new(0),
             writes: AtomicUsize::new(0),
@@ -531,10 +487,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         let published: files::FileResult = serde_json::from_value(write_value.clone())
             .map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(published.file.path(), "destination.txt");
-        assert_eq!(
-            writable.read_file(&published.file).await?.as_ref(),
-            b"body".as_ref()
-        );
+        assert_eq!(writable.read_file(&published.file).await?.as_ref(), b"body".as_ref());
         assert_eq!(write_executor.executions.load(Ordering::SeqCst), 1);
         assert_eq!(write_executor.reconciliations.load(Ordering::SeqCst), 0);
         if reopened {
@@ -654,11 +607,8 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                     "destination.txt",
                     b"later destination edit",
                     "text/plain",
-                    "destination.txt",
-                    None,
-                )?
-                .await?
-                .0;
+                    "destination.txt", None,
+        )?.await?.0;
             assert_ne!(published.file, later_write);
             let later = writer
                 .stage(
@@ -666,11 +616,8 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                     "source.txt",
                     b"later user edit",
                     "text/plain",
-                    "source.txt",
-                    None,
-                )?
-                .await?
-                .0;
+                    "source.txt", None,
+        )?.await?.0;
             assert_ne!(source, later);
         }
     }

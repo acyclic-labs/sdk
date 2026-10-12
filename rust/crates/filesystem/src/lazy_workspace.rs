@@ -8860,7 +8860,7 @@ where
                         ).await
                         }
                         None => {
-                            $owner.read_symbolic_link($path, $budget, cancellation).await,
+                            $owner.read_symbolic_link($path, $budget, cancellation).await
                     }
                     }
                     .map_err(measured_workspace_error)

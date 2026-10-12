@@ -34,13 +34,9 @@ struct ReaderSpy {
 }
 
 impl ContentResidencyVerifier for ReaderSpy {
-    fn read<'a>(
-        &'a self,
-        file: &'a FileRef,
-        maximum_bytes: u64,
-        io: Option<&'a acyclic_harness::conversation::ContentIo>,
-    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
-    {
+    fn read<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>)
+        -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             self.reads.fetch_add(1, Ordering::SeqCst);
             let bytes = self.inner.read(file, maximum_bytes, io)?.await?;
@@ -62,21 +58,15 @@ impl ContentResidencyVerifier for ReaderSpy {
     reason = "one actual admitted live task retains positive and pre-I/O negative controls"
 )]
 async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity() -> Result<()> {
-    let provider = ProviderRef::new(
-        "text-variants".into(),
-        "filesystem".into(),
-        "1".into(),
-        &mut None,
-    )?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let provider = ProviderRef::new("text-variants".into(), "filesystem".into(), "1".into(), &mut None)?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent = AgentId::new();
     let volume = VolumeRef::new(
         provider,
         "text-variants".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
-        &mut None,
-    )?;
+     &mut None)?;
     host.create_volume(&volume).await?;
     let issuer = AuthorityIssuer::new(
         "text-variants",
@@ -88,54 +78,29 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     );
     let read = volume.capability(VolumeOperation::Read, &mut None)?;
     let write = volume.capability(VolumeOperation::Write, &mut None)?;
-    let owner = issuer
-        .issue(
-            "owner",
-            &Capabilities::new([read.clone(), write.clone()]),
-            Some(agent),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
-    let writer = FilesystemContentPublisher::new(
-        host.clone(),
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &owner,
-        4096,
-        None,
-    )?;
+    let owner = issuer.issue("owner", &Capabilities::new([read.clone(), write.clone()]), Some(agent), None, &mut None).expect("scope proof");
+    let writer = FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &owner, 4096, None)?;
     let source = writer
         .stage(
             OperationId::new(),
             "source.txt",
             "one\r\n🦀 abaaba\r\n".as_bytes(),
             "text/plain",
-            "source.txt",
-            None,
-        )?
-        .await?
-        .0;
+            "source.txt", None
+        )
+        ?.await?.0;
     let later = writer
         .stage(
             OperationId::new(),
             "source.txt",
             b"later workspace content",
             "text/plain",
-            "source.txt",
-            None,
-        )?
-        .await?
-        .0;
+            "source.txt", None
+        )
+        ?.await?.0;
     assert_ne!(source, later);
     let reader = Arc::new(ReaderSpy {
-        inner: FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &owner,
-            4096,
-            None,
-        )?,
+        inner: FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &owner, 4096, None)?,
         reads: AtomicUsize::new(0),
         corrupt: AtomicBool::new(false),
     });
@@ -207,9 +172,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             assert!(
                 matches!(parts.get(1),Some(ModelDataPart::File { file,policy:FileProjectionPolicy::Reference }) if file==&source)
             );
-            assert!(
-                matches!(parts.first(), Some(ModelDataPart::Text { text }) if !text.is_empty())
-            );
+            assert!(matches!(parts.first(), Some(ModelDataPart::Text { text }) if !text.is_empty()));
             assert_eq!(canonical, unchanged);
             let search = context.tool("acyclic.search_file")?;
             let result = context

@@ -222,31 +222,4 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn open_volume_with_native_work(
-        &self,
-        volume: &VolumeRef,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Workspace<A, O>> {
-        if volume.provider() != &self.provider {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "volume belongs to another Filesystem provider",
-            });
-        }
-        let io = PreparationIo::from_native_work(work)?;
-        let reference = fork_preparer::bounded_io::content_workspace(&self.provider, volume, Some(&io))?;
-        fork_preparer::bounded_io::open(self, &reference, &io).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn generation_with_native_work(
-        &self,
-        workspace: &Workspace<A, O>,
-        reference: &GenerationRef,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Generation<A, O>> {
-        let io = PreparationIo::from_native_work(work)?;
-        fork_preparer::bounded_io::generation(self, workspace, reference, &io).await
-    }
 }

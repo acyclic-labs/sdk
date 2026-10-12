@@ -19,7 +19,6 @@ use std::{collections::BTreeMap, sync::Arc};
 mod accounting;
 pub use accounting::*;
 mod selection;
-pub(crate) use selection::place_messages_with_io;
 pub use selection::*;
 mod discovery;
 pub use discovery::*;

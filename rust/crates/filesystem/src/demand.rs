@@ -2431,13 +2431,9 @@ impl acyclic_native_runtime::NativeReadMeter for ScopedSourceReadMeter<'_> {
         complete release(bytes: u64) -> ();
         admit admit_bytes(maximum: usize) -> io::Result<()>;
         admit admit_read(maximum: usize) -> io::Result<()>;
-        admit admit_operations(additional: u64) -> io::Result<()>;
-        complete record_operations(completed: u64) -> io::Result<()>;
         complete record_read(bytes: usize) -> io::Result<()>;
         admit admit_write(maximum: usize) -> io::Result<()>;
         complete record_write(bytes: usize) -> io::Result<()>;
-        admit admit_write_operations(additional: u64) -> io::Result<()>;
-        complete record_write_operations(completed: u64) -> io::Result<()>;
         admit admit_durability() -> io::Result<()>;
         admit reserve_cleanup_write() -> io::Result<u64>;
         complete cancel_cleanup_write(reservation: u64) -> ();
@@ -5068,6 +5064,7 @@ impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native {
     use super::*;
+    use crate::native_host::{HostRoot, HostStat, HostStatReader, NativeHostWork as _};
     use crate::model::{FilesystemProfile, VolumeLimits};
     #[cfg(unix)]
     use crate::native_host::HostListedEntry;
@@ -6037,7 +6034,7 @@ pub mod native {
             let root = HostRoot::open(&input.path, work)?;
             #[cfg(windows)]
             let root = HostRoot::open_root_wide(&input.path, work)?;
-            let inline = root.is_local(work)?;
+            let inline = crate::native_host::filesystem_is_local(&root.directory, work)?;
             let requests_ownership = SourcePayloadOwnership::new(work)?;
             let requests_bytes =
                 (std::mem::size_of::<Semaphore>() + 2 * std::mem::size_of::<usize>()) as u64;
@@ -6471,7 +6468,7 @@ pub mod native {
             if source != self.reference() {
                 return Err(DemandError::StaleSource);
             }
-            let held = self.inner.root.held_identity(work)?;
+            let held = crate::native_host::directory_identity(&self.inner.root.directory, work)?;
             #[cfg(unix)]
             let named = crate::native_host::root_path_identity(&self.inner.path, work)?;
             #[cfg(windows)]
@@ -8967,7 +8964,7 @@ pub mod native {
         }
         #[cfg(not(unix))]
         {
-            metadata.number_of_links().map(u64::from)
+            Some(metadata.nlink())
         }
     }
 
@@ -10749,7 +10746,7 @@ mod tests {
     async fn native_lookup_preserves_utf16_windows_names() -> Result<(), Box<dyn Error>> {
         use crate::kernel::{LogicalName, NameEncoding};
 
-        let raw = "snowman-☃"
+        let raw = "snowman-Ã¢ËœÆ’"
             .encode_utf16()
             .flat_map(u16::to_le_bytes)
             .collect();
@@ -10760,7 +10757,7 @@ mod tests {
         )?;
         assert_lossless_name(
             FilesystemProfile::Windows,
-            std::ffi::OsString::from("snowman-☃"),
+            std::ffi::OsString::from("snowman-Ã¢ËœÆ’"),
             name,
         )
         .await
@@ -10921,12 +10918,8 @@ mod native_io_meter {
             record_examination(items: u64, bytes_copied: u64) => record { items_examined: items, bytes_copied: bytes_copied };
             examine(items: u64, bytes_copied: u64) => charge { items_examined: items, bytes_copied: bytes_copied };
             admit_bytes(maximum: usize) => admit { source_bytes_read: maximum as u64 };
-            admit_operations(additional: u64) => admit { backend_read_operations: additional };
-            record_operations(completed: u64) => record { backend_read_operations: completed };
             record_read(bytes: usize) => record { source_bytes_read: bytes as u64 };
             record_write(bytes: usize) => record { output_bytes: bytes as u64 };
-            admit_write_operations(additional: u64) => admit { backend_write_operations: additional };
-            record_write_operations(completed: u64) => record { backend_write_operations: completed };
             admit_durability() => charge { durability_operations: 1 };
         }
         fn reserve_operations(

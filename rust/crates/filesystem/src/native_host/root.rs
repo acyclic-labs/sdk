@@ -8,31 +8,6 @@ pub struct HostRoot {
 }
 
 impl HostRoot {
-    pub(crate) fn exchange_to(
-        &self,
-        name: &Path,
-        destination: &Self,
-        destination_name: &Path,
-        work: &mut impl SourceDemandReadWork,
-    ) -> Result<(), DemandError> {
-        crate::native_exchange::exchange_native_entries_held(
-            &self.directory,
-            name,
-            &destination.directory,
-            destination_name,
-            work,
-        )
-    }
-    pub(crate) fn recover_entry_exchange(
-        &self,
-        name: &Path,
-        work: &mut impl SourceDemandReadWork,
-    ) -> Result<(), DemandError> {
-        crate::native_exchange::recover_native_entry_exchange_held(&self.directory, name, work)
-    }
-}
-
-impl HostRoot {
     pub(crate) fn open_dir_held<W: NativeHostWork>(
         &self,
         path: &Path,
@@ -267,15 +242,6 @@ impl HostRoot {
     #[must_use]
     pub const fn identity(&self) -> NativeRootIdentity {
         self.identity
-    }
-    pub(crate) fn held_identity<W: NativeHostWork>(
-        &self,
-        work: &mut W,
-    ) -> Result<NativeRootIdentity, W::Error> {
-        directory_identity(&self.directory, work)
-    }
-    pub(crate) fn is_local<W: NativeHostWork>(&self, work: &mut W) -> Result<bool, W::Error> {
-        filesystem_is_local(&self.directory, work)
     }
     #[cfg(windows)]
     pub(crate) fn directory_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {

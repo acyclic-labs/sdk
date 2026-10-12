@@ -474,7 +474,7 @@ async fn public_follow_uses_the_same_immediate_page_and_terminal_error_contract(
     assert_eq!(server.requests().len(), 3);
 }
 
-use acyclic_grpc_observability::test_support::Capture;
+use acyclic_grpc_observability::tests::Capture;
 
 fn assert_cancelled_call(captured: &Capture, route: &str) {
     let spans = captured.0.lock().unwrap();

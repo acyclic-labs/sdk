@@ -3,27 +3,6 @@
 use super::*;
 use crate::filesystem::{PreparationIo, fork_preparer_io::clone_text};
 
-pub(in crate::filesystem) fn clone_fence(fence: &LeaseFence, io: Option<&PreparationIo>) -> Result<LeaseFence> {
-    Ok(LeaseFence {
-        reservation_id: clone_text(&fence.reservation_id, io)?,
-        placement: clone_text(&fence.placement, io)?,
-    })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(in crate::filesystem) fn clone_fence_with_custody(
-    original: &LeaseFence, io: &PreparationIo,
-) -> Result<(LeaseFence, acyclic_fs::NativeAllocation)> {
-    io.retain_owned(std::mem::size_of::<LeaseFence>() as u64)?;
-    let fence = clone_fence(original, Some(io))?;
-    let bytes = (std::mem::size_of::<LeaseFence>() as u64)
-        .checked_add(fence.reservation_id.capacity() as u64)
-        .and_then(|bytes| bytes.checked_add(fence.placement.capacity() as u64))
-        .ok_or_else(|| boundary(Some(io), crate::wire::ErrorCode::Invalid, "owned fence metadata overflow"))?;
-    let custody = io.take_native_custody(bytes)?;
-    Ok((fence, custody))
-}
-
 pub(super) fn lease_fence(lease: &crate::distributed::WorkLease, io: Option<&PreparationIo>) -> Result<LeaseFence> {
     Ok(LeaseFence {
         reservation_id: clone_text(&lease.reservation.id, io)?,
@@ -59,20 +38,6 @@ pub(in crate::filesystem) fn boundary(io: Option<&PreparationIo>, code: crate::w
         crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
         _ => Error::Invalid(reason.into()),
     }
-}
-
-pub(in crate::filesystem) fn digest<T: serde::Serialize>(value: &T, io: Option<&PreparationIo>, maximum_bytes: u64) -> Result<[u8; 32]> {
-    let Some(io) = io else { return crate::contract::canonical_json_digest(value); };
-    let hold;
-    let bytes = io.encode(value, maximum_bytes, true)?;
-    hold = io.guard_bytes(&bytes)?;
-    let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
-    io.preflight(hash)?;
-    let digest = *blake3::hash(&bytes).as_bytes();
-    io.charge(hash)?;
-    drop(bytes);
-    drop(hold);
-    Ok(digest)
 }
 
 pub(super) fn history<'a>(io: Option<&'a PreparationIo>) -> Result<Option<impl crate::store::HistoryIo + 'a>> {

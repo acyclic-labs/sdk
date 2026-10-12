@@ -1,5 +1,14 @@
 use super::*;
 #[test]
+fn ordinary_held_root_has_no_reparse_tag() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let work = setup_work()?;
+    let (directory, _) = crate::native_host::open_root_directory(root.path(), &mut &work)?;
+    assert_eq!(super::reparse_tag_held(&directory, &mut &work)?, None);
+    Ok(())
+}
+
+#[test]
 fn staging_refuses_a_link_in_place_of_its_directory() -> Result<(), Box<dyn std::error::Error>> {
     let parent = tempfile::tempdir()?;
     let root = parent.path().join("mount");

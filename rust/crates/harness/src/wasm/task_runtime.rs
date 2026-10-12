@@ -679,13 +679,11 @@ impl WasmTaskRuntime {
             IndexedDbObjectStore::open(&options.filesystem_database, options.maximum_object_bytes)
                 .await
                 .map_err(JsValue::from)?;
-        let filesystem = Arc::new(
-            FilesystemHost::new(
+        let filesystem = FilesystemHost::new(
                 Fs::new(authority, objects, EmbeddedCapabilities { durable: true }),
-                options.filesystem_provider.clone(),
+                &options.filesystem_provider, None,
             )
-            .map_err(js_error)?,
-        );
+            .map_err(js_error)?;
         let limits = options.stream_limits;
         let stream = Arc::new(
             BrowserStream::open(

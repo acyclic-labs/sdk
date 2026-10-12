@@ -31,15 +31,16 @@ fn ordinary_host() -> Result<ConversationEffectHost<MemoryStream>> {
             &mut None,
         )
         .expect("scope proof");
-    let files = Arc::new(crate::filesystem::FilesystemHost::new(
+    let files = crate::filesystem::FilesystemHost::new(
         acyclic_fs::Fs::memory(),
-        crate::resources::ProviderRef::new(
+        &crate::resources::ProviderRef::new(
             "effect-metadata-control".into(),
             "filesystem".into(),
             "2".into(),
             &mut None,
         )?,
-    )?);
+        None,
+    )?;
     let content = crate::filesystem::FilesystemContentVerifier::new(
         files,
         &issuer.verifier(&mut None).expect("verifier copy"),

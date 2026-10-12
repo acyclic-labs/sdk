@@ -27,8 +27,8 @@ use acyclic_harness::fork::{
 };
 use acyclic_harness::merge::{ProjectJoinOutcome, ProjectWorkspaceProvider};
 use acyclic_harness::model::{
-    FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
-    ModelPrefix, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
+    FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent,
+    ModelMessage, ModelPrefix, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
 };
 use acyclic_harness::resources::{ProviderRef, StreamRef};
 use acyclic_harness::runtime::RuntimeScope;
@@ -58,17 +58,10 @@ impl ToolExecutor for PrefixModel {
     }
 }
 impl ToolProjection for PrefixModel {
-    fn project(
-        &self,
-        _: &ToolInvocation,
-        result: &ToolResult,
-        work: acyclic_harness::NativeWork<'_>,
-    ) -> Result<(Value, acyclic_harness::NativeCustody)> {
+    fn project(&self, _: &ToolInvocation, result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
         self.supports_native_projection(work)?;
-        Ok((
-            serde_json::json!({"kind":"json","value":result.value}),
-            None,
-        ))
+        Ok((serde_json::json!({"kind":"json","value":result.value}), None))
     }
 }
 struct PrefixModel {
@@ -98,10 +91,7 @@ impl ModelProvider for PrefixModel {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let reuse = Self::reuse_prefix(
-            requests
-                .last()
-                .map(|(request, _)| request.request())
-                .or(self.inherited.as_ref()),
+            requests.last().map(|(request, _)| request.request()).or(self.inherited.as_ref()),
             request.request(),
         );
         requests.push((request, reuse));
@@ -118,6 +108,7 @@ impl ModelProvider for PrefixModel {
         }));
         Box::pin(futures::stream::iter(events))
     }
+
 }
 
 #[allow(
@@ -160,9 +151,7 @@ where
             "scratch.txt",
             1024,
             &IdempotencyKey::new(format!("scratch-{level}"))?,
-            None,
-            None,
-        )
+         None, None)
         .await?;
     let mut capabilities = local_scope
         .capabilities()
@@ -172,31 +161,15 @@ where
     for file in approved {
         capabilities.push(file.read_capability()?);
     }
-    let read_scope = issuer
-        .issue(
-            "prefix-owner-approved-reader",
-            &Capabilities::new(capabilities),
-            Some(agent),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
-    let reader = FilesystemContentVerifier::new(
-        host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &read_scope,
-        64 * 1024,
-        None,
-    )?;
+    let read_scope = issuer.issue("prefix-owner-approved-reader", &Capabilities::new(capabilities), Some(agent), None, &mut None).expect("scope proof");
+    let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &read_scope, 64 * 1024, None)?;
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
         &private,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &acyclic_harness::core::SchemaRegistry::new(),
+        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
         &read_scope,
-        64 * 1024,
-        None,
+        64 * 1024, None,
     )?
     .with_input_verifier(reader.clone());
     let children = if level == 0 {
@@ -209,28 +182,28 @@ where
         children,
         inherited: previous.map(|(_, parent)| parent.request().clone()),
     });
-    let model = Model::new(
-        "example".into(),
-        if level >= 3 { "alternate" } else { "exact" }.into(),
-        if level == 2 { "2" } else { "1" }.into(),
-        Value::Null,
-    )?;
+    let model = Model::new("example".into(), if level >= 3 { "alternate" } else { "exact" }.into(),
+        if level == 2 { "2" } else { "1" }.into(), Value::Null)?;
     let mut tools = ToolRegistry::default();
     tools.register((Tool { definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
         input_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         output_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false})) },
         executor: provider.clone(), projection: provider.clone() }, None), &mut None, None)?;
-    let mut executor =
-        StockExecutor::new(model, provider.clone(), ContextPipeline::default(), tools)
-            .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled)
-            .with_tool_authority(
-                RuntimeScope::new(
-                    Capabilities::new(["tool:call:example.fork"]),
-                    Limits::default(),
-                )?,
-                None,
-            )?;
+    let mut executor = StockExecutor::new(
+        model,
+        provider.clone(),
+        ContextPipeline::default(),
+        tools,
+    )
+    .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled)
+    .with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new(["tool:call:example.fork"]),
+            Limits::default(),
+        )?,
+        None,
+    )?;
     if let Some((head, _)) = previous {
         executor = executor.with_inherited_prefix(head.clone(), reader.clone())?;
     }
@@ -260,8 +233,7 @@ where
         aggregate.reducer(),
         &issuer.verifier(&mut None).expect("verifier copy"),
         local_scope,
-        &project,
-        None,
+        &project, None,
     )?;
     let private_workspace = workspace_ref(private.provider().clone(), &private.storage_name()?)?;
     let before = host.resolve(&private_workspace).await?;
@@ -295,9 +267,7 @@ where
         .requests
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .map(|(request, _)| request.bytes().to_vec())
-        .collect::<Vec<_>>();
+        .iter().map(|(request, _)| request.bytes().to_vec()).collect::<Vec<_>>();
     let mut expected = completed.request().clone();
     expected.messages =
         previous.map_or_else(Vec::new, |(_, parent)| parent.request().messages.clone());
@@ -312,16 +282,9 @@ where
     assert_eq!(captured.get(1).map(Vec::as_slice), Some(completed.bytes()));
     drop(captured);
     let cold_journal = FilesystemExecutionJournal::new(
-        stream.clone(),
-        host.clone(),
-        &private,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &SchemaRegistry::new(),
-        &read_scope,
-        64 * 1024,
-        None,
-    )?
-    .with_input_verifier(reader);
+        stream.clone(), host.clone(), &private, &issuer.verifier(&mut None).expect("verifier copy"),
+        &SchemaRegistry::new(), &read_scope, 64 * 1024, None,
+    )?.with_input_verifier(reader);
     executor.execute(input.clone(), &cold_journal).await?;
     let expected_reuse = match level {
         0 => Some(false),
@@ -330,18 +293,10 @@ where
         _ => None,
     };
     {
-        let requests = provider
-            .requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let requests = provider.requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match expected_reuse {
-            Some(expected) => {
-                assert!(matches!(requests.first(), Some((_, Ok(reuse))) if *reuse == expected))
-            }
-            None => assert!(matches!(
-                requests.first(),
-                Some((_, Err(Error::Unsupported(_))))
-            )),
+            Some(expected) => assert!(matches!(requests.first(), Some((_, Ok(reuse))) if *reuse == expected)),
+            None => assert!(matches!(requests.first(), Some((_, Err(Error::Unsupported(_)))))),
         }
         assert!(matches!(requests.get(1), Some((_, Ok(true)))));
     }
@@ -422,28 +377,20 @@ fn scope(
         project.owner().clone(),
     )?;
     let source_reads = [selected.capability(VolumeOperation::Read)?];
-    Ok(issuer
-        .issue(
-            &format!("agent-{agent:?}"),
-            &Capabilities::new(
-                [
-                    "conversation:bind".to_owned(),
-                    "conversation:append".to_owned(),
-                    "fork:publish".to_owned(),
-                    "project:merge".to_owned(),
-                    project.capability(VolumeOperation::Read)?,
-                    project.capability(VolumeOperation::Write)?,
-                    private.capability(VolumeOperation::Read)?,
-                    private.capability(VolumeOperation::Write)?,
-                ]
-                .into_iter()
-                .chain(source_reads),
-            ),
-            Some(agent),
-            None,
-            &mut None,
-        )
-        .expect("scope proof"))
+    Ok(issuer.issue(&format!("agent-{agent:?}"), &Capabilities::new(
+            [
+                "conversation:bind".to_owned(),
+                "conversation:append".to_owned(),
+                "fork:publish".to_owned(),
+                "project:merge".to_owned(),
+                project.capability(VolumeOperation::Read)?,
+                project.capability(VolumeOperation::Write)?,
+                private.capability(VolumeOperation::Read)?,
+                private.capability(VolumeOperation::Write)?,
+            ]
+            .into_iter()
+            .chain(source_reads),
+        ), Some(agent), None, &mut None).expect("scope proof"))
 }
 
 fn command(
@@ -474,35 +421,18 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let reader = FilesystemContentVerifier::new(
-        host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        64 * 1_024,
-        None,
-    )?;
-    let forks = Arc::new(CompositeForkVerifier::new(
-        &[
-            FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-            Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-        ],
-        &mut None,
-    )?);
-    Ok(StreamAggregate::open(
-        stream,
-        authority,
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-        None,
-        acyclic_harness::store::default_projection_read_limits(),
-        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
-        None,
-        &mut None,
+    let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 64 * 1_024, None)?;
+    let forks = Arc::new(CompositeForkVerifier::new(&[
+        FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
+        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+    ], &mut None)?);
+    Ok(
+        StreamAggregate::open(stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+            .await?
+            .with_content_verifier(reader)
+            .with_fork_verifier(forks)
+            .with_merge_verifier(FilesystemProjectMergeVerifier::new(host, None)?),
     )
-    .await?
-    .with_content_verifier(reader)
-    .with_fork_verifier(forks)
-    .with_merge_verifier(FilesystemProjectMergeVerifier::new(host, None)?))
 }
 
 #[tokio::test]
@@ -510,24 +440,14 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new(
-        "local-recursive-e2e".into(),
-        "filesystem".into(),
-        "2".into(),
-        &mut None,
-    )?;
-    let stream_provider = ProviderRef::new(
-        "local-recursive-e2e".into(),
-        "stream".into(),
-        "2".into(),
-        &mut None,
-    )?;
-    let mut host = Arc::new(FilesystemHost::new(
+    let provider = ProviderRef::new("local-recursive-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("local-recursive-e2e".into(), "stream".into(), "2".into(), &mut None)?;
+    let mut host = FilesystemHost::new(
         Fs::local(fs_options.clone())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        provider.clone(),
-    )?);
+        &provider, None,
+    )?;
     let mut stream = Arc::new(
         LocalStream::open(&stream_root, LocalStreamLimits::default())
             .await
@@ -570,17 +490,12 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
     )
     .await?;
     aggregate
-        .execute(
-            command(
-                1,
-                0,
-                &grant_scope,
-                Action::BindConversation { agent: root_agent },
-            )?,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
+        .execute(command(
+            1,
+            0,
+            &grant_scope,
+            Action::BindConversation { agent: root_agent },
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let root_write = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
@@ -598,9 +513,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             "root.txt",
             1_024,
             &IdempotencyKey::new("root-message")?,
-            None,
-            None,
-        )
+         None, None)
         .await?;
     let root_attachment = host
         .put_content(
@@ -612,9 +525,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             "root.bin",
             1_024,
             &IdempotencyKey::new("root-attachment")?,
-            None,
-            None,
-        )
+         None, None)
         .await?;
     let mut previous_attachment = root_attachment.clone();
     let (mut model_head, mut model_request, root_scratch) = model_fork_prefix(
@@ -633,32 +544,27 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
     .await?;
     let mut approved_model_files = vec![model_head.clone(), root_scratch, root_attachment.clone()];
     aggregate
-        .execute(
-            command(
-                2,
-                1,
-                &grant_scope,
-                Action::AppendConversationMessage {
-                    message: Box::new(ConversationMessage {
-                        id: Uuid::from_bytes([2; 16]),
-                        sequence: 1,
-                        kind: MessageKind::User,
-                        content: root_file.clone(),
-                        attachments: vec![Attachment {
-                            file: root_attachment.clone(),
-                            label: None,
-                        }]
-                        .into(),
-                        reply_to: None,
-                        tool_call_id: None,
-                        extensions: [("example.model-prefix".into(), model_head.clone())].into(),
-                    }),
-                },
-            )?,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
+        .execute(command(
+            2,
+            1,
+            &grant_scope,
+            Action::AppendConversationMessage {
+                message: Box::new(ConversationMessage {
+                    id: Uuid::from_bytes([2; 16]),
+                    sequence: 1,
+                    kind: MessageKind::User,
+                    content: root_file.clone(),
+                    attachments: vec![Attachment {
+                        file: root_attachment.clone(),
+                        label: None,
+                    }]
+                    .into(),
+                    reply_to: None,
+                    tool_call_id: None,
+                    extensions: [("example.model-prefix".into(), model_head.clone())].into(),
+                }),
+            },
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
 
     let mut final_child_issuer = None;
@@ -693,13 +599,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             VolumeOwner::Project("local-project".into()),
         )?;
         let child_scope = scope(&child_issuer, child_agent, &child_private, &child_project)?;
-        let parent_reader = FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &grant_scope,
-            64 * 1_024,
-            None,
-        )?;
+        let parent_reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 64 * 1_024, None)?;
         let preparer = FilesystemForkPreparer::new(
             host.clone(),
             aggregate.reducer().clone(),
@@ -708,10 +608,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             project.clone(),
             stream_provider.clone(),
             parent_reader,
-            None,
-            None,
-            #[cfg(not(target_arch = "wasm32"))]
-            None,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let parent_workspaces = (level == DEPTH)
             .then(|| {
@@ -817,12 +714,12 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             drop(child_aggregate);
             drop(stream);
             drop(host);
-            host = Arc::new(FilesystemHost::new(
+            host = FilesystemHost::new(
                 Fs::local(fs_options.clone())
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?,
-                provider.clone(),
-            )?);
+                &provider, None,
+            )?;
             stream = Arc::new(
                 LocalStream::open(&stream_root, LocalStreamLimits::default())
                     .await
@@ -889,13 +786,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 authority.stream_path(&mut None)?.into_bytes(),
                 Some(aggregate.reducer().revision().to_string()),
             )?);
-            let reader = FilesystemContentVerifier::new(
-                host.clone(),
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                &grant_scope,
-                64 * 1024,
-                None,
-            )?;
+            let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 64 * 1024, None)?;
             let sibling_preparer = FilesystemForkPreparer::new(
                 host.clone(),
                 aggregate.reducer().clone(),
@@ -904,10 +795,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 project.clone(),
                 stream_provider.clone(),
                 reader,
-                None,
-                None,
-                #[cfg(not(target_arch = "wasm32"))]
-                None,
+                None, None, #[cfg(not(target_arch = "wasm32"))] None,
             )?;
             let report = aggregate
                 .prepare_fork(&sibling_preparer, sibling_request)
@@ -945,9 +833,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     "scratch.txt",
                     1024,
                     &IdempotencyKey::new("later-parent-scratch")?,
-                    None,
-                    None,
-                )
+                 None, None)
                 .await?;
             assert_ne!(Some(&changed), approved_model_files.get(1));
             let (_, sibling_model, _) = model_fork_prefix(
@@ -977,9 +863,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     aggregate.reducer(),
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     &grant_scope,
-                    &project,
-                    None
-                )?
+                    &project
+                , None)?
                 .stage_model_prefix(&root_private, &ModelPrefix::select(&model_request, None)?)
                 .await?
             );
@@ -1000,9 +885,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 &format!("child-{level}.txt"),
                 1_024,
                 &IdempotencyKey::new(format!("child-message-{level}"))?,
-                None,
-                None,
-            )
+             None, None)
             .await?;
         let child_attachment = host
             .put_content(
@@ -1014,9 +897,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 &format!("child-{level}.bin"),
                 1_024,
                 &IdempotencyKey::new(format!("child-attachment-{level}"))?,
-                None,
-                None,
-            )
+             None, None)
             .await?;
         let child_read = ContentGrant::verify(
             &child_issuer.verifier(&mut None).expect("verifier copy"),
@@ -1041,13 +922,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 .as_ref(),
             format!("child attachment {level}").as_bytes(),
         );
-        let denied = FilesystemContentVerifier::new(
-            host.clone(),
-            &child_issuer.verifier(&mut None).expect("verifier copy"),
-            &child_scope,
-            64 * 1024,
-            None,
-        )?;
+        let denied = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, 64 * 1024, None)?;
         assert!(
             PreparedModelRequest::inherit(
                 ModelRequest {
@@ -1085,33 +960,27 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         model_request = child_model_request;
         approved_model_files.extend([model_head.clone(), child_scratch, child_attachment.clone()]);
         child_aggregate
-            .execute(
-                command(
-                    40 + level,
-                    1,
-                    &child_scope,
-                    Action::AppendConversationMessage {
-                        message: Box::new(ConversationMessage {
-                            id: Uuid::from_bytes([40 + level; 16]),
-                            sequence: 1,
-                            kind: MessageKind::User,
-                            content: child_file.clone(),
-                            attachments: vec![Attachment {
-                                file: child_attachment.clone(),
-                                label: None,
-                            }]
-                            .into(),
-                            reply_to: None,
-                            tool_call_id: None,
-                            extensions: [("example.model-prefix".into(), model_head.clone())]
-                                .into(),
-                        }),
-                    },
-                )?,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
+            .execute(command(
+                40 + level,
+                1,
+                &child_scope,
+                Action::AppendConversationMessage {
+                    message: Box::new(ConversationMessage {
+                        id: Uuid::from_bytes([40 + level; 16]),
+                        sequence: 1,
+                        kind: MessageKind::User,
+                        content: child_file.clone(),
+                        attachments: vec![Attachment {
+                            file: child_attachment.clone(),
+                            label: None,
+                        }]
+                        .into(),
+                        reply_to: None,
+                        tool_call_id: None,
+                        extensions: [("example.model-prefix".into(), model_head.clone())].into(),
+                    }),
+                },
+            )?, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let child_observation = host
             .resolve(&workspace_ref(
@@ -1154,9 +1023,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     "final-merge.txt",
                     1_024,
                     &IdempotencyKey::new("final-merge-notice")?,
-                    None,
-                    None,
-                )
+                 None, None)
                 .await?;
             let merge_message = ConversationMessage {
                 id: Uuid::from_bytes([90; 16]),
@@ -1199,21 +1066,16 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 ));
             };
             aggregate
-                .execute(
-                    Command {
-                        operation_id: OperationId::from_bytes([91; 16]),
-                        idempotency_key: IdempotencyKey::new("publish-final-merge")?,
-                        expected_revision: aggregate.reducer().revision(),
-                        scope: grant_scope.clone(),
-                        causal_parent: None,
-                        action: Action::PublishProjectMerge {
-                            receipt: Box::new(receipt),
-                        },
+                .execute(Command {
+                    operation_id: OperationId::from_bytes([91; 16]),
+                    idempotency_key: IdempotencyKey::new("publish-final-merge")?,
+                    expected_revision: aggregate.reducer().revision(),
+                    scope: grant_scope.clone(),
+                    causal_parent: None,
+                    action: Action::PublishProjectMerge {
+                        receipt: Box::new(receipt),
                     },
-                    #[cfg(feature = "filesystem")]
-                    None,
-                    &mut None,
-                )
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
             assert_eq!(
                 host.read(
@@ -1247,18 +1109,10 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
 
         if level == 1 {
             let reference_issuer = child_issuer.clone();
-            let child_scope_with_reference = reference_issuer
-                .issue(
-                    "child-root-reference-reader",
-                    &Capabilities::new([
-                        child_private.capability(VolumeOperation::Read)?,
-                        child_attachment_capability,
-                    ]),
-                    Some(child_agent),
-                    None,
-                    &mut None,
-                )
-                .expect("scope proof");
+            let child_scope_with_reference = reference_issuer.issue("child-root-reference-reader", &Capabilities::new([
+                    child_private.capability(VolumeOperation::Read)?,
+                    child_attachment_capability,
+                ]), Some(child_agent), None, &mut None).expect("scope proof");
             let exact = ContentGrant::verify_read(
                 &reference_issuer.verifier(&mut None).expect("verifier copy"),
                 &child_scope_with_reference,
@@ -1324,25 +1178,15 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         "final-exact-root-attachment",
         &root_attachment,
     )?;
-    let exact_read = ContentGrant::verify_read(
-        &root_issuer.verifier(&mut None).expect("verifier copy"),
-        &delegated,
-        &root_attachment,
-    )?;
+    let exact_read =
+        ContentGrant::verify_read(&root_issuer.verifier(&mut None).expect("verifier copy"), &delegated, &root_attachment)?;
     assert_eq!(
         host.read_content(&root_attachment, &exact_read, 1_024, None)
             .await?
             .as_ref(),
         b"root attachment"
     );
-    assert!(
-        ContentGrant::verify_read(
-            &root_issuer.verifier(&mut None).expect("verifier copy"),
-            &delegated,
-            &root_file
-        )
-        .is_err()
-    );
+    assert!(ContentGrant::verify_read(&root_issuer.verifier(&mut None).expect("verifier copy"), &delegated, &root_file).is_err());
 
     let merge_parent_authority = merge_parent_authority
         .ok_or_else(|| Error::Invalid("missing merge parent authority".into()))?;
@@ -1403,24 +1247,14 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new(
-        "local-deep-e2e".into(),
-        "filesystem".into(),
-        "2".into(),
-        &mut None,
-    )?;
-    let stream_provider = ProviderRef::new(
-        "local-deep-e2e".into(),
-        "stream".into(),
-        "2".into(),
-        &mut None,
-    )?;
-    let host = Arc::new(FilesystemHost::new(
+    let provider = ProviderRef::new("local-deep-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("local-deep-e2e".into(), "stream".into(), "2".into(), &mut None)?;
+    let host = FilesystemHost::new(
         Fs::local(fs_options)
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        provider.clone(),
-    )?);
+        &provider, None,
+    )?;
     let stream = Arc::new(
         LocalStream::open(&stream_root, LocalStreamLimits::default())
             .await
@@ -1458,12 +1292,12 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
     )
     .await?;
     aggregate
-        .execute(
-            command(1, 0, &grant_scope, Action::BindConversation { agent })?,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
+        .execute(command(
+            1,
+            0,
+            &grant_scope,
+            Action::BindConversation { agent },
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let root_write = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
@@ -1481,9 +1315,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             "current.txt",
             1_024,
             &IdempotencyKey::new("deep-message-0")?,
-            None,
-            None,
-        )
+         None, None)
         .await?;
     let mut previous_attachment = host
         .put_content(
@@ -1495,37 +1327,30 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             "evidence.bin",
             1_024,
             &IdempotencyKey::new("deep-attachment-0")?,
-            None,
-            None,
-        )
+         None, None)
         .await?;
     aggregate
-        .execute(
-            command(
-                2,
-                1,
-                &grant_scope,
-                Action::AppendConversationMessage {
-                    message: Box::new(ConversationMessage {
-                        id: Uuid::from_bytes([2; 16]),
-                        sequence: 1,
-                        kind: MessageKind::User,
-                        content: previous_file.clone(),
-                        attachments: vec![Attachment {
-                            file: previous_attachment.clone(),
-                            label: None,
-                        }]
-                        .into(),
-                        reply_to: None,
-                        tool_call_id: None,
-                        extensions: Default::default(),
-                    }),
-                },
-            )?,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
+        .execute(command(
+            2,
+            1,
+            &grant_scope,
+            Action::AppendConversationMessage {
+                message: Box::new(ConversationMessage {
+                    id: Uuid::from_bytes([2; 16]),
+                    sequence: 1,
+                    kind: MessageKind::User,
+                    content: previous_file.clone(),
+                    attachments: vec![Attachment {
+                        file: previous_attachment.clone(),
+                        label: None,
+                    }]
+                    .into(),
+                    reply_to: None,
+                    tool_call_id: None,
+                    extensions: Default::default(),
+                }),
+            },
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
 
     for level in 1..=DEPTH {
@@ -1549,13 +1374,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             VolumeOwner::Project("deep-project".into()),
         )?;
         let child_scope = scope(&child_issuer, child_agent, &child_private, &child_project)?;
-        let reader = FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &grant_scope,
-            8 * 1_024,
-            None,
-        )?;
+        let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 8 * 1_024, None)?;
         let preparer = FilesystemForkPreparer::new(
             host.clone(),
             aggregate.reducer().clone(),
@@ -1564,10 +1383,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             project.clone(),
             stream_provider.clone(),
             reader,
-            None,
-            None,
-            #[cfg(not(target_arch = "wasm32"))]
-            None,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let request = ForkRequest {
             authorized_source: None,
@@ -1654,25 +1470,15 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             format!("deep-parent-attachment-{level}"),
             &previous_attachment,
         )?;
-        let exact_parent_read = ContentGrant::verify_read(
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &delegated,
-            &previous_attachment,
-        )?;
+        let exact_parent_read =
+            ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &delegated, &previous_attachment)?;
         assert_eq!(
             host.read_content(&previous_attachment, &exact_parent_read, 1_024, None)
                 .await?
                 .as_ref(),
             format!("deep attachment {}", level - 1).as_bytes(),
         );
-        assert!(
-            ContentGrant::verify_read(
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                &delegated,
-                &previous_file
-            )
-            .is_err()
-        );
+        assert!(ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &delegated, &previous_file).is_err());
 
         let child_read = ContentGrant::verify(
             &child_issuer.verifier(&mut None).expect("verifier copy"),
@@ -1696,18 +1502,10 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 .await
                 .is_err()
         );
-        let reference_scope = child_issuer
-            .issue(
-                &format!("deep-reference-reader-{level}"),
-                &Capabilities::new([
-                    child_private.capability(VolumeOperation::Read)?,
-                    reference_capability,
-                ]),
-                Some(child_agent),
-                None,
-                &mut None,
-            )
-            .expect("scope proof");
+        let reference_scope = child_issuer.issue(&format!("deep-reference-reader-{level}"), &Capabilities::new([
+                child_private.capability(VolumeOperation::Read)?,
+                reference_capability,
+            ]), Some(child_agent), None, &mut None).expect("scope proof");
         let child_reference_read = ContentGrant::verify_read(
             &child_issuer.verifier(&mut None).expect("verifier copy"),
             &reference_scope,
@@ -1720,12 +1518,8 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             format!("deep attachment {}", level - 1).as_bytes(),
         );
         assert!(
-            ContentGrant::verify_read(
-                &child_issuer.verifier(&mut None).expect("verifier copy"),
-                &reference_scope,
-                &previous_file
-            )
-            .is_err()
+            ContentGrant::verify_read(&child_issuer.verifier(&mut None).expect("verifier copy"), &reference_scope, &previous_file)
+                .is_err()
         );
 
         let child_write = ContentGrant::verify(
@@ -1744,9 +1538,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 "current.txt",
                 1_024,
                 &IdempotencyKey::new(format!("deep-message-{level}"))?,
-                None,
-                None,
-            )
+             None, None)
             .await?;
         let child_attachment = host
             .put_content(
@@ -1758,37 +1550,30 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 "evidence.bin",
                 1_024,
                 &IdempotencyKey::new(format!("deep-attachment-{level}"))?,
-                None,
-                None,
-            )
+             None, None)
             .await?;
         child_aggregate
-            .execute(
-                command(
-                    100 + level,
-                    1,
-                    &child_scope,
-                    Action::AppendConversationMessage {
-                        message: Box::new(ConversationMessage {
-                            id: Uuid::from_bytes([100 + level; 16]),
-                            sequence: 1,
-                            kind: MessageKind::User,
-                            content: child_file.clone(),
-                            attachments: vec![Attachment {
-                                file: child_attachment.clone(),
-                                label: None,
-                            }]
-                            .into(),
-                            reply_to: None,
-                            tool_call_id: None,
-                            extensions: Default::default(),
-                        }),
-                    },
-                )?,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
+            .execute(command(
+                100 + level,
+                1,
+                &child_scope,
+                Action::AppendConversationMessage {
+                    message: Box::new(ConversationMessage {
+                        id: Uuid::from_bytes([100 + level; 16]),
+                        sequence: 1,
+                        kind: MessageKind::User,
+                        content: child_file.clone(),
+                        attachments: vec![Attachment {
+                            file: child_attachment.clone(),
+                            label: None,
+                        }]
+                        .into(),
+                        reply_to: None,
+                        tool_call_id: None,
+                        extensions: Default::default(),
+                    }),
+                },
+            )?, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         project_head = host
             .resolve(&workspace_ref(

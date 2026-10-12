@@ -22,7 +22,7 @@ fn validate_text<'a>(
                 io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             if part.is_empty() || ch.is_some_and(char::is_control) {
-                return Err(resource_validation_error(reason, work));
+                return Err(invalid(reason));
             }
         }
     }
@@ -30,37 +30,20 @@ fn validate_text<'a>(
 }
 fn capacity_sum(parts: impl IntoIterator<Item = usize>) -> Result<u64> {
     parts.into_iter().try_fold(0_u64, |sum, n| {
-        sum.checked_add(n as u64).ok_or_else(ownership_overflow)
+        sum.checked_add(n as u64)
+            .ok_or_else(|| invalid("resource ownership overflows"))
     })
 }
-fn ownership_overflow() -> Error {
+fn invalid(reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {
         Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
-            reason: "resource ownership overflows",
+            reason,
         }
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     {
-        Error::Invalid("resource ownership overflows".into())
+        Error::Invalid(reason.into())
     }
-}
-
-fn resource_validation_error(
-    reason: &'static str,
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work
-        .as_ref()
-        .is_some_and(|work| work.original_native_work().is_some())
-    {
-        return Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason,
-        };
-    }
-    let _ = work;
-    Error::Invalid(reason.into())
 }

@@ -945,9 +945,16 @@ impl PiForkCoordinator {
             owner.clone(),
             Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
         )?;
-        let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work(
-            "local", "stream", "1", work,
-        )?;
+        let stream_provider = {
+            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let value = acyclic_harness::resources::ProviderRef::new(
+                acyclic_harness::store::HistoryIo::clone_text(&mut io, "local")?,
+                acyclic_harness::store::HistoryIo::clone_text(&mut io, "stream")?,
+                acyclic_harness::store::HistoryIo::clone_text(&mut io, "1")?,
+                &mut Some(&mut io),
+            )?;
+            (value, io.into_custody())
+        };
         let source_binding = acyclic_harness::filesystem::recursive_fork_source_with_native_work(
             self.filesystem.clone(),
             &self.stream,
@@ -1761,9 +1768,16 @@ impl PiForkCoordinator {
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
-        let provider = acyclic_harness::resources::ProviderRef::new_with_native_work(
-            "local", "stream", "1", work,
-        )?;
+        let provider = {
+            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let value = acyclic_harness::resources::ProviderRef::new(
+                acyclic_harness::store::HistoryIo::clone_text(&mut io, "local")?,
+                acyclic_harness::store::HistoryIo::clone_text(&mut io, "stream")?,
+                acyclic_harness::store::HistoryIo::clone_text(&mut io, "1")?,
+                &mut Some(&mut io),
+            )?;
+            (value, io.into_custody())
+        };
         let restored = acyclic_harness::filesystem::restore_recursive_fork_source_with_native_work(
             self.filesystem.clone(),
             &self.stream,
@@ -2363,9 +2377,16 @@ impl PiForkCoordinator {
                     &acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
                 )),
             )?;
-        let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work(
-            "local", "stream", "1", work,
-        )?;
+        let stream_provider = {
+            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let value = acyclic_harness::resources::ProviderRef::new(
+                acyclic_harness::store::HistoryIo::clone_text(&mut io, "local")?,
+                acyclic_harness::store::HistoryIo::clone_text(&mut io, "stream")?,
+                acyclic_harness::store::HistoryIo::clone_text(&mut io, "1")?,
+                &mut Some(&mut io),
+            )?;
+            (value, io.into_custody())
+        };
         let history: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
             acyclic_harness::fork::StreamHistoryForkVerifier::new(
                 &stream_provider.0,

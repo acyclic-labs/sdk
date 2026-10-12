@@ -41,7 +41,7 @@ pub(crate) fn seed_digest(
     maximum_bytes: u64,
     io: Option<&PreparationIo>,
 ) -> Result<[u8; 32]> {
-    let mut history = io.map(PreparationIo::history_io);
+    let mut history = io;
     seed.validate(
         &mut history
             .as_mut()
@@ -72,10 +72,7 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
     maximum_bytes: u64,
     key: &IdempotencyKey,
     io: Option<&PreparationIo>,
-    preparation: Option<&TaskResourcePreparation>,
-    #[cfg(not(target_arch = "wasm32"))] guard: Option<
-        &Arc<crate::resource_preparation::TaskResourcePreparation>,
-    >,
+    preparation: Option<&Arc<TaskResourcePreparation>>,
 ) -> Result<()> {
     let bytes = encode(value, maximum_bytes, io)?;
     let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
@@ -90,9 +87,9 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
         }],
         key,
         io,
-        preparation,
+        preparation.map(Arc::as_ref),
         #[cfg(not(target_arch = "wasm32"))]
-        guard,
+        preparation,
     )
     .await;
     drop(hold);
@@ -101,6 +98,31 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
         Err(error) if error.code() == crate::wire::ErrorCode::Conflict => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+pub(super) async fn write_once<A, O, T>(
+    host: &FilesystemHost<A, O>,
+    journal: &WorkspaceRef,
+    path: &str,
+    value: &T,
+    maximum: u64,
+    key: &IdempotencyKey,
+    operation: OperationId,
+    io: Option<&PreparationIo>,
+    preparation: Option<&Arc<TaskResourcePreparation>>,
+) -> Result<T>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    T: Serialize + bounded_io::PreparationRecord,
+{
+    if let Some(prior) = read_record(host, journal, path, maximum, io).await? {
+        return Ok(prior);
+    }
+    write_record(host, journal, path, value, maximum, key, io, preparation).await?;
+    read_record(host, journal, path, maximum, io)
+        .await?
+        .ok_or(Error::Indeterminate(operation))
 }
 
 pub(super) async fn read_claim<A: AsyncAuthorityStore, O: AsyncObjectStore>(
