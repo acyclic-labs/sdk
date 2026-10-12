@@ -41,7 +41,7 @@ impl<'de> Deserialize<'de> for GitCommitId {
     }
 }
 
-/// A filtered tree's exact SDK fork origin, verified when core capture creates
+/// A filtered tree's SDK-authenticated fork origin.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitCaptureProof {
     pub(super) fork_parent: GitTreeRef,
@@ -76,7 +76,7 @@ pub struct GitCommit {
     pub id: GitCommitId,
     /// Git-visible committed tree. Lazy trees retain unresolved source state.
     pub tree: GitTreeRef,
-    /// Complete live working tree captured by the commit. This may differ from
+    /// Complete live tree, including paths excluded from the Git tree.
     pub workspace_tree: GitTreeRef,
     /// SDK-verified fork origin when the Git-visible tree is a filtered fork.
     pub capture_proof: Option<GitCaptureProof>,

@@ -74,7 +74,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         self.load().await?.current().map(|branch| branch.head).map_err(|_| GitCompatError::InvalidState)
     }
 
-    /// Executes a command and all required filesystem work through one composed
+    /// Executes a command and completes its required filesystem work.
     pub async fn run<E: GitFilesystemExecutor>(
         &self,
         command: GitCommand,
@@ -159,7 +159,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         Ok(GitCommandOutput::Filesystem(result))
     }
 
-    /// Parses argv following the `acyclic git` umbrella subcommand and executes
+    /// Parses Git argv and completes the required filesystem work.
     pub async fn run_argv<E: GitFilesystemExecutor>(
         &self,
         argv: &[String],
@@ -172,7 +172,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         self.run(command, workspace_tree, executor).await
     }
 
-    /// Recovers the durable pending transition, if any, through the same
+    /// Recovers a durable pending transition through the filesystem executor.
     pub async fn resume<E: GitFilesystemExecutor>(
         &self,
         executor: &E,
@@ -327,7 +327,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         Err(GitCompatError::Contended)
     }
 
-    /// Clears an exact prepared transition after the executor proves that no
+    /// Clears an exact prepared transition after filesystem rollback.
     pub async fn abort_transition(&self, transition: GitTransitionId) -> Result<(), GitCompatError<S::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
@@ -343,7 +343,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         Err(GitCompatError::Contended)
     }
 
-    /// Parses and executes argv following the `acyclic git` umbrella
+    /// Parses and prepares a command from Git argv.
     pub async fn execute_argv(
         &self,
         argv: &[String],
@@ -375,7 +375,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         Err(GitCompatError::Contended)
     }
 
-    /// Records a compatibility commit after the core executor filters newly
+    /// Records a commit after its filtered snapshot is durable.
     pub async fn record_commit(
         &self,
         expected_head: Option<GitCommitId>,
@@ -398,7 +398,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         .await
     }
 
-    /// Records a merge/publication performed by the distributed workspace
+    /// Records a merge performed by distributed workspace publication.
     pub async fn record_publication(
         &self,
         publication: GitPublicationRecord,

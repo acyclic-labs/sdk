@@ -1,6 +1,6 @@
 use super::*;
 
-/// Byte widths and tagged-output names used by language bindings for the
+/// Identity byte widths used by language bindings.
 pub const GIT_COMPAT_IDENTITY_WIRE_FIELDS: &[(&str, usize)] = &[
     ("workspace_id", std::mem::size_of::<WorkspaceId>()),
     ("source_workspace", std::mem::size_of::<WorkspaceId>()),
@@ -13,7 +13,7 @@ pub const GIT_COMPAT_IDENTITY_WIRE_FIELDS: &[(&str, usize)] = &[
     ("initial_generation", std::mem::size_of::<GenerationId>()),
 ];
 
-/// Field names that language bindings decode as owned byte arrays. `None`
+/// Byte array fields and their optional fixed widths.
 pub const GIT_COMPAT_BYTE_WIRE_FIELDS: &[(&str, Option<usize>)] = &[
     ("workspace_id", Some(std::mem::size_of::<WorkspaceId>())),
     ("source_workspace", Some(std::mem::size_of::<WorkspaceId>())),
@@ -45,7 +45,7 @@ pub const GIT_COMPAT_PENDING_WIRE_FIELDS: &[&str] = &["id", "action", "mutation"
 /// Width of the UUID encoded by `GitTransitionId` in compatibility JSON.
 pub const GIT_COMPAT_TRANSITION_ID_BYTES: usize = std::mem::size_of::<GitTransitionId>();
 
-/// Natural JavaScript command discriminators paired with the canonical Rust
+/// Natural JavaScript command kinds paired with canonical serde tags.
 pub const GIT_COMPAT_PUBLIC_COMMAND_KINDS: &[(&str, &str)] = &[
     ("status", "Status"),
     ("diff", "Diff"),
@@ -83,7 +83,7 @@ pub(super) fn public_git_command_variant(kind: &str) -> Option<&'static str> {
     GIT_COMPAT_PUBLIC_COMMAND_KINDS.iter().find_map(|(public, wire)| (*public == kind).then_some(*wire))
 }
 
-/// Parses the natural JavaScript command projection into the canonical serde
+/// Parses natural JavaScript command JSON into the canonical command.
 pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
     let mut value: serde_json::Value =
         serde_json::from_str(value).map_err(|error| format!("invalid Git command JSON: {error}"))?;
@@ -155,7 +155,7 @@ pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
     serde_json::from_value(wire).map_err(|error| format!("invalid Git command: {error}"))
 }
 
-/// Validates and reserializes one canonical command output at a language
+/// Validates and reserializes canonical command output JSON.
 pub fn canonicalize_git_output_json(value: &str) -> Result<String, String> {
     let output: GitCommandOutput =
         serde_json::from_str(value).map_err(|error| format!("invalid Git command output JSON: {error}"))?;
@@ -193,7 +193,7 @@ macro_rules! git_compat_enum_contract {
     };
 }
 
-/// Defines a scalar enum inventory, its natural TypeScript literal values,
+/// Defines scalar serde tags and their TypeScript literals.
 macro_rules! git_compat_scalar_contract {
     (
         $enum:ident,

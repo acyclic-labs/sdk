@@ -223,7 +223,7 @@ pub enum GitFilesystemAction {
     RestoreGeneration {
         /// Tree to install.
         tree: GitTreeRef,
-        /// Paths participating in a compatibility-history restore. `None`
+        /// Selected restore paths; absent means the complete tree.
         paths: Option<BTreeSet<String>>,
     },
     /// Restore selected paths from an exact generation.

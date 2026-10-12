@@ -39,7 +39,7 @@ impl GitFilesystemExecutor for TestExecutor {
 }
 
 async fn publish_fixture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    transaction: crate::Transaction<A, O>,
+    mut transaction: crate::Transaction<A, O>,
 ) -> Generation<A, O> {
     let outcome = transaction
         .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {

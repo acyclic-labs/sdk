@@ -15,7 +15,7 @@ pub(super) struct GitIgnoreRule {
 }
 
 impl GitIgnorePolicy {
-    /// Identifies changed, newly ignored paths whose child-side binding wins
+    /// Identifies changed, newly ignored paths whose child binding wins.
     pub async fn newly_ignored_paths_at<A, O>(
         &self,
         generation: &Generation<A, O>,
@@ -89,11 +89,7 @@ impl GitIgnorePolicy {
         }
         let path = path.trim_start_matches('/');
         let mut ignored = false;
-        for rule in &self.rules {
-            if ignore_matches(rule, path, is_directory) {
-                ignored = !rule.negated;
-            }
-        }
+        self.apply(path, is_directory, &mut ignored);
         !ignored
     }
 

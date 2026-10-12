@@ -254,7 +254,7 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(GitGrepResult { matches, truncated })
 }
 
-/// Attributes UTF-8 lines using explicit oldest-to-newest compatibility
+/// Attributes UTF-8 lines across explicit compatibility history.
 pub async fn blame_git_generations<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     history_newest_first: &[(GitCommit, Generation<A, O>)],
     path: &str,

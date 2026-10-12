@@ -12,7 +12,7 @@ pub struct GitCapturedGeneration<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
-    /// Issues a capture proof only after the SDK has durably recorded its
+    /// Authenticates a capture proof and durably registers its fork lineage.
     pub async fn authenticated_proof<S: crate::WorkspaceLineageStore>(
         &self,
         operation_id: OperationId,
@@ -188,7 +188,7 @@ where
     Ok((entries, nested_policies))
 }
 
-/// Captures the exact eligible compatibility tree without changing the live
+/// Captures an ignore-aware tree without changing the live workspace.
 pub async fn capture_git_compatible_generation<A, O>(
     workspace: &Workspace<A, O>,
     policy: &GitIgnorePolicy,
@@ -207,7 +207,7 @@ where
     capture_git_compatible_generation_from(live, policy, already_tracked, operation_id).await
 }
 
-/// Captures an ignore-aware compatibility tree from one exact immutable
+/// Captures an ignore-aware tree from one exact immutable generation.
 pub async fn capture_git_compatible_generation_at<A, O>(
     workspace: &Workspace<A, O>,
     generation: GenerationId,
@@ -265,8 +265,7 @@ where
     apply_git_capture(&live, Some(&live), None, &excluded, tracked_paths, operation_id).await
 }
 
-/// Incrementally captures only paths changed since the preceding live
-#[allow(clippy::too_many_lines, reason = "eligibility and the single atomic path application form one operation")]
+/// Captures eligible paths changed since the preceding live generation.
 pub async fn capture_git_compatible_generation_incremental<A, O>(
     workspace: &Workspace<A, O>,
     previous_live: &Generation<A, O>,
