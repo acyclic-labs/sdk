@@ -368,9 +368,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         original: &crate::NativeMaterializationWork,
     ) -> Result<(), FsError> {
         if !original.owns_native_checkout_token(&self.dependencies.data_custody)
-            || !self.root.same_original_scope(original.native_read_meter())
+            || !self.root.same_original_scope((&original.state))
             || !self.dependencies.base_root_control.is_native_original(
-                original.native_read_meter(), root_parent_bytes(&self.base_root)?,
+                (&original.state), root_parent_bytes(&self.base_root)?,
             )
         {
             return Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout));
@@ -378,4 +378,3 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(())
     }
 }
-

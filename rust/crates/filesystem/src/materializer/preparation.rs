@@ -90,7 +90,7 @@ impl<S: MaterializationJournalStore>
         ));
         let reader = generation
             .workspace()
-            .reader(generation.id(), &work, work.cancellation())
+            .reader(generation.id(), work, work.cancellation())
             .await
             .map_err(E::from)?;
         let mut control = |phase| {
@@ -318,12 +318,8 @@ impl NativeTreeMaterializationBackend {
             );
             let directory = match step {
                 MaterializationPreparationAllocation::Operation => {
-                    crate::native_host::create_new_directory_held_with_work(
-                        &parent,
-                        leaf,
-                        &mut &*work,
-                    )
-                    .map_err(backend)?
+                    crate::native_host::create_new_directory_held(&parent, leaf, &mut &*work)
+                        .map_err(backend)?
                 }
                 _ => {
                     let operation = recorded_child(
@@ -335,7 +331,7 @@ impl NativeTreeMaterializationBackend {
                         work,
                     )
                     .map_err(backend)?;
-                    crate::native_host::create_new_directory_held_with_work(
+                    crate::native_host::create_new_directory_held(
                         &operation,
                         if step == MaterializationPreparationAllocation::Target {
                             Path::new("target")
@@ -401,9 +397,13 @@ fn recorded_child(
     expected: [u8; 16],
     work: &NativeMaterializationWork,
 ) -> Result<cap_std::fs::Dir, NativeTreeMaterializationError> {
-    let directory = with_native_walk_leaf(leaf, work, |name| {
-        open_native_walk_directory(parent, name, work)
-    })?;
+    let identity = crate::native_host::directory_identity(parent, &mut &*work)?;
+    work.charge(NativeResourceCredit::ReadOperations.delta(1))?;
+    let parent = crate::native_host::HostRoot {
+        directory: parent.try_clone()?,
+        identity,
+    };
+    let directory = parent.open_dir_held(leaf, &mut &*work)?;
     let actual = crate::native_host::directory_identity(&directory, &mut &*work)?;
     let expected = crate::NativeRootIdentity::from_bytes(expected);
     if actual != expected {

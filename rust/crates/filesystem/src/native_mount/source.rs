@@ -750,7 +750,7 @@ pub(crate) fn native_materialization_failure_is_fatal(
             | crate::NativeTreeMaterializationError::Cancelled
             | crate::NativeTreeMaterializationError::AllocationFailed(_)
             | crate::NativeTreeMaterializationError::IndeterminatePreparation
-            | crate::NativeTreeMaterializationError::ExternalMutation(..)
+            | crate::NativeTreeMaterializationError::ExternalMutation
             | crate::NativeTreeMaterializationError::AllocationChanged { .. }
     )
 }

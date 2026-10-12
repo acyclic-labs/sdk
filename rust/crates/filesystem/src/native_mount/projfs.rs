@@ -121,7 +121,7 @@ impl RetainedBuffer<crate::kernel::OwnedSourceChunk> {
         }
         let bytes = packet.logical_owned_bytes;
         let custody = projection.custody.clone();
-        let mut work = projection.work.native_read_meter().lock();
+        let mut work = (&projection.work.state).lock();
         if let Err(error) = custody.retain_admitted(bytes, &mut work) {
             drop(packet);
             work.release(bytes).map_err(detach_work_error)?;
@@ -198,18 +198,18 @@ struct Runtime {
 fn same_callback_work(
     left: &crate::NativeMaterializationWork, right: &crate::NativeMaterializationWork,
 ) -> bool {
-    Arc::ptr_eq(left.native_read_meter(), right.native_read_meter())
-        && match (left.resource_allowance(), right.resource_allowance()) {
+    Arc::ptr_eq((&left.state), (&right.state))
+        && match (left.resource.as_ref(), right.resource.as_ref()) {
             (None, None) => true,
             (Some(left), Some(right)) => Arc::ptr_eq(left, right),
             _ => false,
         }
-        && match (left.capture_origin(), right.capture_origin()) {
+        && match (left.capture_origin.as_ref(), right.capture_origin.as_ref()) {
             (None, None) => true,
             (Some(left), Some(right)) => left.ptr_eq(right),
             _ => false,
         }
-        && match (left.invocation_view_state(), right.invocation_view_state()) {
+        && match (left.invocation.as_ref(), right.invocation.as_ref()) {
             (None, None) => true,
             (Some(left), Some(right)) => Arc::ptr_eq(left, right),
             _ => false,
@@ -245,9 +245,9 @@ fn with_callback_meter<T>(
     let active = lock_recover(&runtime.stop_meter).upgrade();
     if let Some(meter) = active.or(bound) {
         verify_callback_work(runtime, &meter, authored_write)
-            .map_err(|cause| (cause, meter.native_read_meter().lock().work))?;
+            .map_err(|cause| (cause, (&meter.state).lock().work))?;
         return super::run_native_mount_handler_on_meter(&meter, operation)
-            .map_err(|cause| (cause, meter.native_read_meter().lock().work));
+            .map_err(|cause| (cause, (&meter.state).lock().work));
     }
     let result = super::run_native_mount_handler(runtime.handler_budget, &runtime.handler_cancellation, operation);
     let completed = match &result {
@@ -3215,7 +3215,7 @@ fn write_listed_content(
                     let claimed = !packet.is_intrinsic();
                     drop(packet);
                     if claimed {
-                        projection.work.native_read_meter().lock().release(bytes).map_err(super::lazy::mount_demand_error)?;
+                        (&projection.work.state).lock().release(bytes).map_err(super::lazy::mount_demand_error)?;
                     }
                     return Err(MountSourceError::Stale);
                 }
@@ -3675,7 +3675,7 @@ impl ProjFsSession {
         let root = clone_host_path_with_work(&request.destination, &custody, meter)?;
         let projector = Arc::new(Projector::new(&custody, meter)?);
         let (handler_budget, handler_cancellation) = {
-            let policy = meter.native_read_meter().lock();
+            let policy = (&meter.state).lock();
             (policy.budget, policy.cancellation().clone())
         };
         let runtime = Runtime {
@@ -4743,7 +4743,7 @@ where NativeMountError: From<W::Error> {
         Some(cleanup.loan(cleanup_wait))
     } else { None };
     if loan.as_ref().is_some_and(|loan| {
-        let remaining = loan.remaining_work();
+        let remaining = loan.credit.remaining_work();
         remaining.backend_read_operations < 3 || remaining.backend_write_operations < 2
     }) {
         return Err(NativeMountError::Lifecycle("original staging probe/disposition credit exhausted; capability retained"));
@@ -5911,7 +5911,7 @@ fn retain_callback_failure(projection: Projection<'_>, error: NativeMountError) 
     let mut failure = lock_recover(projection.captures);
     failure.unreplayable_barrier = true;
     if failure.unreplayable.is_none() {
-        failure.unreplayable = Some((error, projection.work.native_read_meter().lock().work));
+        failure.unreplayable = Some((error, (&projection.work.state).lock().work));
     }
     result
 }
@@ -5965,7 +5965,7 @@ fn record_post_operation_failure(
                 let result = native_hresult(&queue_error);
                 failure.unreplayable_barrier = true;
                 if failure.unreplayable.is_none() {
-                    failure.unreplayable = error.or(Some(queue_error)).map(|cause| (cause, projection.work.native_read_meter().lock().work));
+                    failure.unreplayable = error.or(Some(queue_error)).map(|cause| (cause, (&projection.work.state).lock().work));
                 }
                 return result;
             }
@@ -5973,7 +5973,7 @@ fn record_post_operation_failure(
     }
     failure.unreplayable_barrier = true;
     if failure.unreplayable.is_none() {
-        failure.unreplayable = error.map(|cause| (cause, projection.work.native_read_meter().lock().work));
+        failure.unreplayable = error.map(|cause| (cause, (&projection.work.state).lock().work));
     }
     result
 }
@@ -6742,7 +6742,7 @@ mod tests {
             })
         })();
         work.record_admitted(crate::WorkCounters::UNCHARGED).expect("actual source leaf cleanup reconciles");
-        let payload_live = work.native_read_meter().lock().live_allocation_bytes()
+        let payload_live = (&work.state).lock().live_allocation_bytes()
             .checked_sub(crate::NativeMaterializationWork::accounting_state_bytes()).expect("the original accounting body remains owned");
         (result, work.receipt(), payload_live)
     }
@@ -6773,7 +6773,7 @@ mod tests {
         }
         let cancellation = CancellationToken::new();
         let read = |projection: super::Projection<'_>| {
-            let baseline = projection.work.native_read_meter().lock().live_allocation_bytes();
+            let baseline = (&projection.work.state).lock().live_allocation_bytes();
             let mut entries = super::source_listing(projection, &MountPath::root())?;
             assert_eq!(entries.len(), count as usize);
             for adjacent in entries.windows(2) {
@@ -6790,10 +6790,10 @@ mod tests {
             let mut memo = super::MemoMap::default();
             memo.insert_owned(escaped, true, projection)?;
             drop(entries);
-            assert!(projection.work.native_read_meter().lock().live_allocation_bytes() >= baseline + escaped_bytes,
+            assert!((&projection.work.state).lock().live_allocation_bytes() >= baseline + escaped_bytes,
                 "the actual moved name stays funded after its page and listing drop");
             drop(memo);
-            assert_eq!(projection.work.native_read_meter().lock().live_allocation_bytes(), baseline);
+            assert_eq!((&projection.work.state).lock().live_allocation_bytes(), baseline);
             Ok(())
         };
         let (observed, _, live) = measured_source_leaf(source.as_ref(), WorkBudget::UNBOUNDED, &cancellation, read);

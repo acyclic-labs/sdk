@@ -30,7 +30,7 @@ pub(super) fn checked_packet<T>(
 ) -> Result<Owned<T>, Error> {
     // Keep the value-first tuple intact through every rejecting branch.
     let parts = owned.into_parts();
-    if !parts.1.matches_work(work) {
+    if !parts.1.work().shares_allocation_context(work) {
         return Err(Error::NativeLedgerMismatch);
     }
     if parts.1.bytes() != bytes(&parts.0)? {
@@ -41,7 +41,7 @@ pub(super) fn checked_packet<T>(
 
 fn transfer<T>(owned: Owned<T>, work: &Work, held: &mut NativeAllocation) -> Result<T, Error> {
     let (value, mut allocation) = owned.into_parts();
-    let result = if allocation.matches_work(work) {
+    let result = if allocation.work().shares_allocation_context(work) {
         held.absorb(&mut allocation).map_err(Error::from)
     } else {
         Err(Error::NativeLedgerMismatch)
@@ -299,7 +299,7 @@ pub(super) fn clone_native_record_value(
             RecordValue::LazyWorkspace(clone_native_lazy_state(value, work)?)
         }
     };
-    held.substitute(native_record_owned_bytes(&value, work)?)?;
+    held.resize(native_record_owned_bytes(&value, work)?)?;
     Ok(Owned::from_parts(value, held))
 }
 
@@ -375,7 +375,7 @@ fn read<T: DeserializeOwned>(
     };
     let mut value = map(value);
     value.normalize(Some(work))?;
-    held.substitute(native_record_owned_bytes(&value, work)?)?;
+    held.resize(native_record_owned_bytes(&value, work)?)?;
     Ok(Some(Owned::from_parts(value, held)))
 }
 
@@ -505,7 +505,7 @@ pub(super) fn load_native_context(
             };
             drop(value);
             let bytes = native_context_owned_bytes(&context, work)?;
-            held.substitute(bytes)?;
+            held.resize(bytes)?;
             context
         }
         _ => return Err(Error::Integrity),

@@ -436,7 +436,7 @@ impl LocalCoreStateStore {
                         return Ok(None);
                     };
                     let value = T::from_wire(wire, work, &mut allocation)?;
-                    allocation.substitute(value.owned_bytes())?;
+                    allocation.resize(value.owned_bytes())?;
                     let owned = NativeOwnedCoreState::from_parts(value, allocation);
                     if lazy_digest(owned.as_state(), work)? != T::address(id) {
                         return Err(LocalCoreStateStoreError::Integrity);

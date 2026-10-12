@@ -76,7 +76,7 @@ impl<'a> ForkWork<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn native_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
         let original = self.original.expect("native SDK boundary requires original funding");
-        original.native_read_meter().clone()
+        (&original.state).clone()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -559,4 +559,3 @@ pub(super) fn commit_work(
         WorkCounters { backend_write_operations: 1, ..WorkCounters::default() }
     }
 }
-

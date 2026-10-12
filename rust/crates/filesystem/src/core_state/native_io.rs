@@ -194,7 +194,7 @@ pub(super) fn measured_record_path(
     allocation: &mut crate::materializer::NativeAllocation,
 ) -> Result<PathBuf, LocalCoreStateStoreError> {
     let mut owned = work.path(root, Some(Path::new(leaf)))?;
-    owned.1.resize_retained(owned.0.capacity() as u64)?;
+    owned.1.resize(owned.0.capacity() as u64)?;
     allocation.absorb(&mut owned.1)?;
     Ok(owned.0)
 }
@@ -249,7 +249,7 @@ pub(super) fn materialization_acquire_lock<'a>(
                         paths.previous,
                         paths.temporary,
                     ));
-                    allocation.substitute(paths.lock.capacity() as u64)?;
+                    allocation.resize(paths.lock.capacity() as u64)?;
                     return Err(LocalCoreStateStoreError::LazyWork(
                         crate::LazyWorkspaceError::NativeRecordLockTimeout(
                             paths.lock,
@@ -562,7 +562,11 @@ pub(super) fn materialization_exists(
     let leaf = path.file_name().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
     })?;
-    match crate::materializer::native_stat_held(&parent, Path::new(leaf), work) {
+    #[cfg(unix)]
+    let observed = crate::native_host::stat_leaf(&parent, leaf, &mut &*work);
+    #[cfg(windows)]
+    let observed = crate::native_host::with_wide_path(Path::new(leaf), &mut &*work, |name, work| crate::native_host::stat_windows_leaf(&parent, name, work));
+    match observed {
         Ok(_) => Ok(true),
         Err(crate::materializer::NativeTreeMaterializationError::Io(error))
             if error.kind() == std::io::ErrorKind::NotFound =>

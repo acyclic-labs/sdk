@@ -42,8 +42,8 @@ impl NativePreparationCompletionTemplate {
     pub(crate) fn path(&self) -> &acyclic_stream::StreamPath { &self.path }
     pub(crate) fn key(&self) -> &acyclic_stream::IdempotencyKey { &self.key }
     pub(crate) fn matches_work(&self, work: &NativeMaterializationWork) -> bool {
-        self.custody.matches_work(work)
-            && self.journal.custody.as_ref().is_some_and(|guard| guard.matches_work(work))
+        self.custody.work().shares_allocation_context(work)
+            && self.journal.custody.as_ref().is_some_and(|guard| guard.work().shares_allocation_context(work))
     }
     /// Checks sealed packet associations only.
     pub(crate) fn verify_owner<P: StreamProvider>(
@@ -282,7 +282,7 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
         let NativePreparationIntent { task, original_fence, manifest, operation_directory } = intent;
         let NativeViewManifest { options, volumes } = manifest;
         drop((options, operation_directory));
-        intent_custody.substitute(retained)?;
+        intent_custody.resize(retained)?;
         let (encoded, encoded_custody) = encode_record(&journal, &self.work)?;
         self.work.charge(acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64,
             ..acyclic_fs::WorkCounters::default() })?;
@@ -343,7 +343,7 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
             NativePreparationAuthority::Owner { owner, settlement } => (*owner, *settlement),
             NativePreparationAuthority::Admission(_) => return Err(boundary(crate::wire::ErrorCode::Unsupported, "read-only native admission cannot append a materializer journal")),
         };
-        if !replacement.custody.as_ref().is_some_and(|custody| custody.matches_work(&self.work)) {
+        if !replacement.custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(&self.work)) {
             return Err(boundary(crate::wire::ErrorCode::Conflict, "native journal requires its original buffer custody"));
         }
         if replacement.plan.operation_id != operation

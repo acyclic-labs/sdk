@@ -57,7 +57,7 @@ impl NativeRootOutputSource {
 
     pub(super) fn require_content_work<'a>(&self, volume: &VolumeRef, io: Option<&'a crate::filesystem::PreparationIo>) -> Result<&'a NativeMaterializationWork> {
         let work = io.and_then(crate::filesystem::PreparationIo::original_native_work).ok_or(boundary(crate::wire::ErrorCode::Unsupported, "ROOT content requires its original native work"))?;
-        if !self.custody.matches_work(work) || volume != self.writer.volume() {
+        if !self.custody.work().shares_allocation_context(work) || volume != self.writer.volume() {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized, "ROOT content differs from its original volume or native work"));
         }
         work.admit(Default::default())?;
@@ -77,7 +77,7 @@ impl NativeRootOutputSource {
     pub(crate) async fn verify_context_with_native_work(
         &self, context: &crate::runtime::TaskContext, work: &NativeMaterializationWork,
     ) -> Result<()> {
-        if !self.custody.matches_work(work) {
+        if !self.custody.work().shares_allocation_context(work) {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized, "ROOT output differs from its original native work"));
         }
         self.owner.check_context(context, work)?;
@@ -85,7 +85,7 @@ impl NativeRootOutputSource {
     }
 
     pub(crate) fn into_native_shared(self, work: &NativeMaterializationWork) -> Result<Arc<Self>> {
-        if !self.custody.matches_work(work)
+        if !self.custody.work().shares_allocation_context(work)
             || self.custody.bytes() < std::mem::size_of::<Self>() as u64
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized, "ROOT output sharing requires its original metadata custody"));

@@ -106,7 +106,7 @@ pub trait AuthorityGuard: ProviderTask {
         async move {
             if let Err(error) = self.seal(work).await { return Ok(Err(error)); }
             let Some(original) = work.original else { return Ok(Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into())); };
-            let meter = original.native_read_meter().clone();
+            let meter = (&original.state).clone();
             let result = match deadline {
                 Some(deadline) => provider.native_commit_before(request, deadline, meter).await,
                 None => provider.native_commit(request, meter).await,
@@ -163,7 +163,7 @@ where E: Send + 'static, F: for<'m> FnMut(&'m crate::NativeMaterializationWork) 
         work: &mut AuthorityWork<'_>,
     ) -> acyclic_stream::NativeStreamResult<acyclic_stream::CommitOutcome, AuthorityError<E>> {
         let Some(original) = work.original else { return Ok(Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into())); };
-        let meter = original.native_read_meter().clone();
+        let meter = (&original.state).clone();
         let original = original.clone();
         let mut callback = self.0.clone();
         let before = move || {
@@ -181,4 +181,3 @@ pub type AuthorityAllocation = Option<crate::NativeAllocation>;
 /// Browser authority results need no native allocation guard.
 #[cfg(target_arch = "wasm32")]
 pub type AuthorityAllocation = Option<()>;
-

@@ -66,7 +66,7 @@ impl NativePreparationRoot {
         custody.absorb(&mut operation_custody)?;
         let meter = work.clone();
         acyclic_native_runtime::run_blocking_io(move || {
-            let backend = acyclic_fs::NativeTreeMaterializationBackend::new(root, operation_directory, Some(custody), meter.clone(), false)?;
+            let backend = acyclic_fs::NativeTreeMaterializationBackend::new(root, operation_directory, custody, meter.clone())?;
             backend.require_initial_empty()?;
             let expected_identity = acyclic_fs::NativeRootIdentity::from_bytes(
                 backend.allocation_identity().ok_or(boundary(crate::wire::ErrorCode::Conflict, "native root allocation is unwitnessed"))?,
@@ -201,7 +201,7 @@ where
             }, intent.1);
             let retained = allocation.0.root.capacity().checked_add(allocation.0.operation_directory.capacity())
                 .ok_or_else(|| Error::from(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow)))?;
-            allocation.1.substitute(retained as u64)?;
+            allocation.1.resize(retained as u64)?;
             let _backend = native_backend(&allocation.0, work, true).await?;
             store.verify_read_owner().await?;
             work.remaining()?;
@@ -367,7 +367,7 @@ pub(super) async fn native_backend(
     custody.absorb(&mut operation_custody)?;
     let meter = work.clone();
     let backend = acyclic_native_runtime::run_blocking_io(move || {
-        acyclic_fs::NativeTreeMaterializationBackend::new(root, operation_directory, Some(custody), meter, false)
+        acyclic_fs::NativeTreeMaterializationBackend::new(root, operation_directory, custody, meter)
     }, Some((work.runtime_meter(), false)))
         .map_err(|error| Error::from(work.runtime_error(error)))?
         .await.map_err(|error| Error::from(work.runtime_error(error)))??;

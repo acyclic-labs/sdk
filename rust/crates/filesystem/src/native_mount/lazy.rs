@@ -2321,7 +2321,7 @@ impl NativeMountSourceWatchOwner {
         if self.custody.is_some()
             && self.watch.is_some()
             && !matches!(carrier, super::adapter::NativeDemandCarrier::Native(work)
-                if work.resource_allowance().is_some()) {
+                if work.resource.as_ref().is_some()) {
             return self.stop_ordinary_with_carrier(carrier);
         }
         match carrier {
@@ -2669,7 +2669,7 @@ where
     }
 
     fn reported_with_meter(&self, file_id: FileId, work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError> {
-        let mut work = work.native_read_meter().lock();
+        let mut work = (&work.state).lock();
         work.check().map_err(mount_demand_error)?;
         self.authored.cancellation().check().map_err(|_| MountSourceError::Stale)?;
         let linked = self.linked.lock().map_err(|_| MountSourceError::Stale)?;
@@ -5783,7 +5783,7 @@ where
         if self.unstaged.checked_at(self.expected_source, revision) {
             return Ok(None);
         }
-        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut carrier).await }, work.native_read_meter().as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
+        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut carrier).await }, (&work.state).as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
         if let Some(file) = file {
             *promoted = Some(Arc::clone(&file));
             return Ok(Some(file));
@@ -7077,7 +7077,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         let bytes = std::mem::size_of::<ViewBoundOpenFile<A, O>>() as u64;
-        work.native_read_meter().lock().allocate(bytes).map_err(mount_demand_error)?;
+        (&work.state).lock().allocate(bytes).map_err(mount_demand_error)?;
         let bound: Arc<dyn MountOpenFile> = Arc::new(ViewBoundOpenFile {
             inner: file.0, runtime: Arc::clone(&self.runtime), source_view: Arc::clone(&self.source_view),
             source_lifetime: self.authored.cancellation().clone(), detached: Arc::clone(&self.detached),
@@ -10006,7 +10006,7 @@ mod tests {
         let handle = view.open_file(&mounted(&["file"]))?;
         let opens = demand.opens.load(Ordering::Acquire);
         let caller = crate::CancellationToken::new();
-        let meter = native_control_work(finite_content_budget(), &caller)?.native_read_meter().clone();
+        let meter = native_control_work(finite_content_budget(), &caller)?.state.clone();
         let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
         let identity = handle.lookup_with_meter(&context)?.node.file_id;
         assert_eq!(handle.read_range_with_meter(2, 3, &context)?.bytes.as_ref(), b"cde");
@@ -10081,7 +10081,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new()?;
         let view = runtime.block_on(mounted_view(source.path(), "finite-linked-custody"))?;
         let caller = crate::CancellationToken::new();
-        let meter = native_control_work(finite_content_budget(), &caller)?.native_read_meter().clone();
+        let meter = native_control_work(finite_content_budget(), &caller)?.state.clone();
         let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
         let lookup = view.lookup_pinned_with_meter(&mounted(&["file"]), &context)?.ok_or("missing linked file")?.0;
         let bytes = {
@@ -10118,7 +10118,7 @@ mod tests {
         let link = mounted(&["link"]);
         super::super::adapter::boundary(view.authored.cancellation(), |work| view.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((Bytes::from_static(b"../target")).into(), 0), FileMetadata::default(), work))?;
         let caller = crate::CancellationToken::new();
-        let meter = native_control_work(finite_content_budget(), &caller)?.native_read_meter().clone();
+        let meter = native_control_work(finite_content_budget(), &caller)?.state.clone();
         let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
         let path = mounted(&["file"]);
         let (_, pin) = view.lookup_pinned_with_meter(&path, &context)?.ok_or("missing source file")?;

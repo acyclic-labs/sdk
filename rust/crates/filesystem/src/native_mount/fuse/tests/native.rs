@@ -482,8 +482,8 @@ pub(super) fn active_callback_borrows_original_meter_without_future_receipt_doub
             let _active = crate::native_mount::fuse::NativeMountWorkScope::new(&core, work)?;
             let result = core.request(|callback_work| {
                 assert!(Arc::ptr_eq(
-                    callback_work.native_read_meter(),
-                    work.native_read_meter()
+                    (&callback_work.state),
+                    (&work.state)
                 ));
                 let path = crate::native_mount::fuse::fuse_clone_path(&path, callback_work)?;
                 source
@@ -499,7 +499,7 @@ pub(super) fn active_callback_borrows_original_meter_without_future_receipt_doub
                 core.completed_callback_work(),
                 crate::WorkCounters::UNCHARGED
             );
-            assert!(work.native_read_meter().lock().work.bytes_copied != 0);
+            assert!((&work.state).lock().work.bytes_copied != 0);
             Ok(())
         },
     )

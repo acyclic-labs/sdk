@@ -217,8 +217,8 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
                     || (Weak::new(), None),
                     |work| {
                         (
-                            Arc::downgrade(work.native_read_meter()),
-                            work.resource_allowance().map(Arc::downgrade),
+                            Arc::downgrade((&work.state)),
+                            work.resource.as_ref().map(Arc::downgrade),
                         )
                     },
                 );

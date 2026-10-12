@@ -23,11 +23,11 @@ pub(super) fn fuse_same_native_view(
     right: &crate::NativeMaterializationWork,
 ) -> bool {
     left.shares_allocation_context(right)
-        && left.capture_origin().map(Weak::as_ptr) == right.capture_origin().map(Weak::as_ptr)
-        && left.invocation_view_state().map(Arc::as_ptr)
-            == right.invocation_view_state().map(Arc::as_ptr)
-        && left.source_execution_view().map(Arc::as_ptr)
-            == right.source_execution_view().map(Arc::as_ptr)
+        && left.capture_origin.as_ref().map(Weak::as_ptr) == right.capture_origin.as_ref().map(Weak::as_ptr)
+        && left.invocation.as_ref().map(Arc::as_ptr)
+            == right.invocation.as_ref().map(Arc::as_ptr)
+        && left.execution.as_ref().map(Arc::as_ptr)
+            == right.execution.as_ref().map(Arc::as_ptr)
 }
 
 pub(super) fn fuse_native_source_original(
@@ -157,7 +157,7 @@ impl ProjectionCore {
             mount_gid: gid,
         });
         let (budget, cancellation) = {
-            let work = native.native_read_meter().lock();
+            let work = (&native.state).lock();
             (work.budget, work.cancellation().clone())
         };
         let mut core = Self::new(source, state, budget, &cancellation)?;
@@ -259,7 +259,7 @@ impl ProjectionCore {
         error: NativeMountError,
     ) {
         if fatal_handler_error(&error) {
-            let prefix = work.native_read_meter().lock().work;
+            let prefix = (&work.state).lock().work;
             self.retain_handler_failure((error, prefix));
         }
     }
@@ -332,7 +332,7 @@ impl ProjectionCore {
                 self.source_original_work
                     .as_ref()
                     .map_or(crate::WorkCounters::UNCHARGED, |work| {
-                        work.native_read_meter().lock().work
+                        (&work.state).lock().work
                     }),
             )
         })?;
@@ -342,7 +342,7 @@ impl ProjectionCore {
         };
         if let Some(meter) = meter {
             let result = crate::native_mount::run_native_mount_handler_on_meter(&meter, run);
-            let work = meter.native_read_meter().lock().work;
+            let work = (&meter.state).lock().work;
             result
                 .map(|value| crate::OperationReceipt { value, work })
                 .map_err(|cause| (cause, work))

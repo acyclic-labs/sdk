@@ -468,7 +468,7 @@ fn shared_destination_fence_retains_original_owner_after_denial()
     let mut guard = None;
     MountDestinationGuard::acquire_with_work(&destination, false, &meter, &mut guard, false)?;
     let mut guard = guard.expect("actual fence was admitted");
-    assert!(Arc::ptr_eq(meter.native_read_meter(), &original));
+    assert!(Arc::ptr_eq((&meter.state), &original));
     assert!(guard.parent_directory.is_some());
     assert!(guard.file.is_some());
     let mut competing_guard = None;

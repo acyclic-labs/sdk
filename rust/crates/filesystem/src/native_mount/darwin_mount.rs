@@ -291,11 +291,11 @@ fn darwin_verify_callback_guard(
 }
 
 fn darwin_same_native_view(left: &crate::NativeMaterializationWork, right: &crate::NativeMaterializationWork) -> bool {
-    Arc::ptr_eq(left.native_read_meter(), right.native_read_meter())
-        && left.resource_allowance().map(Arc::as_ptr) == right.resource_allowance().map(Arc::as_ptr)
-        && left.capture_origin().map(Weak::as_ptr) == right.capture_origin().map(Weak::as_ptr)
-        && left.invocation_view_state().map(Arc::as_ptr) == right.invocation_view_state().map(Arc::as_ptr)
-        && left.source_execution_view().map(Arc::as_ptr) == right.source_execution_view().map(Arc::as_ptr)
+    Arc::ptr_eq((&left.state), (&right.state))
+        && left.resource.as_ref().map(Arc::as_ptr) == right.resource.as_ref().map(Arc::as_ptr)
+        && left.capture_origin.as_ref().map(Weak::as_ptr) == right.capture_origin.as_ref().map(Weak::as_ptr)
+        && left.invocation.as_ref().map(Arc::as_ptr) == right.invocation.as_ref().map(Arc::as_ptr)
+        && left.execution.as_ref().map(Arc::as_ptr) == right.execution.as_ref().map(Arc::as_ptr)
 }
 
 fn darwin_native_source_original(
@@ -1457,8 +1457,8 @@ fn run_darwin_loop(mut owned: (
     let aborted = state.start_aborted;
     state.start_gate_credit = Some(gate);
     drop(state);
-    let admission = if aborted { Err((NativeMountError::ControlPending, original.native_read_meter().lock().work)) }
-    else { darwin_native_attempt(original, true).map_err(|cause| (cause, original.native_read_meter().lock().work)) };
+    let admission = if aborted { Err((NativeMountError::ControlPending, (&original.state).lock().work)) }
+    else { darwin_native_attempt(original, true).map_err(|cause| (cause, (&original.state).lock().work)) };
     let status = match admission {
         Err(failure) => {
             controller.state.lock().unwrap_or_else(PoisonError::into_inner).start_aborted = true;
@@ -1514,7 +1514,7 @@ impl DarwinMountSession {
     ) -> Result<(), NativeMountError>
     where F: FnOnce(&mut super::NativeMountRetirement) -> Result<(), NativeMountError> {
             if out.is_some() { return Err(NativeMountError::ControlPending.into()); }
-            let meter = source_work.native_read_meter();
+            let meter = (&source_work.state);
             darwin_native_source_original(source.as_ref(), Some(source_work)).map_err(NativeMountError::from)?;
             source_work.admit(crate::WorkCounters::UNCHARGED)
                 .map_err(NativeMountError::from)?;
@@ -1676,7 +1676,7 @@ impl DarwinMountSession {
     }
 
     fn await_mount(&mut self, native: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
-        let meter = native.native_read_meter();
+        let meter = (&native.state);
         let deadline = Instant::now() + MOUNT_VISIBILITY_TIMEOUT;
         let reported = loop {
             native.charge(crate::WorkCounters {
@@ -2635,11 +2635,11 @@ fn prepare_direct_unmount(
     let credit = original.reserve_work(crate::WorkCounters {
         backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
     })?;
-    let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(credit)?;
+    let credit = credit.into_runtime_credit()?;
     let task_meter = credit.runtime_meter();
     let operation = acyclic_native_runtime::NativeOperationReservation::new(
         Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
-    ).map_err(|error| NativeMountError::from(native.native_read_meter().take_native_io_failure()
+    ).map_err(|error| NativeMountError::from((&native.state).take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
     let metadata = original.allocation_work().clone();
     let meter = new_detach_meter(&metadata)?;
@@ -2647,7 +2647,7 @@ fn prepare_direct_unmount(
     let original_work = original.allocation_work();
     let task = acyclic_native_runtime::run_blocking_io(
         move || path.unmount(operation, original_work), Some((task_meter, true)),
-    ).map_err(|error| NativeMountError::from(native.native_read_meter().take_native_io_failure()
+    ).map_err(|error| NativeMountError::from((&native.state).take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
     Ok(DirectUnmountTask {
         task: Some(task), submission_failure: None, _meter: Arc::clone(&meter),
@@ -2664,7 +2664,7 @@ fn bounded_direct_unmount(
         if let std::task::Poll::Ready(result) = poll_direct(task, meter, cleanup)? {
             let task = state.direct.take().expect("observed accepted task");
             return result.and_then(std::convert::identity).map(|_| ())
-                .map_err(|error| NativeMountError::from(task.original.native_read_meter().take_native_io_failure()
+                .map_err(|error| NativeMountError::from((&task.original.state).take_native_io_failure()
                     .unwrap_or_else(|| native_demand_error(error))));
         }
         return Ok(());
@@ -2681,12 +2681,12 @@ fn bounded_direct_unmount(
     let task_meter = original.runtime_meter();
     let operation = acyclic_native_runtime::NativeOperationReservation::new(
         Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
-    ).map_err(|error| NativeMountError::from(original.native_read_meter().take_native_io_failure()
+    ).map_err(|error| NativeMountError::from((&original.state).take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
     let original_work = original.allocation_work();
     let task = acyclic_native_runtime::run_blocking_io(
         move || path.unmount(operation, original_work), Some((task_meter, false)),
-    ).map_err(|error| NativeMountError::from(original.native_read_meter().take_native_io_failure()
+    ).map_err(|error| NativeMountError::from((&original.state).take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
     // Custody is installed before even the first readiness probe can be denied.
     state.direct = Some(DirectUnmountTask {
@@ -2700,7 +2700,7 @@ fn bounded_direct_unmount(
             std::task::Poll::Ready(result) => {
                 let task = state.direct.take().expect("observed accepted task");
                 return result.and_then(std::convert::identity).map(|_| ())
-                    .map_err(|error| NativeMountError::from(task.original.native_read_meter().take_native_io_failure()
+                    .map_err(|error| NativeMountError::from((&task.original.state).take_native_io_failure()
                         .unwrap_or_else(|| native_demand_error(error))));
             }
             std::task::Poll::Pending => {}
@@ -2714,7 +2714,7 @@ fn bounded_direct_unmount(
 
 struct PreparedDiskutilProcess {
     frame: Option<acyclic_native_runtime::PreparedClosedProcess>,
-    credit: Arc<crate::materializer::NativeOwnedCleanupCredit>,
+    credit: Arc<crate::materializer::NativeWorkReservation>,
     original_work: crate::NativeMaterializationWork,
 }
 
@@ -2745,7 +2745,7 @@ impl PreparedDiskutilProcess {
 
     fn new(original: &crate::NativeMaterializationWork) -> Result<Self, NativeMountError> {
         let credit = original.reserve_work(Self::admitted_work()?)?;
-        let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(credit)?;
+        let credit = credit.into_runtime_credit()?;
         let original_work = original.allocation_work();
         let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process(
             3, original_work.runtime_meter(),
@@ -2758,7 +2758,7 @@ struct DiskutilProcess {
     tree: Option<acyclic_native_runtime::ProcessTree>,
     deadline: Instant,
     failed_spawn: bool,
-    owned_credit: Option<Arc<crate::materializer::NativeOwnedCleanupCredit>>,
+    owned_credit: Option<Arc<crate::materializer::NativeWorkReservation>>,
     _original_work: Option<crate::NativeMaterializationWork>,
 }
 
@@ -2780,7 +2780,7 @@ fn spawn_diskutil(
         let result = acyclic_native_runtime::ProcessTree::spawn_closed_prepared(
             c"/usr/sbin/diskutil", &[c"unmount", c"force", path.as_c_str()], &mut prepared.frame,
             native.as_ref(), &mut state.diskutil.as_mut().expect("spawn custody installed").tree,
-        ).map_err(|error| NativeMountError::from(prepared.credit.original_work().runtime_error(error)));
+        ).map_err(|error| NativeMountError::from(prepared.credit.work().runtime_error(error)));
         if state.diskutil.as_ref().is_some_and(|child| child.tree.is_none()) {
             state.diskutil.take();
         } else {
@@ -2801,7 +2801,7 @@ fn spawn_diskutil(
                 c"/usr/sbin/diskutil", &[c"unmount", c"force", path], work.runtime_meter().as_ref(),
                 &mut state.diskutil.as_mut().expect("spawn custody").tree,
             ).map_err(|error| crate::materializer::native_materialization_work_error(
-                work.native_read_meter().take_native_io_failure().unwrap_or_else(|| native_demand_error(error))))
+                (&work.state).take_native_io_failure().unwrap_or_else(|| native_demand_error(error))))
         }).map_err(NativeMountError::from)
     })();
     if state.diskutil.as_ref().is_some_and(|child| child.tree.is_none()) { state.diskutil.take(); }
@@ -2814,11 +2814,11 @@ impl DiskutilProcess {
         if let Some(credit) = &self.owned_credit {
             return self.tree.as_mut().expect("retained process tree")
                 .try_wait(Some(credit.runtime_meter().as_ref()))
-                .map_err(|error| NativeMountError::from(credit.original_work().runtime_error(error)));
+                .map_err(|error| NativeMountError::from(credit.work().runtime_error(error)));
         }
         let work = meter.work().ok_or(crate::DemandError::Cancelled)?;
         self.tree.as_mut().expect("retained process tree").try_wait(Some(work.runtime_meter().as_ref()))
-            .map_err(|error| NativeMountError::from(work.native_read_meter().take_native_io_failure()
+            .map_err(|error| NativeMountError::from((&work.state).take_native_io_failure()
                 .unwrap_or_else(|| native_demand_error(error))))
     }
 
@@ -2826,11 +2826,11 @@ impl DiskutilProcess {
         if let Some(credit) = &self.owned_credit {
             return self.tree.as_mut().expect("retained process tree")
                 .terminate(Some(credit.runtime_meter().as_ref()))
-                .map_err(|error| NativeMountError::from(credit.original_work().runtime_error(error)));
+                .map_err(|error| NativeMountError::from(credit.work().runtime_error(error)));
         }
         let work = meter.work().ok_or(crate::DemandError::Cancelled)?;
         self.tree.as_mut().expect("retained process tree").terminate(Some(work.runtime_meter().as_ref()))
-            .map_err(|error| NativeMountError::from(work.native_read_meter().take_native_io_failure()
+            .map_err(|error| NativeMountError::from((&work.state).take_native_io_failure()
                 .unwrap_or_else(|| native_demand_error(error))))
     }
 }
@@ -2952,7 +2952,7 @@ impl DarwinRecoveryControl {
                     let task = self.direct.take().expect("physically completed direct task");
                     if let Err(error) = result.and_then(std::convert::identity) {
                         failure = Some(NativeMountError::from(
-                            task.original.native_read_meter().take_native_io_failure()
+                            (&task.original.state).take_native_io_failure()
                                 .unwrap_or_else(|| native_demand_error(error)),
                         ));
                     }
@@ -3216,7 +3216,7 @@ impl DarwinCallbackWork<'_> {
     }
 
     fn source_chunk(&self, chunk: crate::kernel::OwnedSourceChunk) -> DarwinBytes {
-        DarwinBytes { chunk: Some(chunk), meter: Arc::clone(self.native.native_read_meter()) }
+        DarwinBytes { chunk: Some(chunk), meter: Arc::clone((&self.native.state)) }
     }
 
     fn copy_bytes(&self, bytes: &[u8]) -> Result<crate::kernel::OwnedSourceChunk, i32> {
@@ -3374,11 +3374,11 @@ impl DarwinMountContext {
             Err((
                 cause,
                 self.source_original_work.as_ref()
-                    .map_or(crate::WorkCounters::UNCHARGED, |work| work.native_read_meter().lock().work),
+                    .map_or(crate::WorkCounters::UNCHARGED, |work| (&work.state).lock().work),
             ))
         } else if let Some(meter) = &active.expect("original source view was validated") {
             super::run_native_mount_handler_on_meter(meter, operation).map_err(|cause|
-                (cause, meter.native_read_meter().lock().work))
+                (cause, (&meter.state).lock().work))
         } else {
             let result = super::run_native_mount_handler(self.handler_budget, &self.handler_cancellation, operation);
             let completed = match &result { Ok(receipt) => receipt.work, Err(failure) => failure.1 };
@@ -3443,7 +3443,7 @@ impl DarwinCallbackWork<'_> {
     }
 
     fn check(&self) -> Result<(), i32> {
-        self.native.native_read_meter().lock().check().map_err(|error| self.native_error(error.into()))
+        (&self.native.state).lock().check().map_err(|error| self.native_error(error.into()))
     }
 
     fn charge(&self, delta: crate::WorkCounters) -> Result<(), i32> {
@@ -3477,7 +3477,7 @@ impl DarwinMountContext {
                 if darwin_handler_is_fatal(&cause) {
                     self.handler_failed.store(true, Ordering::Release);
                     let work = self.source_original_work.as_ref()
-                        .map_or(crate::WorkCounters::UNCHARGED, |work| work.native_read_meter().lock().work);
+                        .map_or(crate::WorkCounters::UNCHARGED, |work| (&work.state).lock().work);
                     let mut retained = self.handler_failure.lock().unwrap_or_else(PoisonError::into_inner);
                     if retained.first_fatal.is_none() {
                         retained.first_fatal = Some((cause, work));
@@ -4689,8 +4689,8 @@ mod tests {
         assert!(matches!(control.recover(temporary.path(), &denied),
             Err(NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
         assert!(!control.namespace_detach_confirmed(), "denied work is not an absence proof");
-        assert_eq!(denied.native_read_meter().lock().work.backend_read_operations, 0);
-        assert_eq!(denied.native_read_meter().lock().work.backend_write_operations, 0);
+        assert_eq!((&denied.state).lock().work.backend_read_operations, 0);
+        assert_eq!((&denied.state).lock().work.backend_write_operations, 0);
         let exact = DemandWork::new(crate::WorkBudget {
             backend_read_operations: 5, backend_write_operations: 1,
             ..crate::WorkBudget::UNBOUNDED
@@ -5147,17 +5147,17 @@ mod tests {
         let active = NativeMountWorkScope::new(Arc::clone(&context), &original)?;
         assert!(matches!(NativeMountWorkScope::new(Arc::clone(&context), &other),
             Err(NativeMountError::ControlPending)));
-        assert_eq!(other.native_read_meter().lock().work, crate::WorkCounters::UNCHARGED);
+        assert_eq!((&other.state).lock().work, crate::WorkCounters::UNCHARGED);
         let accepted_io_scope = active.try_clone_for_io()?;
         drop(active);
         assert!(context.startup_meter.lock().unwrap_or_else(PoisonError::into_inner)
-            .upgrade().is_some_and(|meter| Arc::ptr_eq(meter.native_read_meter(), original.native_read_meter())));
+            .upgrade().is_some_and(|meter| Arc::ptr_eq((&meter.state), (&original.state))));
         let root = CString::new("/")?;
         let mut output = std::mem::MaybeUninit::<NativeStat>::uninit();
         // SAFETY: the actual retained context and output remain alive for this SDK callback.
         assert_eq!(unsafe { acyclic_fs_darwin_mount_getattr(Arc::as_ptr(&context) as usize,
             root.as_ptr(), 0, output.as_mut_ptr()) }, 0);
-        assert!(original.native_read_meter().lock().work.items_examined > 0);
+        assert!((&original.state).lock().work.items_examined > 0);
         assert_eq!(context.handler_failure.lock().unwrap_or_else(PoisonError::into_inner)
             .completed_future_request_work, crate::WorkCounters::UNCHARGED);
         drop(accepted_io_scope);

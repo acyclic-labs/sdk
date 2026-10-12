@@ -33,7 +33,7 @@ impl FuseProjection {
             };
             let errno = native_callback_errno(&cause);
             self.core
-                .retain_handler_failure((cause, work.native_read_meter().lock().work));
+                .retain_handler_failure((cause, (&work.state).lock().work));
             return Err(errno.into());
         }
         result

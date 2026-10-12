@@ -168,7 +168,7 @@ where
                 }
                 require_allocation(journal, &allocation)?;
                 drop(manifest);
-                output_custody.substitute(0)?;
+                output_custody.resize(0)?;
                 output_custody.absorb(&mut intent_custody)?;
                 intent
             } else {
@@ -257,7 +257,7 @@ where
             let journal = {
                 let selected = &generations;
                 let namespace_root = &manifest.options.root;
-                let mut before_effect = |_write| async move {
+                let mut before_effect = || async move {
                     owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
                     for (binding, (_, volume_work)) in bindings.iter().zip(selected) {
                         verify_binding(owner, binding, volume_work)?;

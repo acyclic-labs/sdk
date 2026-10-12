@@ -73,8 +73,8 @@ where
     O: AsyncObjectStore + 'static,
 {
     pub(super) fn require_original(&self, work: &NativeMaterializationWork) -> Result<()> {
-        if !self.custody.matches_work(work)
-            || !self.view.preparation._custody.matches_work(work)
+        if !self.custody.work().shares_allocation_context(work)
+            || !self.view.preparation._custody.work().shares_allocation_context(work)
             || !self.owner.native_shared_work_matches(work)
             || self.owner.task_binding()
                 != (

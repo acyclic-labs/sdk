@@ -1286,7 +1286,7 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
         cancellation: &crate::CancellationToken,
     ) -> Result<bool, (WorkspaceContextError<Self::Error>, Option<crate::NativeAllocation>)> {
         let mut replacement = ContextOwnedRecord::native(replacement);
-        if !replacement.allocation.as_ref().expect("native record custody").matches_work(original) {
+        if !replacement.allocation.as_ref().expect("native record custody").work().shares_allocation_context(original) {
             return Err((WorkspaceContextError::IncompatibleState, None));
         }
         let required = context_native_backing(&replacement.context)

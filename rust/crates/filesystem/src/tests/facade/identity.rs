@@ -41,7 +41,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
     let current = current.0.ok_or("mutated identity disappeared")?;
     assert_eq!(current.file_id, source.file_id);
     assert_ne!(current.payload, source.payload);
-    assert!(candidate.root.same_original_scope(original.native_read_meter()));
+    assert!(candidate.root.same_original_scope((&original.state)));
     assert_eq!(candidate.base_file_table, checkout.root.file_table);
     assert_eq!(checkout.lookup_no_follow(
         &path, WorkBudget::UNBOUNDED, &cancellation,

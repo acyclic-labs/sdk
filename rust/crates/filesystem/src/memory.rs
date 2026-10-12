@@ -1100,7 +1100,7 @@ impl<'a> MemoryObjectAccounting<'a> {
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?;
         match &mut custody {
             #[cfg(not(target_arch = "wasm32"))]
-            KernelOwnedAllocation::NativeOriginal(custody) => custody.resize_retained(actual)?,
+            KernelOwnedAllocation::NativeOriginal(custody) => custody.resize(actual)?,
             KernelOwnedAllocation::Standalone => if actual > requested {
                 self.charge(WorkCounters { peak_allocation_bytes: actual, ..WorkCounters::default() })?;
             },

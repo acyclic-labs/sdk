@@ -812,7 +812,7 @@ fn native_corrupt_log(
     let mut allocation = paths.allocation.take().expect("native record paths");
     let current = paths.current;
     drop((paths.directory, paths.previous, paths.temporary, paths.lock));
-    allocation.substitute(current.capacity() as u64)?;
+    allocation.resize(current.capacity() as u64)?;
     Ok(LocalCoreStateStoreError::LazyWork(
         crate::LazyWorkspaceError::NativeRecordCorrupt(current, Some(allocation)),
     ))

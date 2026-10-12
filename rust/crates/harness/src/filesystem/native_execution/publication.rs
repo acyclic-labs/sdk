@@ -158,7 +158,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> NativePubl
         cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<bool> {
         let Error::NativeReservation { source, custody, .. } = error else { return Ok(false); };
-        if !custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
+        if !custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work)) {
             return Err(boundary(crate::wire::ErrorCode::Invalid,
                 "native cleanup differs from the original operation and resource",
             ));
@@ -188,7 +188,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> NativePubl
         cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<()> {
         let slot = self.failure_slot.take().expect("successful reservation retains its prepaid failure slot");
-        let result = if !slot.1.matches_work(work) {
+        let result = if !slot.1.work().shares_allocation_context(work) {
             Err(NativePublicationReservationFailure {
                 error: boundary(crate::wire::ErrorCode::Invalid, "native cleanup differs from the original operation and resource"),
                 cleanup_error: None, work: work.receipt(), cleanup: Some(self), unwitnessed_workspace: None,
