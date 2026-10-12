@@ -413,7 +413,7 @@ impl<S> StagedObjects<S> {
             }
             let length = usize::try_from(spilled)
                 .map_err(|_| ObjectFailure::before_work(crate::WorkError::Overflow.into()))?;
-            let copy = native.map(|native| native.reserve_copy(spilled)).transpose()
+            let copy = native.map(|native| native.reserve_work(crate::WorkCounters { bytes_copied: spilled, ..crate::WorkCounters::UNCHARGED })).transpose()
                 .map_err(|error| ObjectFailure::before_work(error.into()))?;
             let (buffer_control, mut buffer) = staged_vector(length, native)
                 .map_err(ObjectFailure::before_work)?;
@@ -421,7 +421,7 @@ impl<S> StagedObjects<S> {
                 buffer.extend_from_slice(bytes);
             }
             if let Some(copy) = copy {
-                copy.record(spilled).map_err(|error| ObjectFailure::before_work(error.into()))?;
+                { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: spilled, ..crate::WorkCounters::UNCHARGED }) }.map_err(|error| ObjectFailure::before_work(error.into()))?;
             }
             if let Some(native) = native {
                 native.admit(WorkCounters { object_bytes_written: spilled, ..WorkCounters::default() })
@@ -1291,6 +1291,7 @@ mod tests {
             acyclic_objects::v1::local::LocalObjects::open(
                 directory.join("objects"),
                 acyclic_objects::LocalObjectsLimits::default(),
+                None,
             )
             .await?,
         );
@@ -1317,6 +1318,7 @@ mod tests {
         let reopened = acyclic_objects::v1::local::LocalObjects::open(
             directory.join("objects"),
             acyclic_objects::LocalObjectsLimits::default(),
+            None,
         )
         .await?;
         let bucket = acyclic_objects::v1::wire::BucketRef {

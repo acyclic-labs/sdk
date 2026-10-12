@@ -221,13 +221,13 @@ impl BrowserStream {
     ) -> Result<IdempotencyOutcome, StreamError> {
         match &mut command {
             Command::Append(request) => {
-                memory::provider_result(memory::validate_records(&request.records, &memory::MemoryObserver::default()))?;
+                memory::provider_result(memory::validate_records(&request.records, None))?;
                 memory::validate_append_size(request)?;
             }
             Command::Fork(request) => memory::validate_fork_size(request)?,
             Command::Commit(request) => {
-                memory::provider_result(memory::normalize_commit(request, &memory::MemoryObserver::default()))?;
-                memory::provider_result(memory::validate_commit_shape(request, &memory::MemoryObserver::default()))?;
+                memory::provider_result(memory::normalize_commit(request, None))?;
+                memory::provider_result(memory::validate_commit_shape(request, None))?;
             }
         }
         let journal = crate::wire_codec::CanonicalWire::Journal(&command);

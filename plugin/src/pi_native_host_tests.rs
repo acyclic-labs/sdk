@@ -4,23 +4,20 @@ use crate::pi_native::{PiNativeHostRuntime, PI_NATIVE_VERSION};
 use acyclic_fs::CancellationToken;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
-fn native_host(fixture: &Fixture, replacement: Option<PiOwnerConfig>) -> acyclic_harness::Result<Arc<PiNativeCommandHost>> {
-    let work = acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &CancellationToken::new())
-        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
-    let owner = match replacement {
-        Some(owner) => owner,
-        None => PiOwnerConfig::load_with_native_work(&fixture.private_root, &fixture.relative_session, &work)?,
-    };
+fn native_host(fixture: &Fixture) -> acyclic_harness::Result<Arc<PiNativeCommandHost>> {
+    let work = crate::pi_fork::tests::work();
+    let owner = PiOwnerConfig::load_with_native_work(&fixture.private_root, &fixture.relative_session, &work)?;
     PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(), &fixture.resources, owner, &work)
 }
 
 #[tokio::test]
 async fn native_host_rejects_missing_bootstrap_and_replacement_owner() {
     let fixture = Fixture::new(None).await;
-    assert!(native_host(&fixture, None).is_err());
+    assert!(native_host(&fixture).is_err());
     let replacement = PiOwnerConfig::new(fixture.owner.policy(), None, &crate::pi_fork::tests::work()).unwrap();
-    assert!(fixture.runtime.verify_owner(&replacement).is_err());
-    assert!(native_host(&fixture, Some(replacement)).is_err());
+    assert!(fixture.runtime.verify_owner_with_native_work(&replacement, &crate::pi_fork::tests::work()).is_err());
+    assert!(PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
+        fixture.stream.clone(), &fixture.resources, replacement, &crate::pi_fork::tests::work()).is_err());
 }
 
 fn required_path(name: &str) -> PathBuf {
@@ -41,17 +38,17 @@ fn installed_runtime() -> PiNativeHostRuntime {
         executable_prefix: vec![cli.to_str().unwrap().into()],
         extension: required_path("ACYCLIC_PI_TEST_EXTENSION"), provider_extension: None,
         environment: std::env::vars().collect::<BTreeMap<_, _>>() }
-        .sanitize().unwrap()
+        .sanitize(&acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap()).unwrap()
 }
 
 #[tokio::test]
 #[ignore = "requires the installed Pi 1.1.0 node, CLI and harness extension artifacts"]
 async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handles() {
     let fixture = Fixture::new(Some(installed_runtime())).await;
-    let host = native_host(&fixture, None).unwrap();
+    let host = native_host(&fixture).unwrap();
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
-    let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
-        &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
+    let prepared = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence,
+        &plan, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(),
         CancellationToken::new()).await.unwrap().unwrap();
     let task = prepared.binding.task_id;
     let expected_binding = prepared.binding.clone();
@@ -86,10 +83,10 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
 #[ignore = "requires the installed Pi 1.1.0 node, CLI and harness extension artifacts"]
 async fn actual_registration_denial_never_allocates_a_native_entry() {
     let fixture = Fixture::new(Some(installed_runtime())).await;
-    let host = native_host(&fixture, None).unwrap();
+    let host = native_host(&fixture).unwrap();
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
-    let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
-        &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
+    let prepared = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence,
+        &plan, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(),
         CancellationToken::new()).await.unwrap().unwrap();
     let task = prepared.binding.task_id;
     let root_key = prepared.binding.project_volumes.keys().next().unwrap();
@@ -98,7 +95,7 @@ async fn actual_registration_denial_never_allocates_a_native_entry() {
     let cancellation = CancellationToken::new();
     let denied = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap();
     let error = host.register_cold_locator_with_native_work(task, plan.commit.caller,
-        &plan.commit.sdk_operation, root_key, fixture.source.clone(), &denied).await.err().unwrap();
+        &plan.commit.sdk_operation, root_key, fixture.root_handle.workspace.clone(), &denied).await.err().unwrap();
     assert!(matches!(error, acyclic_harness::Error::NativeWork {
         cause: acyclic_fs::NativeTreeMaterializationError::Work(
             acyclic_fs::WorkError::BudgetExceeded { counter: "allocation_operations", .. }), ..
@@ -120,21 +117,21 @@ async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
         scheduler::{LeaseFence, ResourceSnapshot}};
     let fixture = Fixture::new(Some(installed_runtime())).await;
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
-    let original = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
-        &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
+    let original = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence,
+        &plan, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(),
         CancellationToken::new()).await.unwrap().unwrap();
     let task = original.binding.task_id;
-    let host = native_host(&fixture, None).unwrap();
+    let host = native_host(&fixture).unwrap();
     let root_key = original.binding.project_volumes.keys().next().unwrap().clone();
     let query_cancellation = CancellationToken::new();
     let query_work = acyclic_fs::NativeMaterializationWork::new(
         crate::pi_root_provider::allocation_budget(), &query_cancellation,
     ).unwrap();
     host.register_cold_locator_with_native_work(task, plan.commit.caller,
-        &plan.commit.sdk_operation, &root_key, fixture.source.clone(), &query_work).await.unwrap();
+        &plan.commit.sdk_operation, &root_key, fixture.root_handle.workspace.clone(), &query_work).await.unwrap();
     let replacement_operation = format!("{}-replacement", plan.commit.sdk_operation);
     assert!(host.register_cold_locator_with_native_work(task, plan.commit.caller,
-        &replacement_operation, &root_key, fixture.source.clone(), &query_work).await.is_err());
+        &replacement_operation, &root_key, fixture.root_handle.workspace.clone(), &query_work).await.is_err());
     let worker = Worker { id: "pi-cold-native-owner".into(),
         available: ResourceSnapshot::default(), labels: BTreeMap::new() };
     let mut attempt = fixture.runtime.runtime.run_operation_with_native_work(&worker, task,

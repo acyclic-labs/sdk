@@ -47,7 +47,7 @@ pub use lazy::{LazyMountSource, NativeMountSourceWatchOwner};
 
 mod customer;
 pub use customer::{
-    LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication, NativeWorkingSet, NativeMountDrainProof,
+    LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication, NativeWorkingSet, NativeMountDrainProof, NativeMountPublicationFailure,
 };
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -2318,7 +2318,10 @@ impl NativeRecoveryWorker {
         // recovery. An uninterruptible native task keeps its actual fence.
         while self.state.control.controls_pending() {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.state.control.retire_controls_with_work(&self.original)
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                { self.state.control.retire_controls(&self.original) }
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                { self.state.control.retire_controls_with_work(&self.original) }
             })) {
                 Ok(Ok(())) if !self.state.control.controls_pending() => break,
                 Ok(Err(error)) => {
@@ -2423,7 +2426,7 @@ fn recover_driver_with_work(
     disposable: bool, work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    { let _ = disposable; control.recover_measured(destination, &work) }
+    { let _ = disposable; control.recover(destination, work) }
     #[cfg(target_os = "windows")]
     { control.recover_measured(destination, disposable, &mut &*work) }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -2891,7 +2894,7 @@ impl NativeMountSession {
     ) -> Result<(), NativeMountError> {
         let driver = self.driver.as_ref()
             .ok_or_else(|| NativeMountError::Io(std::io::ErrorKind::NotConnected.into()))?;
-        with_driver!(driver, session, session.revalidate_with_meter(work), session.revalidate(work), Err(NativeMountError::UnsupportedTarget))
+        with_driver!(driver, session, session.revalidate(work), Err(NativeMountError::UnsupportedTarget))
     }
 
     /// Drops the kernel's cached entry/attributes for one mount-relative path (leading `/` optional).
@@ -2905,16 +2908,15 @@ impl NativeMountSession {
     pub fn revalidate(&self) -> Result<(), NativeMountError> {
         let driver = self.driver.as_ref()
             .ok_or_else(|| NativeMountError::Driver("session is stopped".to_owned()))?;
-        with_driver!(driver, session, session.revalidate(), session.revalidate(&NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| projfs::detach_work_error(cause))?), Ok(()))
-    }
-
-    /// Takes the operation of every request the FUSE session served so far.
-    #[cfg(all(test, target_os = "linux"))]
-    pub(crate) fn take_fuse_requests(&self) -> Vec<&'static str> {
-        match &self.driver {
-            Some(DriverSession::Fuse(session)) => session.take_requests(),
-            None => Vec::new(),
-        }
+        let work = NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).map_err(|(cause, _)| {
+            #[cfg(windows)]
+            { projfs::detach_work_error(cause) }
+            #[cfg(not(windows))]
+            { NativeMountError::from(cause) }
+        })?;
+        with_driver!(driver, session, session.revalidate(&work), Ok(()))
     }
 
     /// Detaches the kernel namespace and ends the driver session; returns whether a live session was actually stopped.
@@ -2972,10 +2974,10 @@ impl NativeMountSession {
         let result = (|| {
             let mut changed = false;
             if let Some(driver) = self.driver.as_mut() {
-                match &work {
-                    NativeSessionStopWork::Meter(meter) => with_driver!(&mut *driver, session, session.stop_with_meter(meter), session.stop(meter.cancellation()), Err(NativeMountError::UnsupportedTarget))?,
-                    NativeSessionStopWork::AcceptedWait(wait) => with_driver!(&mut *driver, session, session.stop_with_cleanup_wait(wait), session.stop(wait), Err(NativeMountError::UnsupportedTarget))?,
-                }
+                with_driver!(&mut *driver, session, session.stop(&work), session.stop(match &work {
+                    NativeSessionStopWork::Meter(meter) => meter.cancellation(),
+                    NativeSessionStopWork::AcceptedWait(wait) => wait,
+                }), Err(NativeMountError::UnsupportedTarget))?;
                 self.namespace_detach_confirmed = with_driver!(&*driver, session, session.namespace_detach_confirmed(), false);
                 // Copy settled callback totals and faults before dropping the driver context.
                 self.completed_future_callback_work = with_driver!(&*driver, session, session.completed_callback_work(), crate::WorkCounters::UNCHARGED);
@@ -3196,7 +3198,7 @@ fn start_native_mount_prepared_with_meter(
     }
 }
 
-/// Starts a native projection mounted directly over an existing, non-empty directory — its contents are shadowed for the mount's duration and reappear once the returned session stops.
+/// Starts a native projection mounted directly over an existing, non-empty directory â€” its contents are shadowed for the mount's duration and reappear once the returned session stops.
 pub fn mount_native_over_existing(
     request: NativeMountRequest,
     source: Arc<dyn MountFilesystem>,
@@ -3654,10 +3656,7 @@ impl MountDestinationGuard {
         let registry = self.registry_file.as_ref().ok_or_else(invalid)?;
         let name = self.cleanup_name.as_ref().ok_or_else(invalid)?;
         let credit = self.birth_cleanup.as_mut().ok_or_else(invalid)?;
-        let loan = match wait {
-            Some(wait) => credit.cleanup_loan(wait),
-            None => credit.accepted_cleanup_loan(),
-        };
+        let loan = credit.loan(wait);
         let mut work = NativeFenceReleaseWork { loan: &loan, pending: None };
         // A contended registry is a real pending control. Do not spend an
         // unbounded sequence of new lock attempts after cancellation.
@@ -3869,8 +3868,7 @@ mod tests {
     };
     use crate::path::PortablePath;
     use crate::{
-        ByteRange, CancellationToken, Fs, VolumeId, WatchBatch, WatchChange, WatchEpoch,
-        WatchSequence, WorkBudget,
+        ByteRange, CancellationToken, Fs, VolumeId, WatchBatch, WatchChange, WorkBudget,
     };
     use bytes::Bytes;
     use std::time::{Duration, Instant};
@@ -4593,9 +4591,9 @@ mod tests {
         let watch = capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(1),
-                next_sequence: WatchSequence::from_u64(2),
+                epoch: 1,
+                first_sequence: 1,
+                next_sequence: 2,
                 changes: vec![WatchChange::Created(third.clone())],
                 original: Default::default(),
             },
@@ -4605,6 +4603,7 @@ mod tests {
                 maximum_paths: 1,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4651,9 +4650,9 @@ mod tests {
         let watch = capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(2),
-                next_sequence: WatchSequence::from_u64(3),
+                epoch: 1,
+                first_sequence: 2,
+                next_sequence: 3,
                 changes: vec![WatchChange::Created(existing.clone())],
                 original: Default::default(),
             },
@@ -4663,6 +4662,7 @@ mod tests {
                 maximum_paths: 1,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4705,6 +4705,7 @@ mod tests {
                 maximum_paths: 2,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4858,9 +4859,9 @@ mod tests {
         let watch = capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(7),
-                first_sequence: WatchSequence::from_u64(11),
-                next_sequence: WatchSequence::from_u64(12),
+                epoch: 7,
+                first_sequence: 11,
+                next_sequence: 12,
                 changes: vec![WatchChange::Renamed {
                     from: file.clone(),
                     to: renamed.clone(),
@@ -4868,11 +4869,12 @@ mod tests {
                 original: Default::default(),
             },
             &capture_options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?;
-        assert_eq!(watch.value.next_sequence.get(), 12);
+        assert_eq!(watch.value.next_sequence, 12);
         let old = checkout
             .lookup_no_follow(&file, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
@@ -4898,9 +4900,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(7),
-                first_sequence: WatchSequence::from_u64(12),
-                next_sequence: WatchSequence::from_u64(14),
+                epoch: 7,
+                first_sequence: 12,
+                next_sequence: 14,
                 changes: vec![
                     WatchChange::Renamed {
                         from: renamed.clone(),
@@ -4911,6 +4913,7 @@ mod tests {
                 original: Default::default(),
             },
             &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4949,13 +4952,14 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(7),
-                first_sequence: WatchSequence::from_u64(14),
-                next_sequence: WatchSequence::from_u64(15),
+                epoch: 7,
+                first_sequence: 14,
+                next_sequence: 15,
                 changes: vec![WatchChange::Created(renamed.clone())],
                 original: Default::default(),
             },
             &capture_options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4975,9 +4979,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(7),
-                first_sequence: WatchSequence::from_u64(15),
-                next_sequence: WatchSequence::from_u64(17),
+                epoch: 7,
+                first_sequence: 15,
+                next_sequence: 17,
                 changes: vec![
                     WatchChange::Created(renamed.clone()),
                     WatchChange::Modified(renamed.clone()),
@@ -4985,6 +4989,7 @@ mod tests {
                 original: Default::default(),
             },
             &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5000,6 +5005,7 @@ mod tests {
         let dirty_baseline = capture_baseline(
             &mut checkout,
             &CaptureOptions { maximum_paths: 16, ..capture_options.clone() },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5030,6 +5036,7 @@ mod tests {
         let baseline = capture_baseline(
             &mut checkout,
             &CaptureOptions { maximum_paths: 16, ..capture_options.clone() },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5066,9 +5073,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(8),
-                first_sequence: WatchSequence::from_u64(0),
-                next_sequence: WatchSequence::from_u64(1),
+                epoch: 8,
+                first_sequence: 0,
+                next_sequence: 1,
                 changes: vec![WatchChange::Renamed {
                     from: missing,
                     to: arrived.clone(),
@@ -5076,6 +5083,7 @@ mod tests {
                 original: Default::default(),
             },
             &capture_options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5115,9 +5123,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(8),
-                first_sequence: WatchSequence::from_u64(1),
-                next_sequence: WatchSequence::from_u64(3),
+                epoch: 8,
+                first_sequence: 1,
+                next_sequence: 3,
                 changes: vec![
                     WatchChange::Created(temporary_name.clone()),
                     WatchChange::Renamed {
@@ -5128,6 +5136,7 @@ mod tests {
                 original: Default::default(),
             },
             &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5151,9 +5160,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(8),
-                first_sequence: WatchSequence::from_u64(3),
-                next_sequence: WatchSequence::from_u64(5),
+                epoch: 8,
+                first_sequence: 3,
+                next_sequence: 5,
                 changes: vec![
                     WatchChange::Created(created_and_modified.clone()),
                     WatchChange::Modified(created_and_modified.clone()),
@@ -5161,6 +5170,7 @@ mod tests {
                 original: Default::default(),
             },
             &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5228,6 +5238,7 @@ mod tests {
         capture_baseline(
             &mut checkout,
             &options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5239,13 +5250,14 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(0),
-                next_sequence: WatchSequence::from_u64(1),
+                epoch: 1,
+                first_sequence: 0,
+                next_sequence: 1,
                 changes: vec![WatchChange::Created(parent.clone())],
                 original: Default::default(),
             },
             &options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5263,9 +5275,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(1),
-                next_sequence: WatchSequence::from_u64(3),
+                epoch: 1,
+                first_sequence: 1,
+                next_sequence: 3,
                 changes: vec![
                     WatchChange::Removed(parent.clone()),
                     WatchChange::Removed(child.clone()),
@@ -5273,6 +5285,7 @@ mod tests {
                 original: Default::default(),
             },
             &options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5313,6 +5326,7 @@ mod tests {
         capture_baseline(
             &mut checkout,
             &options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5328,9 +5342,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(0),
-                next_sequence: WatchSequence::from_u64(6),
+                epoch: 1,
+                first_sequence: 0,
+                next_sequence: 6,
                 changes: vec![
                     WatchChange::Created(child.clone()),
                     WatchChange::MetadataChanged(child.clone()),
@@ -5342,6 +5356,7 @@ mod tests {
                 original: Default::default(),
             },
             &options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5396,9 +5411,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(0),
-                next_sequence: WatchSequence::from_u64(2),
+                epoch: 1,
+                first_sequence: 0,
+                next_sequence: 2,
                 changes: vec![
                     WatchChange::Created(path.clone()),
                     WatchChange::Modified(path.clone()),
@@ -5411,6 +5426,7 @@ mod tests {
                 maximum_paths: 16,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5519,6 +5535,7 @@ mod tests {
                 maximum_paths: 2,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )

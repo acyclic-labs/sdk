@@ -43,11 +43,10 @@ async fn prepare_service(data: &Path, reserve: bool) -> (crate::service_process:
     .await
     .unwrap();
     let admission = runtime
-        .admit_root_with_native_work(request.binding.clone(), request.root.clone(), command.0, &native_work)
+        .admit_root(&request.binding, &request.root, &command.0, &native_work)
         .await
         .unwrap();
-    drop(admission.0);
-    drop(admission.1);
+    drop(admission);
     drop(command.1);
     if reserve {
         let WorkPull::Claimed(lease) = runtime
@@ -66,7 +65,7 @@ async fn prepare_service(data: &Path, reserve: bool) -> (crate::service_process:
         runtime
             .runtime
             .task_host()
-            .start_task(&lease)
+            .start_task(&lease, None)
             .await
             .unwrap();
     }
@@ -392,10 +391,8 @@ async fn pi_original_root_registration_precedes_selected_allocation_and_reuses_a
     assert!(service.fs.open_workspace_with_native_work(
         &scratch_name.0, &work, work.cancellation(),
     ).await.is_ok());
-    drop(scratch_name.0);
-    drop(scratch_name.1);
-    drop(original_scratch.0);
-    drop(original_scratch.1);
+    drop(scratch_name);
+    drop(original_scratch);
     assert_eq!(service.shared_roots.live_roots().await, 1);
     let (_, repeated) = service.start_session("pi-registered-root", "pi", project.clone(), json!({}), &mut None).await.unwrap();
     assert_eq!(status.0, repeated.0);

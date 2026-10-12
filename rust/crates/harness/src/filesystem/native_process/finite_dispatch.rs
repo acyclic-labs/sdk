@@ -23,19 +23,6 @@ struct ObservedWrite<'a> {
     work: &'a WorkCounters,
 }
 
-pub(super) fn dispatch_payload(
-    dispatch: EffectDispatch, work: &NativeMaterializationWork,
-) -> Result<(EffectDispatch, NativeAllocation)> {
-    let custody = {
-            let bytes = checked_add(checked_add(dispatch.provider.capacity() as u64,
-                dispatch.effect_kind.capacity() as u64)?, dispatch.request.logical_owned_bytes()?)?;
-            work.retain_owned(bytes)?
-        };
-    Ok((dispatch, custody))
-}
-
-
-
 pub(super) fn require_finite(work: &NativeMaterializationWork) -> Result<()> {
     let remaining = work.remaining()?;
     if !remaining.has_finite_allowances() {
@@ -48,17 +35,12 @@ pub(super) fn require_finite(work: &NativeMaterializationWork) -> Result<()> {
 }
 
 
-fn checked_add(left: u64, right: u64) -> Result<u64> {
-    left.checked_add(right).ok_or(receipt_error("native dispatch custody overflows"))
-}
-
-
 fn observed_matches(
     observed: Option<&NativeObservation>, receipt: &ObservedWrite<'_>,
     work: &NativeMaterializationWork,
 ) -> Result<bool> {
     let Some(observed) = observed else { return Ok(false); };
-    Ok(examine(work, || observed.effect.provider == receipt.effect.provider
+    if !(examine(work, || observed.effect.provider == receipt.effect.provider
             && observed.effect.effect_id == receipt.effect.effect_id
             && observed.effect.attempt_id == receipt.effect.attempt_id
             && observed.effect.request_digest == receipt.effect.request_digest
@@ -68,15 +50,8 @@ fn observed_matches(
         && examine(work, || &observed.publication_failure == receipt.publication_failure)?
         && examine(work, || &observed.invocation_failure == receipt.invocation_failure)?
         && examine(work, || &observed.work == receipt.work)?
-        && published_matches(&observed.published, receipt.published, work)?)
-}
-
-fn published_matches(
-    observed: &[NativeProcessPublishedVolume], expected: &[NativeProcessPublishedVolume],
-    work: &NativeMaterializationWork,
-) -> Result<bool> {
-    if !examine(work, || observed.len() == expected.len())? { return Ok(false); }
-    for (actual, expected) in observed.iter().zip(expected) {
+        && examine(work, || observed.published.len() == receipt.published.len())?) { return Ok(false); }
+    for (actual, expected) in observed.published.iter().zip(receipt.published) {
         if !examine(work, || actual == expected)? { return Ok(false); }
     }
     Ok(true)
@@ -98,18 +73,18 @@ fn require_same_launch(
     Ok(())
 }
 
-impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
+impl<P: StreamProvider> NativeProcessProvider<P> {
     pub(super) async fn validate_dispatch(
         &self, dispatch: &EffectDispatch, work: &NativeMaterializationWork,
     ) -> Result<()> {
         check(work)?;
         self.owner.verify_with_native_work(false, work).await?;
         let mut io = crate::store::history::native_work_io(work)?;
-        let cursor = self.history.pin_with_work(0,
+        let cursor = self.history.pin(0,
             Some(&mut io)).await?;
-        let state = self.history.effect_with_work(&cursor, self.effect_id,
+        let state = self.history.effect(&cursor, self.effect_id,
             self.authority.history_limits,
-            Some(&mut io)).await?
+            Some(&mut io)).await.map(|state| state.map(|(state, _)| state))?
             .ok_or(receipt_error("native command has no committed effect admission"))?;
         if !examine(work, || state.status == EffectStatus::Dispatched)?
             || !examine(work, || state.attempts.last() == Some(&dispatch.attempt_id))?
@@ -212,7 +187,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             };
             if !append_receipt(&owner, &path, 1,
                 &Receipt::<&LaunchReceipt<'_>, _>::Observed(&observed), JournalWrite::Settlement, work).await? {
-                let retained = receipt_observation::read(&owner, &path, work).await?
+                let (launch, observation, _custody) = receipt_observation::read(&owner, &path, work).await?
                     .ok_or(receipt_error("native observed receipt is missing"))?;
                 let (task, fence) = owner.task_binding();
                 let expected = LaunchReceipt {
@@ -220,10 +195,10 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                     conversation: Cow::Borrowed(authority.verifier.audience()),
                     task, command, fence: Cow::Borrowed(fence), approval, approval_digest,
                 };
-                require_same_launch(&retained.launch, &expected, work)?;
-                receipt_observation::authenticate_core_launch(history.as_ref(), &retained.launch,
+                require_same_launch(&launch, &expected, work)?;
+                receipt_observation::authenticate_core_launch(history.as_ref(), &launch,
                     &authority, work).await?;
-                if !observed_matches(retained.observed.as_ref(), &observed, work)? {
+                if !observed_matches(observation.as_ref(), &observed, work)? {
                     return Err(receipt_error("native observed outcome was not retained"));
                 }
             }

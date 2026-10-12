@@ -162,7 +162,7 @@ impl super::native::NativeSession {
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let binding = self.caller_binding(caller).await?;
         let issuer = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone());
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None)?;
         let fence = LeaseFence::from(&lease.reservation);
         let owner = self.runtime.task_host().journal_owner_with_native_work(caller, &fence, &work)
             .await?.into_native_shared(&work)?;
@@ -185,10 +185,9 @@ impl super::native::NativeSession {
             }
             let (ticket, _) = approvals.read(configured.approval).await?
                 .ok_or_else(|| Error::NotFound("native command approval".into()))?;
-            let scope = issuer.root_for_agent(binding.scope.agent()
-                .ok_or_else(|| Error::Invalid("native command caller agent".into()))?,
-                "native-command-responder", acyclic_harness::Capabilities::new([
-                    "interaction:resolve".to_owned(), ticket.responder_grant()]));
+            let scope = issuer.issue("native-command-responder", &acyclic_harness::Capabilities::new([
+                    "interaction:resolve".to_owned(), ticket.responder_grant()]), Some(binding.scope.agent()
+                .ok_or_else(|| Error::Invalid("native command caller agent".into()))?), None, &mut None).expect("scope proof");
             let receipt = approvals.resolve_approval(acyclic_harness::OperationId::new(), scope,
                 configured.approval, 1, approved, None).await?;
             return Ok(format!("command-approval-json={}\n", serde_json::to_string(&receipt)
@@ -230,7 +229,7 @@ impl super::native::NativeSession {
         };
         let provider = NativeProcessProvider::new(owner.clone(), operation, &configured.plan,
             view, configured.approval, authority, &work)?.await?.into_arc_with_native_work(&work)?;
-        let mut registry = EffectRegistry::new_with_native_work(&work)?;
+        let mut registry = EffectRegistry::new(Some(&work))?;
         registry.register_with_native_work(provider, &work)?;
         let (issuer, mut custody) = issuer.clone_with_native_work(&work)?;
         let (scope, mut scope_custody) = binding.scope.clone_with_native_work(&work)?;

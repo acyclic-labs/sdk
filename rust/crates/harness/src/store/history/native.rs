@@ -263,9 +263,9 @@ impl HistoryIo for NativeHistoryIo<'_> {
     }
     fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
         let io = crate::filesystem::PreparationIo::from_native_work(self.work)?;
-        let decoded = io.decode_preparation::<serde_json::Value>(bytes, crate::wire::ErrorCode::Storage)?;
+        let decoded = io.decode(std::marker::PhantomData::<serde_json::Value>, bytes, crate::wire::ErrorCode::Storage)?;
         let retained = io.owned_bytes()?;
-        let value = decoded.into_retained();
+        let value = crate::filesystem::retain_decoded(decoded);
         let incoming = io.into_native_custody(retained)?;
         let held = incoming.bytes();
         self.absorb_native_custody(incoming)?;

@@ -127,11 +127,9 @@ impl GrpcProvider {
         Self::connect_auth(uri, tls, BearerAuth::default()).await
     }
 
-    /// Connects with mandatory mutual TLS and an explicit opaque account bearer applied to every unary, watch, inspection, and operation polling request.
+    /// Connects with mandatory mutual TLS and an explicit account bearer.
     pub async fn connect_with_bearer(
-        uri: &str,
-        tls: Tls<'_>,
-        token: &str,
+        uri: &str, tls: Tls<'_>, token: &str,
     ) -> Result<Self, ProviderError> {
         Self::connect_auth(uri, tls, BearerAuth::new(token)?).await
     }
@@ -163,17 +161,14 @@ impl GrpcProvider {
         Ok(Self::grpc_with_auth(channel, auth))
     }
 
-    /// Connects to an owner-confined local Unix socket.
-    #[cfg(target_os = "linux")]
+    /// Connects to an owner-confined Linux socket.
     pub async fn connect_local(path: &std::path::Path) -> Result<Self, ProviderError> {
         Self::connect_local_auth(path, BearerAuth::default()).await
     }
 
-    /// Connects to an owner-confined socket with an explicit opaque account bearer.
-    #[cfg(target_os = "linux")]
+    /// Connects to an owner-confined Linux socket with an explicit account bearer.
     pub async fn connect_local_with_bearer(
-        path: &std::path::Path,
-        token: &str,
+        path: &std::path::Path, token: &str,
     ) -> Result<Self, ProviderError> {
         Self::connect_local_auth(path, BearerAuth::new(token)?).await
     }
@@ -221,21 +216,6 @@ impl GrpcProvider {
         Ok(Self::grpc_with_auth(channel, auth))
     }
 
-    /// Reports that Unix sockets are unavailable on this platform.
-    #[cfg(not(target_os = "linux"))]
-    pub async fn connect_local(path: &std::path::Path) -> Result<Self, ProviderError> {
-        Self::connect_local_auth(path, BearerAuth::default()).await
-    }
-
-    /// Reports that Unix sockets are unavailable on this platform.
-    #[cfg(not(target_os = "linux"))]
-    pub async fn connect_local_with_bearer(
-        path: &std::path::Path,
-        token: &str,
-    ) -> Result<Self, ProviderError> {
-        Self::connect_local_auth(path, BearerAuth::new(token)?).await
-    }
-
     #[cfg(not(target_os = "linux"))]
     async fn connect_local_auth(
         _path: &std::path::Path,
@@ -269,8 +249,7 @@ impl MachinesProvider for GrpcProvider {
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
         obs::finish(
             async {
-                let response = self
-                    .client()
+                let response = self.client.clone()
                     .qualify_image(wire::QualifyImageRequest {
                         protocol: Some(protocol()),
                         image: Some(encode_image(&image)?),
@@ -293,8 +272,7 @@ impl MachinesProvider for GrpcProvider {
         obs::finish(
             async {
                 let key = request.idempotency_key;
-                let response = self
-                    .client()
+                let response = self.client.clone()
                     .create(wire::CreateMachineRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
@@ -314,8 +292,8 @@ impl MachinesProvider for GrpcProvider {
                 let operation = decode_operation(response.operation.as_ref())?;
                 let machine = decode_machine(response.machine.as_ref())?;
                 let _contract = decode_contract(response.contract.as_ref())?;
-                self.wait(key, operation).await?;
-                self.inspect_machine(machine)
+                wait(self, key, operation).await?;
+                MachinesProvider::inspect_machine(self, machine)
                     .await
                     .map(MutationOutcome::Created)
             }
@@ -334,7 +312,7 @@ impl MachinesProvider for GrpcProvider {
     ) -> Result<MachineObservation, ProviderError> {
         obs::finish(
             async {
-                self.client()
+                self.client.clone()
                     .inspect_machine(wire::InspectMachineRequest {
                         protocol: Some(protocol()),
                         machine: Some(encode_machine(machine)),
@@ -364,8 +342,7 @@ impl MachinesProvider for GrpcProvider {
                         "machine page limit must be 1..=256".into(),
                     ));
                 }
-                let page = self
-                    .client()
+                let page = self.client.clone()
                     .list_machines(wire::ListMachinesRequest {
                         protocol: Some(protocol()),
                         after: after.map(encode_machine),
@@ -418,8 +395,7 @@ impl MachinesProvider for GrpcProvider {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                let value = self
-                    .client()
+                let value = self.client.clone()
                     .checkpoint(wire::CheckpointMachineRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
@@ -435,8 +411,8 @@ impl MachinesProvider for GrpcProvider {
                         "checkpoint source was substituted".into(),
                     ));
                 }
-                self.wait(key, operation).await?;
-                self.inspect_checkpoint(checkpoint)
+                wait(self, key, operation).await?;
+                MachinesProvider::inspect_checkpoint(self, checkpoint)
                     .await
                     .map(MutationOutcome::Checkpointed)
             }
@@ -455,7 +431,7 @@ impl MachinesProvider for GrpcProvider {
     ) -> Result<CheckpointObservation, ProviderError> {
         obs::finish(
             async {
-                self.client()
+                self.client.clone()
                     .inspect_checkpoint(wire::InspectCheckpointRequest {
                         protocol: Some(protocol()),
                         checkpoint: Some(encode_checkpoint(checkpoint)),
@@ -486,8 +462,7 @@ impl MachinesProvider for GrpcProvider {
                 if count.get() > MAX_FORK_CHILDREN {
                     return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
                 }
-                let value = self
-                    .client()
+                let value = self.client.clone()
                     .fork(wire::ForkCheckpointRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
@@ -507,7 +482,7 @@ impl MachinesProvider for GrpcProvider {
                     ));
                 }
                 let operation = decode_operation(value.operation.as_ref())?;
-                self.wait(key, operation).await?;
+                wait(self, key, operation).await?;
                 let mut seen = BTreeSet::new();
                 let mut children = Vec::with_capacity(value.children.len());
                 for child in value.children {
@@ -517,7 +492,7 @@ impl MachinesProvider for GrpcProvider {
                             "fork returned duplicate children".into(),
                         ));
                     }
-                    children.push(self.inspect_machine(child).await?);
+                    children.push(MachinesProvider::inspect_machine(self, child).await?);
                 }
                 Ok(MutationOutcome::Forked(children))
             }
@@ -541,8 +516,7 @@ impl MachinesProvider for GrpcProvider {
                 if count.get() > MAX_FORK_CHILDREN {
                     return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
                 }
-                let value = self
-                    .client()
+                let value = self.client.clone()
                     .fork_machine(wire::ForkMachineRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
@@ -562,7 +536,7 @@ impl MachinesProvider for GrpcProvider {
                         "fork result was substituted".into(),
                     ));
                 }
-                self.wait(key, admitted.operation).await?;
+                wait(self, key, admitted.operation).await?;
                 admitted.observe(self).await
             }
             .await,
@@ -581,7 +555,7 @@ impl MachinesProvider for GrpcProvider {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                self.machine_mutation(machine, key, MachineMutation::Suspend)
+                machine_mutation(self, machine, key, MachineMutation::Suspend)
                     .await
             }
             .await,
@@ -599,7 +573,7 @@ impl MachinesProvider for GrpcProvider {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                self.machine_mutation(machine, key, MachineMutation::Wake)
+                machine_mutation(self, machine, key, MachineMutation::Wake)
                     .await
             }
             .await,
@@ -618,8 +592,7 @@ impl MachinesProvider for GrpcProvider {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                let value = self
-                    .client()
+                let value = self.client.clone()
                     .set_suspension_policy(wire::SetSuspensionPolicyRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
@@ -636,7 +609,7 @@ impl MachinesProvider for GrpcProvider {
                         "policy result was substituted".into(),
                     ));
                 }
-                self.wait(key, decode_operation(value.operation.as_ref())?)
+                wait(self, key, decode_operation(value.operation.as_ref())?)
                     .await?;
                 Ok(MutationOutcome::SuspensionPolicySet(machine, policy))
             }
@@ -655,7 +628,7 @@ impl MachinesProvider for GrpcProvider {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                self.machine_mutation(machine, key, MachineMutation::Destroy)
+                machine_mutation(self, machine, key, MachineMutation::Destroy)
                     .await
             }
             .await,
@@ -673,8 +646,7 @@ impl MachinesProvider for GrpcProvider {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                let value = self
-                    .client()
+                let value = self.client.clone()
                     .destroy_checkpoint(wire::CheckpointMutationRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
@@ -688,7 +660,7 @@ impl MachinesProvider for GrpcProvider {
                         "checkpoint result was substituted".into(),
                     ));
                 }
-                self.wait(key, decode_operation(value.operation.as_ref())?)
+                wait(self, key, decode_operation(value.operation.as_ref())?)
                     .await?;
                 Ok(MutationOutcome::CheckpointDestroyed(checkpoint))
             }
@@ -713,8 +685,7 @@ impl MachinesProvider for GrpcProvider {
                         "event page limit must be 1..=1024".into(),
                     ));
                 }
-                let value = self
-                    .client()
+                let value = self.client.clone()
                     .events(wire::EventsRequest {
                         protocol: Some(protocol()),
                         machine: Some(encode_machine(machine)),
@@ -771,8 +742,7 @@ impl MachinesProvider for GrpcProvider {
                         "usage interval must be non-empty".into(),
                     ));
                 }
-                let value = self
-                    .client()
+                let value = self.client.clone()
                     .usage(wire::UsageRequest {
                         protocol: Some(protocol()),
                         machine: Some(encode_machine(machine)),
@@ -795,8 +765,8 @@ impl MachinesProvider for GrpcProvider {
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                let (operation, value) = self.recovered_admission(key).await?;
-                self.wait(key, operation).await?;
+                let (operation, value) = recovered_admission(self, key).await?;
+                wait(self, key, operation).await?;
                 decode_recovered(self, value).await
             }
             .await,
@@ -810,7 +780,7 @@ impl MachinesProvider for GrpcProvider {
     async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
         obs::finish(
             async {
-                self.recovered_admission(key)
+                recovered_admission(self, key)
                     .await
                     .map(|(operation, _)| operation)
             }
@@ -828,7 +798,7 @@ impl MachinesProvider for GrpcProvider {
     ) -> Result<OperationObservation, ProviderError> {
         obs::finish(
             async {
-                self.client()
+                self.client.clone()
                     .inspect_operation(operation_request(operation))
                     .await
                     .map_err(|error| read_error(&error))
@@ -847,7 +817,7 @@ impl MachinesProvider for GrpcProvider {
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
         obs::finish(
             async {
-                self.client()
+                self.client.clone()
                     .cancel(operation_request(operation))
                     .await
                     .map_err(|error| read_error(&error))
@@ -869,8 +839,7 @@ impl MachinesProvider for GrpcProvider {
     ) -> Result<OperationStream, ProviderError> {
         obs::finish(
             async {
-                let stream = self
-                    .client()
+                let stream = self.client.clone()
                     .watch_operation(operation_request(operation))
                     .await
                     .map_err(|error| read_error(&error))?
@@ -907,122 +876,114 @@ enum MachineMutation {
     Destroy,
 }
 
-impl GrpcProvider {
-    fn client(&self) -> Client {
-        self.client.clone()
-    }
-    async fn recovered_admission(
-        &self,
-        key: IdempotencyKey,
-    ) -> Result<(OperationId, wire::RecoveredAdmission), ProviderError> {
-        let value = self
-            .client()
-            .recover(wire::RecoverRequest {
-                protocol: Some(protocol()),
-                idempotency_key: Some(encode_key(key)),
-            })
-            .await
-            .map_err(|error| recovery_error(key, &error))?
-            .into_inner();
-        let operation = validate_recovered_admission(&value)?;
-        Ok((operation, value))
-    }
-    #[tracing::instrument(
-        name = "acyclic.machines.wait",
-        level = "debug",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    async fn wait(&self, key: IdempotencyKey, operation: OperationId) -> Result<(), ProviderError> {
-        obs::finish(
-            async {
-                let mut unknown_observations = 0;
-                loop {
-                    match self
-                        .client()
-                        .watch_operation(operation_request(operation))
-                        .await
-                    {
-                        Ok(response) => {
-                            let mut stream = response.into_inner();
-                            loop {
-                                match tokio::time::timeout(WATCH_RECONCILE_INTERVAL, stream.message()).await
-                                {
-                                    Ok(Ok(Some(value))) => {
-                                        let phase = decode_operation_observation(&value, operation)?.phase;
-                                        unknown_observations = 0;
-                                        if let Some(outcome) = observed_outcome(key, phase) {
-                                            return outcome;
-                                        }
-                                    }
-                                    Ok(Err(error)) if !retryable_watch_error(&error) => {
-                                        return Err(watch_error(key, &error));
-                                    }
-                                    // Inspect the admitted operation after interruption; never resubmit.
-                                    _ => break,
-                                }
-                            }
-                        }
-                        Err(error) if !retryable_watch_error(&error) => {
-                            return Err(watch_error(key, &error));
-                        }
-                        Err(_) => {}
-                    }
-                    match self
-                        .client()
-                        .inspect_operation(operation_request(operation))
-                        .await
-                    {
-                        Ok(response) => {
-                            let phase =
-                                decode_operation_observation(&response.into_inner(), operation)?.phase;
-                            unknown_observations = 0;
-                            if let Some(outcome) = observed_outcome(key, phase) {
-                                return outcome;
-                            }
-                        }
-                        Err(error) if !retryable_observation_error(&error, &mut unknown_observations) => {
-                            return Err(watch_error(key, &error));
-                        }
-                        Err(_) => {}
-                    }
-                    tokio::time::sleep(OBSERVATION_RETRY_DELAY).await;
-                }
-            }
-            .await,
-        )
-    }
-    async fn machine_mutation(
-        &self,
-        machine: MachineId,
-        key: IdempotencyKey,
-        mutation: MachineMutation,
-    ) -> Result<MutationOutcome, ProviderError> {
-        let request = wire::MachineMutationRequest {
+async fn recovered_admission(
+    provider: &GrpcProvider,
+    key: IdempotencyKey,
+) -> Result<(OperationId, wire::RecoveredAdmission), ProviderError> {
+    let value = provider.client.clone()
+        .recover(wire::RecoverRequest {
             protocol: Some(protocol()),
             idempotency_key: Some(encode_key(key)),
-            machine: Some(encode_machine(machine)),
-        };
-        let value = match mutation {
-            MachineMutation::Suspend => self.client().suspend(request).await,
-            MachineMutation::Wake => self.client().wake(request).await,
-            MachineMutation::Destroy => self.client().destroy_machine(request).await,
-        }
-        .map_err(|error| mutation_error(key, &error))?
-        .into_inner();
-        if decode_machine(value.machine.as_ref())? != machine {
-            return Err(ProviderError::Rejected(
-                "machine result was substituted".into(),
-            ));
-        }
-        self.wait(key, decode_operation(value.operation.as_ref())?)
-            .await?;
-        Ok(match mutation {
-            MachineMutation::Suspend => MutationOutcome::Suspended(machine),
-            MachineMutation::Wake => MutationOutcome::Woken(machine),
-            MachineMutation::Destroy => MutationOutcome::MachineDestroyed(machine),
         })
+        .await
+        .map_err(|error| recovery_error(key, &error))?
+        .into_inner();
+    let operation = validate_recovered_admission(&value)?;
+    Ok((operation, value))
+}
+#[tracing::instrument(
+    name = "acyclic.machines.wait",
+    level = "debug",
+    skip_all,
+    fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+)]
+async fn wait(provider: &GrpcProvider, key: IdempotencyKey, operation: OperationId) -> Result<(), ProviderError> {
+    obs::finish(
+        async {
+            let mut unknown_observations = 0;
+            loop {
+                match provider.client.clone()
+                    .watch_operation(operation_request(operation))
+                    .await
+                {
+                    Ok(response) => {
+                        let mut stream = response.into_inner();
+                        loop {
+                            match tokio::time::timeout(WATCH_RECONCILE_INTERVAL, stream.message()).await
+                            {
+                                Ok(Ok(Some(value))) => {
+                                    let phase = decode_operation_observation(&value, operation)?.phase;
+                                    unknown_observations = 0;
+                                    if let Some(outcome) = observed_outcome(key, phase) {
+                                        return outcome;
+                                    }
+                                }
+                                Ok(Err(error)) if !retryable_watch_error(&error) => {
+                                    return Err(watch_error(key, &error));
+                                }
+                                // Inspect the admitted operation after interruption; never resubmit.
+                                _ => break,
+                            }
+                        }
+                    }
+                    Err(error) if !retryable_watch_error(&error) => {
+                        return Err(watch_error(key, &error));
+                    }
+                    Err(_) => {}
+                }
+                match provider.client.clone()
+                    .inspect_operation(operation_request(operation))
+                    .await
+                {
+                    Ok(response) => {
+                        let phase =
+                            decode_operation_observation(&response.into_inner(), operation)?.phase;
+                        unknown_observations = 0;
+                        if let Some(outcome) = observed_outcome(key, phase) {
+                            return outcome;
+                        }
+                    }
+                    Err(error) if !retryable_observation_error(&error, &mut unknown_observations) => {
+                        return Err(watch_error(key, &error));
+                    }
+                    Err(_) => {}
+                }
+                tokio::time::sleep(OBSERVATION_RETRY_DELAY).await;
+            }
+        }
+        .await,
+    )
+}
+async fn machine_mutation(
+    provider: &GrpcProvider,
+    machine: MachineId,
+    key: IdempotencyKey,
+    mutation: MachineMutation,
+) -> Result<MutationOutcome, ProviderError> {
+    let request = wire::MachineMutationRequest {
+        protocol: Some(protocol()),
+        idempotency_key: Some(encode_key(key)),
+        machine: Some(encode_machine(machine)),
+    };
+    let value = match mutation {
+        MachineMutation::Suspend => provider.client.clone().suspend(request).await,
+        MachineMutation::Wake => provider.client.clone().wake(request).await,
+        MachineMutation::Destroy => provider.client.clone().destroy_machine(request).await,
     }
+    .map_err(|error| mutation_error(key, &error))?
+    .into_inner();
+    if decode_machine(value.machine.as_ref())? != machine {
+        return Err(ProviderError::Rejected(
+            "machine result was substituted".into(),
+        ));
+    }
+    wait(provider, key, decode_operation(value.operation.as_ref())?)
+        .await?;
+    Ok(match mutation {
+        MachineMutation::Suspend => MutationOutcome::Suspended(machine),
+        MachineMutation::Wake => MutationOutcome::Woken(machine),
+        MachineMutation::Destroy => MutationOutcome::MachineDestroyed(machine),
+    })
 }
 
 async fn decode_recovered(
@@ -1035,12 +996,10 @@ async fn decode_recovered(
         .result
         .ok_or_else(|| ProviderError::Rejected("recovery result is missing".into()))?
     {
-        ResultKind::Create(value) => provider
-            .inspect_machine(decode_machine(value.machine.as_ref())?)
+        ResultKind::Create(value) => MachinesProvider::inspect_machine(provider, decode_machine(value.machine.as_ref())?)
             .await
             .map(MutationOutcome::Created),
-        ResultKind::Checkpoint(value) => provider
-            .inspect_checkpoint(decode_checkpoint(value.checkpoint.as_ref())?)
+        ResultKind::Checkpoint(value) => MachinesProvider::inspect_checkpoint(provider, decode_checkpoint(value.checkpoint.as_ref())?)
             .await
             .map(MutationOutcome::Checkpointed),
         ResultKind::Fork(value) => {
@@ -1066,7 +1025,7 @@ async fn decode_recovered(
             }
             let mut result = Vec::with_capacity(children.len());
             for child in children {
-                result.push(provider.inspect_machine(child).await?);
+                result.push(MachinesProvider::inspect_machine(provider, child).await?);
             }
             Ok(MutationOutcome::Forked(result))
         }
@@ -1106,7 +1065,7 @@ impl ForkMachineAdmitted {
     async fn observe(self, provider: &GrpcProvider) -> Result<MutationOutcome, ProviderError> {
         let mut children = Vec::with_capacity(self.children.len());
         for child in self.children {
-            children.push(provider.inspect_machine(child).await?);
+            children.push(MachinesProvider::inspect_machine(provider, child).await?);
         }
         Ok(MutationOutcome::MachineForked {
             source: self.source,
@@ -2996,11 +2955,11 @@ mod tests {
 
     #[tokio::test]
     async fn recovered_forks_reject_empty_and_duplicate_child_sets_before_fanout() {
-        let provider = GrpcProvider {
-            client: wire::machines_service_client::MachinesServiceClient::with_interceptor(
+        let provider = GrpcProvider { client:
+            wire::machines_service_client::MachinesServiceClient::with_interceptor(
                 TonicEndpoint::from_static("http://127.0.0.1:1").connect_lazy(),
                 BearerAuth::default(),
-            ),
+            )
         };
         let operation = OperationId::parse("00000000-0000-0000-0000-000000000001")
             .unwrap_or_else(|_| unreachable!());

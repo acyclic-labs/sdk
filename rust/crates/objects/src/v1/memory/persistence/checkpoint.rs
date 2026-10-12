@@ -79,7 +79,7 @@ impl Journal {
                     }
                 }) {
                     self.poisoned.store(true, Ordering::Release);
-                    return Err(NativeObjectsError::Admission(error));
+                    return Err(NativeObjectsError::from(NativeObjectsCause::Admission(error)));
                 }
                 #[cfg(test)]
                 self.checkpoint_fault(4).map_err(|_| Error::from(Unavailable))?;

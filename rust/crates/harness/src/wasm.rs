@@ -28,7 +28,7 @@ use crate::{
     model::{ModelContent, ModelEvent, ModelMessage},
     projection::{
         SelectedModelContext, select_model_context,
-        validate_model_context_selection_at_revision,
+        validate_model_context_selection,
     },
     resources::{ProviderRef, ResourceRef},
     runtime::{
@@ -1191,7 +1191,7 @@ pub fn decode_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
 #[wasm_bindgen(js_name = decodeExecutionEventJson, unchecked_return_type = "ExecutionEvent")]
 pub fn decode_execution_event_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let event: crate::executor::ExecutionEvent =
-        crate::executor::decode_json(bytes).map_err(js_error)?;
+        crate::executor::decode_json(bytes, None).map_err(js_error)?.into_retained();
     to_js_admitted(&event)
 }
 
@@ -1585,7 +1585,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "project_merge_receipt" => {
             let value: ProjectMergeReceipt = from_js(value)?;
-            value.validate_shape().map_err(js_error)?;
+            value.validate_shape(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "limits" => {
@@ -1899,7 +1899,7 @@ pub fn validate_model_context_selection_wasm(
 ) -> Result<(), JsValue> {
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
-    validate_model_context_selection_at_revision(&conversation, &selection, selection.conversation_revision, None)
+    validate_model_context_selection(&conversation, &selection, selection.conversation_revision, &mut None)
     .map_err(js_error)
 }
 
@@ -1933,7 +1933,7 @@ impl WasmReducer {
     #[wasm_bindgen(js_name = issueScope)]
     pub fn issue_scope(&self, id: String, capabilities: JsValue) -> Result<JsValue, JsValue> {
         let capabilities: Vec<String> = from_js(capabilities)?;
-        to_js(&self.issuer.root(id, Capabilities::new(capabilities)))
+        to_js(&self.issuer.issue(&id, &Capabilities::new(capabilities), None, None, &mut None).expect("scope proof"))
     }
 
     /// Issues a root scope signed for one acting agent.
@@ -1948,8 +1948,7 @@ impl WasmReducer {
         let capabilities: Vec<String> = from_js(capabilities)?;
         to_js(
             &self
-                .issuer
-                .root_for_agent(agent, id, Capabilities::new(capabilities)),
+                .issuer.issue(&id, &Capabilities::new(capabilities), Some(agent), None, &mut None).expect("scope proof"),
         )
     }
 
@@ -1963,8 +1962,7 @@ impl WasmReducer {
         let layers: Vec<PolicyLayer> = from_js(layers)?;
         to_js(
             &self
-                .issuer
-                .root_with_policies(id, &layers)
+                .issuer.issue(&id, &crate::resolve_policy_layers(&layers).map_err(js_error)?, None, None, &mut None)
                 .map_err(js_error)?,
         )
     }
@@ -1981,8 +1979,7 @@ impl WasmReducer {
         let layers: Vec<PolicyLayer> = from_js(layers)?;
         to_js(
             &self
-                .issuer
-                .root_with_policies_for_agent(agent, id, &layers)
+                .issuer.issue(&id, &crate::resolve_policy_layers(&layers).map_err(js_error)?, Some(agent), None, &mut None)
                 .map_err(js_error)?,
         )
     }
@@ -2567,14 +2564,14 @@ struct WasmToolResultInput {
 #[wasm_bindgen(js_name = validateToolDefinition)]
 pub fn validate_tool_definition(definition: JsValue) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
-    definition.validate().map_err(js_error)
+    definition.validate(&mut None).map_err(js_error)
 }
 
 /// Validates one tool invocation against its registered definition.
 #[wasm_bindgen(js_name = validateToolInvocation)]
 pub fn validate_tool_invocation(definition: JsValue, invocation: JsValue) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
-    definition.validate().map_err(js_error)?;
+    definition.validate(&mut None).map_err(js_error)?;
     let invocation: WasmToolInvocationInput = from_js(invocation)?;
     if invocation.call_id.is_empty() || invocation.name != definition.name {
         return Err(JsValue::from_str(
@@ -2593,7 +2590,7 @@ pub fn validate_tool_invocation(definition: JsValue, invocation: JsValue) -> Res
 #[wasm_bindgen(js_name = validateToolResult)]
 pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
-    definition.validate().map_err(js_error)?;
+    definition.validate(&mut None).map_err(js_error)?;
     let result: WasmToolResultInput = from_js(result)?;
     validate_value(&definition.output_schema, &result.value, "tool output", None).map_err(js_error)
 }
@@ -2606,12 +2603,12 @@ pub fn validate_tool_projection(
     #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
 ) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
-    definition.validate().map_err(js_error)?;
+    definition.validate(&mut None).map_err(js_error)?;
     let projection: serde_json::Value = from_js(projection)?;
     let limits: Limits = from_js(limits)?;
     definition
-        .validate_projection(&projection)
-        .and_then(|content| content.validate_limits(limits, &mut None))
+        .validate_projection(&projection, limits, None)
+        .map(drop)
         .map_err(js_error)
 }
 
@@ -2776,12 +2773,13 @@ pub fn project_discovered_context(
     let snapshot: crate::context::DiscoveredContext = from_js(snapshot)?;
     let context: crate::context::Context = from_js(context)?;
     let placement: crate::context::ContextPlacement = from_js(placement)?;
+    let limits = from_js(limits)?;
     let context = crate::context::apply_context_projection(
         context,
-        snapshot.messages().map_err(js_error)?,
+        snapshot.messages(limits, None).map_err(js_error)?,
         crate::context::ContextRenderMode::Prompt,
         placement,
-        from_js(limits)?,
+        limits,
     )
     .map_err(js_error)?;
     context_to_js(&context)
@@ -2915,7 +2913,7 @@ pub fn validate_context_selection(
     #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
 ) -> Result<(), JsValue> {
     let selection: crate::context::ContextSelection = from_js(selection)?;
-    selection.validate(from_js(limits)?).map_err(js_error)
+    selection.validate(from_js(limits)?, &mut None).map_err(js_error)
 }
 
 /// Applies a host renderer's output using the same native placement and bounds.

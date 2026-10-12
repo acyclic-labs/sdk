@@ -42,7 +42,7 @@ impl NativeProcessRequest {
         }
         if let Some(exchange) = &self.mcp_stdio {
             let work = io.original_native_work().ok_or(receipt_error("native invocation requires its original work ledger"))?;
-            let (exchange, first, custody) = exchange.exchange_with_native_work(work)?;
+            let (exchange, first, custody) = exchange.exchange(Some(work))?;
             drop((exchange, first, custody));
         }
         {
@@ -126,8 +126,8 @@ pub struct NativeProcessProvider<P: StreamProvider> {
     supervisor: Arc<NativeSupervisorControl>,
     effect_id: crate::EffectId,
     history: Arc<HistoryReader<P>>,
-    _native_work: acyclic_fs::NativeMaterializationWork,
-    _custody: Arc<Mutex<acyclic_fs::NativeAllocation>>,
+    _custody: Arc<acyclic_fs::NativeAllocation>,
+    _arc_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 struct Invocation<P: StreamProvider> {
@@ -146,7 +146,7 @@ struct NativeActiveAttempt {
 
 struct NativeRetainedProcess {
     process: acyclic_native_runtime::ProcessTree,
-    _scopes: crate::filesystem::native_execution::NativeProcessNamespaceScopes,
+    _scopes: (Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation),
     _custody: acyclic_fs::NativeAllocation,
 }
 
@@ -157,11 +157,6 @@ struct NativeSupervisorControl {
 }
 
 impl NativeSupervisorControl {
-    fn new() -> Self {
-        Self { active: Mutex::new(None), completion: tokio::sync::Notify::new(),
-            process: Mutex::new(None) }
-    }
-
     fn settle_process(
         &self, original: &acyclic_fs::NativeMaterializationWork,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -364,7 +359,7 @@ impl PartialEq for NativeProcessReceipt {
 
 impl<P> NativeProcessProvider<P>
 where
-    P: StreamProvider + 'static,
+    P: StreamProvider,
 {
 
     /// Original one-shot task-effect attempt selected by the existing effect engine.
@@ -493,11 +488,10 @@ where
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native output differs from admitted result owner or bound" });
             }
-            let bytes = self.authority.result_content.read_with_native_work(
-                reference, u64::from(request.maximum_result_bytes), work)?.await?;
+            let bytes = self.authority.result_content.read(reference, u64::from(request.maximum_result_bytes), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             let io = super::PreparationIo::from_native_work(work)?;
-            let value = io.decode_preparation::<serde_json::Value>(&bytes, crate::wire::ErrorCode::Invalid)?;
-            crate::contract::validate_json_schema_value(result_schema, &value.value,
+            let value = io.decode(std::marker::PhantomData::<serde_json::Value>, &bytes, crate::wire::ErrorCode::Invalid)?;
+            crate::contract::validate_json_schema_value(result_schema, &value.0,
                 "native process result", Some(&io))?;
         }
         Ok(reference)
@@ -507,16 +501,20 @@ where
 
     /// Keeps the registry's shared provider allocation in this original family.
     pub fn into_arc_with_native_work(
-        self, work: &acyclic_fs::NativeMaterializationWork,
+        mut self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         self.require_work_family(work)?;
-        let custody = work.claim(std::mem::size_of::<Self>() as u64)?;
-        finite_binding::absorb_shared(&self._custody, custody)?;
+        let mut custody = work.claim(std::mem::size_of::<Self>() as u64)?;
+        let mut original = self._custody.work().retain_owned(0)?;
+        if let Err(cause) = original.absorb(&mut custody) {
+            return Err(Error::NativeWork { cause, custody: Some(custody) });
+        }
+        self._arc_custody = Some(original);
         Ok(Arc::new(self))
     }
 
     fn require_work_family(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        finite_binding::require_family(Some(&self._native_work), work)
+        finite_binding::require_family(self._custody.work(), work)
     }
 
     fn invocation(&self) -> Result<&Invocation<P>> {
@@ -530,7 +528,7 @@ where
 
 impl<P> EffectProvider for NativeProcessProvider<P>
 where
-    P: StreamProvider + 'static,
+    P: StreamProvider,
 {
     fn id(&self) -> &str {
         &self.plan.provider
@@ -568,8 +566,11 @@ where
         let view = &self.invocation()?.view;
         view.operation_cancellation().check()
             .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-        let payload = finite_dispatch::dispatch_payload(request, work)?;
-        crate::NativeFutureBundle::new(work, || self.launch(payload, work))
+        let bytes = receipt_observation::add(
+            receipt_observation::add(request.provider.capacity() as u64, request.effect_kind.capacity() as u64)?,
+            request.request.logical_owned_bytes()?)?;
+        let custody = work.retain_owned(bytes)?;
+        crate::NativeFutureBundle::new(work, || self.launch((request, custody), work))
     }
 
     fn reconcile_with_native_work<'a>(

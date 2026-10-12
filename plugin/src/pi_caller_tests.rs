@@ -29,7 +29,7 @@ fn fixture() -> (pi_owner::PiOwnerConfig, AdapterState) {
 }
 
 #[test]
-fn native_caller_preserves_claims_and_rejects_extra_grants_or_owner_substitution() {
+fn native_caller_preserves_claims_and_environment_and_rejects_substitution() {
     let (owner, mut state) = fixture();
     state.root_session_id = "native-root-\"\\\n-🙂".to_owned();
     let PluginTaskBinding::Pi(binding) = &mut state.task_binding else { unreachable!() };
@@ -44,8 +44,13 @@ fn native_caller_preserves_claims_and_rejects_extra_grants_or_owner_substitution
     assert_eq!(caller.0.capabilities(), &Capabilities::new([CALLER_CAPABILITY]));
     assert_eq!(verify(&owner, &state, &caller.0,
         &binding.native_session_id, &work).unwrap().task_id, binding.task_id);
-    let expanded = owner.authority().unwrap().issuer.root_for_agent(binding.agent_id,
-        caller.0.id(), Capabilities::new([CALLER_CAPABILITY, "operation:declare"]));
+    let environment = issued_environment(&owner, &state.root_session_id, binding, &work).unwrap();
+    assert_eq!(environment.0.len(), 1);
+    let decoded: Scope = serde_json::from_str(environment.0.get(CALLER_ENVIRONMENT).unwrap()).unwrap();
+    assert_eq!(decoded, caller.0);
+    drop(decoded);
+    drop(environment);
+    let expanded = owner.authority().unwrap().issuer.issue(&caller.0.id(), &Capabilities::new([CALLER_CAPABILITY, "operation:declare"]), Some(binding.agent_id), None, &mut None).expect("scope proof");
     assert!(verify(&owner, &state, &expanded, &binding.native_session_id, &work).is_err());
     let mut wire = serde_json::to_value(&caller.0).unwrap();
     let mut claims: serde_json::Value = serde_json::from_str(caller.0.id()).unwrap();
@@ -62,28 +67,11 @@ fn native_caller_preserves_claims_and_rejects_extra_grants_or_owner_substitution
     replaced_binding.task_id = TaskId::from_bytes([73; 16]);
     assert!(verify(&owner, &replaced, &caller.0,
         &binding.native_session_id, &work).is_err());
-    drop(caller.0);
-    drop(caller.1);
-}
-
-#[test]
-fn native_caller_environment_retains_only_the_original_caller_proof() {
-    let (owner, state) = fixture();
-    let PluginTaskBinding::Pi(binding) = &state.task_binding else { unreachable!() };
-    let work = work();
-    let environment = issued_environment(&owner, &state.root_session_id, binding, &work).unwrap();
-    assert_eq!(environment.0.len(), 1);
-    let caller: Scope = serde_json::from_str(environment.0.get(CALLER_ENVIRONMENT).unwrap()).unwrap();
-    assert_eq!(verify(&owner, &state, &caller,
-        &binding.native_session_id, &work).unwrap().task_id, binding.task_id);
-    assert_eq!(caller.capabilities(), &Capabilities::new([CALLER_CAPABILITY]));
     drop(caller);
-    drop(environment.0);
-    drop(environment.1);
 }
 
 #[test]
-fn native_caller_cancellation_precedes_authority_copy_and_claim_encoding() {
+fn native_caller_admission_denies_cancellation_and_exhausted_quota() {
     let (owner, state) = fixture();
     let PluginTaskBinding::Pi(binding) = &state.task_binding else { unreachable!() };
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -103,12 +91,6 @@ fn native_caller_cancellation_precedes_authority_copy_and_claim_encoding() {
             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
         })));
     assert_eq!(work.receipt(), before);
-}
-
-#[test]
-fn native_caller_cannot_reconstruct_an_allowance_after_original_quota_denial() {
-    let (owner, state) = fixture();
-    let PluginTaskBinding::Pi(binding) = &state.task_binding else { unreachable!() };
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget {
             peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + 1,
