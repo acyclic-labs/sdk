@@ -1,8 +1,8 @@
 //! Shared admitted JSON-RPC boundary.
-use super::{McpInitializeResult, McpToolDefinition, McpToolResult, McpToolsPage};
+use super::{McpInitializeResult, McpToolResult};
 use crate::{Error, NativeWork, OperationId, Result, wire::ErrorCode};
 use rmcp::model::{JsonRpcRequest, RequestId};
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 pub(super) fn rpc_result(
@@ -36,7 +36,13 @@ pub(super) fn rpc_result(
     value
         .as_object_mut()
         .and_then(|object| object.remove("result"))
-        .ok_or_else(|| protocol_error(work, ErrorCode::Invalid, "MCP response identity or envelope mismatch"))
+        .ok_or_else(|| {
+            protocol_error(
+                work,
+                ErrorCode::Invalid,
+                "MCP response identity or envelope mismatch",
+            )
+        })
 }
 
 pub(super) fn request(operation: OperationId, method: &str, params: Value) -> Result<Vec<u8>> {
@@ -57,7 +63,11 @@ pub(super) fn notification(value: &Value, work: NativeWork<'_>) -> Result<()> {
         || field(value, "result", work)?.is_some()
         || field(value, "error", work)?.is_some()
     {
-        return Err(protocol_error(work, ErrorCode::Invalid, "invalid MCP notification"));
+        return Err(protocol_error(
+            work,
+            ErrorCode::Invalid,
+            "invalid MCP notification",
+        ));
     }
     if field(value, "id", work)?.is_some() {
         return Err(protocol_error(
@@ -67,7 +77,11 @@ pub(super) fn notification(value: &Value, work: NativeWork<'_>) -> Result<()> {
         ));
     }
     if field(value, "jsonrpc", work)?.and_then(Value::as_str) != Some("2.0") {
-        return Err(protocol_error(work, ErrorCode::Invalid, "invalid MCP notification"));
+        return Err(protocol_error(
+            work,
+            ErrorCode::Invalid,
+            "invalid MCP notification",
+        ));
     }
     Ok(())
 }
@@ -142,7 +156,10 @@ pub(super) fn protocol_error(
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
-        return Error::NativeBoundary { code, reason: message };
+        return Error::NativeBoundary {
+            code,
+            reason: message,
+        };
     }
     let _ = work;
     match code {
