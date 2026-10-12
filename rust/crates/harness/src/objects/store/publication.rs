@@ -7,11 +7,16 @@ impl ObjectContentStore {
         descriptor: &FileDescriptor,
         display_name: &str,
     ) -> Result<()> {
-        let intent = crate::contract::canonical_json_digest(&(path, descriptor, display_name))?;
-        let operation = blake3::Hash::from_bytes(crate::contract::canonical_json_digest(&(
-            "harness-upload-intent-v1",
-            operation_id.to_string(),
-        ))?)
+        let intent = crate::contract::canonical_json_digest(
+            &(path, descriptor, display_name),
+            u64::MAX,
+            &mut None,
+        )?;
+        let operation = blake3::Hash::from_bytes(crate::contract::canonical_json_digest(
+            &("harness-upload-intent-v1", operation_id.to_string()),
+            u64::MAX,
+            &mut None,
+        )?)
         .to_hex();
         let namespace = self.volume.storage_name(&mut None)?;
         let object_key = format!("{namespace}/.system/uploads/{operation}");

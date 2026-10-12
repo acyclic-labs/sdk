@@ -174,10 +174,11 @@ pub(in crate::objects) fn content_identity(
     display_name: &str,
 ) -> Result<String> {
     Ok(
-        blake3::Hash::from_bytes(crate::contract::canonical_json_digest(&(
-            descriptor,
-            display_name,
-        ))?)
+        blake3::Hash::from_bytes(crate::contract::canonical_json_digest(
+            &(descriptor, display_name),
+            u64::MAX,
+            &mut None,
+        )?)
         .to_hex()
         .to_string(),
     )

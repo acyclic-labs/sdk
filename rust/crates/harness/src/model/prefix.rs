@@ -26,7 +26,7 @@ impl ModelPrefix {
         if messages.is_empty() { return Err(Error::Invalid("model prefix must advance its parent".into())); }
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"harness:model-prefix:ordered:v1");
-        for message in &request.request().messages { hasher.update(&crate::contract::canonical_json_digest(message)?); }
+        for message in &request.request().messages { hasher.update(&crate::contract::canonical_json_digest(message, u64::MAX, &mut None)?); }
         Ok(Self { version: 1, parent: parent.cloned(), message_digest: *hasher.finalize().as_bytes(), total_messages: request.request().messages.len(), messages: messages.to_vec() })
     }
     /// Exact canonical bytes staged once for sharing.

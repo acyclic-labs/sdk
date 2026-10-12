@@ -110,7 +110,7 @@ fn worker_key_with_work(
     revision: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<IdempotencyKey> {
-    let digest = crate::contract::canonical_json_digest_with_work(
+    let digest = crate::contract::canonical_json_digest(
         fence,
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,

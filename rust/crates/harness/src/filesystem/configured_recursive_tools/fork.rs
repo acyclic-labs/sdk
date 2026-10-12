@@ -218,7 +218,7 @@ where
             None,
             io,
         )?;
-        let mut input_files = fork_preparer_io::vector(allocation.input_files.len(), io)?;
+        let mut input_files = crate::model::vec_with_capacity(allocation.input_files.len(), io)?;
         for file in &allocation.input_files {
             input_files.push(crate::executor::with_history_io(io, |work| {
                 file.copy(work)
@@ -232,14 +232,14 @@ where
             child_conversation,
             parent_scope,
             child_scope,
-            child_message_pointer: fork_preparer_io::clone_text(
+            child_message_pointer: crate::executor::stock_string_copy(
                 &allocation.child_message_pointer,
                 io,
             )?,
             child_message_file_pointer: allocation
                 .child_message_file_pointer
                 .as_deref()
-                .map(|value| fork_preparer_io::clone_text(value, io))
+                .map(|value| crate::executor::stock_string_copy(value, io))
                 .transpose()?,
             input_files,
             limits: allocation.limits,

@@ -192,7 +192,7 @@ impl DurableWorkflowHost {
         self.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
         self.reserved_operations.extend(record.operation_ids());
         self.intents.insert(operation_id, (record.prior.revision, match digest {
-            Some(digest) => digest, None => crate::contract::canonical_json_digest(&record)?,
+            Some(digest) => digest, None => crate::contract::canonical_json_digest(&record, u64::MAX, &mut None)?,
         }));
         Ok((transition, checkpoint_retained, transition_retained))
     }

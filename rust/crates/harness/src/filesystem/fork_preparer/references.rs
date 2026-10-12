@@ -33,7 +33,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let mut grants = self.reference_grants(request, io).await?;
         if request.preparation.summary.is_some() {
             let summary = self.prepare_bound_summary(request, io)?.ok_or_else(|| {
-                bounded_io::failure(
+                stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "summary source was not authenticated",
@@ -58,7 +58,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     ) -> Result<Vec<ReferenceGrant>> {
         let maximum_messages = usize::try_from(request.preparation.maximum_inherited_messages)
             .map_err(|_| {
-                bounded_io::failure(
+                stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "fork message bound is too large",
@@ -117,7 +117,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             )?;
             for volume in creation_volumes(request) {
                 if volume.provider() != &self.host.provider {
-                    return Err(bounded_io::failure(
+                    return Err(stock_boundary(
                         io,
                         crate::wire::ErrorCode::Invalid,
                         "fork resource belongs to another provider",
@@ -126,21 +126,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
         }
         let count = creation_volumes(request).count();
-        let mut resources = bounded_io::vector(count, io)?;
-        let mut proofs = bounded_io::vector(count, io)?;
+        let mut resources = crate::model::vec_with_capacity(count, io)?;
+        let mut proofs = crate::model::vec_with_capacity(count, io)?;
         for volume in creation_volumes(request) {
             let resource =
                 bounded_io::content_workspace(&self.host.provider, volume, io)?.into_resource();
             let copied = crate::executor::with_history_io(io, |work| {
                 let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-                let provider = crate::core::copy_provider(resource.provider(), &mut quota)?;
-                let key = crate::core::copy_copy_vector(resource.key(), &mut quota)?;
-                let version = resource
-                    .version()
-                    .map(|value| crate::core::copy_text(value, &mut quota))
-                    .transpose()?;
-                let copied =
-                    ResourceRef::new(resource.kind(), provider, key, version, quota.work())?;
+                let copied = crate::core::copy_resource(&resource, &mut quota)?;
                 quota.transfer();
                 Ok::<_, Error>(copied)
             })?;
@@ -180,7 +173,7 @@ pub(in crate::filesystem) fn require_reference_donor(
     {
         return Ok(());
     }
-    Err(bounded_io::failure(
+    Err(stock_boundary(
         io,
         crate::wire::ErrorCode::Unauthorized,
         "preparation task cannot delegate an inherited reference it cannot read",
@@ -193,7 +186,7 @@ pub(super) fn add_summary_readers(
     files: &std::collections::BTreeMap<[u8; 32], crate::conversation::FileRef>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    let reject = |reason| bounded_io::failure(io, crate::wire::ErrorCode::Invalid, reason);
+    let reject = |reason| stock_boundary(io, crate::wire::ErrorCode::Invalid, reason);
     let maximum = request.preparation.maximum_inherited_references as usize;
     if grants.len() > maximum {
         return Err(reject("summary reader grants exceed capture allowance"));
@@ -203,7 +196,7 @@ pub(super) fn add_summary_readers(
         .checked_mul(request.attached_agents.len() + 1)
         .and_then(|count| count.checked_add(grants.len()))
         .ok_or_else(|| reject("summary reader projection overflows"))?;
-    bounded_io::reserve(grants, candidates.min(maximum), io)?;
+    crate::filesystem::PreparationIo::reserve(grants, candidates.min(maximum), io)?;
     for reader in
         std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied())
     {
@@ -213,7 +206,7 @@ pub(super) fn add_summary_readers(
             }
             let mut present = false;
             for grant in &*grants {
-                bounded_io::item(io, 0)?;
+                crate::model::charge_items(io, 1)?;
                 if grant.reader == reader && grant.file == *file {
                     present = true;
                     break;
@@ -234,3 +227,5 @@ pub(super) fn add_summary_readers(
     }
     Ok(())
 }
+
+use crate::executor::stock_boundary;

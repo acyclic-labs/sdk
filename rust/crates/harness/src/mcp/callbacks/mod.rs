@@ -111,13 +111,17 @@ impl McpCallbackRequest {
                 "MCP callback is not enabled by pinned policy".into(),
             )),
         }?;
-        let digest = crate::contract::canonical_json_digest(&(
-            "harness/mcp-callback/v1",
-            self.parent,
-            &self.policy.server,
-            &self.policy.revision,
-            id,
-        ))?;
+        let digest = crate::contract::canonical_json_digest(
+            &(
+                "harness/mcp-callback/v1",
+                self.parent,
+                &self.policy.server,
+                &self.policy.revision,
+                id,
+            ),
+            u64::MAX,
+            &mut None,
+        )?;
         let mut bytes = [0; 16];
         bytes.copy_from_slice(&digest[..16]);
         Ok(OperationId::from_bytes(bytes))

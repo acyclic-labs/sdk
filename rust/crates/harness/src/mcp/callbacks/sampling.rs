@@ -107,12 +107,16 @@ pub(super) async fn sampling_messages(
                         .get("mimeType")
                         .and_then(Value::as_str)
                         .ok_or_else(|| Error::Invalid("MCP media MIME type absent".into()))?;
-                    let digest = crate::contract::canonical_json_digest(&(
-                        "harness/mcp-sampling-media/v1",
-                        operation,
-                        message_index,
-                        block_index,
-                    ))?;
+                    let digest = crate::contract::canonical_json_digest(
+                        &(
+                            "harness/mcp-sampling-media/v1",
+                            operation,
+                            message_index,
+                            block_index,
+                        ),
+                        u64::MAX,
+                        &mut None,
+                    )?;
                     let mut identity = [0; 16];
                     for (byte, source) in identity.iter_mut().zip(digest) {
                         *byte = source;

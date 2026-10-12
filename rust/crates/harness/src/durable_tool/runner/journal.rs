@@ -141,16 +141,7 @@ impl DurableToolRunner {
         event: &ExecutionEvent,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-            return self
-                .journal
-                .append_with_native_work(operation_id, key, event, work)?
-                .await;
-        }
-        self.journal
-            .append(operation_id, key.into(), event.clone())
-            .await
+        self.journal.append(operation_id, key, event, io)?.await
     }
 
     pub(super) async fn append_tail(
@@ -161,16 +152,7 @@ impl DurableToolRunner {
         event: &ExecutionEvent,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<bool> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-            return self
-                .journal
-                .append_if_tail_with_native_work(operation_id, tail, key, event, work)?
-                .await;
-        }
-        self.journal
-            .append_if_tail(operation_id, tail, key.into(), event.clone())
-            .await
+        self.journal.append_if_tail(operation_id, tail, key, event, io)?.await
     }
 
     pub(super) async fn invoke(

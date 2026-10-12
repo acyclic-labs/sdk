@@ -98,7 +98,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<Option<FileRef>> {
         crate::executor::with_history_io(io, |work| volume.validate(work))?;
         if volume.provider() != &self.provider {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "resource belongs to another Filesystem provider",
@@ -115,7 +115,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         || path == "turns/.canonical"
                         || path.starts_with("turns/.canonical/")))
             {
-                return Err(fork_preparer_io::failure(
+                return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     if internal_class.is_some() {
@@ -149,7 +149,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             || recorded.version() != "pending"
             || expected_path.is_some_and(|path| path != recorded.path())
         {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "original upload metadata differs from requested identity",
@@ -162,7 +162,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     || recorded.path() == "turns/.canonical"
                     || recorded.path().starts_with("turns/.canonical/")))
         {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 if internal_class.is_some() {
@@ -177,7 +177,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             None => crate::contract::canonical_json_bytes(&(&recorded, expected.as_ref()))?.into(),
         };
         if canonical.as_ref() != receipt.as_ref() {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "original upload receipt is not canonical",
@@ -192,7 +192,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .into(),
         };
         if encoded.as_ref() != metadata.as_ref() {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "original upload metadata differs from its canonical receipt",
@@ -220,14 +220,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let reference = crate::executor::with_history_io(io, |work| {
             FileRef::new(
                 volume.copy(work)?,
-                fork_preparer_io::clone_text(recorded.path(), io)?,
+                stock_string_copy(recorded.path(), io)?,
                 version,
                 FileDescriptor::new(
                     *recorded.descriptor().sha256(),
                     recorded.descriptor().byte_length(),
-                    fork_preparer_io::clone_text(recorded.descriptor().media_type(), io)?,
+                    stock_string_copy(recorded.descriptor().media_type(), io)?,
                 )?,
-                fork_preparer_io::clone_text(recorded.display_name(), io)?,
+                stock_string_copy(recorded.display_name(), io)?,
                 work,
             )
         })?;
@@ -308,3 +308,5 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })
     }
 }
+
+use crate::executor::{stock_boundary, stock_string_copy};

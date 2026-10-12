@@ -92,7 +92,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObject
         provider,
         child,
         resources,
-        creation_grant: crate::filesystem::fork_preparer_io::clone_text("fork:publish", io)?,
+        creation_grant: crate::executor::stock_string_copy("fork:publish", io)?,
         maximum_resources: limits.resources,
         maximum_work: limits.work,
         maximum_bytes: limits.bytes,

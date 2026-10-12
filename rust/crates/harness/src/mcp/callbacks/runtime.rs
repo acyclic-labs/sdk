@@ -43,14 +43,15 @@ impl McpRuntimeCallbacks {
         self.journal
             .stage(
                 operation,
-                "mcp:callback:request".into(),
-                crate::contract::canonical_json_bytes(&(
+                "mcp:callback:request",
+                &crate::contract::canonical_json_bytes(&(
                     request,
                     &self.model_name,
                     &self.sampling,
                 ))?,
                 "application/json",
-            )
+                None,
+            )?
             .await?;
         Ok(())
     }
@@ -182,7 +183,7 @@ impl McpRuntimeCallbacks {
                     self.pin(operation, request).await?;
                     match context.interact(operation, interaction.clone()).await? {
                         InteractionOutcome::Answered { answer } => {
-                            let bytes = self.journal.load(&answer).await?;
+                            let bytes = self.journal.load(&answer, None)?.await?;
                             answer.descriptor().verify(&bytes, &mut None)?;
                             let response: InteractionResponse =
                                 crate::contract::json_from_slice(&bytes)

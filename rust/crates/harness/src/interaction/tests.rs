@@ -74,7 +74,7 @@ fn native_typed_request_error_keeps_original_serde_source_and_custody() -> Resul
     let error = ticket
         .validate_request_bytes(bytes, &mut Some(&mut io))
         .expect_err("original typed digest rejects malformed length");
-    let Error::NativeDecode {
+    let Error::NativeJson {
         code,
         source,
         custody: Some(custody),
@@ -184,7 +184,7 @@ fn native_answer_error_retains_original_response_cause_after_request_drop() -> R
         .validate_answer_bytes(&request.0, &answer, bytes, &mut Some(&mut io))
         .expect_err("original typed response rejects integer ids");
     drop(request);
-    let Error::NativeDecode {
+    let Error::NativeJson {
         code,
         source,
         custody: Some(custody),
@@ -248,7 +248,7 @@ fn native_request_carrier_retires_parser_and_keeps_actual_fields_through_respons
         .expect_err("original typed string id rejects the funded response object");
     assert!(matches!(
         error,
-        Error::NativeDecode {
+        Error::NativeJson {
             code: crate::wire::ErrorCode::Invalid,
             ..
         }
