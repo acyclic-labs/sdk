@@ -9,20 +9,17 @@ pub struct BrowserVolume {
 
 #[wasm_bindgen]
 impl BrowserVolume {
-    /// Returns the canonical 16-byte volume identity.
     #[wasm_bindgen(getter)]
     #[must_use]
     pub fn id(&self) -> Vec<u8> {
         self.engine.id().into_bytes().to_vec()
     }
 
-    /// Returns exact bounded work used to acquire this volume handle.
     #[wasm_bindgen(getter, js_name = acquisitionWork)]
     pub fn acquisition_work(&self) -> Result<Ts<BrowserWorkCounters>, JsValue> {
         ts(browser_work(self.acquisition_work))
     }
 
-    /// Computes one bounded Merkle-aware semantic generation diff.
     #[wasm_bindgen(js_name = diffGenerations)]
     pub async fn diff_generations(
         &self,
@@ -55,7 +52,6 @@ impl BrowserVolume {
         encode_generation_diff(receipt.value, receipt.work)
     }
 
-    /// Opens the volume head with explicit access and consistency semantics.
     pub async fn checkout(&self, options: JsValue) -> Result<BrowserCheckout, JsValue> {
         let options: BrowserCheckoutOptions =
             serde_wasm_bindgen::from_value(options).map_err(js_error)?;
