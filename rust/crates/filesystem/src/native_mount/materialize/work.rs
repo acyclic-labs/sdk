@@ -49,11 +49,9 @@ impl GenerationReceipt {
 
     pub(super) fn run<T>(
         &self,
-        operation: impl FnOnce(&mut NativeSourceWork<'_>) -> Result<T, DemandError>,
+        operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, DemandError>,
     ) -> Result<T, MaterializeError> {
-        let result = operation(&mut NativeSourceWork::from_native_materialization_work(
-            self.custody.work(),
-        ));
+        let result = operation(&mut self.custody.work().clone());
         result.map_err(MaterializeError::from)
     }
 

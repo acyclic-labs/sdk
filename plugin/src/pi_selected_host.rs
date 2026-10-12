@@ -1330,12 +1330,12 @@ impl PiControlHost<'_> {
             result.map_err(Error::from)?
         } else {
             let result = async {
-                let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
+                let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                     work,
                     cancellation,
-                )?;
+                };
                 workspace
-                    .selected_import_snapshot(fs_operation, &accounting)
+                    .selected_import_snapshot(fs_operation, &mut accounting)
                     .await
             }
             .await;

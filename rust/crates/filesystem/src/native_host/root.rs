@@ -427,7 +427,7 @@ impl HostRoot {
         }
         let mut separator = None;
         for (index, unit) in path.iter().enumerate() {
-            work.charge(ITEM)?;
+            work.started_io(ITEM)?;
             if *unit == u16::from(b'\\') {
                 separator = Some(index);
             }
