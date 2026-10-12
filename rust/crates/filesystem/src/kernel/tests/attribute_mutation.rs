@@ -3,11 +3,12 @@ use super::*;
 use crate::CancellationToken;
 use crate::foundation::Digest;
 use crate::kernel::persistent_btree::Mutation;
-use crate::kernel::{AttributeChild, AttributePage, attribute_page_id, encode_attribute_page};
+use crate::kernel::{AttributePage, attribute_page_id, encode_attribute_page};
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectStore;
 use acyclic_stream::OwnedBytes;
 
+use crate::kernel::Child;
 fn name(byte: u8, length: usize) -> Result<AttributeName, Box<dyn std::error::Error>> {
     Ok(AttributeName::new(
         super::super::AttributeClass::PosixXattr,
@@ -39,7 +40,7 @@ fn put(
     let id = attribute_page_id(page, maximum_items)?;
     store.put(
         id,
-        OwnedBytes::from(encode_attribute_page(page, maximum_items)?),
+        OwnedBytes::from(encode_attribute_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -60,16 +61,16 @@ fn three_leaf_tree(
     let root = put(
         store,
         &AttributePage::Internal(vec![
-            AttributeChild {
-                first_name: name(1, 1)?,
+            Child {
+                first: name(1, 1)?,
                 page: leaves[0],
             },
-            AttributeChild {
-                first_name: name(3, 1)?,
+            Child {
+                first: name(3, 1)?,
                 page: leaves[1],
             },
-            AttributeChild {
-                first_name: name(6, 1)?,
+            Child {
+                first: name(6, 1)?,
                 page: leaves[2],
             },
         ]),
@@ -100,7 +101,7 @@ fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
     let bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
-    let AttributePage::Internal(children) = decode_attribute_page(&bytes, DecodeLimits::default())?
+    let AttributePage::Internal(children) = decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("candidate attribute root is not internal".into());
     };
@@ -131,7 +132,7 @@ fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
     let bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
-    let AttributePage::Leaf(entries) = decode_attribute_page(&bytes, DecodeLimits::default())?
+    let AttributePage::Leaf(entries) = decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("unordered attribute result is not a leaf".into());
     };
@@ -252,7 +253,7 @@ fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std:
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     assert!(root_bytes.len() <= 175);
-    let AttributePage::Internal(children) = decode_attribute_page(&root_bytes, limits)? else {
+    let AttributePage::Internal(children) = decode_attribute_page(&root_bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? else {
         return Err("byte-bounded candidate attribute root is not internal".into());
     };
     assert_eq!(children.len(), 2);
@@ -262,7 +263,7 @@ fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std:
             .value;
         assert!(bytes.len() <= 175);
         assert!(
-            matches!(decode_attribute_page(&bytes, limits)?, AttributePage::Leaf(entries) if entries.len() == 1)
+            matches!(decode_attribute_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, AttributePage::Leaf(entries) if entries.len() == 1)
         );
     }
     Ok(())
@@ -338,11 +339,11 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
     assert!(insert.changes_cardinality());
     let mut current = Some(entry(1, 1, 1)?);
     assert_eq!(
-        insert.apply_current(&mut current),
+        insert.replacement(current.as_ref()),
         Err(AttributeSemanticError::AlreadyExists)
     );
     current = None;
-    assert!(insert.apply_current(&mut current).is_ok());
+    assert!(insert.replacement(current.as_ref()).is_ok());
 
     let remove = AttributeMutation::Remove {
         name: name(1, 1)?,
@@ -350,17 +351,16 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
     };
     current = None;
     assert_eq!(
-        remove.apply_current(&mut current),
+        remove.replacement(current.as_ref()),
         Err(AttributeSemanticError::Missing)
     );
     current = Some(entry(1, 1, 1)?);
     assert_eq!(
-        remove.apply_current(&mut current),
+        remove.replacement(current.as_ref()),
         Err(AttributeSemanticError::StateConflict)
     );
     current = Some(entry(1, 1, 2)?);
-    assert!(remove.apply_current(&mut current).is_ok());
-    assert_eq!(current, None);
+    assert_eq!(remove.replacement(current.as_ref()), Ok(None));
 
     let replace = AttributeMutation::Replace {
         expected: entry(1, 1, 1)?,
@@ -369,17 +369,16 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
     assert!(!replace.changes_cardinality());
     current = None;
     assert_eq!(
-        replace.apply_current(&mut current),
+        replace.replacement(current.as_ref()),
         Err(AttributeSemanticError::Missing)
     );
     current = Some(entry(1, 1, 3)?);
     assert_eq!(
-        replace.apply_current(&mut current),
+        replace.replacement(current.as_ref()),
         Err(AttributeSemanticError::StateConflict)
     );
     current = Some(entry(1, 1, 1)?);
-    assert!(replace.apply_current(&mut current).is_ok());
-    assert_eq!(current, Some(entry(1, 1, 2)?));
+    assert_eq!(replace.replacement(current.as_ref()).map(|value| value.cloned()), Ok(Some(entry(1, 1, 2)?)));
     Ok(())
 }
 

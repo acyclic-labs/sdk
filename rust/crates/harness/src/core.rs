@@ -459,7 +459,7 @@ impl AuthorityIssuer {
         id: impl Into<String>,
         file: &FileRef,
     ) -> Result<Scope> {
-        file.validate()?;
+        file.validate(&mut None)?;
         if is_internal_path(file.path()) {
             return Err(Error::Unauthorized(
                 "internal storage files cannot be delegated".into(),
@@ -487,7 +487,7 @@ impl AuthorityIssuer {
         self.require_private_owner_read(owner_scope, volume)?;
         Ok(self.issue(
             id.into(),
-            Capabilities::new([volume.directory_read_capability(prefix)?]),
+            Capabilities::new([volume.directory_read_capability(prefix, &mut None)?]),
             Some(reader),
             Some(owner_scope.proof),
         ))
@@ -499,11 +499,11 @@ impl AuthorityIssuer {
         volume: &crate::conversation::VolumeRef,
     ) -> Result<()> {
         self.verifier().verify(owner_scope)?;
-        volume.validate()?;
+        volume.validate(&mut None)?;
         if !matches!(volume.owner(), VolumeOwner::Agent(owner) if Some(*owner) == owner_scope.agent)
             || !owner_scope
                 .capabilities
-                .contains(&volume.capability(VolumeOperation::Read)?)
+                .contains(&volume.capability(VolumeOperation::Read, &mut None)?)
         {
             return Err(Error::Unauthorized(
                 "private read delegation requires its original owner".into(),
@@ -1478,7 +1478,7 @@ impl ExtensionRecord {
         {
             return Err(Error::Invalid("extension record is invalid".into()));
         }
-        self.content.validate()
+        self.content.validate(&mut None)
     }
 }
 
@@ -1730,7 +1730,7 @@ impl ExtensionAdmission {
                 {
                     return Err(invalid("extension configuration is invalid"));
                 }
-                configuration.content.validate_with_work(work)?;
+                configuration.content.validate(work)?;
                 let Some(position) = self.selected.iter().position(|extension| extension == &configuration.extension) else {
                     return Err(conflict("extension admission configuration is not uniquely selected"));
                 };
@@ -1755,7 +1755,7 @@ impl ExtensionConfiguration {
         {
             return Err(Error::Invalid("extension configuration is invalid".into()));
         }
-        self.content.validate()
+        self.content.validate(&mut None)
     }
 }
 
@@ -2168,11 +2168,11 @@ impl SchemaRegistry {
         let Some(schema) = &binding.configuration_schema else {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "extension does not declare configuration" });
         };
-        content.validate_with_work(work)?;
+        content.validate(work)?;
         if content.descriptor().media_type() != "application/json" {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "extension configuration must be JSON" });
         }
-        content.descriptor().verify_with_work(bytes, work)?;
+        content.descriptor().verify(bytes, work)?;
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let (value, produced) = quota.work().as_deref_mut().expect("original configuration decoder").decode_json_value(bytes)?;
         quota.adopt(produced)?;
@@ -2187,11 +2187,11 @@ impl SchemaRegistry {
         content: &FileRef,
         bytes: &[u8],
     ) -> Result<()> {
-        content.validate()?;
+        content.validate(&mut None)?;
         if content.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("extension content must be JSON".into()));
         }
-        content.descriptor().verify(bytes)?;
+        content.descriptor().verify(bytes, &mut None)?;
         let value: Value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("extension content is not JSON: {error}")))?;
         let binding = self.pinned_binding(name, version, None)?;
@@ -2311,7 +2311,7 @@ impl SchemaRegistry {
             _metadata = io.encode(record, io.remaining()?.bytes_encoded, false)?;
             _metadata_hold = io.guard_owned(_metadata.len() as u64)?;
         }
-        limits.validate_file(&record.content)?;
+        limits.validate_file(&record.content, &mut None)?;
         let byte_length = u64::try_from(bytes.len())
             .map_err(|_| Error::Invalid("configuration byte length is not portable".into()))?;
         if byte_length > limits.file_bytes
@@ -2382,7 +2382,7 @@ impl SchemaRegistry {
         let hash_work = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
         #[cfg(feature = "filesystem")]
         if let Some(io) = io { io.preflight(hash_work)?; io.charge(hash_work)?; }
-        record.content.descriptor().verify(bytes)?;
+        record.content.descriptor().verify(bytes, &mut None)?;
         let value;
         #[cfg(feature = "filesystem")]
         let decoded;
@@ -2652,13 +2652,13 @@ impl Reducer {
         &mut self, message: &ConversationMessage,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.conversation.validate_append_with_work(message, work)?;
+        self.conversation.validate_append(message, work)?;
         let (message, retired) = Self::produce_component(
             &mut self.native_custody, NativeComponentRef::ConversationMessage(message.sequence), work,
             || message.clone(), |quota| native_custody::copy_message(message, quota),
         )?;
         let sequence = message.sequence;
-        if let Err(error) = self.conversation.append_with_work(message, work) {
+        if let Err(error) = self.conversation.append(message, work) {
             self.native_custody.rollback(NativeComponentRef::ConversationMessage(sequence), retired);
             return Err(error);
         }
@@ -2671,7 +2671,7 @@ impl Reducer {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<((String, Vec<u8>), u64)> {
         if !work.as_deref().is_some_and(native_custody::is_native) {
-            return Ok(((receipt.target_project.storage_name()?,
+            return Ok(((receipt.target_project.storage_name(work)?,
                 receipt.provider_operation_id.clone()), 0));
         }
         let digest = crate::contract::canonical_json_digest_with_work(
@@ -2759,6 +2759,7 @@ impl Reducer {
             scope,
             destination,
             VolumeOperation::Write,
+            acyclic_stream::MAX_RECORD_BYTES as u64, &mut None,
         )?;
         if expected_revision != self.revision {
             return Err(Error::Conflict(
@@ -3174,7 +3175,7 @@ impl Reducer {
             Action::MigrateExtensionState { content, .. } => {
                 if work.as_deref().is_some_and(native_custody::is_native) {
                     self.authority_verifier.verify_with_work(&command.scope, work)?;
-                    content.volume().require_writer(command.scope.agent())?;
+                    content.volume().require_writer(command.scope.agent(), &None)?;
                     Self::require_volume_operation_with_work(
                         &|capability| require_capability(&command.scope, capability),
                         content.volume(), VolumeOperation::Write, work,
@@ -3182,6 +3183,7 @@ impl Reducer {
                 } else {
                     ContentGrant::verify(
                         &self.authority_verifier, &command.scope, content.volume(), VolumeOperation::Write,
+                        acyclic_stream::MAX_RECORD_BYTES as u64, work,
                     )?;
                 }
                 if migration != Migration::Verified {
@@ -3300,7 +3302,8 @@ impl Reducer {
                 let mut owned = crate::fork::ForkValidationWork::new(work)?;
                 for resource in &seed.resources {
                     if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.source {
-                        require(&volume.capability(VolumeOperation::Read)?)?;
+                        let capability = owned.volume_capability(volume)?;
+                        require(&capability)?;
                     }
                     if let crate::fork::ResourceRevision::PrivateVolume { volume, .. } =
                         &resource.source
@@ -3326,7 +3329,7 @@ impl Reducer {
                         "merge receipt is not bound to the parent agent and operation".into(),
                     ));
                 }
-                receipt.target_project.require_writer(agent)?;
+                receipt.target_project.require_writer(agent, &None)?;
                 Self::require_volume_operation_with_work(&require, &receipt.target_project, VolumeOperation::Write, work)?;
                 Self::require_volume_operation_with_work(&require, &receipt.source_project, VolumeOperation::Read, work)?;
                 Ok(())
@@ -3349,7 +3352,7 @@ impl Reducer {
             return require(std::str::from_utf8(&capability[..prefix.len()+64]).expect("hex capability"));
         }
         let _ = work;
-        require(&volume.capability(operation)?)
+        require(&volume.capability(operation, work)?)
     }
 
     /// Applies an event only after its canonical Stream append commits.
@@ -3815,16 +3818,12 @@ impl Reducer {
             owned.adopt(prefix.attached_agents.capacity() as u64 * std::mem::size_of::<AgentId>() as u64)?;
             let bytes = owned.canonical(&prefix)?;
             const PREFIX_MEDIA: &str = "application/vnd.acyclic.harness.inherited-conversation+json";
-            if let Some(observer) = owned.work().as_deref_mut() {
-                observer.hashed_bytes(bytes.len() as u64)?;
-                observer.admit_allocation(PREFIX_MEDIA.len() as u64)?;
-                observer.copy_bytes(PREFIX_MEDIA.len() as u64)?;
-            }
-            owned.retain(PREFIX_MEDIA.len() as u64)?;
             let expected = FileDescriptor::from_bytes(
                 &bytes,
                 PREFIX_MEDIA,
+                owned.work(),
             )?;
+            owned.adopt(expected.logical_owned_bytes())?;
             if file.descriptor() != &expected
                 || file.display_name() != "inherited-conversation.json"
             {
@@ -4099,7 +4098,7 @@ impl Reducer {
                         "extension state version change requires migration".into(),
                     ));
                 }
-                content.validate_with_work(quota.work())?;
+                content.validate(quota.work())?;
                 if content.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("extension content must be JSON".into()));
                 }
@@ -4222,13 +4221,13 @@ impl Reducer {
                         "effect provider and kind must be non-empty".into(),
                     ));
                 }
-                request.validate_with_work(quota.work())?;
+                request.validate(quota.work())?;
                 if request.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("effect request must be JSON content".into()));
                 }
                 let request_digest =
                     effect_request_digest_with_work(provider, *guarantee, effect_kind, request, quota.work())?;
-                result_schema.validate_with_work(quota.work())?;
+                result_schema.validate(quota.work())?;
                 if result_schema.descriptor().media_type() != "application/schema+json" {
                     return Err(Error::Invalid(
                         "effect result schema must be JSON Schema content".into(),
@@ -4314,7 +4313,7 @@ impl Reducer {
                 }
                 drop(key);
                 if let Some(io) = quota.work().as_deref_mut() { io.release_owned(key_owned)?; }
-                self.conversation.validate_append(&receipt.notice)?;
+                self.conversation.validate_append(&receipt.notice, &mut None)?;
                 Ok(EventPayload::ProjectMergePublished {
                     receipt: native_custody::copy_boxed(receipt.as_ref(), quota, native_custody::copy_receipt)?,
                 })
@@ -4328,7 +4327,7 @@ impl Reducer {
             }
             Action::AppendConversationMessage { message } => {
                 self.require_conversation()?;
-                self.conversation.validate_append(message)?;
+                self.conversation.validate_append(message, &mut None)?;
                 Ok(EventPayload::ConversationMessageAppended {
                     message: native_custody::copy_boxed(message.as_ref(), quota, native_custody::copy_message)?,
                 })
@@ -4342,7 +4341,7 @@ impl Reducer {
             }
             Action::OpenInteraction { ticket } => {
                 self.require_bound_conversation_if_applicable()?;
-                ticket.validate()?;
+                ticket.validate(quota.work())?;
                 if self.interactions.contains_key(&ticket.id) {
                     return Err(Error::Conflict(
                         "interaction identity already exists".into(),
@@ -4543,7 +4542,7 @@ impl Reducer {
                         "effect provider and kind must be non-empty".into(),
                     ));
                 }
-                request.validate_with_work(work)?;
+                request.validate(work)?;
                 if request.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("effect request must be JSON content".into()));
                 }
@@ -4555,7 +4554,7 @@ impl Reducer {
                 {
                     return Err(Error::Invalid("effect request digest mismatch".into()));
                 }
-                result_schema.validate_with_work(work)?;
+                result_schema.validate(work)?;
                 if result_schema.descriptor().media_type() != "application/schema+json"
                     || *result_schema_digest != *result_schema.descriptor().sha256()
                 {
@@ -4738,7 +4737,7 @@ impl Reducer {
             }
             EventPayload::InteractionOpened { ticket } => {
                 self.require_bound_conversation_if_applicable()?;
-                ticket.validate()?;
+                ticket.validate(work)?;
                 if self.interactions.contains_key(&ticket.id) {
                     return Err(Error::Conflict(
                         "interaction identity already exists".into(),
@@ -5152,7 +5151,7 @@ fn effect_request_digest_with_work(
 
 fn validate_effect_result(status: &EffectStatus) -> Result<()> {
     if let EffectStatus::Succeeded { result } = status {
-        result.validate()?;
+        result.validate(&mut None)?;
         if result.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("effect result must be JSON content".into()));
         }

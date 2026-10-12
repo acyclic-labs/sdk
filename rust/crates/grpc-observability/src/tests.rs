@@ -147,18 +147,14 @@ fn capture(filtered: bool) -> (Dispatch, Log) {
         log,
     )
 }
-#[derive(Clone)]
-struct Family;
-impl CallSpan for Family {
-    fn span(rpc: Option<&str>) -> Span {
-        tracing::info_span!(
-            "test.grpc.call",
-            rpc,
-            rpc.code = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-            error.kind = tracing::field::Empty
-        )
-    }
+fn call_span(rpc: Option<&str>) -> Span {
+    tracing::info_span!(
+        "test.grpc.call",
+        rpc,
+        rpc.code = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+        error.kind = tracing::field::Empty
+    )
 }
 struct Frames {
     frames: VecDeque<Result<http_body::Frame<Bytes>, Status>>,
@@ -262,10 +258,10 @@ fn call(
             rpc.code = tracing::field::Empty
         );
         let _entered = parent.enter();
-        TracedChannel::<_, Family>::new(Transport(Some(ResponseFuture {
+        TracedChannel::new(Transport(Some(ResponseFuture {
             result: Some(result),
             pending,
-        })))
+        })), call_span)
         .call(
             http::Request::builder()
                 .uri("/v1.Service/Call")
@@ -563,7 +559,7 @@ fn typed_result_and_cancellation_keep_origin_without_mutating_filtered_parent() 
                 );
                 let _entered = caller.enter();
                 Box::pin(observe_call(
-                    Family::span(Some("Typed")),
+                    call_span(Some("Typed")),
                     TypedFuture {
                         pending: stage == 1,
                         failed: stage == 2,
@@ -639,10 +635,10 @@ fn rpc_attribution_uses_only_canonical_method_metadata() {
             request.extensions_mut().insert(method);
         }
         let mut future = tracing::dispatcher::with_default(&dispatch, || {
-            TracedChannel::<_, Family>::new(Transport(Some(ResponseFuture {
+            TracedChannel::new(Transport(Some(ResponseFuture {
                 result: Some(Err(Failure("same failure"))),
                 pending: false,
-            })))
+            })), call_span)
             .call(request)
         });
         assert!(matches!(

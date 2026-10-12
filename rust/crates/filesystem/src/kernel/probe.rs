@@ -1,8 +1,5 @@
 //! Object-store-backed authenticated dependency probes.
-//!
-//! Async probes and captures share one canonical original/standalone accounting
-//! engine. Cache summaries own their actual capacity guards; semantic outputs
-//! retain their guards across every backend await.
+
 
 use super::{
     AsyncRebaseProbe, BlobReadError, DecodeLimits, Dependency, DependencyError, DependencyRegion,
@@ -27,16 +24,7 @@ use thiserror::Error;
 const ZERO_HASH_BLOCK: [u8; 8 * 1024] = [0; 8 * 1024];
 const CONTENT_RANGE_DOMAIN: &[u8] = b"acyclic-fs-dependency-content-range-v1\0";
 
-/// Computes canonical layout-independent evidence for one non-empty logical
-/// content range already present in memory.
-///
-/// This function is the normative cross-language vector surface. Sparse and
-/// inline content use the same domain, length prefix, and logical byte stream.
-///
-/// # Errors
-///
-/// Rejects a zero maximum, empty/excessive content, or exact hash work outside
-/// the admitted budget.
+/// Computes canonical layout-independent evidence for one non-empty logical content range already present in memory.
 pub fn capture_content_range_bytes(
     bytes: &[u8],
     maximum_bytes: u64,
@@ -64,9 +52,6 @@ pub fn capture_content_range_bytes(
 }
 
 /// Authenticated exact-region resolver with disposable per-instance summary caches.
-///
-/// Caches contain only immutable decoded summaries. Cache loss affects
-/// performance, never correctness or authority.
 pub struct AuthenticatedGenerationProbe<'a, S> {
     store: &'a S,
     limits: ProbeLimits,
@@ -109,10 +94,6 @@ impl Default for ProbeLimits {
 
 impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
     /// Creates a bounded resolver over one immutable-object backend.
-    ///
-    /// # Errors
-    ///
-    /// Rejects zero cache or extent-output limits before backend access.
     pub fn new(store: &'a S, limits: ProbeLimits) -> Result<Self, AuthenticatedProbeError> {
         if limits.maximum_cached_generations == 0
             || limits.maximum_cached_records == 0
@@ -134,22 +115,18 @@ impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
         })
     }
 
-    /// Constructs the same resolver on the caller's original accounting context.
-    /// Empty caches allocate nothing; later actual cache capacities retain their
-    /// own guards. The returned constructor guard therefore owns zero bytes.
     pub(crate) fn new_with_accounting(
         store: &'a S,
         limits: ProbeLimits,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
-        accounting.with_owned_allocations(|accounting| {
+        accounting.with_allocations(|accounting| {
             let allocation = accounting.claim_owned(0, 0)?;
             let probe = Self::new(store, limits).map_err(crate::FsError::from)?;
             Ok((probe, allocation))
         })
     }
 
-    /// Destroys cached buffers before releasing their original physical claims.
     pub(crate) fn retire_with_accounting(
         self,
         accounting: &mut KernelAccounting<'_>,
@@ -165,8 +142,6 @@ impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
         records
     }
 
-    /// Attributes reached async frame allocations to this observer's custody.
-    /// The borrowed control token retains no proof map or generation root.
     pub(crate) fn with_data_custody(mut self, custody: Option<&'a super::ProofDataCustody>) -> Self {
         self.data_custody = custody;
         self
@@ -232,7 +207,7 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
             .store
             .read(object, self.limits.decode.maximum_object_bytes, budget)
             .map_err(|failure| failed(failure.error.into(), *failure.work))?;
-        let root = decode_generation_root(&receipt.value, self.limits.decode)
+        let root = decode_generation_root(&receipt.value, self.limits.decode, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
             .map_err(|error| failed(error.into(), receipt.work))?;
         let mut generations = self
             .generations
@@ -305,7 +280,6 @@ pub(crate) fn capture_file_record_state(
     })
 }
 
-/// Captures the canonical record state using the caller's original ledger.
 pub(crate) fn capture_file_record_state_with_accounting(
     record: FileRecord,
     accounting: &mut KernelAccounting<'_>,
@@ -313,9 +287,7 @@ pub(crate) fn capture_file_record_state_with_accounting(
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<DependencyState, crate::FsError> {
     cancellation.map_or(Ok(()), CancellationToken::check)?;
-    let (bytes, allocation) = super::file_table::encode_file_table_leaf_records_with_accounting_and_custody(
-        std::slice::from_ref(&record), 1, accounting, data_custody,
-    )?;
+    let (bytes, allocation) = crate::kernel::codec::encode_owned(accounting, |observe, reserve| super::file_table::encode_file_table_leaf_records(std::slice::from_ref(&record), 1, data_custody, observe, reserve))?;
     let capacity = usize_to_u64(bytes.capacity());
     capture_encoded_state_with_accounting(
         Owned::new(bytes, allocation, capacity),
@@ -407,7 +379,6 @@ pub(crate) fn capture_directory_name_state(
     })
 }
 
-/// Captures a borrowed directory binding without copying its owned name.
 pub(crate) fn capture_directory_name_state_with_accounting(
     entry: &super::TreeEntry,
     accounting: &mut KernelAccounting<'_>,
@@ -416,9 +387,7 @@ pub(crate) fn capture_directory_name_state_with_accounting(
 ) -> Result<DependencyState, crate::FsError> {
     cancellation.map_or(Ok(()), CancellationToken::check)?;
     let _name = ProbeNameResidency::new(data_custody, usize_to_u64(entry.name.retained_bytes()))?;
-    let (bytes, allocation) = super::tree::encode_tree_leaf_entries_with_accounting(
-        std::slice::from_ref(entry), 1, accounting, None, data_custody,
-    )?;
+    let (bytes, allocation) = crate::kernel::codec::encode_owned(accounting, |observe, _reserve| super::tree::encode_tree_leaf_entries(std::slice::from_ref(entry), 1, None, data_custody, observe, crate::FsError::EncodedAllocationFailed))?;
     let capacity = usize_to_u64(bytes.capacity());
     capture_encoded_state_with_accounting(
         Owned::new(bytes, allocation, capacity),
@@ -504,9 +473,7 @@ fn capture_directory_page_encoding(
     // are destroyed before their operation-residency registration retires.
     let entries = entries;
     let remaining = state_encoding_budget(work, budget, standing)?;
-    let encoded = super::tree::encode_tree_leaf_entries_measured(
-        &entries, maximum_entries, remaining, cancellation, 0, Some(u8::from(has_more)),
-    ).map_err(|failure| {
+    let encoded = crate::kernel::encode(remaining, cancellation, 0, |observe| super::tree::encode_tree_leaf_entries(&entries, maximum_entries, Some(u8::from(has_more)), None, observe, crate::kernel::EncodeError::AllocationFailed)).map_err(|failure| {
         let completed = match work.with_backend(*failure.work, standing) {
             Ok(completed) => completed,
             Err(error) => return failed(error.into(), work),
@@ -517,16 +484,15 @@ fn capture_directory_page_encoding(
             }
         }
         let error = match failure.error {
-            super::TreePageEncodeError::Canonical(error) => error.into(),
-            super::TreePageEncodeError::Work(error) => error.into(),
-            super::TreePageEncodeError::Cancelled(_) => AuthenticatedProbeError::Cancelled,
-            super::TreePageEncodeError::AllocationFailed(error) => AuthenticatedProbeError::EncodedAllocationFailed(error),
+            super::EncodeError::Canonical(error) => error.into(),
+            super::EncodeError::Work(error) => error.into(),
+            super::EncodeError::Cancelled(_) => AuthenticatedProbeError::Cancelled,
+            super::EncodeError::AllocationFailed(error) => AuthenticatedProbeError::EncodedAllocationFailed(error),
         };
         failed(error, completed)
     })?;
     capture_encoded_state(encoded, b"acyclic-fs-dependency-directory-page-v1\0", budget, work, standing, data_custody, cancellation)
 }
-
 
 struct ProbeNameResidency<'a> {
     token: Option<&'a super::ProofDataCustody>,
@@ -817,8 +783,6 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
     }
 }
 
-/// Scalar immutable summaries keep their actual backing before its guard.
-/// Generation parents are never cloned merely to cache a file-table frontier.
 struct ProbeSummaryCache<K, V> {
     entries: Owned<Vec<(K, V)>>,
 }
@@ -906,11 +870,6 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
     }
 
     /// Captures a bounded batch, preserving order, duplicates and moved names.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid regions or bounds before semantic backend access, and
-    /// preserves authentication, cancellation and exact accounting failures.
     pub async fn capture_many_async(
         &self, generation: GenerationId, regions: Vec<DependencyRegion>, maximum_regions: u32,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -928,8 +887,6 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
             .map_err(|error| failed(project_probe_error(error), work))
     }
 
-    /// Captures through the original context while incoming vector/name custody
-    /// remains with the caller. The output guard owns only its new backing.
     pub(crate) async fn capture_many_with_accounting(
         &self, generation: GenerationId, regions: Vec<DependencyRegion>, maximum_regions: u32,
         accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -962,13 +919,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         Ok((captured.value, captured.allocation))
     }
 
-    /// Captures records already authenticated by the caller without rereading
-    /// their generation or file table. Owned region names move into the output.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed batches and identities before semantic backend access,
-    /// retaining exact authentication, cancellation and accounting causes.
+    /// Captures records already authenticated by the caller without rereading their generation or file table.
     pub async fn capture_records_many_async(
         &self, regions: Vec<(Option<FileRecord>, DependencyRegion)>, maximum_regions: u32,
         budget: WorkBudget, cancellation: &CancellationToken,
@@ -986,9 +937,6 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
             .map_err(|error| failed(project_probe_error(error), work))
     }
 
-    /// Uses the original ledger and incoming custody. Only the newly allocated
-    /// output backing belongs to the returned guard; names move unchanged and
-    /// remain in the caller's incoming payload custody.
     pub(crate) async fn capture_records_many_with_accounting(
         &self, regions: Vec<(Option<FileRecord>, DependencyRegion)>, maximum_regions: u32,
         accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -1093,10 +1041,6 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
     }
 
     /// Resolves the full exact-region algorithm through nonblocking canonical I/O.
-    ///
-    /// # Errors
-    ///
-    /// Preserves typed authentication, cancellation and exact-work failures.
     pub async fn probe_async(
         &self, generation: GenerationId, region: &DependencyRegion, budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -1110,7 +1054,6 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
             .map_err(|error| failed(project_probe_error(error), work))
     }
 
-    /// Original and standalone callers execute this same semantic region resolver.
     pub(crate) async fn probe_async_with_accounting(
         &self, generation: GenerationId, region: &DependencyRegion,
         accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -1125,10 +1068,6 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
     }
 
     /// Captures an already authenticated record without rereading its frontier.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a mismatched identity and preserves typed semantic/backend errors.
     pub async fn capture_record_async(
         &self, record: Option<FileRecord>, region: &DependencyRegion, budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -1546,9 +1485,7 @@ fn capture_directory_page_with_accounting(
 ) -> Result<DependencyState, crate::FsError> {
     cancellation.check()?;
     let _entries = ProbeNameResidency::new(custody, directory_entries_bytes(entries)?)?;
-    let (encoded, allocation) = super::tree::encode_tree_leaf_entries_with_accounting(
-        entries, maximum_entries, accounting, Some(u8::from(has_more)), custody,
-    )?;
+    let (encoded, allocation) = crate::kernel::codec::encode_owned(accounting, |observe, _reserve| super::tree::encode_tree_leaf_entries(entries, maximum_entries, Some(u8::from(has_more)), custody, observe, crate::FsError::EncodedAllocationFailed))?;
     let bytes = usize_to_u64(encoded.capacity());
     capture_encoded_state_with_accounting(
         Owned::new(encoded, allocation, bytes), b"acyclic-fs-dependency-directory-page-v1\0",
@@ -1569,7 +1506,6 @@ fn project_probe_error(error: crate::FsError) -> AuthenticatedProbeError {
         crate::FsError::Directory(error) => AuthenticatedProbeError::Directory(error),
         crate::FsError::FileRead(super::FileRangeReadError::Extent(error)) => AuthenticatedProbeError::Extent(error),
         crate::FsError::BlobRead(error) => AuthenticatedProbeError::Blob(error),
-        crate::FsError::EncodedAllocationFailed(error) => AuthenticatedProbeError::EncodedAllocationFailed(error),
         #[cfg(not(target_arch = "wasm32"))]
         crate::FsError::NativeKernel(error) => AuthenticatedProbeError::Storage(ObjectStoreError::Native(error)),
         error => AuthenticatedProbeError::Context(Box::new(error)),

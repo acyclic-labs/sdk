@@ -10,14 +10,12 @@ const DOMAIN: &[u8] = b"acyclic-fs-source-state-v1\0";
 const ID_DOMAIN: &[u8] = b"acyclic-fs-source-authority-v1\0";
 const VERSION: u16 = 1;
 
-/// Durable source advancement policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DurableSourceMode {
     Pinned,
     Tracking,
 }
 
-/// Durable fail-closed source lifecycle state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DurableSourceState {
     Clean,
@@ -27,7 +25,6 @@ pub(crate) enum DurableSourceState {
     Sealed,
 }
 
-/// Portable durable reason that source continuity was lost.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SourceInvalidation {
     InitialSnapshotRequired,
@@ -39,7 +36,6 @@ pub(crate) enum SourceInvalidation {
     RootChanged,
 }
 
-/// Complete latest source fact; replaying the authority needs no side state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SourceFact {
     pub(crate) volume_id: VolumeId,
@@ -53,7 +49,6 @@ pub(crate) struct SourceFact {
     pub(crate) generation_id: GenerationId,
 }
 
-/// Canonical source-fact codec failure.
 #[derive(Debug, Error)]
 pub(crate) enum SourceFactError {
     #[error("source bounds must be non-zero")]
@@ -62,7 +57,6 @@ pub(crate) enum SourceFactError {
     Decode(#[from] CanonicalDecodeError),
 }
 
-/// Derives the sole source-state authority for one workspace.
 pub(crate) fn source_authority_id(volume_id: VolumeId) -> AuthorityId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(ID_DOMAIN);
@@ -104,28 +98,28 @@ pub(crate) fn decode_source_fact(
     bytes: &[u8],
     maximum_payload_bytes: u64,
 ) -> Result<SourceFact, SourceFactError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes)?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     let value = SourceFact {
-        volume_id: VolumeId::from_bytes(decoder.fixed()?),
-        root_identity: decoder.fixed()?,
-        mode: match decoder.u8()? {
+        volume_id: VolumeId::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
+        root_identity: decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        mode: match decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
             1 => DurableSourceMode::Pinned,
             2 => DurableSourceMode::Tracking,
             _ => return Err(invariant("unknown source mode").into()),
         },
-        maximum_paths: decoder.u32()?,
-        maximum_extent_spans: decoder.u32()?,
-        maximum_queued_changes: decoder.u32()?,
-        capture_policy: Digest::from_bytes(decoder.fixed()?),
-        state: match decoder.u8()? {
+        maximum_paths: decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        maximum_extent_spans: decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        maximum_queued_changes: decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        capture_policy: Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
+        state: match decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
             1 => DurableSourceState::Clean,
             2 => DurableSourceState::PendingCapture,
-            3 => DurableSourceState::NeedsRescan(reason_from_tag(decoder.u8()?)?),
+            3 => DurableSourceState::NeedsRescan(reason_from_tag(decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)?),
             4 => DurableSourceState::Conflict,
             5 => DurableSourceState::Sealed,
             _ => return Err(invariant("unknown source state").into()),
         },
-        generation_id: GenerationId::new(Digest::from_bytes(decoder.fixed()?)),
+        generation_id: GenerationId::new(Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)),
     };
     decoder.finish()?;
     validate(value)?;

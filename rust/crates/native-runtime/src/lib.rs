@@ -661,7 +661,7 @@ impl NativeFile {
 mod apple;
 #[cfg(target_os = "linux")]
 mod linux;
-mod obs;
+pub mod obs;
 mod process_tree;
 #[cfg(windows)]
 mod windows;
@@ -796,7 +796,7 @@ pub fn sync_file(file: &File, durability: Durability, meter: Option<&dyn NativeR
         outcome = obs::Empty,
         error.kind = obs::Empty
     );
-    operation.scope(|| {
+    operation.in_scope(|| {
         operation.finish(with_file_admission(file, || {
             sync_file_unsequenced(file, durability)
         }))
@@ -818,7 +818,7 @@ pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
         outcome = obs::Empty,
         error.kind = obs::Empty
     );
-    operation.scope(|| {
+    operation.in_scope(|| {
         operation.finish(with_file_admission(file, || {
             match durability {
                 Durability::Full => file.sync_data(),
@@ -836,7 +836,7 @@ pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
         outcome = obs::Empty,
         error.kind = obs::Empty
     );
-    operation.scope(|| operation.finish(sync_parent_impl(path, durability)))
+    operation.in_scope(|| operation.finish(sync_parent_impl(path, durability)))
 }
 
 /// What recovery found after the last valid frame of an append-only log.
@@ -873,7 +873,7 @@ pub fn recover_log_tail(
         outcome = obs::Empty,
         error.kind = obs::Empty
     );
-    operation.scope(|| {
+    operation.in_scope(|| {
         use std::io::{Read as _, Seek as _, SeekFrom};
 
         let tail = (|| {
@@ -1068,7 +1068,7 @@ impl ServiceReadiness {
             outcome = obs::Empty,
             error.kind = obs::Empty
         );
-        operation.scope(|| {
+        operation.in_scope(|| {
             let mut signal = [0_u8; 1];
             let ready = loop {
                 match self.0.read(&mut signal) {
@@ -1145,7 +1145,7 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
         outcome = obs::Empty,
         error.kind = obs::Empty
     );
-    operation.scope(|| operation.finish((|| {
+    operation.in_scope(|| operation.finish((|| {
     #[cfg(windows)]
     {
         windows::spawn_service_process(executable).map(ServiceReadiness)
@@ -1656,7 +1656,7 @@ fn task_completion<T: Send + 'static>(
         obs::span!(DEBUG, "acyclic.runtime.blocking_io", outcome = obs::Empty, error.kind = obs::Empty)
     } else { obs::OperationSpan::new(tracing::Span::none()) };
     let observer = meter.clone();
-    let operation = move || span.scope(|| {
+    let operation = move || span.in_scope(|| {
         let admission = observer.as_ref().map_or(Ok(()), |meter| meter.check());
         let result = match admission {
             Ok(()) => operation(),
@@ -1858,7 +1858,7 @@ impl<T> FileCompletion<T> {
             finished,
             ..
         } = &mut self;
-        span.scope(|| {
+        span.in_scope(|| {
             span.record_error(result.as_ref().err());
             #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
             if result.as_ref().err().is_some_and(is_uncertain_io_error)
@@ -1998,7 +1998,7 @@ impl NativeJob {
                 state,
                 completion,
                 health,
-            } => span.scope(|| {
+            } => span.in_scope(|| {
                 FileCompletion::new(state, completion, health.clone(), Some(Arc::clone(&file)), span.clone())
                     .finish(windows::read_batch_in_place(&file, &reads))
             }),
@@ -2011,7 +2011,7 @@ impl NativeJob {
                 state,
                 completion,
                 health,
-            } => span.scope(|| {
+            } => span.in_scope(|| {
                 let finish = FileCompletion::new(state, completion, health.clone(), Some(Arc::clone(&file)), span.clone());
                 let result = validate_write_batch(&writes)
                     .and_then(|()| windows::write_batch_in_place(&file, &writes));
@@ -2032,7 +2032,7 @@ impl NativeJob {
                 state,
                 completion,
                 health,
-            } => span.scope(|| {
+            } => span.in_scope(|| {
                 let finish = FileCompletion::new(state, completion, health.clone(), Some(Arc::clone(&file)), span.clone());
                 #[cfg(target_os = "linux")]
                 return submit_file_io(finish, |callback| {
@@ -2061,7 +2061,7 @@ impl NativeJob {
                 state,
                 completion,
                 health,
-            } => span.scope(|| {
+            } => span.in_scope(|| {
                 let finish =
                     FileCompletion::new(state, completion, health.clone(), Some(Arc::clone(&file)), span.clone());
                 #[cfg(any(windows, target_os = "linux"))]
@@ -2338,7 +2338,7 @@ impl<T> Future for NativeCompletion<T> {
                 if let Some(NativeJob::Read { span, .. } | NativeJob::Unit { span, .. }) =
                     this.pending.as_ref()
                 {
-                    span.scope(|| {
+                    span.in_scope(|| {
                         tracing::trace!(name: "acyclic.runtime.fence_wait", "waiting for an earlier operation");
                     });
                 }

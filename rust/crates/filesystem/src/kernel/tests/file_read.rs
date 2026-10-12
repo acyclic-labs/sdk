@@ -290,7 +290,7 @@ fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
     ObjectStore::put(
         &store,
         extent_root,
-        OwnedBytes::from(encode_extent_page(&extents, 16)?),
+        OwnedBytes::from(encode_extent_page(&extents, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     let record = FileRecord {
@@ -381,7 +381,7 @@ fn original_decode_completion_survives_cancellation_after_the_copy()
     let mut observed = OriginalReadAccounting::new(&mut accounting)?;
     let mut bytes = Vec::<u8>::new();
     let result = (|| -> Result<(), FsError> {
-        reserve_decoded_items_with_steps(&mut bytes, 4, &mut |step| observed.observe(step))
+        reserve_decoded_items(&mut bytes, 4, &mut |step| observed.observe(step))
             .map_err(ReadDecodeError::into_original_fs_error)?;
         observed.observe(ReadAllocationStep::BeforeCopy(4))
             .map_err(ReadDecodeError::into_original_fs_error)?;

@@ -36,7 +36,7 @@ async fn indexed_publication_cancellation_precedes_codec_and_sdk() -> Result<()>
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let mut work = history::HistoryWork::new(publication_budget(), &cancellation);
-    assert!(operations::IndexedPublication::new_with_work(
+    assert!(operations::IndexedPublication::new(
         reducer.authority(), &event, bytes, &mut Some(&mut work),
     ).is_err());
     Ok(())
@@ -44,7 +44,7 @@ async fn indexed_publication_cancellation_precedes_codec_and_sdk() -> Result<()>
 
 #[tokio::test]
 async fn immutable_stage_cancelled_before_commit_leaves_no_record() -> Result<()> {
-    let client = StreamClient::new(Arc::new(MemoryStream::default()));
+    let client = Arc::new(MemoryStream::default());
     let path = StreamPath::new("harness/v3/test-fork-stage/cancelled")?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -52,19 +52,19 @@ async fn immutable_stage_cancelled_before_commit_leaves_no_record() -> Result<()
     assert!(checkpoints::stage_immutable_record_with_work(
         &client, path.clone(), acyclic_stream::OwnedBytes::from_static(b"immutable"), &mut Some(&mut work),
     ).await.is_err());
-    assert!(matches!(client.bounds(path.as_str()).await, Err(acyclic_stream::StreamError::NotFound)));
+    assert!(matches!(client.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await, Err(acyclic_stream::StreamError::NotFound)));
     Ok(())
 }
 
 #[tokio::test]
 async fn immutable_stage_reopen_preserves_exact_identity() -> Result<()> {
-    let client = StreamClient::new(Arc::new(MemoryStream::default()));
+    let client = Arc::new(MemoryStream::default());
     let path = StreamPath::new("harness/v3/test-fork-stage/reopen")?;
     let bytes = acyclic_stream::OwnedBytes::from_static(b"immutable");
     checkpoints::stage_immutable_record_with_work(&client, path.clone(), bytes.clone(), &mut None).await?;
     let reopened = client.clone();
     checkpoints::stage_immutable_record_with_work(&reopened, path.clone(), bytes, &mut None).await?;
-    assert_eq!(reopened.bounds(path.as_str()).await?.tail, 1);
+    assert_eq!(reopened.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await?.tail, 1);
     assert!(checkpoints::stage_immutable_record_with_work(
         &reopened, path, acyclic_stream::OwnedBytes::from_static(b"hostile"), &mut None).await.is_err());
     Ok(())
@@ -72,14 +72,14 @@ async fn immutable_stage_reopen_preserves_exact_identity() -> Result<()> {
 
 #[tokio::test]
 async fn immutable_stage_zero_allowance_cannot_append() -> Result<()> {
-    let client = StreamClient::new(Arc::new(MemoryStream::default()));
+    let client = Arc::new(MemoryStream::default());
     let path = StreamPath::new("harness/v3/test-fork-stage/quota")?;
     let cancellation = CancellationToken::new();
     let mut work = history::HistoryWork::new(WorkBudget::default(), &cancellation);
     assert!(checkpoints::stage_immutable_record_with_work(
         &client, path.clone(), acyclic_stream::OwnedBytes::from_static(b"immutable"), &mut Some(&mut work),
     ).await.is_err());
-    assert!(matches!(client.bounds(path.as_str()).await, Err(acyclic_stream::StreamError::NotFound)));
+    assert!(matches!(client.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await, Err(acyclic_stream::StreamError::NotFound)));
     Ok(())
 }
 
@@ -257,7 +257,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     assert!(reopened.publish_fork_report_measured(setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, WorkBudget { backend_read_operations: replay.work.backend_read_operations - 1, ..budget },
         &cancellation).await.is_err());
-    assert_eq!(setup.fixture.stream.bounds(seed.parent.stream_path()?.as_str()).await?.tail, before + 1);
+    assert_eq!(setup.fixture.stream.bounds(acyclic_stream::StreamPath::new(seed.parent.stream_path()?.as_str())?).await?.tail, before + 1);
     let mut child = StreamAggregate::open(&setup.fixture.stream, seed.child.clone(),
         setup.child_verifier.clone(), SchemaRegistry::new()).await?;
     let partial = child.bind_published_child_measured(&reopened, &seed, setup.child_scope.clone(),
@@ -281,11 +281,11 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     reopened_child.bind_published_child_measured(&reopened, &seed, setup.child_scope.clone(),
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     assert_eq!(reopened_child.reducer().revision(), 1);
-    assert_eq!(setup.fixture.stream.bounds(seed.child.stream_path()?.as_str()).await?.tail, 1);
+    assert_eq!(setup.fixture.stream.bounds(acyclic_stream::StreamPath::new(seed.child.stream_path()?.as_str())?).await?.tail, 1);
     setup.fixture.host.settle_task(crate::TaskId::from_bytes([84; 16]), (&setup.lease.reservation).into(),
         crate::Outcome::Failed { message: "test closes original publication lease".into() }, &mut None).await?;
     assert!(reopened.publish_fork_report_measured(setup.report, setup.parent_scope, &setup.owner, budget, &cancellation).await.is_err());
-    assert_eq!(setup.fixture.stream.bounds(seed.parent.stream_path()?.as_str()).await?.tail, before + 1);
+    assert_eq!(setup.fixture.stream.bounds(acyclic_stream::StreamPath::new(seed.parent.stream_path()?.as_str())?).await?.tail, before + 1);
     Ok(())
 }
 
@@ -309,7 +309,7 @@ async fn guarded_child_rejects_original_event_one_with_wrong_binding_identity() 
     }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     assert!(child.bind_published_child_measured(&setup.parent, &seed, setup.child_scope,
         &setup.owner, budget, &cancellation).await.is_err());
-    assert_eq!(setup.fixture.stream.bounds(seed.child.stream_path()?.as_str()).await?.tail, 1);
+    assert_eq!(setup.fixture.stream.bounds(acyclic_stream::StreamPath::new(seed.child.stream_path()?.as_str())?).await?.tail, 1);
     Ok(())
 }
 
@@ -362,7 +362,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let retry_custody = retry_io.into_custody();
     assert!(matches!(&retry, ApplyResult::Replayed { event } if event == &canonical));
     assert!(retry_custody.work().shares_ledger(&native));
-    assert_eq!(fixture.stream.bounds(audience.stream_path()?.as_str()).await?.tail, 1);
+    assert_eq!(fixture.stream.bounds(acyclic_stream::StreamPath::new(audience.stream_path()?.as_str())?).await?.tail, 1);
 
     let independent = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
         .expect("independent original query ledger");
@@ -417,7 +417,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     assert!(matches!(aggregate.execute(
         command, Some(&owner), &mut Some(&mut cancelled_io),
     ).await, Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
-    assert_eq!(fixture.stream.bounds(audience.stream_path()?.as_str()).await?.tail, 1);
+    assert_eq!(fixture.stream.bounds(acyclic_stream::StreamPath::new(audience.stream_path()?.as_str())?).await?.tail, 1);
     drop(first);
     drop(first_custody);
     drop(retry);
@@ -638,7 +638,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
     use acyclic_stream::CommitMutation;
     for mode in 0..9 {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut aggregate = with_content(StreamAggregate::open(
             &client, authority(), issuer().verifier(), schemas()).await?);
         for identity in 1..64 {
@@ -691,9 +691,9 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
             };
             Some(records.remove(0))
         } else { None };
-        client.provider.commit(request).await?;
+        client.commit(request).await?;
         if let Some(bytes) = detached {
-            client.stream(&head)?.append_at(bytes, 0).await?;
+            acyclic_stream::Stream::new(std::sync::Arc::clone(&client), &head)?.append_at(bytes, 0).await?;
         }
         let before = provider.io_snapshot();
         let cancellation = CancellationToken::new();
@@ -721,7 +721,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
 #[tokio::test]
 async fn cold_projection_original_cut_and_anchor_survive_later_checkpoint() -> Result<()> {
     use acyclic_fs::NativeMaterializationWork;
-    let client = StreamClient::new(Arc::new(MemoryStream::default()));
+    let client = Arc::new(MemoryStream::default());
     let mut aggregate = with_content(StreamAggregate::open(
         &client, authority(), issuer().verifier(), schemas()).await?);
     for identity in 1..=128 {
@@ -759,7 +759,7 @@ async fn cold_projection_original_cut_and_anchor_survive_later_checkpoint() -> R
 async fn cold_projection_original_audience_and_cancellation_precede_sdk_reads() -> Result<()> {
     use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError};
     let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-    let client = StreamClient::new(provider.clone());
+    let client = provider.clone();
     for cancelled in [false, true] {
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(projection_codec_budget(), &cancellation)

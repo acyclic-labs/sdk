@@ -1,5 +1,4 @@
-//! Shared immutable path-copy mechanics for authenticated B+tree formats.
-//! Original native claims are structural; sorting and producers run outside root loans.
+//! Shared immutable path-copy mechanics for authenticated B+tree formats. Original native claims are structural; sorting and producers run outside root loans.
 
 use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::codec::DecodedPageShape;
@@ -23,11 +22,7 @@ pub(crate) trait Format: Send + Sync + 'static {
 
     fn kind() -> ObjectKind;
     fn key(value: &Self::Value) -> &Self::Key;
-    fn decode(bytes: &[u8], limits: DecodeLimits) -> Result<Page<Self>, CanonicalDecodeError>
-    where
-        Self: Sized;
-    /// Observes the canonical parser's actual owned-allocation and item boundaries.
-    fn decode_with_steps<E: From<CanonicalDecodeError>>(
+    fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
         observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
@@ -48,23 +43,14 @@ pub(crate) trait Format: Send + Sync + 'static {
     fn internal_item_encoded_length(key: &Self::Key) -> Result<usize, CanonicalDecodeError>;
     fn key_nested_bytes(key: &Self::Key) -> u64;
     fn value_nested_bytes(value: &Self::Value) -> u64;
-    /// Actual capacity of this one moved key/value's owned name buffer.
     fn key_owned_bytes(key: &Self::Key) -> u64;
     fn value_owned_bytes(value: &Self::Value) -> u64;
-    fn try_clone_key(
-        key: &Self::Key,
-        maximum_bytes: u32,
-    ) -> Result<Self::Key, CanonicalDecodeError>;
-    fn try_clone_value(
-        value: &Self::Value,
-        maximum_bytes: u32,
-    ) -> Result<Self::Value, CanonicalDecodeError>;
-    fn try_clone_key_with_steps<E: From<CanonicalDecodeError>>(
+    fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
         maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E>;
-    fn try_clone_value_with_steps<E: From<CanonicalDecodeError>>(
+    fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
         maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
@@ -77,10 +63,13 @@ pub(crate) trait Format: Send + Sync + 'static {
     where Self: Sized;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Child<K> {
-    pub(crate) first: K,
-    pub(crate) page: ObjectId,
+/// One authenticated child page and its exact lower-bound key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Child<K> {
+    /// Exact first key represented by the child subtree.
+    pub first: K,
+    /// Authenticated child page.
+    pub page: ObjectId,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -108,14 +97,8 @@ pub(crate) trait Mutation<F: Format>: Clone {
 
     fn key(&self) -> &F::Key;
     fn changes_cardinality(&self) -> bool;
-    /// Checks semantic preconditions without copying the current value.
     fn replacement<'a>(&'a self, current: Option<&F::Value>) -> Result<Option<&'a F::Value>, Self::Error>;
     fn map_error(error: Error<Self::Error>) -> crate::FsError;
-    fn apply_current(&self, current: &mut Option<F::Value>) -> Result<(), Self::Error> {
-        let replacement = self.replacement(current.as_ref())?;
-        *current = replacement.cloned();
-        Ok(())
-    }
 }
 
 #[derive(Clone)]
@@ -212,8 +195,6 @@ where F: Format, M: Mutation<F> {
     marker: PhantomData<(F, M)>,
 }
 
-/// The ordinary and original-native callers drive this one path-copy body.
-/// Inputs remain borrowed under their caller's custody; only indices are sorted.
 pub(crate) async fn apply_with_accounting<S, F, M>(
     store: &S,
     root: ObjectId,
@@ -846,22 +827,9 @@ const PAGE_WRITE: WorkCounters = WorkCounters {
     ..WorkCounters::UNCHARGED
 };
 
-
-/// Soft encoded size of every rewritten page.
-///
-/// Readers admit any page within [`DecodeLimits`]. Writers instead split each
-/// rewritten run into balanced pages near this size, so a point mutation
-/// re-encodes, re-hashes, and stages a bounded page however many items the
-/// tree holds, and a split leaves room on both sides for later inserts.
 pub(crate) const TARGET_PAGE_BYTES: usize = 2 * 1024;
 const PAGE_HEADER_BYTES: usize = 8 + 2 + 1 + 4;
 
-/// Balanced page boundaries over one ordered run of page items.
-///
-/// Each page is cut once it reaches an equal share of the remaining bytes,
-/// recomputed per page, and never above the hard item and byte limits. A page
-/// closes on the soft target only after holding two items, so internal levels
-/// always shrink unless a single item alone reaches the hard limits.
 struct PageChunks<'a, T, L> {
     items: &'a [T],
     encoded_length: L,
@@ -901,7 +869,6 @@ where
         ))
     }
 
-    /// Returns the next non-empty page and the items examined to cut it.
     fn next<E: std::error::Error>(&mut self) -> Result<Option<(&'a [T], u64)>, Error<E>> {
         let items = self.items;
         let Some(rest) = items.get(self.start..).filter(|rest| !rest.is_empty()) else {
@@ -951,8 +918,6 @@ fn unchanged<K: Eq>(rewritten: &[Summary<K>], children: &[Child<K>]) -> bool {
             .all(|(left, right)| left.first == right.first && left.page == right.page)
 }
 
-/// Whether a page whose first and last keys are `first` and `last` matches its
-/// parent's routing: it starts exactly at `lower` and stays below `upper`.
 pub(crate) fn within_bounds<K: Ord>(
     first: Option<&K>,
     last: Option<&K>,
@@ -963,7 +928,6 @@ pub(crate) fn within_bounds<K: Ord>(
         && !matches!((last, upper), (Some(last), Some(upper)) if last >= upper)
 }
 
-/// [`within_bounds`] for a leaf's values.
 pub(crate) fn leaf_within<F: Format>(
     values: &[F::Value],
     lower: Option<&F::Key>,
@@ -977,7 +941,6 @@ pub(crate) fn leaf_within<F: Format>(
     )
 }
 
-/// [`within_bounds`] for an internal page's routing keys.
 pub(crate) fn children_within<K: Ord>(
     children: &[Child<K>],
     lower: Option<&K>,

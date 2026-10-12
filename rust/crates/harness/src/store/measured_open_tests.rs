@@ -25,9 +25,9 @@ mod measured_open_tests {
         }
     }
 
-    async fn fixture() -> Result<(Arc<Provider>, StreamClient<Provider>)> {
+    async fn fixture() -> Result<(Arc<Provider>, std::sync::Arc<Provider>)> {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut writer = with_content(StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?);
         for revision in 0..69 {
             writer.execute(projection_command(u128::from(revision + 1), revision)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
@@ -42,7 +42,7 @@ mod measured_open_tests {
     fn native_reader_constructor_rejects_before_copy_and_transfers_original_custody() -> Result<()> {
         use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
         let provider = Arc::new(Provider::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let cancellation = CancellationToken::new();
         let mut denied = budget();
         denied.bytes_copied = 0;
@@ -78,14 +78,14 @@ mod measured_open_tests {
     #[tokio::test]
     async fn prepared_publication_preserves_atomic_indexes_and_preallocation_denial() -> Result<()> {
         let provider = Arc::new(Provider::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let writer = with_content(StreamAggregate::open(
             &client, authority(), issuer().verifier(), schemas()).await?);
         let ApplyResult::Applied { event } = writer.reducer().plan(&command(1)?)? else {
             return Err(Error::Invalid("fresh original command must apply".into()));
         };
         let publication = operations::IndexedPublication::new(
-            &authority(), &event, encode_event(&authority(), &event)?)?;
+            &authority(), &event, encode_event(&authority(), &event)?, &mut None)?;
         let cancellation = CancellationToken::new();
         let mut denied = budget();
         denied.allocation_operations = 0;
@@ -102,13 +102,13 @@ mod measured_open_tests {
         let mut work = history::HistoryWork::new(allowed, &cancellation);
         let mut observer: Option<&mut dyn history::HistoryIo> = Some(&mut work);
         let (key, held) = crate::distributed::digest_key(&[68; 32], &mut observer)?;
-        let mut prepared = crate::distributed::PreparedCommitRequest::new(key, held, &mut observer);
-        prepared.push_condition(acyclic_stream::CommitCondition::Absent {
+        let mut prepared = crate::distributed::commit_request(key, held, &mut observer);
+        crate::distributed::add_condition(&mut prepared, acyclic_stream::CommitCondition::Absent {
             path: publication.path.clone(),
         })?;
-        prepared.append(publication.path.clone(), publication.bytes.clone())?;
+        crate::distributed::add_record(&mut prepared, publication.path.clone(), publication.bytes.clone())?;
         publication.add_index_with_work(&mut prepared)?;
-        let (outcome, retained) = prepared.commit(&client, Some(event.operation_id), None, None, None).await?;
+        let (outcome, retained) = crate::distributed::commit(prepared, &client, Some(event.operation_id), None, None, None).await?;
         let acyclic_stream::CommitOutcome::Committed(envelope) = outcome else {
             return Err(Error::Conflict("original indexed publication unexpectedly conflicted".into()));
         };
@@ -390,7 +390,7 @@ mod measured_open_tests {
         assert!(matches!(failure.error, Error::Unauthorized(_)));
         assert_eq!(*failure.work, WorkCounters::default());
         let empty_provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let empty = StreamClient::new(empty_provider.clone());
+        let empty = empty_provider.clone();
         let receipt = StreamAggregate::open_measured(&empty, authority(), issuer().verifier(), schemas(), budget(), &CancellationToken::new()).await.map_err(|failure| failure.error)?;
         assert_eq!(receipt.value.reducer().revision(), 0);
         assert_eq!(receipt.work.authority_bytes_read, 0);
@@ -404,7 +404,7 @@ mod measured_open_tests {
         use crate::core::EffectGuarantee;
         use crate::{EffectAttemptId, EffectId};
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let request = content()?;
         let schema_bytes = br#"{"type":"object"}"#;
         let schema = FileRef::new(request.volume().clone(), "effects/schema.json", "generation-1", FileDescriptor::from_bytes(schema_bytes, "application/schema+json")?, "schema.json")?;
@@ -447,10 +447,13 @@ mod measured_open_tests {
         assert!(receipt.work.peak_allocation_bytes > 0);
         for cut in [1, 3] {
             provider.reset_io();
-            let archived = reader.effect_events_measured(
+            let mut work = history::HistoryWork::new(budget(), &cancellation);
+            work.preflight()?;
+            let result = effect_events(&client, &issuer().verifier(),
                 &HistoryCursor { authority: authority(), after_revision: 0, through_revision: cut },
-                effect_id, default_projection_read_limits(), budget(), &cancellation,
-            ).await.map_err(|failure| failure.error)?;
+                effect_id, default_projection_read_limits(), &mut Some(&mut work),
+            ).await.map(|(events, _)| events);
+            let archived = work.finish(result).map_err(|failure| failure.error)?;
             assert_eq!(archived.value, expected.events.iter().take(cut as usize).cloned().collect::<Vec<_>>());
             assert_eq!(archived.work.items_returned, cut);
             assert_eq!(archived.work.authority_bytes_read, provider.io_snapshot().read_bytes);
@@ -462,9 +465,13 @@ mod measured_open_tests {
             let native = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
                 .expect("original effect reader ledger");
             provider.reset_io();
-            let (events, custody) = reader.effect_events_with_native_work(
+            let mut io = history::native_work_io(&native)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let (events, _) = effect_events(&client, &issuer().verifier(),
                 &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
-                effect_id, default_projection_read_limits(), &native).await?;
+                effect_id, default_projection_read_limits(), &mut Some(&mut io)).await?;
+            io.return_staged_output()?;
+            let custody = io.into_custody();
             assert_eq!(events, expected.events);
             assert!(native.shares_ledger(custody.work()));
             assert_eq!(native.receipt().items_returned, 3);
@@ -489,20 +496,26 @@ mod measured_open_tests {
             drop(state_custody);
         }
         provider.reset_io();
-        let absent = reader.effect_events_measured(
+        let mut work = history::HistoryWork::new(budget(), &cancellation);
+        work.preflight()?;
+        let result = effect_events(&client, &issuer().verifier(),
             &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
-            EffectId::from_bytes([99; 16]), default_projection_read_limits(), budget(), &cancellation,
-        ).await.map_err(|failure| failure.error)?;
+            EffectId::from_bytes([99; 16]), default_projection_read_limits(), &mut Some(&mut work),
+        ).await.map(|(events, _)| events);
+        let absent = work.finish(result).map_err(|failure| failure.error)?;
         assert!(absent.value.is_empty());
         assert_eq!(absent.work.items_returned, 0);
         assert_eq!(absent.work.output_bytes, 0);
         assert!(absent.work.authority_records_read > 0);
         provider.reset_io();
-        let denied = reader.effect_events_measured(
+        let mut work = history::HistoryWork::new(
+            WorkBudget { backend_read_operations: 0, ..budget() }, &cancellation);
+        work.preflight()?;
+        let result = effect_events(&client, &issuer().verifier(),
             &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
-            effect_id, default_projection_read_limits(),
-            WorkBudget { backend_read_operations: 0, ..budget() }, &cancellation,
-        ).await.expect_err("SDK admission must precede even the original tail request");
+            effect_id, default_projection_read_limits(), &mut Some(&mut work),
+        ).await.map(|(events, _)| events);
+        let denied = work.finish(result).expect_err("SDK admission must precede even the original tail request");
         assert_eq!(denied.work.backend_read_operations, 0);
         assert_eq!(provider.io_snapshot().reads, 0);
         assert_eq!(provider.io_snapshot().tails, 0);

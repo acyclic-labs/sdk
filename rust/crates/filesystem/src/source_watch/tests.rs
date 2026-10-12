@@ -231,7 +231,7 @@ fn reports_until(
 
 fn watch(root: &Path) -> Result<(NativeSourceWatch, Arc<Recorded>), Box<dyn std::error::Error>> {
     let recorded = Arc::new(Recorded::default());
-    let watch = NativeSourceWatch::start(&HostRoot::open(root)?, recorded.clone())?;
+    let watch = NativeSourceWatch::start(&HostRoot::open(root, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?, recorded.clone())?;
     Ok((watch, recorded))
 }
 
@@ -503,7 +503,7 @@ fn cleanup_wait_ordinary_wrapper_rejects_before_stop_and_still_delivers() -> Tes
 fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
-    let host = HostRoot::open(directory.path())?;
+    let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
     let budget = original_watch_budget()?;
     let cancellation = crate::CancellationToken::new();
     let root = crate::NativeMaterializationWork::new(budget, &cancellation)
@@ -592,7 +592,7 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
 fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cancel() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
-    let host = HostRoot::open(directory.path())?;
+    let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
     let budget = original_watch_budget()?;
     let cancellation = crate::CancellationToken::new();
     let root = crate::NativeMaterializationWork::new(budget, &cancellation)
@@ -644,7 +644,7 @@ fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cance
 fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
-    let host = HostRoot::open(directory.path())?;
+    let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
     let budget = original_watch_budget()?;
     let cancellation = crate::CancellationToken::new();
     let root = crate::NativeMaterializationWork::new(budget, &cancellation)

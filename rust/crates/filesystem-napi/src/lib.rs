@@ -1332,7 +1332,7 @@ impl NativeSpeculation {
             .execute_residency(
                 controller.residency(),
                 permit,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -1634,7 +1634,7 @@ impl NativeResolvedFile {
     /// Complete canonical metadata authenticated by the pinned generation.
     #[napi(getter)]
     pub fn metadata_canonical_bytes(&self) -> Result<Buffer> {
-        encode_file_metadata(self.inner.description().metadata)
+        encode_file_metadata(self.inner.description().metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed)
             .map(Buffer::from)
             .map_err(napi_error)
     }
@@ -1649,7 +1649,7 @@ impl NativeResolvedFile {
                     offset: bigint_u64(&offset, "offset")?,
                     length: bigint_u64(&length, "length")?,
                 },
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -1665,7 +1665,7 @@ impl NativeResolvedFile {
     pub async fn read_symbolic_link(&self) -> Result<NativeFileRead> {
         let receipt = self
             .inner
-            .read_symbolic_link(boundary_budget(), &self.cancellation)
+            .read_symbolic_link(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
@@ -2235,8 +2235,8 @@ impl NativeWorkspace {
             .fork(
                 destination,
                 ForkOptions::from_generation(generation, idempotency_key),
-            )
-            .await
+            acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
             .map_err(napi_error)
     }
@@ -2260,8 +2260,8 @@ impl NativeWorkspace {
             None => fork,
         };
         self.inner
-            .fork(destination, fork)
-            .await
+            .fork(destination, fork, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
             .map_err(napi_error)
     }
@@ -4143,7 +4143,7 @@ impl NativeFs {
         let config = native_volume_config(options)?;
         let receipt = self
             .inner
-            .create_volume(config, boundary_budget(), &self.cancellation)
+            .create_volume(config, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeVolume {
@@ -4169,7 +4169,7 @@ impl NativeFs {
         let config = native_volume_config(options)?;
         let receipt = self
             .inner
-            .create_volume_with_id(volume_id, config, boundary_budget(), &self.cancellation)
+            .create_volume_with_id(volume_id, config, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeVolume {
@@ -4190,7 +4190,7 @@ impl NativeFs {
         let volume_id = VolumeId::from_bytes(fixed_16(&volume_id)?);
         let receipt = self
             .inner
-            .open_volume(volume_id, boundary_budget(), &self.cancellation)
+            .open_volume(volume_id, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeVolume {
@@ -4217,7 +4217,7 @@ impl NativeFs {
             .export_object(
                 decode_object_id(&object_id)?,
                 bigint_u64(&maximum_bytes, "maximumBytes")?,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -4245,7 +4245,7 @@ impl NativeFs {
             .import_object(
                 decode_object_id(&object_id)?,
                 bytes.to_vec(),
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -4277,7 +4277,7 @@ impl NativeFs {
                 TransferCursor::new(bigint_u64(&cursor, "cursor")?),
                 maximum_objects,
                 bigint_u64(&maximum_object_bytes, "maximumObjectBytes")?,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -4326,7 +4326,7 @@ impl NativeFs {
                 TransferCursor::new(bigint_u64(&cursor, "cursor")?),
                 &objects,
                 maximum_objects,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -4356,7 +4356,7 @@ impl NativeFs {
             .restore_volume(
                 &manifest,
                 operation_id,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -4417,7 +4417,7 @@ impl NativeVolume {
                 before,
                 after,
                 maximum_changes,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -4449,7 +4449,7 @@ impl NativeVolume {
             .checkout(
                 GenerationSelector::Head,
                 mode,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -4501,7 +4501,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .apply_authored_transaction(authored, boundary_budget(), &self.cancellation)
+            .apply_authored_transaction(authored, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeTransactionResult {
@@ -4525,7 +4525,7 @@ impl NativeCheckout {
     pub async fn checkpoint(&self) -> Result<NativeCheckpointResult> {
         let checkout = self.inner.lock().await;
         let receipt = checkout
-            .checkpoint(boundary_budget(), &self.cancellation)
+            .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeCheckpointResult {
@@ -4545,7 +4545,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .refresh_head(boundary_budget(), &self.cancellation)
+            .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_checkpoint_receipt(&receipt)
@@ -4562,7 +4562,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .refresh_live(boundary_budget(), &self.cancellation)
+            .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_checkpoint_receipt(&receipt)
@@ -4578,7 +4578,7 @@ impl NativeCheckout {
     pub async fn export_manifest(&self) -> Result<NativeExportManifest> {
         let checkout = self.inner.lock().await;
         let receipt = checkout
-            .export_manifest(boundary_budget(), &self.cancellation)
+            .export_manifest(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_export_manifest(receipt.value, receipt.work)
@@ -4610,7 +4610,7 @@ impl NativeCheckout {
                 theirs,
                 maximum_changes,
                 maximum_conflicts,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -4667,7 +4667,7 @@ impl NativeCheckout {
                 maximum_extent_spans: options.maximum_extent_spans.into_inner(),
                 transfer_bytes: bigint_u64(&options.transfer_bytes, "transferBytes")?,
             },
-            boundary_budget(),
+            acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
         .await
@@ -4719,7 +4719,7 @@ impl NativeCheckout {
                 maximum_paths,
                 maximum_extent_spans,
             },
-            boundary_budget(),
+            acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
         .await
@@ -4766,7 +4766,7 @@ impl NativeCheckout {
                 maximum_paths,
                 maximum_extent_spans,
             },
-            boundary_budget(),
+            acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
         .await
@@ -4832,7 +4832,7 @@ impl NativeCheckout {
         .map_err(napi_error)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
-            .lookup_no_follow(&path, boundary_budget(), &self.cancellation)
+            .lookup_no_follow(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         let record = receipt.value.record;
@@ -4869,7 +4869,7 @@ impl NativeCheckout {
             .collect::<Result<Vec<_>>>()?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
-            .lookup_batch_no_follow(&paths, boundary_budget(), &self.cancellation)
+            .lookup_batch_no_follow(&paths, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         let entries = receipt
@@ -4904,14 +4904,14 @@ impl NativeCheckout {
         let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
-            .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
+            .lookup_no_follow_with_metadata(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         let (record, metadata_canonical_bytes) = match receipt.value {
             Some(value) => (
                 Some(encode_file_record(value.record)),
                 Some(Buffer::from(
-                    encode_file_metadata(value.metadata).map_err(napi_error)?,
+                    encode_file_metadata(value.metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(napi_error)?,
                 )),
             ),
             None => (None, None),
@@ -4936,7 +4936,7 @@ impl NativeCheckout {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
-            .read_file_record_by_id(file_id, boundary_budget(), &self.cancellation)
+            .read_file_record_by_id(file_id, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRecordRead {
@@ -4955,11 +4955,11 @@ impl NativeCheckout {
         let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
-            .read_metadata(&path, boundary_budget(), &self.cancellation)
+            .read_metadata(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeMetadataResult {
-            canonical_bytes: Buffer::from(encode_file_metadata(receipt.value).map_err(napi_error)?),
+            canonical_bytes: Buffer::from(encode_file_metadata(receipt.value, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(napi_error)?),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -4975,11 +4975,11 @@ impl NativeCheckout {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
-            .read_metadata_by_id(file_id, boundary_budget(), &self.cancellation)
+            .read_metadata_by_id(file_id, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeMetadataResult {
-            canonical_bytes: Buffer::from(encode_file_metadata(receipt.value).map_err(napi_error)?),
+            canonical_bytes: Buffer::from(encode_file_metadata(receipt.value, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(napi_error)?),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -4996,15 +4996,12 @@ impl NativeCheckout {
         canonical_bytes: Buffer,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            native_decode_limits(self.config.limits),
-        )
+        let metadata = decode_file_metadata(canonical_bytes.as_ref(), native_decode_limits(self.config.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
         .map_err(napi_error)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .set_metadata(path, metadata, boundary_budget(), &self.cancellation)
+            .apply_authored_transaction(vec![acyclic_fs::AuthoredMutation::SetMetadata { path, metadata }], acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         native_mutation(None, receipt.work)
@@ -5023,15 +5020,12 @@ impl NativeCheckout {
         canonical_bytes: Buffer,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            native_decode_limits(self.config.limits),
-        )
+        let metadata = decode_file_metadata(canonical_bytes.as_ref(), native_decode_limits(self.config.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
         .map_err(napi_error)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .set_attributes_by_id(file_id, metadata, None, boundary_budget(), &self.cancellation)
+            .set_attributes_by_id(file_id, metadata, None, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         native_mutation(None, receipt.work)
@@ -5051,10 +5045,7 @@ impl NativeCheckout {
         logical_bytes: Option<BigInt>,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            native_decode_limits(self.config.limits),
-        )
+        let metadata = decode_file_metadata(canonical_bytes.as_ref(), native_decode_limits(self.config.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
         .map_err(napi_error)?;
         let logical_bytes = logical_bytes
             .as_ref()
@@ -5067,7 +5058,7 @@ impl NativeCheckout {
                 path,
                 metadata,
                 logical_bytes,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -5089,10 +5080,7 @@ impl NativeCheckout {
         logical_bytes: Option<BigInt>,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            native_decode_limits(self.config.limits),
-        )
+        let metadata = decode_file_metadata(canonical_bytes.as_ref(), native_decode_limits(self.config.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
         .map_err(napi_error)?;
         let logical_bytes = logical_bytes
             .as_ref()
@@ -5105,7 +5093,7 @@ impl NativeCheckout {
                 file_id,
                 metadata,
                 logical_bytes,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -5131,7 +5119,7 @@ impl NativeCheckout {
         let receipt = Box::pin(checkout.read_named_attribute(
             &path,
             &name,
-            boundary_budget(),
+            acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
         .await
@@ -5178,7 +5166,7 @@ impl NativeCheckout {
             &path,
             after.as_ref(),
             maximum_entries,
-            boundary_budget(),
+            acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
         .await
@@ -5222,7 +5210,7 @@ impl NativeCheckout {
             name,
             bytes::Bytes::from(bytes.to_vec()),
             mode,
-            boundary_budget(),
+            acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
         .await
@@ -5249,7 +5237,7 @@ impl NativeCheckout {
         let receipt = Box::pin(checkout.remove_named_attribute(
             path,
             name,
-            boundary_budget(),
+            acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
         .await
@@ -5299,7 +5287,7 @@ impl NativeCheckout {
                 checkout.pinned_reader().map_err(napi_error)?
             };
             let receipt = reader
-                .resolve_files(&parsed, boundary_budget(), &cancellation)
+                .resolve_files(&parsed, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                 .await
                 .map_err(napi_error)?;
             Ok(NativeResolvedFiles {
@@ -5348,7 +5336,7 @@ impl NativeCheckout {
                     offset: bigint_u64(&offset, "offset")?,
                     length: bigint_u64(&length, "length")?,
                 },
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -5381,7 +5369,7 @@ impl NativeCheckout {
                     offset: bigint_u64(&offset, "offset")?,
                     length: bigint_u64(&length, "length")?,
                 },
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -5418,7 +5406,7 @@ impl NativeCheckout {
                     length: bigint_u64(&length, "length")?,
                 },
                 maximum_spans,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -5452,7 +5440,7 @@ impl NativeCheckout {
                     length: bigint_u64(&length, "length")?,
                 },
                 maximum_spans,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -5481,7 +5469,7 @@ impl NativeCheckout {
                 &path,
                 bigint_u64(&offset, "offset")?,
                 target,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -5513,7 +5501,7 @@ impl NativeCheckout {
                 file_id,
                 bigint_u64(&offset, "offset")?,
                 target,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -5535,7 +5523,7 @@ impl NativeCheckout {
         let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
-            .read_symbolic_link(&path, boundary_budget(), &self.cancellation)
+            .read_symbolic_link(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
@@ -5555,7 +5543,7 @@ impl NativeCheckout {
         let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
-            .read_reparse_point(&path, boundary_budget(), &self.cancellation)
+            .read_reparse_point(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
@@ -5596,7 +5584,7 @@ impl NativeCheckout {
                 &path,
                 after.as_ref(),
                 maximum_entries,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -5644,7 +5632,7 @@ impl NativeCheckout {
             &path,
             after.as_ref(),
             maximum_entries,
-            boundary_budget(),
+            acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
         .await
@@ -5658,7 +5646,7 @@ impl NativeCheckout {
                     name: Buffer::from(entry.name.as_bytes().to_vec()),
                     record: encode_file_record(entry.record),
                     metadata_canonical_bytes: Buffer::from(
-                        encode_file_metadata(entry.metadata).map_err(napi_error)?,
+                        encode_file_metadata(entry.metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(napi_error)?,
                     ),
                 })
             })
@@ -5682,7 +5670,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes::Bytes::from(bytes.to_vec())).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &self.cancellation)
+            .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes::Bytes::from(bytes.to_vec())).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeMutationResult {
@@ -5703,7 +5691,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &self.cancellation)
+            .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeMutationResult {
@@ -5728,7 +5716,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (bytes::Bytes::from(target.to_vec())).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &self.cancellation)
+            .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (bytes::Bytes::from(target.to_vec())).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeMutationResult {
@@ -5750,7 +5738,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &self.cancellation)
+            .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_created_mutation(&receipt)
@@ -5777,7 +5765,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &self.cancellation)
+            .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_created_mutation(&receipt)
@@ -5799,7 +5787,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload.to_vec())).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &self.cancellation)
+            .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload.to_vec())).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_created_mutation(&receipt)
@@ -5822,7 +5810,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .change_content(path, acyclic_fs::ContentChange::Write { offset: bigint_u64(&offset, "offset")?, bytes: (bytes::Bytes::from(bytes.to_vec())).into() }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &self.cancellation)
+            .change_content(path, acyclic_fs::ContentChange::Write { offset: bigint_u64(&offset, "offset")?, bytes: (bytes::Bytes::from(bytes.to_vec())).into() }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeMutationResult {
@@ -5848,7 +5836,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .change_content(file_id, acyclic_fs::ContentChange::Write { offset: bigint_u64(&offset, "offset")?, bytes: (bytes::Bytes::from(bytes.to_vec())).into() }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &self.cancellation)
+            .change_content(file_id, acyclic_fs::ContentChange::Write { offset: bigint_u64(&offset, "offset")?, bytes: (bytes::Bytes::from(bytes.to_vec())).into() }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -5874,7 +5862,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: native_path(&path, self.config)?, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], boundary_budget(), &self.cancellation)
+            .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: native_path(&path, self.config)?, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -5898,7 +5886,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], boundary_budget(), &self.cancellation)
+            .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -5921,7 +5909,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], boundary_budget(), &self.cancellation)
+            .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -5943,7 +5931,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: bigint_u64(&logical_bytes, "logicalBytes")? }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &self.cancellation)
+            .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: bigint_u64(&logical_bytes, "logicalBytes")? }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -5965,7 +5953,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .change_content(file_id, acyclic_fs::ContentChange::Resize { logical_bytes: bigint_u64(&logical_bytes, "logicalBytes")? }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &self.cancellation)
+            .change_content(file_id, acyclic_fs::ContentChange::Resize { logical_bytes: bigint_u64(&logical_bytes, "logicalBytes")? }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -5993,7 +5981,7 @@ impl NativeCheckout {
             .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
                     length: bigint_u64(&length, "length")?,
-                }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &self.cancellation)
+                }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -6021,7 +6009,7 @@ impl NativeCheckout {
             .change_content(file_id, acyclic_fs::ContentChange::ZeroRange { range: ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
                     length: bigint_u64(&length, "length")?,
-                }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &self.cancellation)
+                }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -6048,7 +6036,7 @@ impl NativeCheckout {
             .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
                     length: bigint_u64(&length, "length")?,
-                }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &self.cancellation)
+                }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -6075,7 +6063,7 @@ impl NativeCheckout {
             .change_content(file_id, acyclic_fs::ContentChange::Preallocate { range: ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
                     length: bigint_u64(&length, "length")?,
-                }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &self.cancellation)
+                }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -6106,7 +6094,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &self.cancellation)
+            .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -6132,7 +6120,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .change_content(destination_file_id, acyclic_fs::ContentChange::CloneFrom { source: source_file_id, source_offset: bigint_u64(&source_offset, "sourceOffset")?, offset: bigint_u64(&destination_offset, "destinationOffset")?, length: bigint_u64(&length, "length")? }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &self.cancellation)
+            .change_content(destination_file_id, acyclic_fs::ContentChange::CloneFrom { source: source_file_id, source_offset: bigint_u64(&source_offset, "sourceOffset")?, offset: bigint_u64(&destination_offset, "destinationOffset")?, length: bigint_u64(&length, "length")? }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -6157,7 +6145,7 @@ impl NativeCheckout {
             .retain_operation_id(operation_id)
             .map_err(napi_error)?;
         let receipt = checkout
-            .commit(operation_id, None, None, None, permit, boundary_budget(), &self.cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
+            .commit(operation_id, None, None, None, permit, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
             .await;
         let receipt = match receipt {
             Ok(receipt) => {
@@ -6210,7 +6198,7 @@ impl NativeCheckout {
                 operation_id,
                 maximum_attempts,
                 maximum_conflicts,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await;
@@ -6274,7 +6262,7 @@ impl NativeCheckout {
                 operation_id,
                 maximum_attempts,
                 maximum_conflicts,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await;
@@ -6303,7 +6291,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .rebase_head(maximum_conflicts, boundary_budget(), &self.cancellation)
+            .rebase_head(maximum_conflicts, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         let (status, generation_id, conflict_count, truncated) = match receipt.value {
@@ -6342,7 +6330,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .discard(boundary_budget(), &self.cancellation)
+            .discard(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -6392,7 +6380,7 @@ impl NativeWatcher {
                 maximum_paths,
                 maximum_extent_spans,
             },
-            boundary_budget(),
+            acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
         .await;
@@ -6456,7 +6444,7 @@ impl NativeWatcher {
             seal_checkout(
                 &mut checkout,
                 pending.operation_id,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -6514,7 +6502,7 @@ impl NativeWatcher {
             pending
         } else {
             let receipt = lock_state(&self.inner, "native watcher state")?
-                .poll(maximum_changes, boundary_budget(), &self.cancellation)
+                .poll(maximum_changes, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
                 .map_err(napi_error)?;
             let pending = PendingWatchBatch {
                 batch: receipt.value,
@@ -6549,7 +6537,7 @@ impl NativeWatcher {
                     maximum_paths,
                     maximum_extent_spans,
                 },
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             ))
             .await
@@ -6567,7 +6555,7 @@ impl NativeWatcher {
             seal_checkout(
                 &mut checkout,
                 pending.operation_id,
-                boundary_budget(),
+                acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )
             .await
@@ -7446,10 +7434,7 @@ fn native_authored_transaction(
         },
         "set-metadata" => AuthoredMutation::SetMetadata {
             path: native_path(&required(path, "path")?, config)?,
-            metadata: decode_file_metadata(
-                &required(canonical_bytes, "canonicalBytes")?,
-                native_decode_limits(limits),
-            )
+            metadata: decode_file_metadata(&required(canonical_bytes, "canonicalBytes")?, native_decode_limits(limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
             .map_err(napi_error)?,
         },
         "resize" => AuthoredMutation::Resize {
@@ -7922,37 +7907,6 @@ fn extent_seek_target(target: &str) -> Result<ExtentSeekTarget> {
         "data" => Ok(ExtentSeekTarget::Data),
         "hole" => Ok(ExtentSeekTarget::Hole),
         _ => Err(Error::new(Status::InvalidArg, "unknown sparse seek target")),
-    }
-}
-
-fn boundary_budget() -> WorkBudget {
-    const OPERATIONS: u64 = 1_000_000;
-    const BYTES: u64 = 256 * 1024 * 1024;
-    WorkBudget {
-        authority_records_read: OPERATIONS,
-        authority_records_appended: OPERATIONS,
-        authority_bytes_read: BYTES,
-        authority_bytes_written: BYTES,
-        object_probes: OPERATIONS,
-        backend_read_operations: OPERATIONS,
-        backend_write_operations: OPERATIONS,
-        durability_operations: OPERATIONS,
-        page_reads: OPERATIONS,
-        page_writes: OPERATIONS,
-        object_bytes_read: BYTES,
-        object_bytes_written: BYTES,
-        bytes_hashed: BYTES,
-        bytes_copied: BYTES,
-        bytes_encoded: BYTES,
-        source_bytes_read: BYTES,
-        source_path_components: OPERATIONS,
-        source_entries_visited: OPERATIONS,
-        output_bytes: BYTES,
-        items_examined: OPERATIONS,
-        items_returned: OPERATIONS,
-        allocation_operations: OPERATIONS,
-        peak_allocation_bytes: BYTES,
-        materializations: OPERATIONS,
     }
 }
 

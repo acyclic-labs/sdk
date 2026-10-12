@@ -55,13 +55,12 @@ impl HttpObjects {
                         .map_err(|error| controls.fail(error))
                 }).transpose()?;
                 request::put_stream_digest(query)?;
-                let original = response::binary_controlled(query, controls.as_ref())?;
                 let header_frame = request_input.map(|query| wire::PutObjectRequest {
                     frame: Some(wire::put_object_request::Frame::Header(query)),
                 });
                 let header = line_controlled("PutObjectRequest", header_frame.value(), controls.as_ref())?;
                 drop(header_frame);
-                let (chunks, state, failure) = upload::chunks_controlled(body, controls.clone())?;
+                let (chunks, state) = upload::chunks(body, controls.clone())?;
                 let frame_controls = controls.clone();
                 let frames = chunks.map(move |chunk| {
                     let chunk = chunk?;
@@ -105,10 +104,10 @@ impl HttpObjects {
                             .await?;
                         self.decode_put_controlled(reply, controls.as_ref(), response_allocation.take()).await
                     },
-                    failure,
+                    &state,
                 )
                 .await?;
-                response::validate_put_controlled(&original.0, result, retained_response, state.finish(), controls.as_ref())
+                response::validate_put_controlled(result, retained_response, state.finish(), controls.as_ref())
             },
         )
         .await
@@ -135,7 +134,7 @@ impl HttpObjects {
                         frame: Some(wire::upload_part_request::Frame::Header(query)),
                     },
                 )?;
-                let (chunks, state, failure) = upload::chunks(body);
+                let (chunks, state) = upload::chunks(body, None)?;
                 let frames = chunks.map(|chunk| {
                     line(
                         "UploadPartRequest",
@@ -165,7 +164,7 @@ impl HttpObjects {
                             .await?;
                         self.decode("UploadedPart", reply).await
                     },
-                    failure,
+                    &state,
                 )
                 .await?;
                 response::validate_binary(
@@ -481,9 +480,7 @@ impl HttpObjects {
             ),
             async {
                 let query = request_input.value();
-                let _request_allocation = controls.as_ref().map(|controls| controls.request(query)).transpose()?;
-                let request_binary = response::binary_controlled(query, controls.as_ref())?;
-                request::validate_binary("objects/get", &request_binary.0, 0)?;
+                request::get(query)?;
                 let body_factory = |reader: Frames, remaining: u64|
                     stream::try_unfold((reader, remaining), |(mut reader, remaining)| async move {
                         let Some((frame, allocation)) = reader.next().await? else {
@@ -507,7 +504,6 @@ impl HttpObjects {
                         }
                     });
                 let prepared_body = response::prepare_body_stream(&body_factory, controls.as_ref())?;
-                drop(request_binary);
                 let bytes = if let Some(controls) = &controls {
                     let (bytes, allocation) = json::encode_native("GetObjectRequest", query, controls)?;
                     controls.wire_bytes(bytes, allocation)?
@@ -733,7 +729,7 @@ impl ObjectsProvider for HttpObjects {
         let request_input = response::RequestInput::native(request, &meter)?;
         super::native_future(meter.clone(), async move {
             let prepared = Download::prepare_native(0, meter.clone())?;
-            let errors = prepared.errors();
+            let errors = prepared.errors.clone();
             let mut body = None;
             let request_input = request_input.map(|(header, carrier)| {
                 body = Some(carrier);
@@ -744,7 +740,7 @@ impl ObjectsProvider for HttpObjects {
             match self.put_stream_controlled(request_input, source, Some(controls)).await {
                 Ok((info, allocation)) => Ok(super::ObjectsPutReceipt::new(info, allocation)),
                 Err(error) => {
-                    let original = prepared.take_error().unwrap_or_else(|| error.into());
+                    let original = prepared.errors.take().unwrap_or_else(|| error.into());
                     Err(prepared.fail(original, None, 0, None))
                 }
             }
@@ -769,18 +765,18 @@ impl ObjectsProvider for HttpObjects {
         let request_input = response::RequestInput::native(request, &meter)?;
         super::native_future(meter.clone(), async move {
             let mut prepared = Download::prepare_native(maximum_bytes, meter.clone())?;
-            let errors = prepared.errors();
+            let errors = prepared.errors.clone();
             let controls = response::NativeGetControls { meter: meter.clone(), errors: errors.clone() };
             let mut header_allocation = Some(acyclic_native_runtime::ReadAllocation::adopt(&meter, JSON_FRAME_BYTES * 4)?);
             let download = match self.get_stream_controlled(request_input, maximum_bytes, Some(controls), &mut header_allocation).await {
                 Ok(download) => download,
                 Err(error) => {
-                    let original = prepared.take_error().unwrap_or_else(|| error.into());
+                    let original = prepared.errors.take().unwrap_or_else(|| error.into());
                     return Err(prepared.fail(original, None, 0, None));
                 }
             };
             if let Some(allocation) = header_allocation {
-                prepared.retain_header_allocation(allocation)?;
+                prepared.header_allocation = Some(allocation);
             }
             download.collect_native(prepared).await
         })

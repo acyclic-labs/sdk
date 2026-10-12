@@ -1,9 +1,11 @@
+use crate::{OperationFailure, WorkBudget};
+use crate::storage::ObjectStoreError;
 use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
-use crate::kernel::{FileKind, NameEncoding, TreeChild, TreePage, encode_tree_page, tree_page_id};
+use crate::kernel::{FileKind, NameEncoding, TreePage, encode_tree_page, tree_page_id};
 use crate::kernel::{
-    FilePayload, FileRecord, FileTableChild, FileTablePage, InlineFileData, encode_file_table_page,
+    FilePayload, FileRecord, FileTablePage, InlineFileData, encode_file_table_page,
     file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
@@ -12,6 +14,7 @@ use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
 use acyclic_stream::OwnedBytes;
 
+use crate::kernel::Child;
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,
@@ -33,7 +36,7 @@ fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn s
     ObjectStore::put(
         store,
         id,
-        OwnedBytes::from(encode_tree_page(page, 8)?),
+        OwnedBytes::from(encode_tree_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -60,7 +63,7 @@ fn put_file_table(
     ObjectStore::put(
         store,
         id,
-        OwnedBytes::from(encode_file_table_page(page, 8)?),
+        OwnedBytes::from(encode_file_table_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -73,8 +76,8 @@ fn diff<S: AsyncObjectStore>(
     maximum_changes: u32,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Option<Result<Diff<LogicalName, TreeEntry>, OperationFailure<DiffError>>> {
-    crate::async_storage::poll_ready(diff_tree_entries_async(
+) -> Option<Result<Diff<LogicalName, TreeEntry>, OperationFailure<FsError>>> {
+    crate::async_storage::poll_ready(diff_accounted::<_, TreeFormat>(
         store,
         before,
         after,
@@ -117,7 +120,7 @@ fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
         .ok_or("memory diff blocked")?
         .err()
         .ok_or("zero diff limit unexpectedly succeeded")?;
-        assert!(matches!(failure.error, DiffError::InvalidLimit));
+        assert!(matches!(failure.error, FsError::InvalidDiff));
         assert_eq!(*failure.work, WorkCounters::default());
     }
     let wrong = ObjectId {
@@ -135,7 +138,7 @@ fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
     .ok_or("memory diff blocked")?
     .err()
     .ok_or("wrong diff root kind unexpectedly succeeded")?;
-    assert!(matches!(failure.error, DiffError::WrongRootKind));
+    assert!(matches!(failure.error, FsError::InvalidDiff));
     assert_eq!(*failure.work, WorkCounters::default());
     Ok(())
 }
@@ -226,7 +229,7 @@ fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
     .ok_or("memory diff blocked")?
     .err()
     .ok_or("cancelled diff unexpectedly succeeded")?;
-    assert!(matches!(failure.error, DiffError::Cancelled));
+    assert!(matches!(failure.error, FsError::Cancelled(_)));
     assert_eq!(*failure.work, WorkCounters::default());
 
     let failure = diff(
@@ -245,7 +248,7 @@ fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
     .ok_or("unadmitted diff read unexpectedly succeeded")?;
     assert!(matches!(
         failure.error,
-        DiffError::Work(WorkError::BudgetExceeded {
+        FsError::Work(WorkError::BudgetExceeded {
             counter: "page_reads",
             observed: 2,
             maximum: 0,
@@ -269,16 +272,16 @@ fn internal_diff_skips_shared_merkle_children() -> Result<(), Box<dyn std::error
     let e_name = name("e")?;
     let root = |middle| {
         TreePage::Internal(vec![
-            TreeChild {
-                first_name: a_name.clone(),
+            Child {
+                first: a_name.clone(),
                 page: a,
             },
-            TreeChild {
-                first_name: c_name.clone(),
+            Child {
+                first: c_name.clone(),
                 page: middle,
             },
-            TreeChild {
-                first_name: e_name.clone(),
+            Child {
+                first: e_name.clone(),
                 page: e,
             },
         ])
@@ -286,7 +289,7 @@ fn internal_diff_skips_shared_merkle_children() -> Result<(), Box<dyn std::error
     let before = put(&store, &root(c_before))?;
     let after = put(&store, &root(c_after))?;
     let cancellation = CancellationToken::new();
-    let diff = crate::async_storage::poll_ready(diff_tree_entries_async(
+    let diff = crate::async_storage::poll_ready(diff_accounted::<_, TreeFormat>(
         &store,
         Some(before),
         Some(after),
@@ -313,12 +316,12 @@ fn internal_file_table_diff_aligns_shared_and_one_sided_children()
     let before = put_file_table(
         &store,
         &FileTablePage::Internal(vec![
-            FileTableChild {
-                first_file_id: FileId::from_bytes([1; 16]),
+            Child {
+                first: FileId::from_bytes([1; 16]),
                 page: shared,
             },
-            FileTableChild {
-                first_file_id: FileId::from_bytes([3; 16]),
+            Child {
+                first: FileId::from_bytes([3; 16]),
                 page: removed,
             },
         ]),
@@ -326,21 +329,21 @@ fn internal_file_table_diff_aligns_shared_and_one_sided_children()
     let after = put_file_table(
         &store,
         &FileTablePage::Internal(vec![
-            FileTableChild {
-                first_file_id: FileId::from_bytes([1; 16]),
+            Child {
+                first: FileId::from_bytes([1; 16]),
                 page: shared,
             },
-            FileTableChild {
-                first_file_id: FileId::from_bytes([2; 16]),
+            Child {
+                first: FileId::from_bytes([2; 16]),
                 page: added_left,
             },
-            FileTableChild {
-                first_file_id: FileId::from_bytes([4; 16]),
+            Child {
+                first: FileId::from_bytes([4; 16]),
                 page: added_right,
             },
         ]),
     )?;
-    let result = crate::async_storage::poll_ready(diff_file_records_async(
+    let result = crate::async_storage::poll_ready(diff_accounted::<_, FileTableFormat>(
         &store,
         Some(before),
         Some(after),
@@ -375,12 +378,12 @@ fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dy
     let internal = put(
         &store,
         &TreePage::Internal(vec![
-            TreeChild {
-                first_name: name("a")?,
+            Child {
+                first: name("a")?,
                 page: a,
             },
-            TreeChild {
-                first_name: name("c")?,
+            Child {
+                first: name("c")?,
                 page: c,
             },
         ]),
@@ -439,8 +442,8 @@ fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dy
 
     let one_child = put(
         &store,
-        &TreePage::Internal(vec![TreeChild {
-            first_name: name("a")?,
+        &TreePage::Internal(vec![Child {
+            first: name("a")?,
             page: flattened,
         }]),
     )?;
@@ -467,12 +470,12 @@ fn owned_one_sided_internal_diff_stops_at_the_exact_outer_bound()
     let root = put(
         &store.inner,
         &TreePage::Internal(vec![
-            TreeChild {
-                first_name: name("a")?,
+            Child {
+                first: name("a")?,
                 page: first,
             },
-            TreeChild {
-                first_name: name("z")?,
+            Child {
+                first: name("z")?,
                 page: second,
             },
         ]),
@@ -514,7 +517,7 @@ fn diff_preserves_storage_and_decode_failures_after_admitted_work()
     .ok_or("missing page unexpectedly diffed")?;
     assert!(matches!(
         failure.error,
-        DiffError::Storage(ObjectStoreError::Missing)
+        FsError::Object(ObjectStoreError::Missing)
     ));
     assert_eq!(failure.work.page_reads, 2);
     assert!(failure.work.backend_read_operations >= 1);
@@ -536,7 +539,7 @@ fn diff_preserves_storage_and_decode_failures_after_admitted_work()
     .ok_or("memory diff blocked")?
     .err()
     .ok_or("malformed page unexpectedly diffed")?;
-    assert!(matches!(failure.error, DiffError::Decode(_)));
+    assert!(matches!(failure.error, FsError::Decode(_)));
     assert!(failure.work.page_reads >= 2);
     Ok(())
 }
@@ -557,8 +560,8 @@ fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
                 kind: FileKind::Regular,
             }]),
         )?;
-        let descriptor = TreeChild {
-            first_name: child_name,
+        let descriptor = Child {
+            first: child_name,
             page: child,
         };
         before_children.push(descriptor.clone());
@@ -567,12 +570,12 @@ fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
     let changed_name = name("z")?;
     let before_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 90)?]))?;
     let after_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 91)?]))?;
-    before_children.push(TreeChild {
-        first_name: changed_name.clone(),
+    before_children.push(Child {
+        first: changed_name.clone(),
         page: before_leaf,
     });
-    after_children.push(TreeChild {
-        first_name: changed_name,
+    after_children.push(Child {
+        first: changed_name,
         page: after_leaf,
     });
     let before = put(&backend, &TreePage::Internal(before_children))?;
@@ -633,7 +636,6 @@ mod model {
     type Model = BTreeMap<u8, u8>;
     type Outcome = Result<(), Box<dyn std::error::Error>>;
 
-    /// Four items per page, so a few dozen entries span several levels.
     const LIMITS: DecodeLimits = DecodeLimits {
         maximum_object_bytes: 64 * 1024,
         maximum_name_bytes: 255,
@@ -654,7 +656,6 @@ mod model {
             .collect()
     }
 
-    /// Path-copies `from` into `to` and returns the new root.
     fn rewrite(
         store: &MemoryObjectStore,
         root: ObjectId,
@@ -785,4 +786,15 @@ fn native_diff_denies_frontier_allocation_before_backend_work()
     assert_eq!(original.receipt().backend_read_operations, 0);
     assert_eq!(original.allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes())).map(|(value, _allocation)| value)?, baseline);
     Ok(())
+}
+
+async fn diff_accounted<S: AsyncObjectStore, F: Format>(
+    store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
+    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
+) -> Result<Diff<F::Key, F::Value>, OperationFailure<FsError>> {
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    let result = diff_with_accounting::<S, F>(store, before, after, maximum_changes, limits, &mut accounting, cancellation).await;
+    let work = accounting.spent();
+    result.map(|(mut diff, _)| { diff.work = work; diff })
+        .map_err(|error| OperationFailure::new(error, work))
 }

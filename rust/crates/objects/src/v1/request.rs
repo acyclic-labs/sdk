@@ -76,7 +76,6 @@ pub fn upload_length(size: u64) -> Result<(), Error> {
 }
 
 /// Validates a canonical binary request before any transport or provider side effect.
-/// Upload routes accept their generated header message, with the decoded body length separate.
 pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<(), Error> {
     use prost::Message;
     if bytes.len() > 16 * 1024 * 1024 {
@@ -104,20 +103,7 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
             put_stream_digest(&decode!(PutObjectHeader))?;
             upload_length(body_length)?;
         }
-        "objects/get" => {
-            let value = decode!(GetObjectRequest);
-            bucket(&value.bucket)?;
-            key(&value.object_key)?;
-            read_filters(&value.if_match, &value.if_none_match)?;
-            if let Some(range) = value.range {
-                match range.selection {
-                    Some(wire::byte_range::Selection::Bytes(range))
-                        if range.end.is_none_or(|end| end >= range.start) => {}
-                    Some(wire::byte_range::Selection::SuffixLength(length)) if length > 0 => (),
-                    _ => return Err(wire::ErrorCode::RangeNotSatisfiable.into()),
-                }
-            }
-        }
+        "objects/get" => { get(&decode!(GetObjectRequest))?; }
         "objects/head" => {
             let value = decode!(HeadObjectRequest);
             bucket(&value.bucket)?;
@@ -168,6 +154,22 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
     }
     Ok(())
 }
+pub(crate) fn get(query: &wire::GetObjectRequest) -> Result<&str, Error> {
+    if prost::Message::encoded_len(query) > 16 * 1024 * 1024 { return Err(wire::ErrorCode::QuotaExceeded.into()); }
+    let name = bucket(&query.bucket)?;
+    key(&query.object_key)?;
+    read_filters(&query.if_match, &query.if_none_match)?;
+    if let Some(range) = query.range {
+        match range.selection {
+            Some(wire::byte_range::Selection::Bytes(range))
+                if range.end.is_none_or(|end| end >= range.start) => {}
+            Some(wire::byte_range::Selection::SuffixLength(length)) if length > 0 => {}
+            _ => return Err(wire::ErrorCode::RangeNotSatisfiable.into()),
+        }
+    }
+    Ok(name)
+}
+
 fn finish_digest(operation: &str, header: &[u8], length: u64, body: [u8; 32]) -> [u8; 32] {
     let mut digest = blake3::Hasher::new();
     digest.update(b"acyclic.objects.v1.mutation\0");
@@ -187,13 +189,17 @@ fn message_digest(operation: &str, message: &impl prost::Message) -> [u8; 32] {
         *blake3::hash(&[]).as_bytes(),
     )
 }
-/// Starts canonical header/body hashing for a streaming PUT. Retry identity is excluded.
-pub fn put_stream_digest(header: &wire::PutObjectHeader) -> Result<BodyDigest, Error> {
-    bucket(&header.bucket)?;
+pub(crate) fn put(header: &wire::PutObjectHeader) -> Result<&str, Error> {
+    let name = bucket(&header.bucket)?;
     key(&header.object_key)?;
     metadata(&header.metadata)?;
     preconditions(&header.preconditions)?;
     identity(&header.mutation)?;
+    Ok(name)
+}
+/// Starts canonical header/body hashing for a streaming PUT. Retry identity is excluded.
+pub fn put_stream_digest(header: &wire::PutObjectHeader) -> Result<BodyDigest, Error> {
+    put(header)?;
     let mut normalized = header.clone();
     normalized.mutation = None;
     Ok(BodyDigest {

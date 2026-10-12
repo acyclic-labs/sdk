@@ -3,12 +3,13 @@ use super::*;
 use crate::foundation::Digest;
 use crate::kernel::persistent_btree::Mutation;
 use crate::kernel::{
-    FileKind, FilePayload, FileTableChild, FileTablePage, encode_file_table_page, file_table_page_id,
+    FileKind, FilePayload, FileTablePage, encode_file_table_page, file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectStore;
 use acyclic_stream::OwnedBytes;
 
+use crate::kernel::Child;
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_table_encoding_denial_precedes_native_payload_and_backend_write()
@@ -53,7 +54,7 @@ fn put(
     let id = file_table_page_id(page, maximum_items)?;
     store.put(
         id,
-        OwnedBytes::from(encode_file_table_page(page, maximum_items)?),
+        OwnedBytes::from(encode_file_table_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -74,16 +75,16 @@ fn three_leaf_table(
     let root = put(
         store,
         &FileTablePage::Internal(vec![
-            FileTableChild {
-                first_file_id: FileId::from_bytes([1; 16]),
+            Child {
+                first: FileId::from_bytes([1; 16]),
                 page: leaves[0],
             },
-            FileTableChild {
-                first_file_id: FileId::from_bytes([3; 16]),
+            Child {
+                first: FileId::from_bytes([3; 16]),
                 page: leaves[1],
             },
-            FileTableChild {
-                first_file_id: FileId::from_bytes([6; 16]),
+            Child {
+                first: FileId::from_bytes([6; 16]),
                 page: leaves[2],
             },
         ]),
@@ -120,7 +121,7 @@ fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     let FileTablePage::Internal(children) =
-        decode_file_table_page(&bytes, DecodeLimits::default())?
+        decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("candidate file table is not internal".into());
     };
@@ -151,7 +152,7 @@ fn unordered_file_table_mutations_are_sorted_once_and_persist_canonically()
     let bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
-    let FileTablePage::Leaf(records) = decode_file_table_page(&bytes, DecodeLimits::default())?
+    let FileTablePage::Leaf(records) = decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("unordered file-table result is not a leaf".into());
     };
@@ -256,7 +257,7 @@ fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::error::
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     assert!(root_bytes.len() <= 120);
-    let FileTablePage::Internal(children) = decode_file_table_page(&root_bytes, limits)? else {
+    let FileTablePage::Internal(children) = decode_file_table_page(&root_bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? else {
         return Err("byte-bounded candidate root is not internal".into());
     };
     assert_eq!(children.len(), 2);
@@ -266,7 +267,7 @@ fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::error::
             .value;
         assert!(bytes.len() <= 120);
         assert!(matches!(
-            decode_file_table_page(&bytes, limits)?,
+            decode_file_table_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
             FileTablePage::Leaf(records) if records.len() == 1
         ));
     }
@@ -338,12 +339,12 @@ fn mutation_validation_and_current_state_matrix_is_total() {
     assert!(insert.changes_cardinality());
     let mut current = Some(record(1, 1));
     assert_eq!(
-        insert.apply_current(&mut current),
+        insert.replacement(current.as_ref()),
         Err(FileTableSemanticError::AlreadyExists)
     );
     current = None;
-    assert!(insert.apply_current(&mut current).is_ok());
-    assert_eq!(current, Some(record(1, 1)));
+    assert!(insert.replacement(current.as_ref()).is_ok());
+    assert_eq!(insert.replacement(current.as_ref()).map(|value| value.cloned()), Ok(Some(record(1, 1))));
 
     let remove = FileTableMutation::Remove {
         file_id: FileId::from_bytes([1; 16]),
@@ -351,17 +352,16 @@ fn mutation_validation_and_current_state_matrix_is_total() {
     };
     current = None;
     assert_eq!(
-        remove.apply_current(&mut current),
+        remove.replacement(current.as_ref()),
         Err(FileTableSemanticError::Missing)
     );
     current = Some(record(1, 1));
     assert_eq!(
-        remove.apply_current(&mut current),
+        remove.replacement(current.as_ref()),
         Err(FileTableSemanticError::StateConflict)
     );
     current = Some(record(1, 2));
-    assert!(remove.apply_current(&mut current).is_ok());
-    assert_eq!(current, None);
+    assert_eq!(remove.replacement(current.as_ref()), Ok(None));
 
     let replace = FileTableMutation::Replace {
         expected: record(1, 1),
@@ -370,17 +370,16 @@ fn mutation_validation_and_current_state_matrix_is_total() {
     assert!(!replace.changes_cardinality());
     current = None;
     assert_eq!(
-        replace.apply_current(&mut current),
+        replace.replacement(current.as_ref()),
         Err(FileTableSemanticError::Missing)
     );
     current = Some(record(1, 3));
     assert_eq!(
-        replace.apply_current(&mut current),
+        replace.replacement(current.as_ref()),
         Err(FileTableSemanticError::StateConflict)
     );
     current = Some(record(1, 1));
-    assert!(replace.apply_current(&mut current).is_ok());
-    assert_eq!(current, Some(record(1, 2)));
+    assert_eq!(replace.replacement(current.as_ref()).map(|value| value.cloned()), Ok(Some(record(1, 2))));
 }
 
 #[test]

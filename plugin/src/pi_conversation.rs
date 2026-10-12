@@ -4,7 +4,7 @@ use acyclic_harness::{Error, OperationId, Result,
     conversation::Limits,
     core::{AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, EventPayload, Scope},
     durable_host::TaskJournalOwner, store::HistoryReader};
-use acyclic_stream::{StreamClient, StreamProvider};
+use acyclic_stream::{StreamProvider};
 
 fn native_invalid(reason: &'static str) -> Error {
     Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason }
@@ -12,7 +12,7 @@ fn native_invalid(reason: &'static str) -> Error {
 
 /// Reads the original atomic operation index, including archived bindings.
 async fn observe_binding_with_native_work<P: StreamProvider>(
-    stream: &StreamClient<P>, authority: &Authority, verifier: &AuthorityVerifier,
+    stream: &std::sync::Arc<P>, authority: &Authority, verifier: &AuthorityVerifier,
     scope: &Scope, operation: OperationId, maximum_event_bytes: u64,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<Option<u64>> {
@@ -41,7 +41,7 @@ async fn observe_binding_with_native_work<P: StreamProvider>(
 /// Original finite native ledger; no ordinary scope clone, fresh meter, or shadow binding cache.
 #[allow(clippy::too_many_arguments, reason = "original producer custody and guarded creator are explicit")]
 pub(crate) async fn bind_task_conversation<P: StreamProvider + 'static>(
-    stream: &StreamClient<P>, authority: (Authority, AuthorityIssuer, Scope),
+    stream: &std::sync::Arc<P>, authority: (Authority, AuthorityIssuer, Scope),
     authority_custody: acyclic_fs::NativeAllocation, owner: &TaskJournalOwner<P>,
     exact_volume: &acyclic_harness::conversation::VolumeRef,
     original_creation: acyclic_fs::OperationId, limits: Limits,
@@ -70,7 +70,7 @@ pub(crate) async fn bind_task_conversation<P: StreamProvider + 'static>(
 /// Cold observation of the original binding uses the same authenticated immutable operation query; it cannot populate a current owner's cache.
 #[allow(clippy::too_many_arguments, reason = "original authority custody and immutable operation are explicit")]
 pub(crate) async fn observe_task_conversation<P: StreamProvider>(
-    stream: &StreamClient<P>, authority: (Authority, AuthorityIssuer, Scope),
+    stream: &std::sync::Arc<P>, authority: (Authority, AuthorityIssuer, Scope),
     authority_custody: acyclic_fs::NativeAllocation,
     exact_volume: &acyclic_harness::conversation::VolumeRef,
     original_creation: acyclic_fs::OperationId,

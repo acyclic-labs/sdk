@@ -36,7 +36,7 @@ impl ForkToolArguments {
         &self, caller: TaskId, limits: Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<TaskId> {
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         if let Some(observer) = work.as_deref_mut() {
             observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
@@ -142,7 +142,7 @@ pub struct RetainedSourceBinding<A, O> {
 pub async fn recursive_fork_source<P, A, O>(
     _runtime: &super::FilesystemTaskRuntime<P, A, O>,
     filesystem: Arc<super::FilesystemHost<A, O>>,
-    stream: &acyclic_stream::StreamClient<P>,
+    stream: &Arc<P>,
     parent: &crate::store::StreamAggregate<P>,
     verifier: crate::core::AuthorityVerifier,
     signed: crate::core::Scope,
@@ -179,7 +179,7 @@ where
         }
         crate::conversation::ContentGrant::verify(&verifier, &signed, volume, VolumeOperation::Read)?;
     }
-    config.limits.validate()?;
+    config.limits.validate(&mut None)?;
     let selected = arguments.source_task(caller, config.limits, &mut None)?;
     let mut request = ForkRequest {
         operation_id, parent: parent.reducer().authority().clone(),
@@ -217,8 +217,7 @@ where
         if authorization.caller_task != caller {
             return Err(Error::Unauthorized("selected source approval belongs to another caller".into()));
         }
-        source_read.require_selection(operation_id, selected, &authorization.project,
-            &authorization.generation, authorization.native_snapshot.as_ref())?;
+        source_read.require_selection(operation_id, selected, &authorization.project, &authorization.generation, authorization.native_snapshot.as_ref(), None)?;
         arguments.select_project(caller, selected, authorization.project.clone(),
             authorization.generation.clone(), config.limits, &mut request)?;
         request.authorized_source = Some(authorization.clone());
@@ -304,12 +303,12 @@ pub(crate) fn recursive_fork_request_with_native_work(
         crate::resources::ResourceKind::Stream, provider, path, Some(version), &mut observer,
     )?;
     let reference = crate::resources::StreamRef::from_resource_with_work(reference, &mut observer)?;
-    let child_project = allocation.project.clone_with_work(&mut observer)?;
-    let child_private = allocation.private_volume.clone_with_work(&mut observer)?;
-    let child_result = allocation.result_volume.map(|volume| volume.clone_with_work(&mut observer)).transpose()?;
+    let child_project = allocation.project.copy(&mut observer)?;
+    let child_private = allocation.private_volume.copy(&mut observer)?;
+    let child_result = allocation.result_volume.map(|volume| volume.copy(&mut observer)).transpose()?;
     let source_project = source_read.map_or(source.project, |handle| &handle.authorization().project)
-        .clone_with_work(&mut observer)?;
-    let scratch = source.private_volume.clone_with_work(&mut observer)?;
+        .copy(&mut observer)?;
+    let scratch = source.private_volume.copy(&mut observer)?;
     let mut selections = Vec::new();
     let slots = 3 * std::mem::size_of::<crate::fork::ForkSelection>() as u64;
     observer.as_deref_mut().expect("native fork observer").admit_owned(slots)?;
@@ -342,8 +341,7 @@ pub(crate) fn recursive_fork_request_with_native_work(
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native source approval belongs to another caller" });
             }
-            handle.require_selection_with_native_work(operation, selected, &authorization.project,
-                &authorization.generation, authorization.native_snapshot.as_ref(), work)?;
+            handle.require_selection(operation, selected, &authorization.project, &authorization.generation, authorization.native_snapshot.as_ref(), Some(work))?;
             Some(authorization.clone_with_work_and_custody(&mut observer)?.0)
         }
         None if selected != source.caller => return Err(Error::NativeBoundary {
@@ -378,7 +376,7 @@ pub(crate) fn recursive_fork_request_with_native_work(
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments, reason = "original provider, source and authority identities stay explicit")]
 pub async fn recursive_fork_source_with_native_work<P, A, O>(
-    filesystem: Arc<super::FilesystemHost<A, O>>, stream: &acyclic_stream::StreamClient<P>,
+    filesystem: Arc<super::FilesystemHost<A, O>>, stream: &Arc<P>,
     parent: crate::core::Reducer, verifier: &crate::core::AuthorityVerifier,
     signed: &crate::core::Scope, context: &crate::runtime::TaskContext,
     source: &RecursiveSourceSnapshot, stream_provider: &crate::resources::ProviderRef,
@@ -433,7 +431,7 @@ where P: acyclic_stream::StreamProvider + 'static, A: AsyncAuthorityStore + 'sta
 #[allow(clippy::too_many_arguments, reason = "original owner/provider/source identities stay explicit")]
 pub async fn restore_recursive_fork_source<P, A, O>(
     filesystem: Arc<super::FilesystemHost<A, O>>,
-    stream: &acyclic_stream::StreamClient<P>,
+    stream: &Arc<P>,
     parent: &crate::core::Reducer,
     verifier: crate::core::AuthorityVerifier,
     signed: crate::core::Scope,
@@ -477,7 +475,7 @@ where
 #[allow(clippy::too_many_arguments, reason = "original providers and transferred custody stay explicit")]
 pub async fn restore_recursive_fork_source_with_native_work<P, A, O>(
     filesystem: Arc<super::FilesystemHost<A, O>>,
-    stream: &acyclic_stream::StreamClient<P>,
+    stream: &Arc<P>,
     parent: crate::core::Reducer,
     verifier: &crate::core::AuthorityVerifier,
     signed: &crate::core::Scope,
@@ -525,7 +523,7 @@ where
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
         (verifier.clone_with_work(&mut observer)?, signed.clone_with_work(&mut observer)?,
-            caller_project.clone_with_work(&mut observer)?)
+            caller_project.copy(&mut observer)?)
     };
     let provider = stream_provider.clone_with_io(&io)?;
     let selected_read = match source_read {
@@ -628,7 +626,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         read_authorization, payload: encode(fork, io)?,
         command: Some(command), source_checkpoint, input_files,
     };
-    recursive_observe(io, |work| request.validate_with_work(work))?;
+    recursive_observe(io, |work| request.validate(work))?;
     Ok(request)
 }
 
@@ -768,7 +766,7 @@ impl ResumableMachine for ForkPreparationMachine {
         let io = super::PreparationIo::from_native_work(work)?;
         let state = self.initialize_engine(input, Some(&io))?;
         let custody = io.take_native_custody(
-            super::default_tools::recursive_value_owned_bytes(&state, Some(&io))?,
+            super::default_tools::recursive_value_owned_bytes(&state)?,
         )?;
         Ok((state, custody))
     }
@@ -790,7 +788,7 @@ impl ForkPreparationMachine {
     fn initialize_engine(&self, input: &Value, io: Option<&super::PreparationIo>) -> Result<Value> {
         use super::default_tools::{recursive_box, decode, encode, recursive_observe, recursive_reject};
         let request: ResourcePreparationRequest = decode(input, io)?;
-        recursive_observe(io, |work| request.validate_with_work(work))?;
+        recursive_observe(io, |work| request.validate(work))?;
         let command = request.command.ok_or_else(|| recursive_reject(
             io, crate::wire::ErrorCode::Invalid, "fork preparation has no admitted command"))?;
         if command.kind != FORK_PREPARE_TASK_COMMAND_KIND {
