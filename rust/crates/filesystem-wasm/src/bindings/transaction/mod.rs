@@ -61,8 +61,7 @@ impl BrowserTransaction {
         ))
         .await
         .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .map_err(js_error)
+        .map_err(|failure| js_error(failure.error))
     }
 
     /// Creates exactly one empty directory.
@@ -76,8 +75,7 @@ impl BrowserTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)
+            .map_err(|failure| js_error(failure.error))
     }
 
     /// Creates one symbolic link with an opaque target.
@@ -97,8 +95,7 @@ impl BrowserTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)
+            .map_err(|failure| js_error(failure.error))
     }
 
     /// Creates or replaces one complete file inside this transaction.
@@ -113,8 +110,7 @@ impl BrowserTransaction {
         ))
         .await
         .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .map_err(js_error)
+        .map_err(|failure| js_error(failure.error))
     }
 
     /// Removes one existing namespace binding inside this transaction.
@@ -128,8 +124,7 @@ impl BrowserTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)
+            .map_err(|failure| js_error(failure.error))
     }
 
     /// Clones one complete regular file without copying its body.
@@ -152,8 +147,7 @@ impl BrowserTransaction {
         ))
         .await
         .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .map_err(js_error)
+        .map_err(|failure| js_error(failure.error))
     }
 
     /// Creates one same-workspace hard link.
@@ -168,8 +162,7 @@ impl BrowserTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)
+            .map_err(|failure| js_error(failure.error))
     }
 
     /// Replaces one sparse regular-file range.
@@ -191,8 +184,7 @@ impl BrowserTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)
+            .map_err(|failure| js_error(failure.error))
     }
 
     /// Changes one regular file's logical length.
@@ -265,32 +257,24 @@ impl BrowserTransaction {
         lease: Option<JsValue>,
     ) -> Result<Ts<BrowserWorkspaceCommit>, JsValue> {
         let permit = browser_publication_permit(lease)?;
-        let outcome = {
-            let value = &mut self.engine;
-            Box::pin(async {
-                value
-                    .commit(
-                        None,
-                        permit,
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                        |_| async {
-                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                                acyclic_fs::OperationReceipt {
-                                    value: (),
-                                    work: acyclic_fs::WorkCounters::default(),
-                                },
-                            )
-                        },
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)
-            })
-            .await
-            .map(browser_workspace_commit)
-        }
-        .map_err(js_error)?;
+        let outcome = Box::pin(self.engine.commit(
+            None,
+            permit,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+            |_| {
+                std::future::ready(Ok::<
+                    _,
+                    acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>,
+                >(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: acyclic_fs::WorkCounters::default(),
+                }))
+            },
+        ))
+        .await
+        .map(|receipt| browser_workspace_commit(receipt.value))
+        .map_err(|failure| js_error(failure.error))?;
         ts(outcome)
     }
 

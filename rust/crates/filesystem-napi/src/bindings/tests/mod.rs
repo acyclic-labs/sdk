@@ -810,7 +810,9 @@ async fn shared_publication_fence_blocks_napi_mutation_and_reconcile_recovers()
         acquisition_work: acyclic_fs::WorkCounters::default(),
     };
     let unresolved = OperationId::new();
-    Box::pin(shared.lock()).await.retain_operation_id(unresolved)?;
+    Box::pin(shared.lock())
+        .await
+        .retain_operation_id(unresolved)?;
     assert!(
         native
             .create_file("/blocked.txt".to_owned(), Buffer::from(b"blocked".to_vec()))
@@ -841,7 +843,9 @@ async fn shared_publication_fence_blocks_napi_mutation_and_reconcile_recovers()
             .await
             .is_err()
     );
-    Box::pin(shared.lock()).await.clear_retained_operation(unresolved);
+    Box::pin(shared.lock())
+        .await
+        .clear_retained_operation(unresolved);
     Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64))).await?;
     Ok(())
 }

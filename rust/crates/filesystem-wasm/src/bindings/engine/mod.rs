@@ -141,8 +141,7 @@ impl BrowserFs {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)?;
+            .map_err(|failure| js_error(failure.error))?;
         Ok(BrowserWorkspace { engine })
     }
 
@@ -160,8 +159,7 @@ impl BrowserFs {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(js_error)?;
+            .map_err(|failure| js_error(failure.error))?;
         Ok(BrowserWorkspace { engine })
     }
 

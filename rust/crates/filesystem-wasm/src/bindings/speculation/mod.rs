@@ -345,7 +345,9 @@ pub(in crate::bindings) fn speculation_busy() -> JsValue {
     )
 }
 
-pub(in crate::bindings) const fn browser_speculation_options(options: &BrowserSpeculationOptions) -> SpeculationOptions {
+pub(in crate::bindings) const fn browser_speculation_options(
+    options: &BrowserSpeculationOptions,
+) -> SpeculationOptions {
     SpeculationOptions {
         residency: ResidencySpeculatorOptions {
             maximum_active_operations: options.residency.maximum_active_operations,
@@ -483,7 +485,9 @@ pub(in crate::bindings) fn browser_promotion_metrics(
     }
 }
 
-pub(in crate::bindings) const fn browser_object_cache_options(options: &BrowserObjectCacheOptions) -> ObjectCacheOptions {
+pub(in crate::bindings) const fn browser_object_cache_options(
+    options: &BrowserObjectCacheOptions,
+) -> ObjectCacheOptions {
     ObjectCacheOptions {
         maximum_entries: options.entries,
         maximum_bytes: options.bytes,

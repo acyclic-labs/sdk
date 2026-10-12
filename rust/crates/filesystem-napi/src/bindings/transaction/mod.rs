@@ -22,8 +22,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Creates exactly one empty directory.
@@ -39,8 +38,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Creates one symbolic link with an opaque target.
@@ -57,8 +55,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Creates or replaces one complete file inside this transaction.
@@ -75,8 +72,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Removes one existing namespace binding inside this transaction.
@@ -92,8 +88,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Clones one complete regular file without copying its body.
@@ -122,8 +117,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Creates one same-workspace hard link.
@@ -140,8 +134,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Replaces one sparse regular-file range.
@@ -159,8 +152,7 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Changes one regular file's logical length.
@@ -274,9 +266,8 @@ impl NativeWorkspaceTransaction {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .map(workspace_commit)
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Safely advances this retained candidate and sparsely replays its work.
