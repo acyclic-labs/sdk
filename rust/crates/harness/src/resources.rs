@@ -345,10 +345,10 @@ macro_rules! typed_reference {
             /// Creates a provider-owned typed reference.
             pub fn new(
                 provider: ProviderRef,
-                key: impl Into<Vec<u8>>,
+                key: Vec<u8>,
                 version: Option<String>,
             ) -> Result<Self> {
-                ResourceRef::new(ResourceKind::$kind, provider, key.into(), version, &mut None).map(Self)
+                ResourceRef::new(ResourceKind::$kind, provider, key, version, &mut None).map(Self)
             }
 
             pub(crate) fn from_resource_with_work(
@@ -604,8 +604,8 @@ mod tests {
     #[test]
     fn references_are_typed_bounded_and_provider_owned() -> Result<()> {
         let provider = ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let workspace = WorkspaceRef::new(provider.clone(), [7; 16], None)?;
-        let generation = GenerationRef::new(provider, [8; 32], Some("immutable".into()))?;
+        let workspace = WorkspaceRef::new(provider.clone(), [7; 16].into(), None)?;
+        let generation = GenerationRef::new(provider, [8; 32].into(), Some("immutable".into()))?;
         assert_eq!(workspace.as_resource().kind(), ResourceKind::Workspace);
         assert_eq!(generation.as_resource().kind(), ResourceKind::Generation);
         assert!(

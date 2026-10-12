@@ -2526,7 +2526,7 @@ fn release(
         }
         Some(Owned::File(state, owner)) => {
             let deleted = with_projection_parent(projection.root, projection.root_identity, path, projection.work, |parent, leaf| {
-                let file = match open_projection_leaf(parent, leaf, true, projection.work) {
+                let file = match open_projection_leaf(parent, leaf, projection.work) {
                     Ok(file) => file,
                     Err(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
                     Err(error) => return Err(error),
@@ -3173,22 +3173,6 @@ fn staging_path(root: &std::path::Path) -> PathBuf {
     root.with_file_name(format!(".{name}.acyclic-staging"))
 }
 
-fn write_source_chunk(
-    projection: Projection<'_>, file: &acyclic_native_runtime::NativeFile,
-    offset: u64, packet: crate::kernel::OwnedSourceChunk,
-) -> Result<(), NativeMountError> {
-    let packet = RetainedBuffer::source_chunk(packet, projection)?;
-    let meter = projection.work.runtime_meter_owner();
-    let completion = file.control_async(move |file, meter| { let meter = meter.expect("metered control");
-        acyclic_native_runtime::write_all_at(
-            file, offset, &std::ops::Deref::deref(&packet).bytes, Some((meter, true)),
-        )
-    }, Some(meter)).map_err(projection_io_error)?;
-    let written = wait_native_unit_measured(completion, projection.work);
-    let retired = projection.work.record_admitted(crate::WorkCounters::UNCHARGED).map_err(detach_work_error);
-    written.and(retired)
-}
-
 fn write_listed_content(
     projection: Projection<'_>, path: &MountPath, entry: &ProjectedEntry,
     file: &acyclic_native_runtime::NativeFile,
@@ -3198,10 +3182,20 @@ fn write_listed_content(
     let mut delivered = 0_u64;
     let mut sink = |offset: u64, packet: crate::kernel::OwnedSourceChunk| {
         let length = packet.bytes.len() as u64;
-        let written = write_source_chunk(projection, file, offset, packet).and_then(|()| {
+        let written: Result<(), NativeMountError> = (|| {
+            let packet = RetainedBuffer::source_chunk(packet, projection)?;
+            let meter = projection.work.runtime_meter_owner();
+            let completion = file.control_async(move |file, meter| { let meter = meter.expect("metered control");
+                acyclic_native_runtime::write_all_at(
+                    file, offset, &std::ops::Deref::deref(&packet).bytes, Some((meter, true)),
+                )
+            }, Some(meter)).map_err(projection_io_error)?;
+            let written = wait_native_unit_measured(completion, projection.work);
+            let retired = projection.work.record_admitted(crate::WorkCounters::UNCHARGED).map_err(detach_work_error);
+            written.and(retired)?;
             delivered = delivered.checked_add(length).ok_or(crate::WorkError::Overflow)?;
             Ok(())
-        });
+        })();
         if let Err(error) = written {
             failure = Some(error);
             return Err(MountSourceError::Stale);
@@ -3241,18 +3235,8 @@ fn write_listed_content(
     }
 }
 
-fn projection_status_error(status: windows::Win32::Foundation::NTSTATUS) -> std::io::Error {
-    if status.0 == 0xC000_0056_u32 as i32 {
-        return std::io::Error::from_raw_os_error(SHARING_VIOLATION);
-    }
-    // SAFETY: this translates only the actual NT result, without another I/O.
-    std::io::Error::from_raw_os_error(
-        unsafe { windows::Win32::Foundation::RtlNtStatusToDosError(status) } as i32,
-    )
-}
-
 fn open_projection_leaf(
-    parent: &cap_std::fs::Dir, leaf: &[u16], deny_writers: bool,
+    parent: &cap_std::fs::Dir, leaf: &[u16],
     work: &crate::NativeMaterializationWork,
 ) -> Result<std::fs::File, NativeMountError> {
     use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
@@ -3262,7 +3246,7 @@ fn open_projection_leaf(
     use windows::Win32::Foundation::{HANDLE, OBJ_CASE_INSENSITIVE, UNICODE_STRING};
     use windows::Win32::Storage::FileSystem::{
         DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE, FILE_ATTRIBUTE_NORMAL,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_SHARE_DELETE, FILE_SHARE_READ,
     };
     let length = u16::try_from(leaf.len().checked_mul(2).ok_or(crate::WorkError::Overflow)?)
         .map_err(|_| NativeMountError::Demand(crate::DemandError::InvalidRequest))?;
@@ -3280,12 +3264,16 @@ fn open_projection_leaf(
         let status = unsafe { NtCreateFile(
             &raw mut handle, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             &raw const attributes, &raw mut block, None, FILE_ATTRIBUTE_NORMAL,
-            FILE_SHARE_READ | FILE_SHARE_DELETE
-                | if deny_writers { windows::Win32::Storage::FileSystem::FILE_SHARE_MODE(0) }
-                    else { FILE_SHARE_WRITE },
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
             FILE_OPEN, FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT, None, 0,
         ) };
-        if status.is_err() { return Err(projection_status_error(status)); }
+        if status.is_err() {
+            let code = if status.0 == 0xC000_0056_u32 as i32 { SHARING_VIOLATION } else {
+                // SAFETY: translate the actual NT result without another I/O.
+                (unsafe { windows::Win32::Foundation::RtlNtStatusToDosError(status) }) as i32
+            };
+            return Err(std::io::Error::from_raw_os_error(code));
+        }
         // SAFETY: successful native open transferred the new handle once.
         Ok(unsafe { std::fs::File::from_raw_handle(handle.0) })
     })
@@ -6512,8 +6500,8 @@ mod tests {
         crate::demand::native::NativeDemandSource, crate::MemoryLazyWorkspaceStore,
     >, Box<dyn std::error::Error>> {
         let demand = crate::demand::native::NativeDemandSource::open(
-            source_root, crate::model::FilesystemProfile::Windows, crate::model::VolumeLimits::default(), None, None,
-        ).await?;
+            std::borrow::Cow::Owned(std::path::Path::new(source_root).to_path_buf()), crate::model::FilesystemProfile::Windows, crate::model::VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         Ok(crate::LazyWorkspace::attach_with_config(
             &Fs::memory(), name, Arc::new(demand), crate::MemoryLazyWorkspaceStore::default(),
             VolumeConfig::native(Lifecycle::Ephemeral),
@@ -6821,8 +6809,7 @@ mod tests {
         });
         super::ProjFsSession::start(&crate::NativeMountRequest {
             mount_id: crate::MountId::new(), volume_id: source.volume_id()?, destination: destination.clone(), writable,
-        }, source.clone(), &materialization, &mut session, &mut retirement, |_| Ok(()))
-            .map_err(|failure| failure.error)?;
+        }, source.clone(), &materialization, &mut session, &mut retirement, |_| Ok(()))?;
         let session = session.expect("successful startup owns its driver");
         Ok((root, destination, session))
     }
@@ -7679,11 +7666,11 @@ mod tests {
         std::fs::write(source_root.join("pkg").join("shared.rs"), b"shared")?;
         std::fs::write(source_root.join("pkg").join("sub").join("deep.rs"), b"deep")?;
         let demand = NativeDemandSource::open(
-            &source_root,
+            std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
             crate::model::FilesystemProfile::Windows,
-            crate::model::VolumeLimits::default(), None, None,
+            crate::model::VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
         let lazy = crate::LazyWorkspace::attach_with_config(
             &engine,

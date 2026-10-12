@@ -129,8 +129,8 @@ pub fn source(config: &Config, stream: std::sync::Arc<LocalStream>, files: Arc<F
 }
 
 fn authority_binding(binding: &AuthorityBinding) -> Result<ConfiguredRecursiveAuthorityBinding> {
-    ConfiguredRecursiveAuthorityBinding::new(acyclic_harness::core::AuthorityIssuer::new(
-        &binding.issuer, binding.key, binding.authority.clone()), binding.scope.clone())
+    Ok(ConfiguredRecursiveAuthorityBinding::new(acyclic_harness::core::AuthorityIssuer::new(
+        &binding.issuer, binding.key, binding.authority.clone()), binding.scope.clone()))
 }
 
 #[derive(Clone, Serialize, Deserialize)]

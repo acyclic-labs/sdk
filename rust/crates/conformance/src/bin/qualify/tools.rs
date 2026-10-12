@@ -905,8 +905,8 @@ fn with_lazy_mount<T>(
                 .map_err(engine_err("open store"))?;
             let state = LocalCoreStateStore::open_owned(work.join("core-state"))
                 .map_err(engine_err("open core state"))?;
-            let demand = NativeDemandSource::open(source, profile, VolumeLimits::default(), None, None)
-                .await
+            let demand = NativeDemandSource::open(std::borrow::Cow::Owned(source.to_path_buf()), profile, VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(engine_err("open source"))?;
             let workspace = LazyWorkspace::attach_with_config(
                     &engine,

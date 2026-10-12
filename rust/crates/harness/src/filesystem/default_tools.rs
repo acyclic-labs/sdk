@@ -654,7 +654,7 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
         Plan::Fork(plan) => {
             crate::executor::with_history_io(io, |work| {
                 plan.request.validate(work)?;
-                plan.preparation.validate_with_work(work)?;
+                plan.preparation.validate(work)?;
                 plan.source_checkpoint.validate(work)
             })?;
             if plan.request.source_checkpoint.as_ref() != Some(&plan.source_checkpoint) {

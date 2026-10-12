@@ -36,9 +36,9 @@ pub struct ConfiguredRecursiveAuthorityBinding {
 }
 
 impl ConfiguredRecursiveAuthorityBinding {
-    /// Retains the original installed signer; setup authenticates its scope through the same configured source validation used for wire bindings.
+    /// Retains the signer and scope for configured-source validation.
     #[must_use]
-    pub fn new(issuer: AuthorityIssuer, scope: Scope) -> Result<Self> { Ok(Self { issuer, scope }) }
+    pub fn new(issuer: AuthorityIssuer, scope: Scope) -> Self { Self { issuer, scope } }
 
     #[must_use]
     pub fn authority(&self) -> &Authority { self.issuer.audience() }

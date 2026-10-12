@@ -3655,7 +3655,7 @@ mod tests {
             host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?);
-        let request = Interaction::question("original published prompt", json!({"type": "string"}))?;
+        let request = Interaction::question("original published prompt".into(), json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),
             "interactions/request.json", &published, "application/json", "request.json").await?;
@@ -3728,7 +3728,7 @@ mod tests {
     -> Result<()> {
         let client = Arc::new(MemoryStream::default());
         let request =
-            Interaction::question("secret prompt", json!({"type": "string", "minLength": 2}))?;
+            Interaction::question("secret prompt".into(), json!({"type": "string", "minLength": 2}))?;
         let request_bytes =
             serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
         let answer_bytes = br#"{"type":"question","value":"yes"}"#;

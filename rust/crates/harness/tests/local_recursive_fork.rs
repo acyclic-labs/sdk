@@ -185,8 +185,8 @@ where
         children,
         inherited: previous.map(|(_, parent)| parent.request().clone()),
     });
-    let model = Model::new("example", if level >= 3 { "alternate" } else { "exact" },
-        if level == 2 { "2" } else { "1" }, Value::Null)?;
+    let model = Model::new("example".into(), if level >= 3 { "alternate" } else { "exact" }.into(),
+        if level == 2 { "2" } else { "1" }.into(), Value::Null)?;
     let mut tools = ToolRegistry::default();
     tools.register(Tool { definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
         input_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
@@ -1017,7 +1017,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 Some(&child_observation.generation),
                 &[WorkspaceMutation::PutFile {
                     path: format!("/level-{level}.txt"),
-                    bytes: format!("project child {level}").into_bytes().into(),
+                    bytes: format!("project child {level}").into_bytes(),
                 }],
                 &IdempotencyKey::new(format!("project-write-{level}"))?,
             )

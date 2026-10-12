@@ -11,14 +11,6 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Reconciles only the original retained outbox under its exact lease.
-    pub async fn reconcile_task(
-        &self, lease: crate::distributed::WorkLease, commands: &dyn TaskCommandHost,
-        maximum_commands: u32, maximum_wait_millis: u32,
-    ) -> TaskWorkerAttempt {
-        self.reconcile_task_observed(lease, commands, maximum_commands, maximum_wait_millis, None).await
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn reconcile_task_with_native_work(
         &self, lease: crate::distributed::WorkLease, recovery_custody: acyclic_fs::NativeAllocation,
@@ -35,12 +27,13 @@ where
             }, recovery_custody));
         }
         let io = super::super::PreparationIo::from_native_custody(recovery_custody);
-        let value = self.reconcile_task_observed(lease, commands, maximum_commands, maximum_wait_millis, Some(&io)).await;
+        let value = self.reconcile_task(lease, commands, maximum_commands, maximum_wait_millis, Some(&io)).await;
         let custody = io.take_native_custody(io.owned_bytes()?)?;
         Ok((value, custody))
     }
 
-    async fn reconcile_task_observed(
+    /// Reconciles the retained outbox under the exact lease and optional original IO.
+    pub async fn reconcile_task(
         &self, lease: crate::distributed::WorkLease, commands: &dyn TaskCommandHost,
         maximum_commands: u32, maximum_wait_millis: u32,
         io: Option<&super::super::PreparationIo>,

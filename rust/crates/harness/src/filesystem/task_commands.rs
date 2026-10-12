@@ -874,6 +874,11 @@ where
     ) -> Result<TaskCommandProgress> {
         use super::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let WorkerContext::Native(_) = &context {
+            let io = io.ok_or_else(|| boundary(io, ErrorCode::Unsupported, "native model requires original observer"))?;
+            io.original_native_work().ok_or_else(|| boundary(Some(io), ErrorCode::Unsupported, "native model requires original work"))?;
+        }
         let mut input: ModelTaskCommand = mail::decode_command(payload, io)?;
         input.mailbox_operation = input.mailbox_operation.or(receive);
         let binding = self.model.as_ref().ok_or_else(|| boundary(
@@ -889,7 +894,7 @@ where
             let journal = if reconciliation_only {
                 Some(self.runtime.execution_journal(task, fence.clone(), turn).await?)
             } else { None };
-            break 'journal (journal, super::task_runtime::execution_operation(task, turn));
+            break 'journal (journal, super::task_runtime::execution_operation(task, turn, io)?);
         };
         if reconciliation_only && !was_dispatched(journal.as_ref().expect("reconciliation opened its journal").as_ref(),
             operation, MODEL_TASK_COMMAND_KIND, io).await? {
@@ -1055,7 +1060,7 @@ where
                 break 'journal self.runtime.execution_journal_with_native_work(task, fence, turn, work).await?;
             }
             break 'journal (self.runtime.execution_journal(task, fence.clone(), turn).await?,
-                super::task_runtime::execution_operation(task, turn));
+                super::task_runtime::execution_operation(task, turn, io)?);
         };
         if reconciliation_only && !was_dispatched(journal.as_ref(), operation, TOOL_TASK_COMMAND_KIND, io).await? {
             return mail::reconciled(io);

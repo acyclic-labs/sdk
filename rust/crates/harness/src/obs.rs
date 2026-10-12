@@ -2,6 +2,8 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use tracing::field::Empty;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use acyclic_native_runtime::obs::OperationSpan;
 
 /// Records `outcome` and `error.kind` on the current span, then returns `result`.
 pub(crate) fn outcome<T>(result: crate::Result<T>) -> crate::Result<T> {
@@ -30,48 +32,69 @@ macro_rules! obs_record {
 }
 pub(crate) use obs_record;
 
-/// Opens a span (`DEBUG` unless prefixed with `INFO,`) with `outcome`/`error.kind` slots for [`traced`]; an empty [`Span`] on wasm32.
+/// Opens an owned operation span; WASM does not evaluate fields.
 macro_rules! obs_span {
     (INFO, $($rest:tt)+) => { crate::obs::obs_span!(@ INFO, $($rest)+) };
     (@ $level:ident, $name:literal $(, $field:ident = $value:expr)* $(,)?) => {{
         #[cfg(not(target_arch = "wasm32"))]
-        let span = ::tracing::span!(
+        let span = crate::obs::OperationSpan::new(::tracing::span!(
             ::tracing::Level::$level,
             $name,
             $($field = $value,)*
             outcome = ::tracing::field::Empty,
             error.kind = ::tracing::field::Empty,
-        );
+        ));
         #[cfg(target_arch = "wasm32")]
-        let span = crate::obs::Span;
+        let span = crate::obs::OperationSpan;
         span
     }};
     ($($rest:tt)+) => { crate::obs::obs_span!(@ DEBUG, $($rest)+) };
 }
 pub(crate) use obs_span;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type Span = tracing::Span;
 /// wasm32 records nothing.
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy)]
-pub(crate) struct Span;
+pub(crate) struct OperationSpan;
 
 /// Boxes a trait method's future inside `span` and records its outcome there.
 pub(crate) fn traced<'a, T: 'a>(
-    span: Span,
+    span: OperationSpan,
     future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
 ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>> {
     #[cfg(not(target_arch = "wasm32"))]
-    return Box::pin(tracing::Instrument::instrument(
-        async move { outcome(future.await) },
-        span,
-    ));
+    {
+        let operation = span.clone();
+        return Box::pin(span.scope(async move {
+            let result = future.await;
+            operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
+            if let Err(error) = &result {
+                operation.record("error.kind", error.kind());
+            }
+            result
+        }));
+    }
     #[cfg(target_arch = "wasm32")]
     {
-        let Span = span;
+        let OperationSpan = span;
         Box::pin(future)
     }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[test]
+fn filtered_operation_cannot_record_failure_on_its_parent() {
+    let (seen, _guard) = capture::install();
+    let parent = obs_span!(INFO, "acyclic.harness.test.parent");
+    parent.in_scope(|| {
+        let result = futures::executor::block_on(traced(
+            OperationSpan::new(tracing::Span::none()),
+            std::future::ready(Err::<(), _>(crate::Error::Invalid("test failure".into()))),
+        ));
+        assert!(result.is_err());
+    });
+    assert!(!capture::has(&seen, "acyclic.harness.test.parent", "outcome", "err"));
+    assert!(capture::has(&seen, "acyclic.harness.test.parent", "outcome", ""));
 }
 
 /// Span-test capture layer shared by the crate's test modules.

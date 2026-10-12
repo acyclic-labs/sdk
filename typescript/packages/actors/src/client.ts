@@ -75,7 +75,7 @@ export class ActorsClient {
     this.#endpoint = options.endpoint;
     this.#token = options.token;
     this.#caCertificate = options.caCertificate;
-    this.#binding = options.binding ?? defaultBinding();
+    this.#binding = options.binding ?? (isNodeRuntime() ? nativeBinding() : wasmBinding());
     installActorsMethods(this, (method, request, callOptions) => this.#call(method, request, callOptions));
   }
 
@@ -131,10 +131,6 @@ export class ActorsClient {
 }
 
 export interface ActorsClient extends ActorsClientMethods {}
-
-function defaultBinding(): ActorsRustBinding {
-  return isNodeRuntime() ? nativeBinding() : wasmBinding();
-}
 
 function nativeBinding(): ActorsRustBinding {
   return {
@@ -209,10 +205,7 @@ async function loadNativeModule(): Promise<NativeActorsModule | undefined> {
     .then(module => module as unknown as NativeActorsModule)
     .catch(async error => {
       nativeModulePromise = undefined;
-      // The generated loader is the maintained target selector. Its aggregate
-      // error is fallback-safe only when every candidate failed because the
-      // candidate itself was absent; ABI, export, and dependency failures must
-      // remain visible instead of silently selecting WASM.
+      // Fall back only when the companion itself is absent.
       if (await isExpectedNativeAbsence(error)) return undefined;
       throw error;
     });
@@ -246,7 +239,7 @@ function wasmBinding(): ActorsRustBinding {
       const inner = await module.ActorsClient.connect(endpoint, token, signal);
       const wasm = inner as unknown as WasmActorsClient;
       const client = Object.fromEntries(ACTORS_OPERATION_NAMES.map(operation => {
-        const method = snakeCase(operation);
+        const method = operation.replace(/[A-Z]/g, character => `_${character.toLowerCase()}`);
         return [operation, async (request: Uint8Array, signal?: AbortSignal) => {
           const invoke = (wasm as unknown as Record<string, unknown>)[method];
           if (typeof invoke !== "function") throw new ActorsTransportError(`WASM bridge is missing ${method}`, "configuration");
@@ -315,10 +308,6 @@ function isNodeRuntime(): boolean {
 
 interface WasmActorsClient {
   readonly transport: string;
-}
-
-function snakeCase(value: string): string {
-  return value.replace(/[A-Z]/g, character => `_${character.toLowerCase()}`);
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
