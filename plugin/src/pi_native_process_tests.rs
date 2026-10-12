@@ -153,7 +153,7 @@ impl Fixture {
         let owner = runtime.task_host().journal_owner_with_native_work(task, &fence, &work).await?
             .into_native_shared(&work)?;
         let context = runtime.task_context_with_native_work(task, &fence, &work).await?;
-        let allocation = NativePreparationRoot::witness_with_native_work(&native, &operation_directory, &work)?.await?;
+        let allocation = NativePreparationRoot::witness(&native, &operation_directory, &work)?.await?;
         let cwd = native.join("scratch");
         let source_entries = json!([{"type":"message","id":"original","parentId":null,"timestamp":"2026-10-09T00:00:00.000Z",
             "message":{"role":"user","content":"original native instruction","timestamp":1}}]);
