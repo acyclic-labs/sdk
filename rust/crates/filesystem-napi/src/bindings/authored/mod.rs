@@ -99,11 +99,15 @@ impl NativeCheckout {
             .into_iter()
             .map(|operation| native_authored_transaction(operation, self.config))
             .collect::<Result<Vec<_>>>()?;
-        let mut checkout = self.inner.lock().await;
+        let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = authored_transaction(&mut checkout, authored, &self.cancellation)
-            .await
-            .map_err(napi_error)?;
+        let receipt = Box::pin(checkout.apply_authored_transaction(
+            authored,
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &self.cancellation,
+        ))
+        .await
+        .map_err(napi_error)?;
         Ok(NativeTransactionResult {
             created_file_ids: receipt
                 .value
@@ -247,23 +251,4 @@ pub(in crate::bindings) fn native_authored_transaction(
             ));
         }
     })
-}
-
-fn authored_transaction<'a>(
-    checkout: &'a mut acyclic_fs::Checkout<LocalAuthorityBackend, LocalObjectBackend>,
-    operations: Vec<AuthoredMutation>,
-    cancellation: &'a CancellationToken,
-) -> std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-                Output = acyclic_fs::FsResult<acyclic_fs::AuthoredTransactionResult>,
-            > + Send
-            + 'a,
-    >,
-> {
-    Box::pin(checkout.apply_authored_transaction(
-        operations,
-        acyclic_fs::performance::BOUNDARY_BUDGET,
-        cancellation,
-    ))
 }
