@@ -3697,7 +3697,7 @@ fn explicit_live_refresh_advances_only_across_unobserved_regions()
     {
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        let native_conflict = poll_immediate(live.synchronize_live_with_native_work(&original, &cancellation))
+        let native_conflict = poll_immediate(live.synchronize_live_with_accounting(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation))
             .err().ok_or("native conflicting live sync unexpectedly advanced")?;
         assert!(matches!(&native_conflict,
             FsError::NativeLiveConflict { conflicts, allocation, .. }

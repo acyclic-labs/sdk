@@ -9339,6 +9339,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 }
 
+async fn seek_record_extent_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+volume: &Volume<A, O>, record: FileRecord, offset: u64, target: ExtentSeekTarget,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
+) -> Result<Option<u64>, FsError> {
+    accounting.check()?;
+    match record.payload {
+        FilePayload::InlineRegular(data) => {
+            let logical_bytes = data.as_bytes().len() as u64;
+            if offset > logical_bytes { return Ok(None); }
+            Ok(match target {
+                ExtentSeekTarget::Data => (offset < logical_bytes).then_some(offset),
+                ExtentSeekTarget::Hole => Some(logical_bytes),
+            })
+        }
+        FilePayload::Regular { logical_bytes, extents } => {
+            if offset > logical_bytes { return Ok(None); }
+            let before = readonly_standalone_live(accounting);
+            let result = crate::kernel::seek_extent_with_accounting(
+                &volume.fs.inner.objects,
+                ExtentSeekRequest {
+                    root: extents, file_size: logical_bytes, offset, target,
+                    limits: DecodeLimits::for_volume(volume.config), budget: accounting.remaining()?,
+                }, accounting, cancellation,
+            ).await;
+            readonly_cleanup_standalone(accounting, before, 0)?;
+            result
+        }
+        _ => Err(FsError::FileRead(FileRangeReadError::NotRegular)),
+    }
+}
+
+
 fn record_logical_bytes(record: FileRecord) -> u64 {
     match record.payload {
         FilePayload::InlineRegular(bytes) => {
@@ -10416,16 +10448,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let work = accounting.spent();
         result.map(|value| FsReceipt { value, work })
             .map_err(|error| OperationFailure::new(error, work))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn synchronize_live_with_native_work(
-        &mut self,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(), FsError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        self.synchronize_live_with_accounting(&mut accounting, cancellation).await
     }
 
     pub(crate) async fn synchronize_live_with_accounting(
@@ -13369,44 +13391,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> Result<Option<u64>, FsError> {
         let record = self.lookup_file_record_by_id_with_accounting(file_id, accounting, cancellation).await?
             .ok_or(FsError::NotFound)?;
-        let value = self.seek_record_extent_with_accounting(record, offset, target, accounting, cancellation).await?;
+        let value = seek_record_extent_with_accounting(&self.volume, record, offset, target, accounting, cancellation).await?;
         if self.tracks_observations() {
             self.observe_identity_regions_with_accounting(
                 [Some(DependencyRegion::SparseSeek { file_id, offset, target }), None], accounting, cancellation,
             ).await?;
         }
         Ok(value)
-    }
-
-    async fn seek_record_extent_with_accounting(
-        &self, record: FileRecord, offset: u64, target: ExtentSeekTarget,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
-    ) -> Result<Option<u64>, FsError> {
-        accounting.check()?;
-        match record.payload {
-            FilePayload::InlineRegular(data) => {
-                let logical_bytes = data.as_bytes().len() as u64;
-                if offset > logical_bytes { return Ok(None); }
-                Ok(match target {
-                    ExtentSeekTarget::Data => (offset < logical_bytes).then_some(offset),
-                    ExtentSeekTarget::Hole => Some(logical_bytes),
-                })
-            }
-            FilePayload::Regular { logical_bytes, extents } => {
-                if offset > logical_bytes { return Ok(None); }
-                let before = readonly_standalone_live(accounting);
-                let result = crate::kernel::seek_extent_with_accounting(
-                    &self.volume.fs.inner.objects,
-                    ExtentSeekRequest {
-                        root: extents, file_size: logical_bytes, offset, target,
-                        limits: DecodeLimits::for_volume(self.volume.config), budget: accounting.remaining()?,
-                    }, accounting, cancellation,
-                ).await;
-                readonly_cleanup_standalone(accounting, before, 0)?;
-                result
-            }
-            _ => Err(FsError::FileRead(FileRangeReadError::NotRegular)),
-        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -14994,26 +14985,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<PathBatchLookup> {
-        self.lookup_batch_no_follow_unobserved(paths, budget, cancellation, false).await
-    }
-
-    /// Reads immutable source evidence for selected restoration. Authenticated
-    pub(crate) async fn lookup_batch_no_follow_selected(
-        &mut self,
-        paths: &[NamespacePath],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<PathBatchLookup> {
-        self.lookup_batch_no_follow_unobserved(paths, budget, cancellation, true).await
-    }
-
-    async fn lookup_batch_no_follow_unobserved(
-        &mut self, paths: &[NamespacePath], budget: WorkBudget,
-        cancellation: &CancellationToken, selected_restore: bool,
-    ) -> FsResult<PathBatchLookup> {
         let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
         let result = self.lookup_batch_no_follow_with_accounting(
-            paths, selected_restore, &mut accounting, cancellation,
+            paths, false, &mut accounting, cancellation,
         ).await;
         let work = accounting.spent();
         result.map(|(mut lookup, allocation)| {
@@ -15596,7 +15570,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ).await?;
         drop(allocation);
         let record = lookup.record.ok_or(FsError::NotFound)?;
-        let value = self.seek_record_extent_with_accounting(record, offset, target, accounting, cancellation).await?;
+        let value = seek_record_extent_with_accounting(&self.volume, record, offset, target, accounting, cancellation).await?;
         if self.tracks_observations() {
             self.observe_identity_regions_with_accounting(
                 [Some(DependencyRegion::SparseSeek { file_id: record.file_id, offset, target }), None],
@@ -15953,7 +15927,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         cancellation: &CancellationToken,
     ) -> FsResult<Option<u64>> {
         let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
-        let result = self.seek_with_accounting(offset, target, &mut accounting, cancellation).await;
+        let result = seek_record_extent_with_accounting(&self.volume, self.record, offset, target, &mut accounting, cancellation).await;
         let work = accounting.spent();
         result.map(|value| FsReceipt { value, work })
             .map_err(|error| OperationFailure::new(error, work))
@@ -15969,57 +15943,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<Option<u64>, FsError> {
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        self.seek_with_accounting(offset, target, &mut accounting, cancellation).await
-    }
-
-    async fn seek_with_accounting(
-        &self,
-        offset: u64,
-        target: ExtentSeekTarget,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<Option<u64>, FsError> {
-        accounting.check()?;
-        let value = match self.record.payload {
-            FilePayload::InlineRegular(data) => {
-                let logical_bytes = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
-                if offset > logical_bytes {
-                    None
-                } else {
-                    match target {
-                        ExtentSeekTarget::Data => (offset < logical_bytes).then_some(offset),
-                        ExtentSeekTarget::Hole => Some(logical_bytes),
-                    }
-                }
-            }
-            FilePayload::Regular { logical_bytes, extents } => {
-                if offset > logical_bytes {
-                    None
-                } else {
-                    return crate::kernel::seek_extent_with_accounting(
-                        &self.volume.fs.inner.objects,
-                        ExtentSeekRequest {
-                            root: extents,
-                            file_size: logical_bytes,
-                            offset,
-                            target,
-                            limits: DecodeLimits::for_volume(self.volume.config),
-                            budget: accounting.remaining()?,
-                        },
-                        accounting,
-                        cancellation,
-                    ).await;
-                }
-            }
-            FilePayload::Directory { .. }
-            | FilePayload::SymbolicLink { .. }
-            | FilePayload::Empty
-            | FilePayload::Device { .. }
-            | FilePayload::ReparsePoint { .. } => {
-                return Err(FsError::FileRead(FileRangeReadError::NotRegular));
-            }
-        };
-        Ok(value)
+        seek_record_extent_with_accounting(&self.volume, self.record, offset, target, &mut accounting, cancellation).await
     }
 
     /// Replaces complete metadata and optionally logical size as one detached
