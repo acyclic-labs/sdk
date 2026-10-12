@@ -3,7 +3,7 @@ use crate::conversation::{ContentGrant, FileRef};
 
 async fn runtime(fixture: &Fixture) -> Result<Runtime> {
     FilesystemTaskRuntime::open(
-        fixture.stream.clone(), fixture.filesystem.clone(), &fixture.volume, &fixture.issuer.verifier(),
+        fixture.stream.clone(), fixture.filesystem.clone(), &fixture.volume, &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &fixture.signed, &fixture.scope, &fixture.tasks, &fixture.machines,
         &fixture.tools, SessionLimits { active_tasks: 8, total_tasks: 16, depth: 4, model_steps: 8 },
         1, 65_536, fixture.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
@@ -20,7 +20,7 @@ async fn admit(runtime: &Runtime, fixture: &Fixture, id: u8, grants: Capabilitie
 }
 
 async fn put(fixture: &Fixture, volume: &VolumeRef, path: &str, bytes: &[u8], key: &str) -> Result<FileRef> {
-    let grant = ContentGrant::verify(&fixture.issuer.verifier(), &fixture.signed, volume, VolumeOperation::Write)?;
+    let grant = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, volume, VolumeOperation::Write)?;
     fixture.filesystem.put_content(volume, &grant, path, bytes, "text/plain", path.rsplit('/').next().unwrap_or(path),
         65_536, &IdempotencyKey::new(key)?).await
 }
@@ -118,7 +118,7 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
     let agent = fixture.signed.agent().ok_or_else(|| Error::Invalid("fixture agent".into()))?;
     let signed = foreign_issuer.root_for_agent(agent, "owner", fixture.signed.capabilities().clone());
     let foreign = FilesystemTaskRuntime::open(
-        fixture.stream.clone(), fixture.filesystem.clone(), &fixture.volume, &foreign_issuer.verifier(),
+        fixture.stream.clone(), fixture.filesystem.clone(), &fixture.volume, &foreign_issuer.verifier(&mut None).expect("verifier copy"),
         &signed, &fixture.scope, &fixture.tasks, &fixture.machines, &fixture.tools,
         SessionLimits { active_tasks: 8, total_tasks: 16, depth: 4, model_steps: 8 }, 1, 65_536, fixture.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
     ).await?;
@@ -134,7 +134,7 @@ impl ModelProvider for ModelFixture {
     }
     fn count_tokens(&self, request: &crate::model::PreparedModelRequest) -> Result<crate::context::ModelTokenCount> {
         Ok(crate::context::ModelTokenCount {
-            request_digest: request.manifest().request_digest,
+            request_digest: request.request_digest(),
             fixed_tokens: u32::try_from(request.bytes().len()).map_err(|_| Error::Invalid("fixture request size".into()))?,
             message_tokens: vec![0; request.request().messages.len()],
         })
@@ -172,7 +172,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let provider = Arc::new(ModelFixture(AtomicUsize::new(0)));
     let execution = runtime.stock_execution(task, LeaseFence::from(&lease.reservation), OperationId::from_bytes([130; 16]),
-        Model::new("fixture", "headless", "1", json!({}))?, provider.clone(), ContextPipeline::default()).await?
+        Model::new("fixture", "headless", "1", json!({}))?, provider.clone(), ContextPipeline::default(), None).await?
         .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     let input = TurnInput { operation_id: execution.operation_id(), input: crate::model::ModelContent::Text("headless".into()),
         selected_context: None, max_steps: 1 };
@@ -188,7 +188,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let mut stale = LeaseFence::from(&lease.reservation);
     stale.reservation_id = "wrong-fence".into();
     assert!(runtime.stock_execution(task, stale, OperationId::new(), Model::new("fixture", "headless", "1", json!({}))?,
-        provider.clone(), ContextPipeline::default()).await.is_err());
+        provider.clone(), ContextPipeline::default(), None).await.is_err());
     assert_eq!(provider.0.load(Ordering::SeqCst), 1);
     use acyclic_fs::{TransactionCommit, WorkspaceRestore};
     use crate::core::{Action, Command};
@@ -202,13 +202,13 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let signed = issuer.root_for_agent(agent, "owner", Capabilities::new(
         fixture.signed.capabilities().iter().chain(["conversation:bind", "conversation:append", "fork:publish"]),
     ));
-    let reader = Arc::new(FilesystemContentVerifier::new(fixture.filesystem.clone(), issuer.verifier(), signed.clone(), 65_536)?);
+    let reader = Arc::new(FilesystemContentVerifier::new(fixture.filesystem.clone(), &issuer.verifier(), &signed, 65_536, None)?);
     let stream_provider = ProviderRef::new("restore", "stream", "2")?;
-    let forks = Arc::new(CompositeForkVerifier::new(vec![
+    let forks = Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536)?),
-        Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-    ])?);
-    let mut history = StreamAggregate::open(&fixture.stream, authority.clone(), issuer.verifier(), SchemaRegistry::new()).await?
+        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+    ], &mut None)?);
+    let mut history = StreamAggregate::open(&fixture.stream, authority.clone(), issuer.verifier(&mut None)?, SchemaRegistry::new()).await?
         .with_content_verifier(reader.clone()).with_fork_verifier(forks.clone());
     history.execute(Command { operation_id: OperationId::from_bytes([133; 16]), idempotency_key: IdempotencyKey::new("restore-bind")?,
         expected_revision: 0, scope: signed.clone(), causal_parent: None, action: Action::BindConversation { agent } }).await?;
@@ -216,7 +216,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     history.execute(Command { operation_id: OperationId::from_bytes([134; 16]), idempotency_key: IdempotencyKey::new("restore-message")?,
         expected_revision: 1, scope: signed.clone(), causal_parent: None, action: Action::AppendConversationMessage {
             message: Box::new(ConversationMessage { id: uuid::Uuid::from_bytes([134; 16]), sequence: 1, kind: MessageKind::User,
-                content: message.clone(), attachments: Vec::new().into(), reply_to: None, tool_call_id: None, extensions: BTreeMap::new() }),
+                content: message.clone(), attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() }, reply_to: None, tool_call_id: None, extensions: BTreeMap::new() }),
         } }).await?;
     let original_history = history.reducer().conversation().map(|state| state.messages().to_vec());
     let original_revision = history.reducer().revision();
@@ -288,7 +288,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     assert_eq!(fixture.filesystem.read(&crate::filesystem::workspace_ref(project.provider().clone(), &child_project.storage_name()?)?, None, "/src/a.txt", 128).await?.as_ref(), b"old");
     let reopened = self::runtime(&fixture).await?;
     let replay = reopened.stock_execution(task, LeaseFence::from(&lease.reservation), input.operation_id,
-        Model::new("fixture", "headless", "1", json!({}))?, provider.clone(), ContextPipeline::default()).await?
+        Model::new("fixture", "headless", "1", json!({}))?, provider.clone(), ContextPipeline::default(), None).await?
         .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     assert_eq!(replay.model_step(&input, 0, &[]).await?, events);
     assert_eq!(provider.0.load(Ordering::SeqCst), 1);

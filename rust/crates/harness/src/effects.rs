@@ -147,11 +147,11 @@ impl Clone for EffectRegistry {
 
 /// Single admission check for a pinned successful JSON result.
 pub(crate) fn validate_result_bytes(schema: &Value, result: &FileRef, bytes: &[u8]) -> Result<()> {
-    result.validate()?;
+    result.validate(&mut None)?;
     if result.descriptor().media_type() != "application/json" {
         return Err(Error::Invalid("effect result must be JSON content".into()));
     }
-    result.descriptor().verify(bytes)?;
+    result.descriptor().verify(bytes, &mut None)?;
     let value: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result is not JSON: {error}")))?;
     crate::contract::validate_json_schema_value(schema, &value, "effect result", None)?;
@@ -160,13 +160,13 @@ pub(crate) fn validate_result_bytes(schema: &Value, result: &FileRef, bytes: &[u
 
 /// Parses one pinned schema and rejects invalid or mismatched bytes before publication.
 pub(crate) fn validate_schema_bytes(reference: &FileRef, bytes: &[u8]) -> Result<Value> {
-    reference.validate()?;
+    reference.validate(&mut None)?;
     if reference.descriptor().media_type() != "application/schema+json" {
         return Err(Error::Invalid(
             "effect result schema must be JSON Schema content".into(),
         ));
     }
-    reference.descriptor().verify(bytes)?;
+    reference.descriptor().verify(bytes, &mut None)?;
     let schema: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result schema is not JSON: {error}")))?;
     crate::contract::compile_json_schema(&schema, "effect result", None)?;
@@ -181,7 +181,7 @@ fn validate_effect_reference(
     if let Some(io) = work.as_deref_mut() {
         io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
     }
-    reference.validate()
+    reference.validate(&mut None)
 }
 
 /// Validates the original schema without letting an unguarded Value escape.
@@ -199,7 +199,7 @@ pub(crate) fn validate_effect_schema_bytes_with_work(
             return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
                 "effect result schema must be JSON Schema content"));
         }
-        reference.descriptor().verify_with_work(bytes, work)?;
+        reference.descriptor().verify(bytes, work)?;
         let original = work.as_deref().and_then(|io| io.original_native_work())
             .ok_or_else(|| Error::Unsupported("effect schema observer has no original native ledger".into()))?;
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
@@ -229,7 +229,7 @@ pub(crate) fn validate_effect_result_bytes_with_work(
             return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
                 "effect result schema must be JSON Schema content"));
         }
-        schema_reference.descriptor().verify_with_work(schema_bytes, work)?;
+        schema_reference.descriptor().verify(schema_bytes, work)?;
         let original = work.as_deref().and_then(|io| io.original_native_work())
             .ok_or_else(|| Error::Unsupported("effect result observer has no original native ledger".into()))?;
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
@@ -243,7 +243,7 @@ pub(crate) fn validate_effect_result_bytes_with_work(
                 reason: "effect result must be JSON content",
             });
         }
-        result.descriptor().verify_with_native_work(bytes, original)?;
+        result.descriptor().verify(bytes, work)?;
         let value = decode.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
         return crate::contract::validate_json_schema_value(
             &schema, &value, "effect result", Some(&decode));
@@ -476,7 +476,7 @@ impl EffectRegistry {
             Some(io) => io.clone_text(&effect.effect_kind)?, None => effect.effect_kind.clone(),
         };
         custody.adopt(effect_kind.capacity() as u64)?;
-        let request = effect.request.clone_with_work(custody.work())?;
+        let request = effect.request.copy(custody.work())?;
         custody.adopt(request.logical_owned_bytes()?)?;
         let dispatch = EffectDispatch {
             provider, effect_id, attempt_id, effect_kind, request,
@@ -607,13 +607,13 @@ impl EffectRegistry {
                 validate_effect_result_bytes_with_work(
                     &effect.result_schema, &schema_bytes, result, &bytes, content.work())?;
             } else {
-                let bytes = resolver.read(result).await?;
-                let schema_bytes = resolver.read(&effect.result_schema).await?;
+                let bytes = resolver.read(result, result.descriptor().byte_length(), None)?.await?;
+                let schema_bytes = resolver.read(&effect.result_schema, effect.result_schema.descriptor().byte_length(), None)?.await?;
                 validate_effect_result_bytes_with_work(
                     &effect.result_schema, &schema_bytes, result, &bytes, work)?;
             }
         }
-        issuer.attest_effect_with_work(
+        issuer.attest_effect(
             effect_id, effect, observation.attempt_id, observation.status, work)
     }
 }
@@ -676,7 +676,7 @@ mod tests {
                 } else {
                     br#"{"receipt":"ok"}"#.to_vec()
                 };
-                reference.descriptor().verify(&bytes)?;
+                reference.descriptor().verify(&bytes, &mut None)?;
                 Ok(bytes.into())
             })
         }

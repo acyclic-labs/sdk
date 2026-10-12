@@ -261,7 +261,7 @@ impl ObjectContentStore {
 
     async fn manifest(&self, file: &FileRef, count: u32) -> Result<Vec<Attachment>> {
         let bytes = self.read_exact(file).await?;
-        decode_attachment_manifest(file, &bytes, count)
+        decode_attachment_manifest(file, &bytes, Some(count), None)
     }
 
     /// Converts content in this bucket into an immutable artifact key selection without copying its bytes or weakening the bucket boundary.
@@ -701,7 +701,7 @@ mod tests {
             bucket.clone(),
             provider.clone(),
             volume.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             owner_scope.clone(),
             owner_scope.clone(),
             4_096,
@@ -826,7 +826,7 @@ mod tests {
                     required: true,
                     revision: ResourceRevision::History(StreamRef::new(
                         ProviderRef::new("local", "stream", "2")?,
-                        parent.stream_path()?.into_bytes(),
+                        parent.stream_path(&mut None)?.into_bytes(),
                         Some("1".into()),
                     )?),
                 },
@@ -944,8 +944,8 @@ mod tests {
         owner_store
             .verify_manifest(&manifest, 1, &Limits::default())
             .await?;
-        assert_eq!(owner_store.load_manifest(&manifest, 1).await?, items);
-        assert!(owner_store.load_manifest(&manifest, 2).await.is_err());
+        assert_eq!(crate::conversation::load_manifest(&owner_store, &manifest, 1, None).await.map(|(items, _)| items)?, items);
+        assert!(crate::conversation::load_manifest(&owner_store, &manifest, 2, None).await.map(|(items, _)| items).is_err());
         let delegated =
             issuer.delegate_private_file_read(&owner_scope, reader, "attached", &file)?;
         let attached = ObjectContentStore::new(
@@ -953,7 +953,7 @@ mod tests {
             bucket.clone(),
             provider.clone(),
             volume.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             owner_scope.clone(),
             delegated,
             4_096,
@@ -1028,7 +1028,7 @@ mod tests {
                 bucket.clone(),
                 provider.clone(),
                 volume.clone(),
-                impostor.verifier(),
+                impostor.verifier(&mut None).expect("verifier copy"),
                 owner_scope.clone(),
                 impostor_scope,
                 4_096
@@ -1042,7 +1042,7 @@ mod tests {
                 bucket.clone(),
                 ProviderRef::new("impostor", "objects", "1")?,
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 owner_scope.clone(),
                 owner_scope,
                 4_096
@@ -1172,7 +1172,7 @@ mod tests {
             bucket_a.clone(),
             provider.clone(),
             volume_a.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             owner_scope_a.clone(),
             owner_scope_a.clone(),
             4_096,
@@ -1183,7 +1183,7 @@ mod tests {
             bucket_b.clone(),
             provider.clone(),
             volume_b.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             owner_scope_b.clone(),
             owner_scope_b.clone(),
             4_096,
@@ -1216,7 +1216,7 @@ mod tests {
             bucket_a.clone(),
             provider.clone(),
             volume_a.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             owner_scope_a.clone(),
             attached_a_scope,
             4_096,
@@ -1227,7 +1227,7 @@ mod tests {
             bucket_b.clone(),
             provider.clone(),
             volume_b.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             owner_scope_b.clone(),
             attached_b_scope,
             4_096,
@@ -1248,7 +1248,7 @@ mod tests {
             bucket_a,
             provider,
             volume_a,
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             owner_scope_a,
             no_grant,
             4_096,

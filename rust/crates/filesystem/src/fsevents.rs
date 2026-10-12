@@ -288,7 +288,7 @@ impl Api {
                 strings.push(string);
                 payload += owned;
                 if let Some(copy) = copy {
-                    copy.record(owned).map_err(crate::native_name::original_name_error)?;
+                    { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: owned, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
                 } else {
                     work.record(WorkCounters { bytes_copied: owned, ..WorkCounters::UNCHARGED })?;
                 }
@@ -317,7 +317,7 @@ impl Api {
                 return Err(native_error("cannot create the FSEvents path array"));
             }
             if let Some(copy) = copy {
-                copy.record(slots).map_err(crate::native_name::original_name_error)?;
+                { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: slots, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
             } else {
                 work.record(WorkCounters { bytes_copied: slots, ..WorkCounters::UNCHARGED })?;
             }

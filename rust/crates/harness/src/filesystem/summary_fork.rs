@@ -294,7 +294,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         validate_capture(&planned_capture, child_private, io)?;
         if let Some(io) = io {
             for file in references.values() {
-                io.receive_content(resolver.verify_measured(file, limits.file_bytes, io.remaining()?, io.cancellation()).await)?;
+                resolver.verify(file, limits.file_bytes, Some(io))?.await?;
             }
         }
         let keys = summary_keys(key, io)?;
@@ -339,7 +339,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                     }
                     None => journal.load(file).await?,
                 };
-                file.descriptor().verify_with_io(&bytes, io)?;
+                file.descriptor().verify(&bytes, io)?;
                 let encoded = fork_preparer_io::hex_key(key, io)?;
                 writes.push(WorkspaceMutation::PutFile {
                     path: crate::contract::preparation_format(format_args!("/.system/inherited-conversation/summary-payloads/{encoded}"), io)?,

@@ -57,27 +57,24 @@ fn fixture(
     let metadata = put(
         objects,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let tree = put(
         objects,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let root_file_id = FileId::from_bytes([3; 16]);
     let table = put(
         objects,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![FileRecord {
+        encode_file_table_page(&FileTablePage::Leaf(vec![FileRecord {
                 file_id: root_file_id,
                 kind: FileKind::Directory,
                 link_count: 1,
                 metadata,
                 payload: FilePayload::Directory { entries: tree },
-            }]),
-            8,
-        )?,
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     put(
         objects,
@@ -88,7 +85,7 @@ fn fixture(
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )
 }
 
@@ -231,15 +228,15 @@ fn publication_payload_is_canonical_bounded_and_decodable() -> Result<(), Box<dy
     };
     let encoded = encode_publication_payload(value.volume_id, value.generation_root);
     assert_eq!(
-        decode_published_generation(&encoded, u64::try_from(encoded.len()).unwrap_or(u64::MAX),)?,
+        decode_published_generation(&encoded, u64::try_from(encoded.len()).unwrap_or(u64::MAX), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         value
     );
 
     let too_small = u64::try_from(encoded.len().saturating_sub(1)).unwrap_or(0);
-    assert!(decode_published_generation(&encoded, too_small).is_err());
+    assert!(decode_published_generation(&encoded, too_small, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
     let mut trailing = encoded;
     trailing.push(0);
-    assert!(decode_published_generation(&trailing, u64::MAX).is_err());
+    assert!(decode_published_generation(&trailing, u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
     Ok(())
 }
 
@@ -256,7 +253,7 @@ fn publication_payload_rejects_unknown_and_non_generation_object_kinds() {
     let mut wrong_kind = encoded.clone();
     wrong_kind[kind_offset] = ObjectKind::Blob.canonical_tag();
     assert!(matches!(
-        decode_published_generation(&wrong_kind, u64::MAX),
+        decode_published_generation(&wrong_kind, u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::Invariant(crate::kernel::codec::CanonicalInvariant::Static(
             "publication object is not a generation root",
         )))
@@ -265,7 +262,7 @@ fn publication_payload_rejects_unknown_and_non_generation_object_kinds() {
     let mut unknown_kind = encoded;
     unknown_kind[kind_offset] = u8::MAX;
     assert!(matches!(
-        decode_published_generation(&unknown_kind, u64::MAX),
+        decode_published_generation(&unknown_kind, u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::Invariant(crate::kernel::codec::CanonicalInvariant::Static(
             "unknown publication object kind",
         )))
@@ -536,8 +533,6 @@ fn async_and_sync_publication_are_identical_and_pre_cancel_is_inert()
     Ok(())
 }
 
-/// Two distinct sparse files share one extent object. Their logical total
-/// exceeds u64 without allocating or reading their holes.
 fn evidence_fixture() -> Result<
     (PublishGenerationRequest, GenerationProof, GuardedAppend, VolumeConfig),
     Box<dyn std::error::Error>,
@@ -547,24 +542,20 @@ fn evidence_fixture() -> Result<
     let root_file_id = FileId::from_bytes([1; 16]);
     let first_file_id = FileId::from_bytes([2; 16]);
     let second_file_id = FileId::from_bytes([3; 16]);
-    let metadata = put(&objects, ObjectKind::Metadata, encode_file_metadata(metadata())?)?;
+    let metadata = put(&objects, ObjectKind::Metadata, encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?)?;
     let extents = put(
         &objects,
         ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Leaf(vec![Extent {
+        encode_extent_page(&ExtentPage::Leaf(vec![Extent {
                 offset: 0,
                 length: u64::MAX,
                 kind: ExtentKind::Hole,
-            }]),
-            8,
-        )?,
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let tree = put(
         &objects,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![
+        encode_tree_page(&TreePage::Leaf(vec![
                 TreeEntry {
                     name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
                     file_id: first_file_id,
@@ -575,15 +566,12 @@ fn evidence_fixture() -> Result<
                     file_id: second_file_id,
                     kind: FileKind::Regular,
                 },
-            ]),
-            8,
-        )?,
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let table = put(
         &objects,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![
+        encode_file_table_page(&FileTablePage::Leaf(vec![
                 FileRecord {
                     file_id: root_file_id,
                     kind: FileKind::Directory,
@@ -605,9 +593,7 @@ fn evidence_fixture() -> Result<
                     metadata,
                     payload: FilePayload::Regular { logical_bytes: u64::MAX, extents },
                 },
-            ]),
-            8,
-        )?,
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let root = put(
         &objects,
@@ -618,7 +604,7 @@ fn evidence_fixture() -> Result<
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let request = PublishGenerationRequest {
         authority_id: volume_authority_id(volume_id),
@@ -900,23 +886,23 @@ fn native_fixture(
         BlobChunkRef, BlobNode, BlobPage, Extent, ExtentKind, ExtentPage, LogicalName,
         NameEncoding, TreeEntry, encode_blob_page, encode_extent_page,
     };
-    let metadata = put(objects, ObjectKind::Metadata, encode_file_metadata(metadata())?)?;
+    let metadata = put(objects, ObjectKind::Metadata, encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?)?;
     let chunk = put(objects, ObjectKind::BlobChunk, b"original closure content".to_vec())?;
     let logical_bytes = b"original closure content".len() as u64;
     let blob = put(objects, ObjectKind::Blob, encode_blob_page(&BlobPage {
         first_offset: 0, end_offset: logical_bytes,
         node: BlobNode::Leaf(vec![BlobChunkRef { first_offset: 0, end_offset: logical_bytes, chunk }]),
-    }, 8)?)?;
+    }, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?)?;
     let extents = put(objects, ObjectKind::ExtentPage, encode_extent_page(&ExtentPage::Leaf(vec![Extent {
         offset: 0, length: logical_bytes,
         kind: ExtentKind::Content { object: blob, object_offset: 0 },
-    }]), 8)?)?;
+    }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?)?;
     let root_file_id = FileId::from_bytes([1; 16]);
     let child_file_id = FileId::from_bytes([2; 16]);
     let tree = put(objects, ObjectKind::TreePage, encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
         name: LogicalName::new(NameEncoding::Utf8, b"content".to_vec(), 255)?,
         file_id: child_file_id, kind: FileKind::Regular,
-    }]), 8)?)?;
+    }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?)?;
     let table = put(objects, ObjectKind::FileTablePage, encode_file_table_page(&FileTablePage::Leaf(vec![
         FileRecord {
             file_id: root_file_id, kind: FileKind::Directory, link_count: 1, metadata,
@@ -926,12 +912,12 @@ fn native_fixture(
             file_id: child_file_id, kind: FileKind::Regular, link_count: 1, metadata,
             payload: FilePayload::Regular { logical_bytes, extents },
         },
-    ]), 8)?)?;
+    ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?)?;
     let generation = put(objects, ObjectKind::GenerationRoot, encode_generation_root(&GenerationRoot {
         volume_id, root_file_id, file_table: table,
         parents: vec![crate::GenerationId::new(Digest::from_bytes([7; 32]))],
         required_features: 0,
-    })?)?;
+    }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?)?;
     let mut expected = vec![generation, table, tree, metadata, extents, blob, chunk];
     expected.sort_unstable_by(|left, right| left.kind.canonical_tag().cmp(&right.kind.canonical_tag())
         .then_with(|| left.digest.as_bytes().cmp(right.digest.as_bytes())));
@@ -1130,7 +1116,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     if let AppendOutcome::AlreadyCommitted(recovered) = &publication.0.outcome {
         assert_eq!(recovered.operation_id, request.operation_id);
         assert_eq!(recovered.previous_digest, request.expected.digest);
-        assert_eq!(decode_published_generation(&recovered.payload, 4_096)?.generation_root, root);
+        assert_eq!(decode_published_generation(&recovered.payload, 4_096, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?.generation_root, root);
     }
     assert_eq!(seals.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(reopened.receipt().authority_records_appended, 0);
@@ -1138,8 +1124,6 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     Ok(())
 }
 
-/// Uses production immutable reads and durability, but intentionally has no
-/// native custody capability. The generic default must reject, never skip it.
 #[cfg(not(target_arch = "wasm32"))]
 struct NativeMissingCustody<'a>(&'a MemoryObjectStore);
 
@@ -1172,7 +1156,7 @@ impl crate::AsyncObjectStore for NativeMissingCustody<'_> {
     async fn read_with_native_work(
         &self, object: ObjectId, maximum: u64, original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
         crate::AsyncObjectStore::read_with_native_work(self.0, object, maximum, original, cancellation).await
     }
 
@@ -1224,43 +1208,43 @@ fn publication_evidence_v2_validates_complete_frame_before_legacy_projection()
     let evidence = b"immutable original operation data";
     let mut bytes = Vec::new();
     write_publication_payload_with_evidence(&mut bytes, volume_id, root, Some((evidence, original_evidence_digest(evidence))));
-    let decoded = decode_publication_evidence_with_steps::<CanonicalDecodeError>(&bytes, bytes.len() as u64, |_| Ok(()))?;
+    let decoded = decode_publication_evidence::<CanonicalDecodeError>(&bytes, bytes.len() as u64, |_| Ok(()))?;
     assert_eq!(decoded.publication, PublishedGeneration { volume_id, generation_root: root });
     assert_eq!(decoded.original_evidence, Some(evidence.as_slice()));
     assert_eq!(decoded.evidence_digest, Some(original_evidence_digest(evidence)));
     assert_eq!(decoded.original_evidence.ok_or("missing original data")?.as_ptr(),
         bytes[publication_payload_length() + 4..].as_ptr());
-    assert_eq!(decode_published_generation(&bytes, bytes.len() as u64)?, decoded.publication);
-    assert!(matches!(decode_published_generation(&bytes, bytes.len() as u64 - 1),
+    assert_eq!(decode_published_generation(&bytes, bytes.len() as u64, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, decoded.publication);
+    assert!(matches!(decode_published_generation(&bytes, bytes.len() as u64 - 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::ObjectTooLarge { .. })));
     for offset in [PAYLOAD_DOMAIN.len(), PAYLOAD_DOMAIN.len() + 2 + 16, publication_payload_length() + 4, bytes.len() - 1] {
         let mut malformed = bytes.clone();
         malformed[offset] = u8::MAX;
-        assert!(decode_published_generation(&malformed, u64::MAX).is_err());
+        assert!(decode_published_generation(&malformed, u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
     }
     for length in [0_u32, u32::MAX] {
         let mut malformed = bytes.clone();
         let offset = publication_payload_length();
         malformed[offset..offset + 4].copy_from_slice(&length.to_le_bytes());
-        assert!(decode_published_generation(&malformed, bytes.len() as u64).is_err());
+        assert!(decode_published_generation(&malformed, bytes.len() as u64, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
     }
     let mut suffixed = bytes.clone();
     suffixed.push(0);
-    assert!(matches!(decode_published_generation(&suffixed, u64::MAX), Err(CanonicalDecodeError::TrailingBytes)));
-    assert!(decode_published_generation(&bytes[..bytes.len() - 1], u64::MAX).is_err());
+    assert!(matches!(decode_published_generation(&suffixed, u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())), Err(CanonicalDecodeError::TrailingBytes)));
+    assert!(decode_published_generation(&bytes[..bytes.len() - 1], u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
     let legacy = encode_publication_payload(volume_id, root);
-    let decoded = decode_publication_evidence_with_steps::<CanonicalDecodeError>(&legacy, u64::MAX, |_| Ok(()))?;
+    let decoded = decode_publication_evidence::<CanonicalDecodeError>(&legacy, u64::MAX, |_| Ok(()))?;
     assert_eq!(decoded.original_evidence, None);
     assert_eq!(decoded.evidence_digest, None);
     assert_eq!(decoded.publication, PublishedGeneration { volume_id, generation_root: root });
     let mut suffixed = legacy.clone();
     suffixed.extend_from_slice(evidence);
-    assert!(matches!(decode_published_generation(&suffixed, u64::MAX), Err(CanonicalDecodeError::TrailingBytes)));
+    assert!(matches!(decode_published_generation(&suffixed, u64::MAX, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())), Err(CanonicalDecodeError::TrailingBytes)));
     let large_evidence = vec![7; 4_096];
     let mut large = Vec::new();
     write_publication_payload_with_evidence(&mut large, volume_id, root,
         Some((&large_evidence, original_evidence_digest(&large_evidence))));
-    assert!(matches!(decode_published_generation(&large, 4_096), Err(CanonicalDecodeError::ObjectTooLarge { .. })));
-    assert_eq!(decode_published_generation(&large, large.len() as u64)?, decoded.publication);
+    assert!(matches!(decode_published_generation(&large, 4_096, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())), Err(CanonicalDecodeError::ObjectTooLarge { .. })));
+    assert_eq!(decode_published_generation(&large, large.len() as u64, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, decoded.publication);
     Ok(())
 }

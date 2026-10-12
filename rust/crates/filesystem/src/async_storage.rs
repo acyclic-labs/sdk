@@ -17,77 +17,35 @@ use std::mem::size_of;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-/// An immutable read whose SDK-owned buffers retain the original native journal.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-pub struct NativeObjectRead {
-    read: ObjectRead,
+pub(crate) fn native_read_batch(
+    reads: Vec<ObjectRead>, allocation: crate::materializer::NativeAllocation,
+) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), crate::storage::ObjectStoreError> {
+    let bytes = reads.capacity().checked_mul(size_of::<ObjectRead>())
+        .and_then(|bytes| u64::try_from(bytes).ok());
+    if bytes != Some(allocation.bytes()) {
+        drop(reads);
+        drop(allocation);
+        return Err(crate::storage::ObjectStoreError::Corrupt);
+    }
+    Ok((reads, allocation))
 }
 
-/// One genuine native batch, including its physically owned result container.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-pub struct NativeObjectReadBatch {
-    reads: Vec<ObjectRead>,
-    allocation: crate::materializer::NativeAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeObjectReadBatch {
-    pub(crate) fn new(
-        reads: Vec<ObjectRead>,
-        allocation: crate::materializer::NativeAllocation,
-    ) -> Result<Self, crate::storage::ObjectStoreError> {
-        let bytes = reads.capacity().checked_mul(size_of::<ObjectRead>())
-            .and_then(|bytes| u64::try_from(bytes).ok());
-        if bytes != Some(allocation.bytes()) {
-            drop(reads);
-            drop(allocation);
-            return Err(crate::storage::ObjectStoreError::Corrupt);
+pub(crate) fn owned_read(
+    read: ObjectRead, original: &crate::materializer::NativeMaterializationWork,
+) -> Result<ObjectRead, crate::storage::ObjectStoreError> {
+    let valid = match read.retention {
+        crate::storage::ObjectReadRetention::Owned { logical_bytes } => {
+            read.bytes.retained_capacity().and_then(|capacity| u64::try_from(capacity).ok())
+                == Some(logical_bytes)
+                && logical_bytes >= read.bytes.len() as u64
+                && read.bytes.matches_meter(&original.runtime_meter_owner())
         }
-        Ok(Self { reads, allocation })
-    }
-
-    /// Borrows the actual ordered results without another allocation.
-    pub fn reads(&self) -> &[ObjectRead] { &self.reads }
-
-    /// Moves the container and its original guard; destroy the vector first.
-    pub fn into_parts(self) -> (Vec<ObjectRead>, crate::materializer::NativeAllocation) {
-        (self.reads, self.allocation)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeObjectRead {
-    pub(crate) fn shared(read: ObjectRead) -> Result<Self, crate::storage::ObjectStoreError> {
-        if read.retention != crate::storage::ObjectReadRetention::Shared {
-            return Err(crate::storage::ObjectStoreError::Corrupt);
-        }
-        Ok(Self { read })
-    }
-
-    /// Accepts a completed pre-funded owner without adopting or wrapping bytes.
-    pub(crate) fn intrinsic(
-        read: ObjectRead, original: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<Self, crate::storage::ObjectStoreError> {
-        let valid = match read.retention {
-            crate::storage::ObjectReadRetention::Owned { logical_bytes } => {
-                read.bytes.retained_capacity().and_then(|capacity| u64::try_from(capacity).ok())
-                    == Some(logical_bytes)
-                    && logical_bytes >= read.bytes.len() as u64
-                    && read.bytes.matches_meter(&original.runtime_meter_owner())
-            }
-            crate::storage::ObjectReadRetention::Shared => false,
-        };
-        if !valid { return Err(crate::storage::ObjectStoreError::Corrupt); }
-        Ok(Self { read })
-    }
-
-    /// Borrows the actual read without taking a second allocation claim.
-    pub const fn read(&self) -> &ObjectRead { &self.read }
-
-    /// Moves the same view; its physical byte owner keeps original custody.
-    pub fn into_read(self) -> ObjectRead { self.read }
+        crate::storage::ObjectReadRetention::Shared => false,
+    };
+    if !valid { return Err(crate::storage::ObjectStoreError::Corrupt); }
+    Ok(read)
 }
 
 /// Opaque SDK observation for one actual object-read receipt.
@@ -1786,7 +1744,7 @@ pub trait AsyncObjectStore: ProviderPlatform {
         _maximum_bytes: u64,
         _work: &crate::materializer::NativeMaterializationWork,
         _cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<NativeObjectRead, crate::storage::ObjectStoreError>> + ProviderTask {
+    ) -> impl Future<Output = Result<ObjectRead, crate::storage::ObjectStoreError>> + ProviderTask {
         async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
     }
 
@@ -1833,7 +1791,7 @@ pub trait AsyncObjectStore: ProviderPlatform {
         _requests: &[ObjectReadRequest],
         _work: &crate::materializer::NativeMaterializationWork,
         _cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<NativeObjectReadBatch, crate::storage::ObjectStoreError>> + ProviderTask {
+    ) -> impl Future<Output = Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), crate::storage::ObjectStoreError>> + ProviderTask {
         async { Err(crate::storage::ObjectStoreError::NativeUnavailable) }
     }
 
@@ -1980,13 +1938,13 @@ pub async fn read_many_sequential_with_native_work<S: AsyncObjectStore + ?Sized>
     requests: &[ObjectReadRequest],
     work: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
-) -> Result<NativeObjectReadBatch, crate::storage::ObjectStoreError> {
+) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), crate::storage::ObjectStoreError> {
     let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
     let result = read_many_sequential_engine(store, requests, &mut accounting, cancellation)
         .await.map_err(sequential_read_error)?;
     match result.1 {
         crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-            NativeObjectReadBatch::new(result.0, allocation)
+            crate::async_storage::native_read_batch(result.0, allocation)
         }
         crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
             drop(result.0);
@@ -2034,7 +1992,7 @@ async fn read_many_sequential_engine<S: AsyncObjectStore + ?Sized>(
             let read = store.read_with_native_work(
                 request.object_id, request.maximum_bytes, work, cancellation,
             ).await?;
-            values.0.push(read.into_read());
+            values.0.push(read);
             continue;
         }
         let result = store.read(
@@ -2474,7 +2432,7 @@ impl<T: ImmediateObjectStore + ?Sized> AsyncObjectStore for T {
         maximum_bytes: u64,
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<NativeObjectRead, crate::storage::ObjectStoreError> {
+    ) -> Result<ObjectRead, crate::storage::ObjectStoreError> {
         ObjectStore::read_with_native_work(self, object_id, maximum_bytes, work, cancellation)
     }
 
@@ -2496,7 +2454,7 @@ impl<T: ImmediateObjectStore + ?Sized> AsyncObjectStore for T {
         requests: &[ObjectReadRequest],
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<NativeObjectReadBatch, crate::storage::ObjectStoreError> {
+    ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), crate::storage::ObjectStoreError> {
         ObjectStore::read_many_with_native_work(self, requests, work, cancellation)
     }
 

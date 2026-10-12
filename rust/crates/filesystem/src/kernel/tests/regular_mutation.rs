@@ -125,7 +125,7 @@ fn flatten_extents(
 ) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
     let encoded = ObjectStore::read(store, root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
     Ok(
-        match decode_extent_page(&encoded, DecodeLimits::for_volume(config()))? {
+        match decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
             ExtentPage::Leaf(extents) => extents,
             ExtentPage::Internal(children) => {
                 let mut extents = Vec::new();
@@ -353,7 +353,7 @@ fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("promoted extent root was not a leaf".into());
     };
@@ -438,7 +438,7 @@ fn empty_inline_growth_promotes_directly_to_one_sparse_hole()
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("empty growth extent root was not a leaf".into());
     };
@@ -473,7 +473,7 @@ fn inline_growth_within_threshold_preserves_trailing_hole() -> Result<(), Box<dy
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("grown extent root was not a leaf".into());
     };
@@ -592,7 +592,7 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
     )?
     .value;
     let ExtentPage::Leaf(extents) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("clone destination root was not a leaf".into());
     };
@@ -620,7 +620,7 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
     )?
     .value;
     let ExtentPage::Leaf(extents) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("identity clone destination root was not a leaf".into());
     };
@@ -914,7 +914,7 @@ fn inline_zero_extension_preserves_exact_sparse_semantics() -> Result<(), Box<dy
         )?
         .value;
         let ExtentPage::Leaf(values) =
-            decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+            decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
         else {
             return Err("promoted extent root was not a leaf".into());
         };
@@ -1020,7 +1020,7 @@ fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicit
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("preallocated extent root was not a leaf".into());
     };
@@ -1057,7 +1057,7 @@ fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicit
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("extended extent root was not a leaf".into());
     };
@@ -1125,7 +1125,7 @@ fn extending_preallocation_merges_the_eof_hole_and_extension_into_one_mutation()
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("allocated extent root was not a leaf".into());
     };
@@ -1405,7 +1405,7 @@ fn sparse_write_rewrites_only_the_target_and_preserves_the_trailing_hole()
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("sparse write root was not a leaf".into());
     };
@@ -1455,7 +1455,7 @@ fn sparse_clone_preserves_holes_and_destination_size_with_bounded_promotion_copi
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("sparse clone root was not a leaf".into());
     };
@@ -1686,7 +1686,7 @@ fn inline_preallocation_handles_keep_size_and_growth() -> Result<(), Box<dyn std
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("preallocation root was not a leaf".into());
     };
@@ -1791,7 +1791,7 @@ fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("multi-region preallocation root was not a leaf".into());
     };

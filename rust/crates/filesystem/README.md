@@ -59,7 +59,7 @@ two-read allowance denies locality discovery after retaining the two completed
 reads; SDK-stage counting must not hide the identity query.
 
 Native demand pages retain immutable entries and the original cursor until
-`SourcePagePublication::accept` succeeds. Consumers reserve the publication's
+`demand::accept_publication` succeeds. Consumers reserve the publication's
 reported cleanup work before projecting entries; abort or drop restores the original
 cursor, including an unpublished first page. Publication is not authority.
 Source chunks, immutable objects and file-read payloads use `acyclic_stream::OwnedBytes`.

@@ -17,13 +17,13 @@ use crate::{
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{StreamClient, StreamProvider};
+use acyclic_stream::{StreamProvider};
 use std::sync::Arc;
 use uuid::Uuid;
 
 /// Stages participant data privately and commits only references to one conversation history.
 pub struct FilesystemInteractionHost<P, A, O> {
-    stream: StreamClient<P>,
+    stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     authority: Authority,
     verifier: AuthorityVerifier,
@@ -65,7 +65,6 @@ impl PreparationRecord for Interaction {
 }
 
 impl PreparationRecord for InteractionResponse {
-    fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
     fn diagnostic_label_bytes() -> u64 {
         crate::contract::preparation_serde_diagnostic_label_bytes() + INTERACTION_DIAGNOSTIC_LABEL_BYTES
     }
@@ -80,7 +79,7 @@ impl<P, A, O> FilesystemInteractionHost<P, A, O> {
         &self, id: InteractionId, scope: &Scope, io: Option<&PreparationIo>,
     ) -> Result<()> {
         let mut borrowed = io.map(PreparationIo::history_io);
-        self.verifier.verify_with_work(scope, &mut borrowed.as_mut().map(
+        self.verifier.verify(scope, &mut borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo))?;
         let grant_hold;
         let grant = interaction_text("interaction:respond:", Some(id.into_bytes()), "", "", "", io)?;
@@ -113,7 +112,7 @@ where
         id: InteractionId,
     ) -> BoxFuture<'a, Result<Option<(InteractionTicket, Option<InteractionResolution>)>>> {
         Box::pin(async move {
-            self.verifier.verify(&scope)?;
+            self.verifier.verify(&scope, &mut None)?;
             let result = self.read(id, None).await?;
             if let Some((ticket, _)) = &result
                 && !scope.capabilities().contains(&ticket.viewer_grant())
@@ -175,14 +174,14 @@ where
     /// Authenticates and copies the conversation owner with optional accounting.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>,
+        stream: Arc<P>, host: Arc<FilesystemHost<A, O>>,
         authority: &Authority, verifier: &AuthorityVerifier, schemas: &SchemaRegistry,
         owner_scope: &Scope, private_volume: &VolumeRef, maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        verifier.verify_audience_with_work(authority, &mut work)?;
+        verifier.verify_audience(authority, &mut work)?;
         if authority.kind != crate::core::AggregateKind::Conversation
             || private_volume.class() != VolumeClass::AgentPrivate
             || private_volume.provider() != &host.provider || maximum_bytes == 0
@@ -191,11 +190,8 @@ where
                 "interaction host requires a conversation, private volume, and positive limit"));
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            match io {
-                Some(io) => ContentGrant::verify_original_volume_with_io(
-                    verifier, owner_scope, private_volume, operation, io)?,
-                None => { ContentGrant::verify(verifier, owner_scope, private_volume, operation)?; }
-            }
+            ContentGrant::authorize_volume(verifier, owner_scope, private_volume,
+                operation, u64::MAX, &mut work)?;
         }
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -203,9 +199,9 @@ where
             Some(work) => work.clone_authority(authority)?,
             None => authority.clone(),
         };
-        let verifier = verifier.clone_with_work(&mut work)?;
-        let owner_scope = owner_scope.clone_with_work(&mut work)?;
-        let private_volume = private_volume.clone_with_work(&mut work)?;
+        let verifier = verifier.copy(&mut work)?;
+        let owner_scope = owner_scope.copy(&mut work)?;
+        let private_volume = private_volume.copy(&mut work)?;
         let schemas = schemas.clone_with_work(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
@@ -312,7 +308,7 @@ where
                     io, crate::wire::ErrorCode::Invalid, "committed interaction revision is zero"))?,
                 None => aggregate.reducer().revision(),
             };
-            let scope = scope.clone_with_work(&mut work)?;
+            let scope = scope.copy(&mut work)?;
             let command_ticket = ticket.clone_with_work(&mut work)?;
             let idempotency_key = IdempotencyKey::new(interaction_text(
                 "interaction:", Some(operation_id.into_bytes()), "", "", "", io)?)?;
@@ -362,7 +358,7 @@ where
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        let scope = scope.clone_with_work(&mut work)?;
+        let scope = scope.copy(&mut work)?;
         let (committed, _) = crate::store::operations::find_operation_bounded_with_work(
             &self.stream, &self.authority, &self.verifier, operation_id,
             2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut work,
@@ -460,7 +456,7 @@ where
         id: InteractionId,
         expected_version: u64,
     ) -> Result<InteractionTicket> {
-        self.verifier.verify(scope)?;
+        self.verifier.verify(scope, &mut None)?;
         if !scope
             .capabilities()
             .contains(capability::INTERACTION_RESOLVE)
@@ -699,7 +695,7 @@ where
             Some(work) => work.clone_authority(&self.authority)?,
             None => self.authority.clone(),
         };
-        let aggregate_verifier = self.verifier.clone_with_work(&mut work)?;
+        let aggregate_verifier = self.verifier.copy(&mut work)?;
         if let Some(io) = io {
             io.claim(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
             io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;

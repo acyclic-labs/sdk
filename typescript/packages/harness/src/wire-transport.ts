@@ -15,7 +15,6 @@ import {
   ResumeRequestSchema,
   ServerFrameSchema,
   type Admission,
-  type Authority,
   type CommandEnvelope,
   type CancelRequest,
   type CancelResponse,
@@ -24,7 +23,6 @@ import {
   type ObserveRequest,
   type OperationStatus,
   type ResumeRequest,
-  type Scope,
   type ServerFrame,
 } from "../generated/proto/harness/v2/harness_pb.js";
 import {
@@ -35,7 +33,6 @@ import {
 } from "../generated/proto/protocol/v1/protocol_pb.js";
 import { TerminalAdmissionError } from "./client.js";
 import { NativeContracts } from "./native-contracts.js";
-import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";
 
 export interface WireConnection extends AsyncIterable<Delivery> {
   send(command: CommandEnvelope): Promise<void>;
@@ -46,56 +43,6 @@ export interface WireConnection extends AsyncIterable<Delivery> {
 
 export interface WireTransport {
   connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection>;
-}
-
-/**
- * Reports `acyclic.harness.wire.<connect|send|observe|cancel>` for any wire
- * transport (embedded, JSONL, WebSocket, HTTP/SSE, gRPC). Without an observer
- * it returns `transport` itself.
- */
-export function observeWireTransport(transport: WireTransport, observer?: AcyclicObserver): WireTransport {
-  const target = resolveObserver(observer);
-  if (target === undefined) return transport;
-  return {
-    connect: (resume, signal) => observed(target, "harness", "wire.connect", async () => {
-      const connection = await transport.connect(resume, signal);
-      return {
-        send: command => observed(target, "harness", "wire.send", () => connection.send(command)),
-        observe: request => observed(target, "harness", "wire.observe", () => connection.observe(request)),
-        cancel: request => observed(target, "harness", "wire.cancel", () => connection.cancel(request)),
-        close: () => connection.close(),
-        [Symbol.asyncIterator]: () => connection[Symbol.asyncIterator](),
-      };
-    }),
-  };
-}
-
-/** Typed control handle over the exact wire connection used for replay and submit. */
-export class WireOperationHandle {
-  constructor(
-    readonly connection: WireConnection,
-    readonly owner: Authority,
-    readonly operationId: string,
-    readonly scope: Scope,
-  ) {}
-
-  observe(): Promise<OperationStatus> {
-    return this.connection.observe(create(ObserveRequestSchema, {
-      owner: this.owner,
-      operationId: this.operationId,
-      scope: this.scope,
-    }));
-  }
-
-  cancel(idempotencyKey: string, recursive = false): Promise<CancelResponse> {
-    return this.connection.cancel(create(CancelRequestSchema, {
-      owner: this.owner,
-      operationId: this.operationId,
-      scope: this.scope,
-      idempotencyKey,
-      recursive,
-    }));
-  }
 }
 
 export interface EmbeddedWireApi {

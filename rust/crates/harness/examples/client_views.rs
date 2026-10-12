@@ -325,7 +325,7 @@ pub fn trace() {
         "host",
         Capabilities::new(["conversation:bind", "conversation:append"]),
     );
-    let mut reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+    let mut reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     let command = |id, revision, action| Command {
         operation_id: op(id),
         idempotency_key: IdempotencyKey(format!("{id}")),

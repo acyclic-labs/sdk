@@ -1,5 +1,6 @@
 //! Typed invariants shared by authenticated namespace algorithms.
 
+use crate::kernel::Child;
 use crate::foundation::{Digest, FileId};
 use crate::model::FilesystemProfile;
 use crate::storage::{ObjectId, ObjectKind};
@@ -7,7 +8,7 @@ use std::borrow::Cow;
 use thiserror::Error;
 use super::allocation::AllocationLedger;
 use super::codec::{CanonicalDecodeError, Decoder, Encoder, ReadAllocationStep};
-use super::namespace_path::{NamespacePathError, NamespacePathStep, path_vec};
+use super::namespace_path::{NamespacePathError, NamespacePathStep, };
 use super::namespace_path::NamespacePathAccounting;
 use crate::{CancellationToken, WorkBudget, WorkCounters};
 
@@ -63,10 +64,6 @@ impl LogicalName {
     }
 
     /// Validates a bounded name in its declared host representation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects empty, oversized, malformed, NUL, or separator-bearing names.
     pub fn new(
         encoding: NameEncoding,
         bytes: Vec<u8>,
@@ -76,13 +73,11 @@ impl LogicalName {
         Ok(Self { encoding, bytes })
     }
 
-    /// Owns bytes emitted from the same already-validated Unicode spelling.
-    /// Only the canonical namespace producer may skip the redundant validation.
     pub(super) fn from_validated_bytes(encoding: NameEncoding, bytes: Vec<u8>) -> Self {
         Self { encoding, bytes }
     }
 
-    pub(crate) fn try_clone_with_steps<E: From<CanonicalDecodeError>>(
+    pub(crate) fn try_clone<E: From<CanonicalDecodeError>>(
         &self,
         maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
@@ -118,7 +113,7 @@ impl LogicalName {
         owned.observe(NamespacePathStep::Admit(&WorkCounters {
             bytes_copied: self.bytes.len() as u64, ..WorkCounters::UNCHARGED
         }))?;
-        let result = self.try_clone_with_steps(
+        let result = self.try_clone(
             maximum_bytes, &mut |step| owned.observe(NamespacePathStep::Allocation(step)),
         );
         owned.finish(result)
@@ -162,8 +157,6 @@ impl LogicalName {
         Ok(())
     }
 
-    /// Validates the Unicode subset using the same native-name predicates.
-    /// Returns its exact encoded size without allocating the native bytes.
     pub(crate) fn validate_unicode(
         encoding: NameEncoding,
         value: &str,
@@ -207,54 +200,10 @@ impl LogicalName {
         Ok(())
     }
 
-    /// Copies an already-validated payload through the canonical path ledger.
-    /// The containing operation counts the borrowed name/component visit.
-    pub(crate) fn clone_with_ledger(
-        &self,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, NamespacePathError> {
-        cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
-        let delta = WorkCounters { bytes_copied: self.bytes.len() as u64,
-            ..WorkCounters::default() };
-        work.admit(&delta, &budget).map_err(NamespacePathError::Work)?;
-        let initial_live = ledger.live_bytes();
-        let result = (|| {
-            let mut bytes = path_vec(self.bytes.len(), ledger, work, budget)?;
-            bytes.extend_from_slice(&self.bytes);
-            work.charge(&delta, &budget).map_err(NamespacePathError::Work)?;
-            Ok(Self { encoding: self.encoding, bytes })
-        })();
-        if result.is_err() {
-            ledger.release(ledger.live_bytes() - initial_live).map_err(|error| match error {
-                super::allocation::AllocationError::Work(error) => NamespacePathError::Work(error),
-                _ => NamespacePathError::AllocationFailed,
-            })?;
-        }
-        result
-    }
-
     pub(crate) fn cursor_encoded_len(&self) -> Result<usize, NamespacePathError> {
         u32::try_from(self.bytes.len()).map_err(|_| NamespacePathError::ComponentTooLong)?;
         self.bytes.len().checked_add(5)
             .ok_or(NamespacePathError::Codec(CanonicalDecodeError::LengthOverflow))
-    }
-
-    /// Appends into the containing codec's already-admitted output capacity.
-    pub(crate) fn encode_cursor_into(
-        &self,
-        encoder: &mut Encoder,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<(), NamespacePathError> {
-        self.encode_cursor_into_with_steps(
-            encoder, cancellation, &mut |step| {
-                super::namespace_path::observe_cursor_write(step, work, budget)
-            },
-        )
     }
 
     pub(crate) fn encode_cursor_into_with_accounting(
@@ -264,86 +213,47 @@ impl LogicalName {
         cancellation: &CancellationToken,
     ) -> Result<(), crate::FsError> {
         accounting.check()?;
-        self.encode_cursor_into_with_steps(
-            encoder, cancellation, &mut |step| {
-                super::namespace_path::observe_cursor_write_with_accounting(step, accounting)
-            },
-        )
-    }
-
-    pub(crate) fn encode_cursor_into_with_steps<E: From<NamespacePathError>>(
-        &self,
-        encoder: &mut Encoder,
-        cancellation: &CancellationToken,
-        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
-    ) -> Result<(), E> {
-        cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
-        let length = self.cursor_encoded_len().map_err(E::from)?;
+        cancellation.check()?;
+        let length = self.cursor_encoded_len()?;
         if encoder.remaining_capacity() < length {
-            return Err(E::from(NamespacePathError::AllocationFailed));
+            return Err(NamespacePathError::AllocationFailed.into());
         }
         let delta = WorkCounters { bytes_encoded: length as u64,
             bytes_copied: self.bytes.len() as u64, items_examined: 1,
             ..WorkCounters::UNCHARGED };
-        steps(NamespacePathStep::Admit(&delta))?;
+        accounting.admit(delta)?;
         encoder.u8(self.encoding.tag());
         encoder.bounded_bytes(&self.bytes)
-            .map_err(|error| E::from(NamespacePathError::Codec(error)))?;
-        steps(NamespacePathStep::Performed(&delta))
+            .map_err(NamespacePathError::Codec)?;
+        accounting.record_completed(delta)
     }
 
-
-    pub(crate) fn read_cursor_borrowed_with_steps<'a, E: From<NamespacePathError>>(
+    pub(crate) fn read_cursor_borrowed<'a>(
         decoder: &mut Decoder<'a>,
         profile: FilesystemProfile,
         maximum_bytes: u32,
         cancellation: &CancellationToken,
-        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
-    ) -> Result<(NameEncoding, &'a [u8]), E> {
-        cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
-        steps(NamespacePathStep::Charge(&WorkCounters {
+        owned: &mut NamespacePathAccounting<'_, '_>,
+    ) -> Result<(NameEncoding, &'a [u8]), crate::FsError> {
+        cancellation.check()?;
+        owned.observe(NamespacePathStep::Charge(&WorkCounters {
             items_examined: 1, ..WorkCounters::UNCHARGED
         }))?;
         let encoding = NameEncoding::from_tag(
-            decoder.u8().map_err(|error| E::from(NamespacePathError::Codec(error)))?,
-        ).map_err(|error| E::from(NamespacePathError::Name(error)))?;
+            decoder.u8(&mut |_| Ok::<_, CanonicalDecodeError>(())).map_err(NamespacePathError::Codec)?,
+        ).map_err(NamespacePathError::Name)?;
         if !encoding.is_admitted_in_profile(profile) {
-            return Err(E::from(NamespacePathError::Name(TreePageError::InvalidName)));
+            return Err(NamespacePathError::Name(TreePageError::InvalidName).into());
         }
-        let length = decoder.u32().map_err(|error| E::from(NamespacePathError::Codec(error)))?;
+        let length = decoder.u32(&mut |_| Ok::<_, CanonicalDecodeError>(())).map_err(NamespacePathError::Codec)?;
         if length > maximum_bytes {
-            return Err(E::from(NamespacePathError::Name(TreePageError::NameTooLarge)));
+            return Err(NamespacePathError::Name(TreePageError::NameTooLarge).into());
         }
         let bytes = decoder.take_exact(length as usize)
-            .map_err(|error| E::from(NamespacePathError::Codec(error)))?;
+            .map_err(NamespacePathError::Codec)?;
         Self::validate_bytes(encoding, bytes, maximum_bytes)
-            .map_err(|error| E::from(NamespacePathError::Name(error)))?;
+            .map_err(NamespacePathError::Name)?;
         Ok((encoding, bytes))
-    }
-
-    pub(crate) fn decode_cursor_with_ledger(
-        decoder: &mut Decoder<'_>,
-        profile: FilesystemProfile,
-        maximum_bytes: u32,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, NamespacePathError> {
-        let initial_live = ledger.live_bytes();
-        let result = Self::decode_cursor_with_steps(
-            decoder, profile, maximum_bytes, cancellation, &mut |step| {
-                super::namespace_path::observe_path_ledger(step, ledger, work, budget)
-            },
-        );
-        if result.is_err() {
-            ledger.release(ledger.live_bytes() - initial_live)
-                .map_err(|error| match error {
-                    super::allocation::AllocationError::Work(error) => NamespacePathError::Work(error),
-                    _ => NamespacePathError::AllocationFailed,
-                })?;
-        }
-        result
     }
 
     pub(crate) fn decode_cursor_with_accounting(
@@ -354,30 +264,30 @@ impl LogicalName {
         cancellation: &CancellationToken,
     ) -> Result<(Self, super::allocation::KernelOwnedAllocation), crate::FsError> {
         let mut owned = NamespacePathAccounting::new(accounting)?;
-        let result = Self::decode_cursor_with_steps(
-            decoder, profile, maximum_bytes, cancellation, &mut |step| owned.observe(step),
+        let result = Self::decode_cursor(
+            decoder, profile, maximum_bytes, cancellation, &mut owned,
         );
         owned.finish(result)
     }
 
-    pub(crate) fn decode_cursor_with_steps<E: From<NamespacePathError>>(
+    pub(crate) fn decode_cursor(
         decoder: &mut Decoder<'_>,
         profile: FilesystemProfile,
         maximum_bytes: u32,
         cancellation: &CancellationToken,
-        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
-    ) -> Result<Self, E> {
-        let (encoding, source) = Self::read_cursor_borrowed_with_steps(
-            decoder, profile, maximum_bytes, cancellation, steps,
+        owned: &mut NamespacePathAccounting<'_, '_>,
+    ) -> Result<Self, crate::FsError> {
+        let (encoding, source) = Self::read_cursor_borrowed(
+            decoder, profile, maximum_bytes, cancellation, owned,
         )?;
         let delta = WorkCounters { bytes_copied: source.len() as u64,
             ..WorkCounters::UNCHARGED };
-        steps(NamespacePathStep::Admit(&delta))?;
+        owned.observe(NamespacePathStep::Admit(&delta))?;
         let mut bytes = super::namespace_path::namespace_path_vec_with_steps(
-            source.len(), cancellation, steps,
+            source.len(), cancellation, &mut |step| owned.observe(step),
         )?;
         bytes.extend_from_slice(source);
-        steps(NamespacePathStep::Performed(&delta))?;
+        owned.observe(NamespacePathStep::Performed(&delta))?;
         Ok(Self::from_validated_bytes(encoding, bytes))
     }
 
@@ -393,8 +303,7 @@ impl LogicalName {
         &self.bytes
     }
 
-    /// Presents this exact name as Unicode when its host encoding permits it.
-    /// Raw POSIX names outside UTF-8 remain unrepresentable as strings.
+    /// Presents this exact name as Unicode when its host encoding permits it. Raw POSIX names outside UTF-8 remain unrepresentable as strings.
     #[must_use]
     pub fn unicode_text(&self) -> Option<Cow<'_, str>> {
         match self.encoding {
@@ -407,12 +316,7 @@ impl LogicalName {
         }
     }
 
-    /// Owns the exact non-lossy Unicode name on this original native work scope.
-    /// Drop the returned string before its allocation guard.
-    ///
-    /// # Errors
-    /// Returns the original work/cancellation failure, reserve failure, or an
-    /// inline non-Unicode projection cause before allocating opaque names.
+    /// Owns the exact non-lossy Unicode name on this original native work scope. Drop the returned string before its allocation guard.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn unicode_text_with_native_work(
         &self,
@@ -491,15 +395,7 @@ impl LogicalName {
         self.bytes.capacity()
     }
 
-    /// Comparison key for `CaseSensitivity::ProfileFolded` lookup and
-    /// collision detection.
-    ///
-    /// Only [`NameEncoding::Utf8`] names are folded (via full Unicode
-    /// case-folding, `str::to_lowercase`); other encodings return their raw
-    /// bytes unchanged, so `ProfileFolded` behaves like `Sensitive` for
-    /// `PosixBytes`/`WindowsUtf16Le` names. This never changes the physical,
-    /// byte-ordered on-disk representation — it is a comparison-only key used
-    /// by callers that already hold the name, not a new canonical form.
+    /// Comparison key for `CaseSensitivity::ProfileFolded` lookup and collision detection.
     #[must_use]
     pub fn case_fold_key(&self) -> Vec<u8> {
         match self.encoding {
@@ -509,7 +405,7 @@ impl LogicalName {
                 let Ok(value) = std::str::from_utf8(&self.bytes) else {
                     return self.bytes.clone();
                 };
-                lowercase_unicode_with_ledger_inner(
+                lowercase_unicode(
                     value,
                     &mut AllocationLedger::default(),
                     &mut WorkCounters::UNCHARGED,
@@ -526,21 +422,7 @@ impl LogicalName {
 // mappings both use Unicode 17. Updating either requires updating both.
 const _: () = assert!(matches!(char::UNICODE_VERSION, (17, 0, 0)));
 
-/// The canonical lowercase engine used by ordinary name keys and admitted
-/// native keys. Both accounting adapters observe the same scalar, contextual
-/// ICU-property, allocation, and emission steps; no native scan is unmetered.
-/// The returned capacity remains owned by the supplied ledger.
-pub(crate) fn lowercase_unicode_with_ledger(
-    text: &str,
-    ledger: &mut AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<Vec<u8>, NamespacePathError> {
-    lowercase_unicode_with_ledger_inner(text, ledger, work, budget, Some(cancellation))
-}
-
-fn lowercase_unicode_with_ledger_inner(
+pub(crate) fn lowercase_unicode(
     text: &str,
     ledger: &mut AllocationLedger,
     work: &mut WorkCounters,
@@ -759,30 +641,17 @@ pub struct TreeEntry {
     pub kind: FileKind,
 }
 
-/// One lower-bound-to-page binding in an internal page.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TreeChild {
-    /// Exact first name represented by the child subtree.
-    pub first_name: LogicalName,
-    /// Authenticated tree-page identity.
-    pub page: ObjectId,
-}
-
 /// One immutable authenticated directory B+tree page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TreePage {
     /// Ordered file bindings.
     Leaf(Vec<TreeEntry>),
     /// Ordered child lower bounds.
-    Internal(Vec<TreeChild>),
+    Internal(Vec<Child<LogicalName>>),
 }
 
 impl TreePage {
     /// Validates ordering, uniqueness, object kinds, and page bounds.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed pages before hashing or publication.
     pub fn validate(&self, maximum_items: u32) -> Result<(), TreePageError> {
         let count = match self {
             Self::Leaf(entries) => {
@@ -793,7 +662,7 @@ impl TreePage {
                 if children.is_empty() {
                     return Err(TreePageError::EmptyInternalPage);
                 }
-                validate_order(children.iter().map(|child| &child.first_name))?;
+                validate_order(children.iter().map(|child| &child.first))?;
                 if children
                     .iter()
                     .any(|child| child.page.kind != ObjectKind::TreePage)
@@ -916,10 +785,6 @@ pub enum ExtentPage {
 
 impl ExtentPage {
     /// Validates bounds, ordering, non-overlap, and typed child/content identities.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed extent pages before hashing or publication.
     pub fn validate(&self, maximum_items: u32) -> Result<(), ExtentPageError> {
         let count = match self {
             Self::Leaf(extents) => {
@@ -1021,8 +886,6 @@ pub enum ExtentPageError {
 #[path = "tests/types.rs"]
 mod tests;
 
-/// The UTF-16 code units little-endian `bytes` hold, or `None` for an odd
-/// length, which holds none.
 pub(crate) fn utf16le_units(bytes: &[u8]) -> Option<impl Iterator<Item = u16> + Clone + '_> {
     let (units, rest) = bytes.as_chunks::<2>();
     rest.is_empty()

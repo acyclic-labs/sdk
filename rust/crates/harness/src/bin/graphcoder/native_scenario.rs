@@ -28,7 +28,7 @@ use acyclic_harness::{
     store::{HistoryReadLimits, StreamAggregate},
     workflow::{MachineRegistry, WorkflowCommand},
 };
-use acyclic_stream::{LocalStream, StreamClient, SystemUnixMillisClock};
+use acyclic_stream::{LocalStream, SystemUnixMillisClock};
 use prost::Message as _;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -55,7 +55,7 @@ struct Caller {
 struct Producer {
     root: PathBuf,
     files: Arc<Files>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     runtime: Runtime,
     config: Config,
     template: TaskAdmissionRecord,
@@ -100,10 +100,10 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let filesystem_provider = ProviderRef::new(&deployment, "filesystem", "2")?;
     let stream_provider = ProviderRef::new(&deployment, "stream", "2")?;
     let seed_agent = AgentId::new();
-    let private = VolumeRef::new(filesystem_provider.clone(), "bootstrap-private",
-        VolumeClass::AgentPrivate, VolumeOwner::Agent(seed_agent))?;
-    let project = VolumeRef::new(filesystem_provider.clone(), "bootstrap-project",
-        VolumeClass::Project, VolumeOwner::Project("qualification-project".into()))?;
+    let private = VolumeRef::new(filesystem_provider.clone(), "bootstrap-private".into(),
+        VolumeClass::AgentPrivate, VolumeOwner::Agent(seed_agent), &mut None)?;
+    let project = VolumeRef::new(filesystem_provider.clone(), "bootstrap-project".into(),
+        VolumeClass::Project, VolumeOwner::Project("qualification-project".into()), &mut None)?;
     let authority = Authority { kind: AggregateKind::Conversation, id: format!("qualification-bootstrap-{deployment}") };
     let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, authority.clone());
     let grants = Capabilities::new([
@@ -120,8 +120,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         "tool:call:acyclic.fork".to_owned(), "tool:call:acyclic.merge".to_owned(),
         "tool:call:acyclic.read_file".to_owned(), "tool:call:acyclic.write_file".to_owned(),
         "tool:call:acyclic.edit_file".to_owned(),
-        private.capability(VolumeOperation::Read)?, private.capability(VolumeOperation::Write)?,
-        project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
+        private.capability(VolumeOperation::Read, &mut None)?, private.capability(VolumeOperation::Write, &mut None)?,
+        project.capability(VolumeOperation::Read, &mut None)?, project.capability(VolumeOperation::Write, &mut None)?,
         project.directory_read_capability("")?,
     ]);
     let scope = issuer.root_for_agent(seed_agent, "explicit-trusted-local-bootstrap", grants);
@@ -151,7 +151,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     tokio::fs::create_dir(&native_root).await.map_err(|error| Error::Storage(error.to_string()))?;
     tokio::fs::write(native_root.join("sentinel.txt"), b"host original imported sentinel\n").await.map_err(|error| Error::Storage(error.to_string()))?;
     tokio::fs::write(native_root.join("concurrent-user.txt"), b"host original concurrent file\n").await.map_err(|error| Error::Storage(error.to_string()))?;
-    let imported = filesystem.attach_directory(project.storage_name()?, &native_root, acyclic_fs::SourceOptions {
+    let imported = filesystem.attach_directory(project.storage_name(&mut None)?, &native_root, acyclic_fs::SourceOptions {
         mode: acyclic_fs::SourceMode::Pinned, maximum_paths: 64, maximum_extent_spans: 16,
         maximum_queued_changes: 64, excluded_paths: Vec::new(),
     }).await.map_err(|error| Error::Unsupported(format!("genuine bounded native source import failed: {error}")))?;
@@ -164,7 +164,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     files.create_volume(&private).await?;
     files.create_volume(&project).await?;
     // Known qualification prompts are real provider-owned command artifacts.
-    let project_writer = ContentGrant::verify(&issuer.verifier(), &owner.scope, &project, VolumeOperation::Write)?;
+    let project_writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &owner.scope, &project, VolumeOperation::Write)?;
     let mut planned_commands = BTreeMap::new();
     let mut planned_inputs = BTreeMap::new();
     let mut artifact_grants = owner.scope.capabilities().iter().map(str::to_owned).collect::<Vec<_>>();
@@ -183,8 +183,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     }
     owner.scope = issuer.root_for_agent(seed_agent, "explicit-trusted-local-bootstrap", Capabilities::new(artifact_grants));
     config.owner = owner.clone();
-    let stream = StreamClient::new(Arc::new(LocalStream::open(&config.stream_root, Default::default())
-        .await.map_err(|error| Error::Storage(error.to_string()))?));
+    let stream = Arc::new(LocalStream::open(&config.stream_root, Default::default())
+        .await.map_err(|error| Error::Storage(error.to_string()))?);
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
     let mut tasks = TaskRegistry::default();
@@ -195,7 +195,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     machines.register(preparation)?;
     let creator = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), issuer.clone())?);
     let runtime = Runtime::open_with_creation_providers(
-        stream.clone(), files.clone(), private.clone(), issuer.verifier(), owner.scope.clone(),
+        stream.clone(), files.clone(), private.clone(), issuer.verifier(&mut None).expect("verifier copy"), owner.scope.clone(),
         RuntimeScope::new(owner.scope.capabilities().clone(), limits)?.with_run_limits(run_limits)?,
         tasks, machines, Default::default(), config.session_limits, config.concurrency,
         PAYLOAD_BYTES, Arc::new(SystemUnixMillisClock), None, vec![creator], Default::default(),
@@ -224,10 +224,10 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let imported_ref = acyclic_harness::resources::GenerationRef::new(producer.config.filesystem_provider.clone(),
         imported_generation.id().digest().into_bytes(), None)?;
     let imported_bytes = producer.files.read(&workspace_ref(producer.config.filesystem_provider.clone(),
-        &seed.project.storage_name()?)?, Some(&imported_ref), "/sentinel.txt", PAYLOAD_BYTES).await?;
-    let imported_file = FileRef::new(seed.project.clone(), "sentinel.txt",
-        hex::encode(imported_generation.id().digest().into_bytes()),
-        acyclic_harness::conversation::FileDescriptor::from_bytes(&imported_bytes, "text/plain")?, "sentinel.txt")?;
+        &seed.project.storage_name(&mut None)?)?, Some(&imported_ref), "/sentinel.txt", PAYLOAD_BYTES).await?;
+    let imported_file = FileRef::new(seed.project.clone(), "sentinel.txt".into(),
+        (hex::encode(imported_generation.id().digest().into_bytes())).into(),
+        acyclic_harness::conversation::FileDescriptor::from_bytes(&imported_bytes, "text/plain", &mut None)?, "sentinel.txt".into(), &mut None)?;
     producer.references.insert("native_import_baseline".into(), imported_file);
     for (label, file) in &producer.planned_inputs {
         producer.references.insert(format!("{label}_input"), file.clone());
@@ -248,7 +248,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     // Authenticated foreign project selection only.
     producer.fork(&mut left, "cross_source", Some(logical_root.task), false).await?;
     let left_issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, left.binding.authority.clone());
-    let notice_writer = ContentGrant::verify(&left_issuer.verifier(), &left.binding.scope, &left.private, VolumeOperation::Write)?;
+    let notice_writer = ContentGrant::verify(&left_issuer.verifier(&mut None).expect("verifier copy"), &left.binding.scope, &left.private, VolumeOperation::Write)?;
     let notice_file = producer.files.put_content(&left.private, &notice_writer, "merge/selected-grandchild.txt",
         b"Explicit caller notice: import the selected immutable grandchild project; do not import private scratch.\n",
         "text/plain", "merge-notice.txt", PAYLOAD_BYTES, &IdempotencyKey::new("left-grandchild-merge-notice")?).await?;
@@ -295,7 +295,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     };
     tokio::fs::write(&cursor_path, cursor_frame.encode_to_vec()).await.map_err(|error| Error::Storage(error.to_string()))?;
     let config_path = root.join("native-config.json");
-    let target_workspace = filesystem.open_workspace(logical_root.project.storage_name()?, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+    let target_workspace = filesystem.open_workspace(logical_root.project.storage_name(&mut None)?, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| Error::Storage(error.to_string()))?;
     let target_generation = target_workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| Error::Storage(error.to_string()))?;
     target_generation.pin("graphcoder-native-exact-approved-target").await
@@ -335,8 +335,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         "root": native_root, "operation_directory": native_operation_directory,
         "state_root": root.join("native-publication-state"),
         "operation_id": publication_operation, "source_root_identity": source_root_identity,
-        "from_workspace": seed.project.storage_name()?, "from": imported_generation.id(),
-        "to_workspace": logical_root.project.storage_name()?, "to": target_generation.id(),
+        "from_workspace": seed.project.storage_name(&mut None)?, "from": imported_generation.id(),
+        "to_workspace": logical_root.project.storage_name(&mut None)?, "to": target_generation.id(),
         "excluded_names": [".system", ".qualification-inputs"],
         "concurrent_edit_path": native_root.join("concurrent-user.txt"),
         "conflicting_edit_path": native_root.join("sentinel.txt"),
@@ -409,7 +409,7 @@ impl Producer {
         let (allocation, _allocation_custody) = NativePreparationRoot::witness(
             &namespace, &preparation, &work)?.await?;
         let generation = self.files.resolve(&workspace_ref(self.config.filesystem_provider.clone(),
-            &caller.project.storage_name()?)?).await?.generation;
+            &caller.project.storage_name(&mut None)?)?).await?.generation;
         let volumes = [BorrowedNativeVolumeBinding {
             host: self.files.as_ref(), volume: &caller.project, generation: &generation,
             namespace: &NativeVolumeNamespace::MaterializedDirectory, path: "project", writable: false,
@@ -454,7 +454,7 @@ impl Producer {
 
     async fn seed(&mut self, caller: &mut Caller, label: &str, messages: usize) -> Result<()> {
         let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, caller.binding.authority.clone());
-        let writer = ContentGrant::verify(&issuer.verifier(), &caller.binding.scope, &caller.private, VolumeOperation::Write)?;
+        let writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &caller.binding.scope, &caller.private, VolumeOperation::Write)?;
         let scratch = self.files.put_content(&caller.private, &writer, "scratch/caller-marker.txt",
             format!("{label} private scratch; must never be copied as child scratch\n").as_bytes(),
             "text/plain", "caller-marker.txt", PAYLOAD_BYTES,
@@ -478,7 +478,7 @@ impl Producer {
                         kind: MessageKind::User, content: file, attachments: Default::default(),
                         reply_to: None, tool_call_id: None, extensions: Default::default() }) } }).await?;
         }
-        let project_writer = ContentGrant::verify(&issuer.verifier(), &caller.binding.scope,
+        let project_writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &caller.binding.scope,
             &caller.project, VolumeOperation::Write)?;
         let before = self.files.put_content(&caller.project, &project_writer, "sentinel.txt",
             format!("{label} project baseline\n").as_bytes(), "text/plain", "sentinel.txt", PAYLOAD_BYTES,
@@ -497,18 +497,18 @@ impl Producer {
     {
         let agent = AgentId::new();
         let child_authority = Authority { kind: AggregateKind::Conversation, id: format!("qualification-{label}-{agent}") };
-        let project = VolumeRef::new(self.config.filesystem_provider.clone(), format!("{label}-project"),
-            VolumeClass::Project, VolumeOwner::Project("qualification-project".into()))?;
-        let private = VolumeRef::new(self.config.filesystem_provider.clone(), format!("{label}-private"),
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
-        let result = VolumeRef::new(self.config.filesystem_provider.clone(), format!("{label}-result"),
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+        let project = VolumeRef::new(self.config.filesystem_provider.clone(), (format!("{label}-project")).into(),
+            VolumeClass::Project, VolumeOwner::Project("qualification-project".into()), &mut None)?;
+        let private = VolumeRef::new(self.config.filesystem_provider.clone(), (format!("{label}-private")).into(),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
+        let result = VolumeRef::new(self.config.filesystem_provider.clone(), (format!("{label}-result")).into(),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
         let operation = OperationId::new();
         let preparation_operation = OperationId::new();
         let preparation_task = acyclic_harness::runtime::task_id_for_admission(preparation_operation);
         let child_operation = OperationId::new();
         let initial_prompt = format!("real isolated {label} qualification task");
-        let verifier = AuthorityIssuer::new(ISSUER, TEST_KEY, parent.binding.authority.clone()).verifier();
+        let verifier = AuthorityIssuer::new(ISSUER, TEST_KEY, parent.binding.authority.clone()).verifier(&mut None).expect("verifier copy");
         let admission = self.runtime.task_host().observe_admission(parent.task).await?;
         let context = self.runtime.task_context(parent.task, LeaseFence::from(&parent.lease.reservation)).await?;
         let source_read = if let Some(source_task) = source.filter(|task| *task != parent.task) {
@@ -517,7 +517,7 @@ impl Producer {
             let graph_root = self.config.project_source_root.ok_or_else(|| Error::Unsupported(
                 "actual coordinator graph root source policy is not configured".into()))?;
             let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
-                self.files.clone(), self.config.owner.authority.clone(), graph_root,
+                self.files.clone(), &self.config.owner.authority, graph_root, None,
             )?;
             let service_issuer = AuthorityIssuer::new(
                 &self.config.owner.issuer, self.config.owner.key, self.config.owner.authority.clone(),
@@ -536,10 +536,10 @@ impl Producer {
             RecursiveSourceSnapshot {
                 task: parent.task, project: parent.project.clone(),
                 project_generation: self.files.resolve(&workspace_ref(self.config.filesystem_provider.clone(),
-                    &parent.project.storage_name()?)?).await?.generation,
+                    &parent.project.storage_name(&mut None)?)?).await?.generation,
                 private_volume: parent.private.clone(),
                 private_generation: self.files.resolve(&workspace_ref(self.config.filesystem_provider.clone(),
-                    &parent.private.storage_name()?)?).await?.generation,
+                    &parent.private.storage_name(&mut None)?)?).await?.generation,
             }, self.config.stream_provider.clone(), operation,
             &ForkToolArguments { id: agent, msg: initial_prompt.clone(), source },
             RecursiveForkConfig { child: child_authority.clone(), child_project: project.clone(),
@@ -551,7 +551,7 @@ impl Producer {
         ).await?;
         let projected_reference_grants = binding.preparer.required_reference_grants(&binding.request, None).await?;
         let checkpoint = ForkSourceConfig { caller: parent.task, owner: parent.binding.clone(),
-            project: parent.project.clone(), snapshot: parent.aggregate.reducer().snapshot()?,
+            project: parent.project.clone(), snapshot: parent.aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
             request: binding.request.clone() };
         let checkpoint_path = self.root.join("inputs").join(format!("{label}-source.json"));
         persist(&checkpoint_path, &checkpoint).await?;
@@ -571,7 +571,7 @@ impl Producer {
         grants.extend(["tool:call:acyclic.fork".to_owned(), "tool:call:acyclic.merge".to_owned(),
             "tool:call:acyclic.read_file".to_owned(), "tool:call:acyclic.write_file".to_owned(),
             "tool:call:acyclic.edit_file".to_owned()]);
-        let parent_project_read = parent.project.capability(VolumeOperation::Read)?;
+        let parent_project_read = parent.project.capability(VolumeOperation::Read, &mut None)?;
         if admission.grants.contains(&parent_project_read) { grants.push(parent_project_read); }
         for file in self.planned_inputs.values() {
             let capability = file.read_capability()?;
@@ -630,7 +630,7 @@ impl Producer {
         let preparation_lease = claim(&self.runtime, preparation_task, &self.worker).await?;
         persist(&preparation_lease_path, &preparation_lease).await?;
         let commands = self.runtime.commands().with_fork_preparer(binding.preparer);
-        let attempt = self.runtime.resume_task(preparation_lease.clone(), &commands, 16).await;
+        let attempt = self.runtime.resume_task(preparation_lease.clone(), &commands, 16, None).await;
         if let acyclic_harness::filesystem::TaskWorkerAttempt::Unresolved { error, .. } = attempt {
             return Err(error);
         }
@@ -674,15 +674,15 @@ impl Producer {
     }
 }
 
-async fn aggregate(stream: &StreamClient<LocalStream>, files: Arc<Files>,
+async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
     owner: &AuthorityBinding, config: &Config) -> Result<StreamAggregate<LocalStream>>
 {
-    let verifier = AuthorityIssuer::new(&owner.issuer, owner.key, owner.authority.clone()).verifier();
+    let verifier = AuthorityIssuer::new(&owner.issuer, owner.key, owner.authority.clone()).verifier(&mut None).expect("verifier copy");
     let content = Arc::new(FilesystemContentVerifier::new(files.clone(), &verifier, &owner.scope, PAYLOAD_BYTES, None)?);
-    let forks = Arc::new(CompositeForkVerifier::new(vec![
+    let forks = Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES)?),
-        Arc::new(StreamHistoryForkVerifier::new(config.stream_provider.clone())?),
-    ])?);
+        Arc::new(StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?),
+    ], &mut None)?);
     StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new()).await?
         .with_content_verifier(content).with_fork_verifier(forks)
         .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(files)))

@@ -25,17 +25,17 @@ fn volume_creation_is_canonical_bounded_and_catalog_free() -> Result<(), Box<dyn
             digest: Digest::from_bytes([2; 32]),
         },
     };
-    let encoded = encode_volume_created(value)?;
-    assert_eq!(decode_volume_created(&encoded, u64::MAX)?, value);
+    let encoded = encode_volume_created(value, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed))?;
+    assert_eq!(decode_volume_created(&encoded, u64::MAX, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?, value);
     assert_eq!(
         volume_authority_id(value.volume_id).into_bytes(),
         value.volume_id.into_bytes()
     );
     let maximum = u64::try_from(encoded.len().saturating_sub(1)).unwrap_or(0);
-    assert!(decode_volume_created(&encoded, maximum).is_err());
+    assert!(decode_volume_created(&encoded, maximum, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(())).is_err());
     let mut trailing = encoded;
     trailing.push(0);
-    assert!(decode_volume_created(&trailing, u64::MAX).is_err());
+    assert!(decode_volume_created(&trailing, u64::MAX, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(())).is_err());
     Ok(())
 }
 
@@ -51,7 +51,7 @@ fn invalid_config_and_object_kind_fail_closed() {
                 kind: ObjectKind::GenerationRoot,
                 digest: Digest::from_bytes([4; 32]),
             },
-        }),
+        }, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed)),
         Err(VolumeCreatedError::Config(VolumeConfigError::ZeroLimit))
     ));
     assert!(
@@ -62,7 +62,7 @@ fn invalid_config_and_object_kind_fail_closed() {
                 kind: ObjectKind::TreePage,
                 digest: Digest::from_bytes([6; 32]),
             },
-        })
+        }, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed))
         .is_err()
     );
 }
@@ -88,8 +88,8 @@ fn every_volume_semantic_variant_roundtrips_and_unknown_tags_fail_closed()
             digest: Digest::from_bytes([10; 32]),
         },
     };
-    let encoded = encode_volume_created(value)?;
-    assert_eq!(decode_volume_created(&encoded, u64::MAX)?, value);
+    let encoded = encode_volume_created(value, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed))?;
+    assert_eq!(decode_volume_created(&encoded, u64::MAX, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?, value);
     let config_prefix = [4_u8, 1, 2, 2, 2, 0, 0, 0];
     let config_offset = encoded
         .windows(config_prefix.len())
@@ -99,19 +99,19 @@ fn every_volume_semantic_variant_roundtrips_and_unknown_tags_fail_closed()
     for relative in 0..=7 {
         let mut malformed = encoded.clone();
         malformed[config_offset + relative] = if relative < 5 { 0 } else { 2 };
-        assert!(decode_volume_created(&malformed, u64::MAX).is_err());
+        assert!(decode_volume_created(&malformed, u64::MAX, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(())).is_err());
     }
 
     let mut depth_overflow = encoded.clone();
     let depth_offset = config_offset + 8 + 4 + 4;
     depth_overflow[depth_offset..depth_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-    assert!(decode_volume_created(&depth_overflow, u64::MAX).is_err());
+    assert!(decode_volume_created(&depth_overflow, u64::MAX, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(())).is_err());
 
     let mut wrong_kind = encoded;
     let kind_offset = wrong_kind.len() - 33;
     wrong_kind[kind_offset] = ObjectKind::TreePage.canonical_tag();
     assert!(matches!(
-        decode_volume_created(&wrong_kind, u64::MAX),
+        decode_volume_created(&wrong_kind, u64::MAX, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(())),
         Err(VolumeCreatedError::Decode(CanonicalDecodeError::Invariant(
             _
         )))

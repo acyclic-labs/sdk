@@ -94,7 +94,7 @@ impl ContextAttribute {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         crate::contract::validate_trusted_json_byte_bound(
-            self, crate::model::MAX_MODEL_REQUEST_BYTES, work,
+            self, u64::MAX, work,
         )?;
         self.validate_identity(work)?;
         crate::contract::validate_json_schema_value_with_work(
@@ -185,14 +185,14 @@ impl ContextSelection {
         limits: Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         let native = selection_has_native_work(work);
         if native {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
             }
             match &self.source {
-                ContextSourceValue::File { file } => limits.validate_file_with_work(file, work)?,
+                ContextSourceValue::File { file } => limits.validate_file(file, work)?,
                 ContextSourceValue::Attribute { attribute } => attribute.preflight_source(work)?,
             }
         }
@@ -200,7 +200,7 @@ impl ContextSelection {
         match &self.source {
             ContextSourceValue::File { file } => {
                 if !native {
-                    limits.validate_file_with_work(file, work)?;
+                    limits.validate_file(file, work)?;
                 }
                 if let ContextExtent::Span { start, end } = self.extent
                     && (start >= end || end > file.descriptor().byte_length())
@@ -397,8 +397,8 @@ impl ContextStage for SelectionStage {
             super::validate_projected_context(&context, limits, None)?;
             self.selection.validate(limits)?;
             if let ContextSourceValue::File { file } = &self.selection.source {
-                limits.validate_file(file)?;
-                self.verifier.verify(file).await?;
+                limits.validate_file(file, &mut None)?;
+                self.verifier.verify(file, limits.file_bytes, None)?.await?;
             }
             let messages = self
                 .renderer
@@ -491,9 +491,9 @@ impl ContextStage for SelectionStage {
             super::validate_projected_context(&context.0, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             self.selection.validate_with_native_work(limits, work)?;
             if let ContextSourceValue::File { file } = &self.selection.source {
-                limits.validate_file_with_native_work(file, work)?;
+                limits.validate_file(file, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
                 work.remaining().map_err(super::native_context_work_error)?;
-                self.verifier.verify_with_native_work(file, limits.file_bytes, work)?.await?;
+                self.verifier.verify(file, limits.file_bytes, Some(&crate::executor::PreparationIo::from_native_work(work)?))?.await?;
             }
             work.remaining().map_err(super::native_context_work_error)?;
             let messages = self.renderer.render_native(

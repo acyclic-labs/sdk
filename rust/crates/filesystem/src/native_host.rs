@@ -1329,11 +1329,11 @@ pub(crate) fn read_builtin_file(
     let mut transfer = acyclic_native_runtime::NativeByteReservation::new(
         work.native_read_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Read, destination.len(),
     ).map_err(native_builtin_runtime_error)?;
-    let copy = work.reserve_copy(destination.len() as u64)?;
+    let copy = work.reserve_work(crate::WorkCounters { bytes_copied: destination.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
     work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
     let count = (&*file).read(destination)?;
     let transferred = transfer.record(count).map_err(native_builtin_runtime_error);
-    let copied = copy.record(count as u64);
+    let copied = { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: count as u64, ..crate::WorkCounters::UNCHARGED }) };
     transferred?;
     copied?;
     Ok(count)
@@ -1346,11 +1346,11 @@ pub(crate) fn write_builtin_file(
     let mut transfer = acyclic_native_runtime::NativeByteReservation::new(
         work.native_read_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Write, source.len(),
     ).map_err(native_builtin_runtime_error)?;
-    let copy = work.reserve_copy(source.len() as u64)?;
+    let copy = work.reserve_work(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
     work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })?;
     let count = (&*file).write(source)?;
     let transferred = transfer.record(count).map_err(native_builtin_runtime_error);
-    let copied = copy.record(count as u64);
+    let copied = { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: count as u64, ..crate::WorkCounters::UNCHARGED }) };
     transferred?;
     copied?;
     Ok(count)
@@ -3415,9 +3415,9 @@ fn prepare_source_link_buffer<W: crate::demand::SourceDemandReadWork>(
         let _cleanup = work.release(allocation);
         return Err(error);
     }
-    let copied = original.reserve_copy(allocation).map_err(crate::native_name::original_name_error)?;
+    let copied = original.reserve_work(crate::WorkCounters { bytes_copied: allocation, ..crate::WorkCounters::UNCHARGED }).map_err(crate::native_name::original_name_error)?;
     buffer.resize(buffer.capacity(), 0);
-    copied.record(allocation).map_err(crate::native_name::original_name_error)?;
+    { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: allocation, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
     acyclic_stream::PreparedOwnedBytes::new(buffer, ownership, original.runtime_meter_owner())
         .map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
