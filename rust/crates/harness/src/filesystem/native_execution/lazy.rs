@@ -1,9 +1,10 @@
 use super::preparation_record::invalid;
 use super::*;
+use crate::{NativeFutureBundle, runtime::NativeVolumePublicationGuard};
 use acyclic_fs::native_mount::NativeMountPublicationFailure;
-use acyclic_fs::{LazyMount, LazyWorkspaceStore, NativePublicationSnapshot};
+use acyclic_fs::{LazyMount, LazySnapshotRef, LazyWorkspaceStore, NativePublicationSnapshot};
 
-/// Existing SDK mount and the selection captured under its original task.
+/// Existing SDK mount and its original task selection.
 pub struct NativeExistingLazyVolume {
     pub(super) mapping: NativeVolumeMapping,
     pub(super) publication: PublicationPermit,
@@ -16,22 +17,12 @@ pub(super) trait Backend: Send + Sync {
     fn snapshot<'a>(
         &'a self,
         work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_fs::LazySnapshotRef>>;
+    ) -> Result<NativeFutureBundle<'a, LazySnapshotRef>>;
     fn publish<'a>(
         &'a self,
-        permit: PublicationPermit,
-        work: &'a NativeMaterializationWork,
+        volume: &'a NativeExistingLazyVolume,
     ) -> Result<
-        crate::NativeFutureBundle<
-            'a,
-            std::result::Result<NativePublicationSnapshot, NativeMountPublicationFailure<Error>>,
-        >,
-    >;
-    fn qualify<'a>(
-        &'a self,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<
+        NativeFutureBundle<
             'a,
             std::result::Result<NativePublicationSnapshot, NativeMountPublicationFailure<Error>>,
         >,
@@ -41,11 +32,11 @@ pub(super) trait Backend: Send + Sync {
 struct Mount<P: StreamProvider, A, O, D, S> {
     mount: Arc<LazyMount<A, O, D, S>>,
     owner: Arc<TaskJournalOwner<P>>,
-    callback: Arc<dyn crate::runtime::NativeVolumePublicationGuard>,
+    callback: Arc<dyn NativeVolumePublicationGuard>,
 }
 
 impl NativeExistingLazyVolume {
-    /// Captures a real mounted selection on the original metadata and volume ledgers.
+    /// Captures a mounted selection on the original metadata and volume ledgers.
     pub fn capture<'a, P, A, O, D, S>(
         mount: &'a Arc<LazyMount<A, O, D, S>>,
         owner: &'a Arc<TaskJournalOwner<P>>,
@@ -53,7 +44,7 @@ impl NativeExistingLazyVolume {
         guard: &'a crate::runtime::NativeVolumeCallbackGuard<P>,
         metadata: &'a NativeMaterializationWork,
         work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, Self>>
+    ) -> Result<NativeFutureBundle<'a, Self>>
     where
         P: StreamProvider + 'static,
         A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -61,7 +52,7 @@ impl NativeExistingLazyVolume {
         D: acyclic_fs::demand::DemandSource + 'static,
         S: LazyWorkspaceStore,
     {
-        crate::NativeFutureBundle::new(work, || async move {
+        NativeFutureBundle::new(work, || async move {
             if !owner.native_shared_work_matches(metadata) || !work.shares_ledger(metadata) {
                 return Err(invalid());
             }
@@ -77,7 +68,7 @@ impl NativeExistingLazyVolume {
                 .host
                 .generation_with_native_work(&workspace, binding.generation, work)
                 .await?;
-            let actual = mount.snapshot_with_work(work, work.cancellation()).await?;
+            let actual = mount.snapshot(work, work.cancellation()).await?;
             if &actual != snapshot
                 || actual.workspace_id != workspace.id()
                 || actual.authored_generation != generation.id()
@@ -89,8 +80,8 @@ impl NativeExistingLazyVolume {
             let callback = guard
                 .for_volume(owner, binding.volume, binding.writable, work)?
                 .1;
-            let (path, path_custody) = work.path(mount.path(), None)?;
-            io.absorb_native_custody(path_custody)?;
+            let (path, custody) = work.path(mount.path(), None)?;
+            io.absorb_native_custody(custody)?;
             let mapping = NativeVolumeMapping {
                 volume: binding.volume.copy(&mut Some(&mut io.history_io()))?,
                 generation: binding.generation.clone_with_io(&io)?,
@@ -103,18 +94,18 @@ impl NativeExistingLazyVolume {
                     &mut Some(&mut io.history_io()),
                 )?,
             };
-            let backend_custody = work.claim(
+            let custody = work.claim(
                 std::mem::size_of::<Mount<P, A, O, D, S>>() as u64,
                 1,
                 acyclic_fs::WorkCounters::UNCHARGED,
             )?;
             let backend = Box::new(Mount {
-                mount: Arc::clone(mount),
-                owner: Arc::clone(owner),
+                mount: mount.clone(),
+                owner: owner.clone(),
                 callback,
             });
             backend.callback.check(work)?.await?;
-            io.absorb_native_custody(backend_custody)?;
+            io.absorb_native_custody(custody)?;
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
             let retained = io.owned_bytes()?;
             Ok(Self {
@@ -140,62 +131,49 @@ where
             .downcast_ref::<TaskJournalOwner<P>>()
             .is_some_and(|owner| std::ptr::eq(owner, self.owner.as_ref()))
     }
+
     fn snapshot<'a>(
         &'a self,
         work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_fs::LazySnapshotRef>> {
-        crate::NativeFutureBundle::new(work, || async move {
+    ) -> Result<NativeFutureBundle<'a, LazySnapshotRef>> {
+        NativeFutureBundle::new(work, || async move {
             self.callback.check(work)?.await?;
-            let snapshot = self
-                .mount
-                .snapshot_with_work(work, work.cancellation())
-                .await?;
+            let snapshot = self.mount.snapshot(work, work.cancellation()).await?;
             self.callback.check(work)?.await?;
             Ok(snapshot)
         })
     }
+
     fn publish<'a>(
         &'a self,
-        permit: PublicationPermit,
-        work: &'a NativeMaterializationWork,
+        volume: &'a NativeExistingLazyVolume,
     ) -> Result<
-        crate::NativeFutureBundle<
+        NativeFutureBundle<
             'a,
             std::result::Result<NativePublicationSnapshot, NativeMountPublicationFailure<Error>>,
         >,
     > {
-        crate::NativeFutureBundle::new(work, || async move {
+        let work = volume.custody.work();
+        NativeFutureBundle::new(work, || async move {
             self.callback.check(work)?.await?;
-            let callback = Arc::clone(&self.callback);
-            Ok(self
-                .mount
-                .sync_with_permit_work_guarded(
-                    permit,
-                    work,
-                    work.cancellation(),
-                    move |actual: &NativeMaterializationWork| {
-                        let actual = actual.clone();
-                        let callback = Arc::clone(&callback);
-                        async move { callback.check(&actual)?.await }
-                    },
-                )
-                .await)
-        })
-    }
-    fn qualify<'a>(
-        &'a self,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<
-            'a,
-            std::result::Result<NativePublicationSnapshot, NativeMountPublicationFailure<Error>>,
-        >,
-    > {
-        crate::NativeFutureBundle::new(work, || async move {
-            self.callback.check(work)?.await?;
+            if volume.mapping.writable {
+                let callback = self.callback.clone();
+                return Ok(self
+                    .mount
+                    .sync_with_permit(
+                        volume.publication,
+                        work,
+                        move |actual: &NativeMaterializationWork| {
+                            let actual = actual.clone();
+                            let callback = callback.clone();
+                            async move { callback.check(&actual)?.await }
+                        },
+                    )
+                    .await);
+            }
             let snapshot = match self
                 .mount
-                .publication_snapshot_with_work(work, work.cancellation())
+                .publication_snapshot(work, work.cancellation())
                 .await
             {
                 Ok(snapshot) => snapshot,

@@ -57,10 +57,8 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             let io = PreparationIo::from_native_work(work)?;
             let plan_io = PreparationIo::from_native_work(work)?;
             let mut mappings = crate::model::vec_with_capacity(bindings.len(), Some(&io))?;
-            let mut generations =
-                crate::model::vec_with_capacity(bindings.len(), Some(&io))?;
-            let mut selected =
-                crate::model::vec_with_capacity(bindings.len(), Some(&plan_io))?;
+            let mut generations = crate::model::vec_with_capacity(bindings.len(), Some(&io))?;
+            let mut selected = crate::model::vec_with_capacity(bindings.len(), Some(&plan_io))?;
             let mut edits = crate::model::vec_with_capacity(bindings.len(), Some(&plan_io))?;
             let mut preserved = crate::model::vec_with_capacity(bindings.len(), Some(&io))?;
             for (index, (binding, guard)) in bindings.iter().zip(guards).enumerate() {
@@ -313,8 +311,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 .await?
                 .ok_or_else(invalid)?;
             let final_io = PreparationIo::from_native_work(work)?;
-            let mut volumes =
-                crate::model::vec_with_capacity(bindings.len(), Some(&final_io))?;
+            let mut volumes = crate::model::vec_with_capacity(bindings.len(), Some(&final_io))?;
             for (index, (binding, (generation, volume_work))) in
                 bindings.iter().zip(generations).enumerate()
             {
@@ -336,18 +333,17 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         } else {
                             acyclic_fs::MountOptions::read_only()
                         };
+                        let mount =
+                            mount.native_context(&volume_work, Some(sdk), Some(&volume_work));
                         let view = generation
-                            .attach_native_working_set_with_work(
+                            .attach_native_working_set(
                                 &mount,
                                 &acyclic_fs::MaterializeOptions::native(
                                     &intent.manifest.volumes[index].path,
                                 ),
                                 identity,
                                 options.work_per_volume,
-                                &volume_work,
                                 work.cancellation(),
-                                Some(sdk),
-                                Some(&volume_work),
                             )
                             .await?;
                         PreparedVolume::Materialized {

@@ -20,16 +20,6 @@ pub(super) fn operation(
     Ok(acyclic_fs::OperationId::from_bytes(bytes))
 }
 
-pub(super) async fn read<P: StreamProvider>(
-    witness: &crate::durable_host::TaskAdmissionReadonlyWitness<P>,
-    work: &NativeMaterializationWork,
-) -> Result<Option<MaterializationJournal>> {
-    witness.verify_with_native_work(work).await?;
-    let result = read_record(witness.prepared_stream(), witness.task(), work).await;
-    witness.verify_with_native_work(work).await?;
-    result
-}
-
 pub(super) fn path(
     task: crate::TaskId,
     work: &NativeMaterializationWork,
@@ -44,7 +34,7 @@ pub(super) fn path(
         .map_err(Error::from)
 }
 
-async fn read_record<P: StreamProvider>(
+pub(super) async fn read_record<P: StreamProvider>(
     client: &Arc<P>,
     task: crate::TaskId,
     work: &NativeMaterializationWork,

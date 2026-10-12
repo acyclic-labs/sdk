@@ -1,4 +1,3 @@
-use super::super::native_process::NativeProcessPublishedVolume;
 use crate::{Error, conversation::FileRef};
 
 /// Publication failure retaining the SDK acknowledgement and completed prefix.
@@ -7,7 +6,7 @@ pub struct NativeViewPublicationError {
     /// Original SDK failure, including acknowledgement and accounting.
     pub cause: acyclic_fs::native_mount::NativeMountPublicationFailure<Error>,
     /// Snapshots returned before this failure.
-    pub published: Vec<NativeProcessPublishedVolume>,
+    pub published: Vec<(usize, acyclic_fs::NativePublicationSnapshot)>,
     /// Output retained before publication.
     pub diagnostic: Option<FileRef>,
     /// Original allocation ownership.

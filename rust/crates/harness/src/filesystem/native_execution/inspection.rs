@@ -12,7 +12,11 @@ pub fn observe_preparation<'a, P: StreamProvider>(
         return Err(invalid());
     }
     crate::NativeFutureBundle::new(work, || async move {
-        let Some(mut journal) = super::journal::read(witness, work).await? else {
+        witness.verify_with_native_work(work).await?;
+        let journal =
+            super::journal::read_record(witness.prepared_stream(), witness.task(), work).await;
+        witness.verify_with_native_work(work).await?;
+        let Some(mut journal) = journal? else {
             return Ok(None);
         };
         let mut custody = journal.custody.take().ok_or_else(invalid)?;
