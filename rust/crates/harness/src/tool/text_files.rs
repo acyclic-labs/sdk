@@ -604,15 +604,15 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("text".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([12; 16])),
-            )?,
-            "text.txt",
-            "generation-1",
-            FileDescriptor::from_bytes(b"ababa", "text/plain")?,
-            "text.txt",
-        )
+             &mut None)?,
+            "text.txt".into(),
+            "generation-1".into(),
+            FileDescriptor::from_bytes(b"ababa", "text/plain", &mut None)?,
+            "text.txt".into(),
+         &mut None)
     }
 
     fn invocation(arguments: Value) -> ToolInvocation {

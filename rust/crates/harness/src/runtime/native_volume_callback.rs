@@ -76,7 +76,9 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
         self.require_volume_with_native_work(owner, volume, writable, work)?;
         let mut custody = work.claim(std::mem::size_of::<VolumeCallback<P>>() as u64, 0, acyclic_fs::WorkCounters::default())
             .map_err(native_error)?;
-        let (volume, mut volume_custody) = volume.clone_with_native_work(work)?;
+        let mut observer = crate::store::history::native_work_io(work)?;
+        let volume = volume.copy(&mut Some(&mut observer))?;
+        let mut volume_custody = observer.into_custody();
         if let Err(cause) = custody.absorb(&mut volume_custody) {
             drop(volume);
             return Err(native_error(cause));
@@ -141,7 +143,7 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
     fn sdk_check<'a>(
         &'a self, work: &'a NativeMaterializationWork, require_write: bool,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
-        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, || async move {
+        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, move || async move {
             self.verify_with_native_work(work, require_write).await
         })
     }
