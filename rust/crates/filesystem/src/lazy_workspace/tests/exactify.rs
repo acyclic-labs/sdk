@@ -59,7 +59,7 @@ async fn source_epoch_can_rebind_without_enumeration() {
         .snapshot(accounting!())
         .await
         .expect("snapshot before rebind");
-    source.invalidate();
+    source.invalidate(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("invalidate");
     let rebound = root.rebind_source(accounting!()).await.expect("rebind");
     assert_eq!(rebound.source, source.reference());
     assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);

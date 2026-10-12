@@ -35,7 +35,7 @@ pub struct LazySnapshotRef {
 }
 
 impl LazySnapshotRef {
-    pub(super) fn new(
+    pub(crate) fn new(
         workspace_id: WorkspaceId,
         authored_generation: crate::GenerationId,
         source: SourceReference,

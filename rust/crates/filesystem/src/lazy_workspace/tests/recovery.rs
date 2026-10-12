@@ -254,16 +254,8 @@ async fn open_recovers_remove_intent_from_authored_state() {
         reopened
             .commit(
                 &mut removal,
-                None,
-                None,
-                None,
-                crate::PublicationPermit::Unrestricted,
                 crate::PublicationPermit::Unrestricted,
                 accounting!(),
-                |_| std::future::ready(Ok::<_, crate::FsError>(crate::OperationReceipt {
-                    value: (),
-                    work: WorkCounters::UNCHARGED
-                }))
             )
             .await
             .expect("physical remove"),

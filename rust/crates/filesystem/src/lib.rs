@@ -59,7 +59,7 @@ pub(crate) fn descriptor_digest() -> String {
 
 pub mod accounting;
 #[cfg(all(test, feature = "memory", feature = "distributed"))]
-#[path = "tests/accounting.rs"]
+#[path = "tests/accounting/mod.rs"]
 mod accounting_tests;
 pub mod async_storage;
 mod collection;
@@ -160,26 +160,28 @@ pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObject
 pub use acyclic_stream::deferring_durability as deferring_authority_durability;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
+#[cfg(not(target_arch = "wasm32"))]
+pub use async_storage::NativeAuthorityGuard;
 pub use async_storage::{
-    AsyncAuthorityStore, AsyncObjectStore, GenerationFork, GenerationForkSource,
+    AsyncAuthorityStore, AuthorityWork, AuthorityGuard, AuthorityError, AuthorityAllocation, AsyncObjectStore, GenerationFork, GenerationForkSource,
     PublicationScope, WorkspaceForkCommit,
-    WorkspaceForkOutcome, append_first_record, commit_workspace_fork_in_steps,
+    WorkspaceForkOutcome,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use core_state::{
-    DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError, MeasuredMaterializationStore,
+    DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError,
 };
 #[cfg(feature = "distributed")]
 pub use distributed::StreamAuthorityStore;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    CheckoutCommitOutcome, ContentChange, ContentTimes, DetachedFile,
+    ContentChange, ContentTimes, DetachedFile,
     DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage,
     EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
-    FsReceipt, FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,
-    LiveMutationOutcome, MergeConflict, MergePreparation, NamedAttributeWriteMode,
+    FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,
+    LiveMutationOutcome, LivePublicationObservation, MergeConflict, MergePreparation, NamedAttributeWriteMode,
     PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile,
     ResolvedFileRangeReadRequest, StagedContent, Volume,
 };
@@ -201,9 +203,9 @@ pub use git_compat::{
     GitCommit, GitCommitId, GitCompatError, GitCompatRepository, GitCompatRunError, GitCompatState,
     GitCompatStore, GitDiffCounts, GitDirtyState, GitFilesystemAction, GitFilesystemExecutor,
     GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult, GitIgnorePolicy,
-    GitObjectName, GitPatchError, GitPendingMutation, GitPendingTransition, GitPublicationRecord,
-    GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef, IntoGitTreeRef,
-    MemoryGitCompatStore, apply_git_patch, apply_git_patch_with_permit, blame_git_generations,
+    GitPatchError, GitPendingMutation, GitPendingTransition, GitPublicationRecord,
+    GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef,
+    MemoryGitCompatStore, apply_git_patch, blame_git_generations,
     canonicalize_git_output_json, canonicalize_git_pending_transition_json,
     capture_git_compatible_generation, capture_git_compatible_generation_at,
     capture_git_compatible_generation_incremental, git_compatible_diff_counts, grep_git_generation,
@@ -295,7 +297,7 @@ pub use native_capture::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_exchange::{
     NativeExchangeError, NativeExchangeJournal, NativeExchangeOutcome, NativeExchangePhase,
-    exchange_native_entries, prepare_native_exchange, prepare_native_exchange_with_recovery,
+    exchange_native_entries, prepare_native_exchange,
     publish_native_exchange, recover_native_exchange,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -315,7 +317,7 @@ pub use native_mount::{
     NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, NativeMountDrainProof, NativeSourceIoLease, SharedCheckout, SharedCheckoutState,
-    OwnedNativeMountOriginalWorkScope,
+    NativeMountWorkScope,
     initialize_native_mount_services,
     detach_native_mount_destination_after_crash, materialize_checkout,
     materialize_checkout_paths,

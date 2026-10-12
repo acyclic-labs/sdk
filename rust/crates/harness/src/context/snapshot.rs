@@ -5,7 +5,6 @@ use crate::{
     Error, Result,
     conversation::{ContentResidencyVerifier, FileRef, Limits},
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -59,16 +58,22 @@ impl PinnedContextStage {
             limits,
         })
     }
-
 }
 
-fn validate_reference(reference: &FileRef, limits: Limits, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+fn validate_reference(
+    reference: &FileRef,
+    limits: Limits,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
     crate::executor::with_history_io(io, |work| limits.validate_file(reference, work))?;
     if reference.descriptor().media_type() != "application/json"
         || reference.descriptor().byte_length() > limits.render_bytes
     {
-        return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-            "context snapshot file exceeds JSON/render bounds"));
+        return Err(crate::executor::stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "context snapshot file exceeds JSON/render bounds",
+        ));
     }
     Ok(())
 }
@@ -78,86 +83,99 @@ impl ContextStage for PinnedContextStage {
         &self.name
     }
 
-    fn validate(&self) -> Result<()> {
-        crate::contract::validate_component_label(&self.name, "context snapshot")?;
-        crate::contract::validate_component_label(&self.revision, "context snapshot revision")?;
-        validate_reference(&self.reference, self.limits, None)?;
-        super::validate_projected_context(&self.context, self.limits, None)
+    fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+        if !crate::is_valid_component_label(&self.name)
+            || !crate::is_valid_component_label(&self.revision)
+        {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "context snapshot identity is invalid",
+            ));
+        }
+        validate_reference(&self.reference, self.limits, io)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if io
+            .and_then(crate::executor::PreparationIo::original_native_work)
+            .is_some()
+            && !self.reader.supports_read(self.reference.volume(), io)?
+        {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "context snapshot reader has no original native capability",
+            ));
+        }
+        super::validate_projected_context(&self.context, self.limits, io)
     }
 
-    fn contract(&self) -> Value {
-        serde_json::json!({
-            "name": self.name,
-            "revision": self.revision,
-            "reference": self.reference,
-            "placement": self.placement,
-            "limits": self.limits,
-        })
+    fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+            self.validate(io)?;
+            #[derive(serde::Serialize)]
+            struct Contract<'a> {
+                name: &'a str,
+                revision: &'a str,
+                reference: &'a FileRef,
+                placement: ContextPlacement,
+                limits: Limits,
+            }
+            let (value, custody) = super::context_contract_native(
+                &Contract {
+                    name: &self.name,
+                    revision: &self.revision,
+                    reference: &self.reference,
+                    placement: self.placement,
+                    limits: self.limits,
+                },
+                work,
+            )?;
+            io.expect("native ledger").absorb_native_custody(custody)?;
+            return Ok(value);
+        }
+        let _ = io;
+        Ok(
+            serde_json::json!({"name": self.name, "revision": self.revision, "reference": self.reference,
+            "placement": self.placement, "limits": self.limits}),
+        )
     }
 
     fn apply<'a>(
         &'a self,
-        _: &'a ContextInput,
+        input: &'a ContextInput,
         context: Context,
         limits: Limits,
-    ) -> BoxFuture<'a, Result<Context>> {
-        Box::pin(async move {
-            let limits = super::restrict_context_limits(self.limits, limits, None)?;
-            validate_reference(&self.reference, limits, None)?;
-            let composed =
-                super::selection::place_snapshot(context, &self.context, self.placement, limits)?;
-            // A new admission still requires the original bound reader's current authority and retained content.
-            self.reader.verify(&self.reference, limits.render_bytes, None)?.await?;
-            super::validate_context_refs(&self.context, self.reader.as_ref(), limits, None).await?;
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if io
+            .and_then(crate::executor::PreparationIo::original_native_work)
+            .is_some()
+        {
+            self.validate(io)?;
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let _ = input;
+            let limits = super::restrict_context_limits(self.limits, limits, io)?;
+            validate_reference(&self.reference, limits, io)?;
+            let composed = super::selection::place_snapshot(
+                context,
+                &self.context,
+                self.placement,
+                limits,
+                io,
+            )?;
+            self.reader
+                .verify(&self.reference, limits.render_bytes, io)?
+                .await?;
+            super::validate_context_refs(&self.context, self.reader.as_ref(), limits, io).await?;
             Ok(composed)
         })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native(&self) -> bool { true }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn validate_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        if !crate::is_valid_component_label(&self.name) || !crate::is_valid_component_label(&self.revision) {
-            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context snapshot identity is invalid" });
-        }
-        let io = crate::executor::PreparationIo::from_native_work(work)?;
-        validate_reference(&self.reference, self.limits, Some(&io))?;
-        if !self.reader.supports_read(self.reference.volume(), Some(&io))? {
-            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context snapshot reader has no original native capability" });
-        }
-        super::validate_projected_context(&self.context, self.limits, Some(&io))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn contract_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        self.validate_native(work)?;
-        #[derive(serde::Serialize)]
-        struct Contract<'a> {
-            name: &'a str, revision: &'a str, reference: &'a FileRef,
-            placement: ContextPlacement, limits: Limits,
-        }
-        super::context_contract_native(&Contract { name: &self.name, revision: &self.revision,
-            reference: &self.reference, placement: self.placement, limits: self.limits }, work)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn apply_native<'a>(
-        &'a self, _: &'a ContextInput, context: (Context, acyclic_fs::NativeAllocation),
-        limits: Limits, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Context, acyclic_fs::NativeAllocation)>> {
-        self.validate_native(work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = crate::executor::PreparationIo::from_native_work(work)?;
-            let limits = super::restrict_context_limits(self.limits, limits, Some(&io))?;
-            validate_reference(&self.reference, limits, Some(&io))?;
-            let composed = super::selection::place_snapshot_native(
-                context, &self.context, self.placement, limits, work)?;
-            super::verify_file(&self.reference, self.reader.as_ref(), Some(&io)).await?;
-            super::validate_context_refs(&self.context, self.reader.as_ref(), limits, Some(&io)).await?;
-            Ok(composed)
-        })
+    fn supports_native(&self) -> bool {
+        true
     }
 }

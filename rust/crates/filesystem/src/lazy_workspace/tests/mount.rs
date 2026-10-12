@@ -217,7 +217,7 @@ async fn mounted_promotion_stays_in_the_dirty_candidate_until_one_publication() 
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             |_| {
-                std::future::ready(Ok::<_, crate::FsError>(crate::OperationReceipt {
+                std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
                     value: (),
                     work: WorkCounters::UNCHARGED,
                 }))
@@ -569,7 +569,7 @@ async fn mounted_whiteout_follows_the_checkout_publication_decision() {
                 crate::PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
-                &mut (|_| std::future::ready(Ok::<_, crate::FsError>(crate::OperationReceipt {
+                &mut (|_| std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
                     value: (),
                     work: WorkCounters::UNCHARGED
                 }))),
@@ -682,7 +682,7 @@ async fn a_shadowed_identity_keeps_its_content_across_power_loss() {
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 &mut (|_| {
-                    std::future::ready(Ok::<_, crate::FsError>(crate::OperationReceipt {
+                    std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
                         value: (),
                         work: WorkCounters::UNCHARGED,
                     }))
@@ -749,5 +749,5 @@ async fn a_shadowed_identity_keeps_its_content_across_power_loss() {
     )
     .await
     .expect("the shadowed identity's content survived");
-    assert_eq!(read.value.bytes, content);
+    assert_eq!(read.value.bytes.as_ref(), content.as_ref());
 }

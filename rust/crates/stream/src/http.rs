@@ -9,7 +9,7 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 use serde_json::Value;
-use std::{collections::VecDeque, net::IpAddr, time::Duration};
+use std::{net::IpAddr, time::Duration};
 use tracing::{Span, field::Empty};
 
 /// Invalid endpoint, bearer token, CA, or response bound.
@@ -78,8 +78,12 @@ impl HttpStream {
     }
     async fn request(&self, route: &'static str, bytes: Vec<u8>) -> Result<Value, StreamError> {
         let span = obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.stream.http.call", route, http.status = Empty, bytes = Empty,
-            outcome = Empty, error.kind = Empty,
+            "acyclic.stream.http.call",
+            route,
+            http.status = Empty,
+            bytes = Empty,
+            outcome = Empty,
+            error.kind = Empty,
         ));
         let mut cancellation = obs::Cancellation(Some(span.clone()));
         let result = span.scope(self.request_inner(route, bytes, &span)).await;
@@ -275,14 +279,14 @@ impl HttpStream {
                 self.clone(),
                 path,
                 from,
-                VecDeque::<Record>::new(),
+                Vec::<Record>::new().into_iter(),
                 delay,
                 observation,
             ),
             |(provider, path, mut next, mut queued, mut delay, mut observation)| async move {
                 let result = async {
                     loop {
-                        if let Some(record) = queued.pop_front() {
+                        if let Some(record) = queued.next() {
                             next = record
                                 .sequence
                                 .checked_add(1)
@@ -310,9 +314,9 @@ impl HttpStream {
                                 false,
                             ))
                             .await?
-                            .into();
+                            .into_iter();
                         observation.span.record("queued", queued.len());
-                        if queued.is_empty() {
+                        if queued.len() == 0 {
                             observation.span.record("phase", "sleep");
                             let sleep = obs::OperationSpan::new(tracing::debug_span!(
                                 "acyclic.stream.http.follow.sleep",
@@ -523,22 +527,18 @@ struct FollowObservation {
 }
 impl FollowObservation {
     fn new(from: u64) -> Self {
-        let mut observation = Self {
-            span: obs::OperationSpan::new(
-                tracing::info_span!(
-                    "acyclic.stream.http.follow",
-                    rev = from,
-                    queued = 0_u64,
-                    phase = "tail",
-                    terminal = Empty,
-                    outcome = Empty,
-                    error.kind = Empty
-                ),
-            ),
+        Self {
+            span: obs::OperationSpan::new(tracing::info_span!(
+                "acyclic.stream.http.follow",
+                rev = from,
+                queued = 0_u64,
+                phase = "tail",
+                terminal = Empty,
+                outcome = Empty,
+                error.kind = Empty
+            )),
             terminal: false,
-        };
-        observation.span.caller = None;
-        observation
+        }
     }
     fn failed(&mut self, error: &StreamError) {
         self.span.record("terminal", "error");

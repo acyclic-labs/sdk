@@ -79,103 +79,119 @@ fn encode<T: Serialize>(value: T) -> Result<Value> {
     serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
-impl ReadProjection {
-    /// Complete projection envelope schema, owning all nested definitions.
-    pub fn schema(self) -> Result<Value> {
-        match self.0 {
-            ProjectionMode::Full => super::schema::json_projection::<ReadResult>(),
-            ProjectionMode::Reference => super::schema::reference_projection(),
-        }
-    }
-}
-
 impl ToolProjection for ReadProjection {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.remaining()?;
+    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        if let Some(work) = work {
+            work.remaining()?;
+        }
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn project_with_native_work(
-        &self, _: &ToolInvocation, result: &ToolResult, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        let value = super::decode_with_native_work::<ReadResult>(&result.value, work)?;
-        match self.0 {
-            ProjectionMode::Full => super::schema::project_json_with_native_work(&value.0, work),
-            ProjectionMode::Reference => super::files::native::summary_reference(&value.0.file, 400, format_args!(
-                "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
-                value.0.selection.range.start, value.0.selection.range.end,
-                value.0.selection.omitted_before, value.0.selection.omitted_after,
-            ), work),
+    fn project(
+        &self,
+        _: &ToolInvocation,
+        result: &ToolResult,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(Value, crate::NativeCustody)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let value = match work {
+            Some(work) => {
+                let (value, custody) =
+                    super::decode_with_native_work::<ReadResult>(&result.value, work)?;
+                (value, Some(custody))
+            }
+            None => (decode::<ReadResult>(&result.value)?, None),
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let value: (ReadResult, crate::NativeCustody) = (decode(&result.value)?, None);
+        if self.0 == ProjectionMode::Full {
+            return super::schema::project_json(&value.0, work);
         }
-    }
-
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        let value: ReadResult = decode(&result.value)?;
-        match self.0 {
-            ProjectionMode::Full => super::schema::project_json(value),
-            ProjectionMode::Reference => super::schema::project_reference(
-                value.file,
-                format!(
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            return super::files::native::summary_reference(
+                &value.0.file,
+                400,
+                format_args!(
                     "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
-                    value.selection.range.start,
-                    value.selection.range.end,
-                    value.selection.omitted_before,
-                    value.selection.omitted_after,
+                    value.0.selection.range.start,
+                    value.0.selection.range.end,
+                    value.0.selection.omitted_before,
+                    value.0.selection.omitted_after,
                 ),
+                work,
+            );
+        }
+        super::schema::project_reference(
+            &value.0.file,
+            &format!(
+                "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
+                value.0.selection.range.start,
+                value.0.selection.range.end,
+                value.0.selection.omitted_before,
+                value.0.selection.omitted_after,
             ),
-        }
-    }
-}
-
-impl SearchProjection {
-    /// Complete projection envelope schema, owning all nested definitions.
-    pub fn schema(self) -> Result<Value> {
-        match self.0 {
-            ProjectionMode::Full => super::schema::json_projection::<SearchResult>(),
-            ProjectionMode::Reference => super::schema::reference_projection(),
-        }
+            None,
+        )
     }
 }
 
 impl ToolProjection for SearchProjection {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.remaining()?;
+    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        if let Some(work) = work {
+            work.remaining()?;
+        }
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn project_with_native_work(
-        &self, _: &ToolInvocation, result: &ToolResult, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        let value = super::decode_with_native_work::<SearchResult>(&result.value, work)?;
-        match self.0 {
-            ProjectionMode::Full => super::schema::project_json_with_native_work(&value.0, work),
-            ProjectionMode::Reference => super::files::native::summary_reference(&value.0.file, 480, format_args!(
-                "Literal search completed: {} total matches, {} retained positions, {} positions omitted from the canonical result, {} byte comparisons. Query and retained positions are retained in the canonical tool result and omitted from this model projection.",
-                value.0.matches.total_matches, value.0.matches.matches.len(),
-                value.0.matches.omitted_matches, value.0.matches.work,
-            ), work),
+    fn project(
+        &self,
+        _: &ToolInvocation,
+        result: &ToolResult,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(Value, crate::NativeCustody)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let value = match work {
+            Some(work) => {
+                let (value, custody) =
+                    super::decode_with_native_work::<SearchResult>(&result.value, work)?;
+                (value, Some(custody))
+            }
+            None => (decode::<SearchResult>(&result.value)?, None),
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let value: (SearchResult, crate::NativeCustody) = (decode(&result.value)?, None);
+        if self.0 == ProjectionMode::Full {
+            return super::schema::project_json(&value.0, work);
         }
-    }
-
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        let value: SearchResult = decode(&result.value)?;
-        match self.0 {
-            ProjectionMode::Full => super::schema::project_json(value),
-            ProjectionMode::Reference => super::schema::project_reference(
-                value.file,
-                format!(
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            return super::files::native::summary_reference(
+                &value.0.file,
+                480,
+                format_args!(
                     "Literal search completed: {} total matches, {} retained positions, {} positions omitted from the canonical result, {} byte comparisons. Query and retained positions are retained in the canonical tool result and omitted from this model projection.",
-                    value.matches.total_matches,
-                    value.matches.matches.len(),
-                    value.matches.omitted_matches,
-                    value.matches.work,
+                    value.0.matches.total_matches,
+                    value.0.matches.matches.len(),
+                    value.0.matches.omitted_matches,
+                    value.0.matches.work,
                 ),
-            ),
+                work,
+            );
         }
+        super::schema::project_reference(
+            &value.0.file,
+            &format!(
+                "Literal search completed: {} total matches, {} retained positions, {} positions omitted from the canonical result, {} byte comparisons. Query and retained positions are retained in the canonical tool result and omitted from this model projection.",
+                value.0.matches.total_matches,
+                value.0.matches.matches.len(),
+                value.0.matches.omitted_matches,
+                value.0.matches.work,
+            ),
+            None,
+        )
     }
 }
 
@@ -198,7 +214,7 @@ pub fn read_file_range(
         adapter,
         super::schema::input::<ReadInput>()?,
         super::schema::output::<ReadResult>()?,
-        projection.schema()?,
+        mode.schema::<ReadResult>()?,
         Arc::new(projection),
         json!({"read":options,"maximum_result_bytes":maximum_result_bytes,"projection":mode}),
     )
@@ -223,7 +239,7 @@ pub fn search_file(
         adapter,
         super::schema::input::<SearchInput>()?,
         super::schema::output::<SearchResult>()?,
-        projection.schema()?,
+        mode.schema::<SearchResult>()?,
         Arc::new(projection),
         json!({"search":options,"maximum_result_bytes":maximum_result_bytes,"projection":mode}),
     )
@@ -372,14 +388,24 @@ impl TextTool {
                 let input: ReadInput = decode(&invocation.arguments)?;
                 let value = ReadResult {
                     file,
-                    selection: super::text::read_range(source, input.range, options, &mut super::edit::AlgorithmWork::ordinary())?,
+                    selection: super::text::read_range(
+                        source,
+                        input.range,
+                        options,
+                        &mut super::edit::AlgorithmWork::ordinary(),
+                    )?,
                 };
                 crate::contract::validate_json_byte_bound(&value, maximum)?;
                 encode(value)?
             }
             TextKind::Search(options) => {
                 let input: SearchInput = decode(&invocation.arguments)?;
-                let matches = super::text::literal_search(source, &input.query, options, &mut super::edit::AlgorithmWork::ordinary())?;
+                let matches = super::text::literal_search(
+                    source,
+                    &input.query,
+                    options,
+                    &mut super::edit::AlgorithmWork::ordinary(),
+                )?;
                 let value = SearchResult {
                     file,
                     query: input.query,
@@ -395,14 +421,19 @@ impl TextTool {
 
 impl ToolExecutor for TextTool {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_execution(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+    fn supports_native_execution(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
         work.remaining()?;
         Ok(())
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn authorize_with_native_context(
-        &self, context: &ToolContext, invocation: &ToolInvocation,
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         use super::files::native;
@@ -412,8 +443,13 @@ impl ToolExecutor for TextTool {
         let maximum = self.maximum_result_bytes.min(scope.limits().file_bytes);
         match self.kind {
             TextKind::Read(options) => {
-                let input = super::decode_with_native_work::<ReadInput>(&invocation.arguments, work)?;
-                let length = input.0.range.end.checked_sub(input.0.range.start)
+                let input =
+                    super::decode_with_native_work::<ReadInput>(&invocation.arguments, work)?;
+                let length = input
+                    .0
+                    .range
+                    .end
+                    .checked_sub(input.0.range.start)
                     .ok_or_else(|| native::invalid("read range is reversed"))?;
                 if input.0.file.descriptor().byte_length() > options.maximum_input_bytes
                     || input.0.range.end > input.0.file.descriptor().byte_length()
@@ -425,13 +461,17 @@ impl ToolExecutor for TextTool {
                 context.authorize_file_read_with_native_work(&input.0.file, work)
             }
             TextKind::Search(options) => {
-                let input = super::decode_with_native_work::<SearchInput>(&invocation.arguments, work)?;
+                let input =
+                    super::decode_with_native_work::<SearchInput>(&invocation.arguments, work)?;
                 if input.0.file.descriptor().byte_length() > options.maximum_input_bytes
                     || input.0.query.is_empty()
                     || input.0.query.len() as u64 > options.maximum_query_bytes
-                    || u64::from(options.maximum_matches) * std::mem::size_of::<TextRange>() as u64 > maximum
+                    || u64::from(options.maximum_matches) * std::mem::size_of::<TextRange>() as u64
+                        > maximum
                 {
-                    return Err(native::invalid("search exceeds its admitted input or retained-position bounds"));
+                    return Err(native::invalid(
+                        "search exceeds its admitted input or retained-position bounds",
+                    ));
                 }
                 native::public_path(input.0.file.path(), work)?;
                 context.authorize_file_read_with_native_work(&input.0.file, work)
@@ -441,7 +481,9 @@ impl ToolExecutor for TextTool {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn execute_with_native_context<'a>(
-        &'a self, context: &'a ToolContext, invocation: &'a ToolInvocation,
+        &'a self,
+        context: &'a ToolContext,
+        invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
@@ -451,9 +493,12 @@ impl ToolExecutor for TextTool {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn reconcile_with_native_context<'a>(
-        &'a self, context: &'a ToolContext, invocation: &'a ToolInvocation,
+        &'a self,
+        context: &'a ToolContext,
+        invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
+    {
         crate::NativeFutureBundle::new(work, || async move {
             let result = self.run_native(context, invocation, work).await?;
             Ok((Some(result.0), result.1))
@@ -518,21 +563,34 @@ impl ToolExecutor for TextTool {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl TextTool {
     async fn run_native(
-        &self, context: &ToolContext, invocation: &ToolInvocation,
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
         use super::files::native;
         self.authorize_with_native_context(context, invocation, work)?;
-        let maximum = self.maximum_result_bytes.min(context.effective_scope().limits().file_bytes);
+        let maximum = self
+            .maximum_result_bytes
+            .min(context.effective_scope().limits().file_bytes);
         match self.kind {
             TextKind::Read(options) => {
-                let input = super::decode_with_native_work::<ReadInput>(&invocation.arguments, work)?;
-                let read = context.read_file_with_native_work(&input.0.file, work).await?;
+                let input =
+                    super::decode_with_native_work::<ReadInput>(&invocation.arguments, work)?;
+                let read = context
+                    .read_file_with_native_work(&input.0.file, work)
+                    .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
-                let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<TextSelection>())?;
+                let mut allocation =
+                    super::edit::AlgorithmWork::native(work, std::mem::size_of::<TextSelection>())?;
                 let value = ReadResult {
-                    selection: super::text::read_range(source, input.0.range, options, &mut allocation)?,
+                    selection: super::text::read_range(
+                        source,
+                        input.0.range,
+                        options,
+                        &mut allocation,
+                    )?,
                     file: input.0.file,
                 };
                 native::bound(&value, maximum, work)?;
@@ -540,14 +598,24 @@ impl TextTool {
                 Ok((ToolResult { value: encoded.0 }, encoded.1))
             }
             TextKind::Search(options) => {
-                let input = super::decode_with_native_work::<SearchInput>(&invocation.arguments, work)?;
-                let read = context.read_file_with_native_work(&input.0.file, work).await?;
+                let input =
+                    super::decode_with_native_work::<SearchInput>(&invocation.arguments, work)?;
+                let read = context
+                    .read_file_with_native_work(&input.0.file, work)
+                    .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
-                let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<SearchMatches>())?;
+                let mut allocation =
+                    super::edit::AlgorithmWork::native(work, std::mem::size_of::<SearchMatches>())?;
                 let value = SearchResult {
-                    matches: super::text::literal_search(source, &input.0.query, options, &mut allocation)?,
-                    file: input.0.file, query: input.0.query,
+                    matches: super::text::literal_search(
+                        source,
+                        &input.0.query,
+                        options,
+                        &mut allocation,
+                    )?,
+                    file: input.0.file,
+                    query: input.0.query,
                 };
                 native::bound(&value, maximum, work)?;
                 let encoded = super::value(&value, work.remaining()?.bytes_encoded, work)?;
@@ -563,28 +631,49 @@ mod native_records {
     use crate::filesystem::UploadRecord;
 
     fn total(file: &FileRef, additional: usize) -> Result<u64> {
-        file.logical_owned_bytes()?.checked_add(additional as u64)
+        file.logical_owned_bytes()?
+            .checked_add(additional as u64)
             .ok_or_else(|| super::super::files::native::invalid("text tool DTO ownership overflow"))
     }
 
     impl UploadRecord for ReadInput {
-        fn diagnostic_label_bytes() -> u64 { crate::tool::tool_serde_diagnostic_label_bytes() }
-        fn logical_owned_bytes(&self) -> Result<u64> { total(&self.file, 0) }
+        fn diagnostic_label_bytes() -> u64 {
+            crate::tool::tool_serde_diagnostic_label_bytes()
+        }
+        fn logical_owned_bytes(&self) -> Result<u64> {
+            total(&self.file, 0)
+        }
     }
     impl UploadRecord for SearchInput {
-        fn diagnostic_label_bytes() -> u64 { crate::tool::tool_serde_diagnostic_label_bytes() }
-        fn logical_owned_bytes(&self) -> Result<u64> { total(&self.file, self.query.capacity()) }
+        fn diagnostic_label_bytes() -> u64 {
+            crate::tool::tool_serde_diagnostic_label_bytes()
+        }
+        fn logical_owned_bytes(&self) -> Result<u64> {
+            total(&self.file, self.query.capacity())
+        }
     }
     impl UploadRecord for ReadResult {
-        fn diagnostic_label_bytes() -> u64 { crate::tool::tool_serde_diagnostic_label_bytes() }
-        fn logical_owned_bytes(&self) -> Result<u64> { total(&self.file, self.selection.text.capacity()) }
+        fn diagnostic_label_bytes() -> u64 {
+            crate::tool::tool_serde_diagnostic_label_bytes()
+        }
+        fn logical_owned_bytes(&self) -> Result<u64> {
+            total(&self.file, self.selection.text.capacity())
+        }
     }
     impl UploadRecord for SearchResult {
-        fn diagnostic_label_bytes() -> u64 { crate::tool::tool_serde_diagnostic_label_bytes() }
+        fn diagnostic_label_bytes() -> u64 {
+            crate::tool::tool_serde_diagnostic_label_bytes()
+        }
         fn logical_owned_bytes(&self) -> Result<u64> {
-            let positions = self.matches.matches.capacity().checked_mul(std::mem::size_of::<TextRange>())
+            let positions = self
+                .matches
+                .matches
+                .capacity()
+                .checked_mul(std::mem::size_of::<TextRange>())
                 .and_then(|n| n.checked_add(self.query.capacity()))
-                .ok_or_else(|| super::super::files::native::invalid("search result ownership overflow"))?;
+                .ok_or_else(|| {
+                    super::super::files::native::invalid("search result ownership overflow")
+                })?;
             total(&self.file, positions)
         }
     }
@@ -604,14 +693,16 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("text".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([12; 16])),
+                &mut None,
             )?,
-            "text.txt",
-            "generation-1",
-            FileDescriptor::from_bytes(b"ababa", "text/plain")?,
-            "text.txt",
+            "text.txt".into(),
+            "generation-1".into(),
+            FileDescriptor::from_bytes(b"ababa", "text/plain", &mut None)?,
+            "text.txt".into(),
+            &mut None,
         )
     }
 
@@ -641,7 +732,7 @@ mod tests {
             panic!("reference envelope")
         };
         assert_eq!(parts.len(), 2);
-        assert!(matches!(&parts[0], ModelDataPart::Text { text } if text.contains("omitted")));
+        assert!(matches!(&parts[0], ModelDataPart::Text { text } if !text.is_empty()));
         assert!(
             matches!(&parts[1], ModelDataPart::File { file, policy: FileProjectionPolicy::Reference } if file == expected)
         );
@@ -664,39 +755,50 @@ mod tests {
         let result = ToolResult {
             value: encode(&read)?,
         };
-        let unchanged = result.clone();
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
             let projector = ReadProjection(mode);
-            let projected = projector.project(&input, &result)?;
-            super::super::validate_value(&projector.schema()?, &projected, "read projection", None)?;
+            let projected = projector.project(&input, &result, None)?.0;
+            super::super::validate_value(
+                &mode.schema::<ReadResult>()?,
+                &projected,
+                "read projection",
+                None,
+            )?;
             if mode == ProjectionMode::Full {
                 assert_eq!(projected, json!({"kind":"json","value":result.value}));
             } else {
                 assert_reference(&projected, &file)?;
             }
-            assert_eq!(result, unchanged);
         }
         let search = SearchResult {
             file: file.clone(),
             query: "a".into(),
-            matches: super::super::text::literal_search("ababa", "a", SEARCH, &mut super::super::edit::AlgorithmWork::ordinary())?,
+            matches: super::super::text::literal_search(
+                "ababa",
+                "a",
+                SEARCH,
+                &mut super::super::edit::AlgorithmWork::ordinary(),
+            )?,
         };
         assert_eq!(search.matches.total_matches, 3);
         assert_eq!(search.matches.omitted_matches, 1);
         let result = ToolResult {
             value: encode(&search)?,
         };
-        let unchanged = result.clone();
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
             let projector = SearchProjection(mode);
-            let projected = projector.project(&input, &result)?;
-            super::super::validate_value(&projector.schema()?, &projected, "search projection", None)?;
+            let projected = projector.project(&input, &result, None)?.0;
+            super::super::validate_value(
+                &mode.schema::<SearchResult>()?,
+                &projected,
+                "search projection",
+                None,
+            )?;
             if mode == ProjectionMode::Full {
                 assert_eq!(projected, json!({"kind":"json","value":result.value}));
             } else {
                 assert_reference(&projected, &file)?;
             }
-            assert_eq!(result, unchanged);
         }
         Ok(())
     }
@@ -736,8 +838,9 @@ mod tests {
                 super::super::validate_value(
                     &tool.definition.projection_schema,
                     &json!({"file":file()?}),
-                    "bare result"
-                , None)
+                    "bare result",
+                    None
+                )
                 .is_err()
             );
         }

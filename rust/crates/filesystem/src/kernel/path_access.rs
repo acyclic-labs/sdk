@@ -7,9 +7,9 @@ use super::{AuthenticatedProbeError, DecodeLimits, Dependency, DependencyRegion,
 use crate::async_storage::{self, AsyncObjectStore};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::model::{VolumeConfig, VolumeConfigError};
 #[cfg(test)]
 use crate::model::FilesystemProfile;
+use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest,
     ObjectReadRetention, ObjectResult, ObjectStoreError};
@@ -58,11 +58,13 @@ fn reserve_slots<T>(count: usize, accounting: &mut KernelAccounting<'_>, custody
     let actual = usize_to_u64(slots.capacity()).checked_mul(size_of::<T>() as u64).ok_or(WorkError::Overflow)?;
     // The buffer already exists: keep its actual guard even on a late refusal.
     let completed = accounting.reconcile_owned(&mut slots.allocation, requested, actual);
-    let observed = custody.map_or(Ok(()), |owner| owner.record_completed_leaf_work(WorkCounters {
+    let observed = custody.map_or(Ok(()), |owner| {
+        owner.record_completed_leaf_work(WorkCounters {
         allocation_operations: u64::from(count != 0),
         peak_allocation_bytes: actual,
         ..WorkCounters::UNCHARGED
-    }).map_err(crate::FsError::from));
+    }).map_err(crate::FsError::from)
+    });
     completed?;
     observed?;
     Ok(slots)
@@ -74,7 +76,9 @@ fn examine_item<T>(accounting: &mut KernelAccounting<'_>, custody: Option<&super
     accounting.admit(delta)?;
     let value = examine();
     let completed = accounting.record_completed(delta);
-    let observed = custody.map_or(Ok(()), |owner| owner.record_completed_leaf_work(delta).map_err(crate::FsError::from));
+    let observed = custody.map_or(Ok(()), |owner| {
+        owner.record_completed_leaf_work(delta).map_err(crate::FsError::from)
+    });
     completed?;
     observed?;
     Ok(value)
@@ -207,10 +211,14 @@ impl<'a, S> OperationReadCache<'a, S> {
                 let (allocations, work, budget, _) = accounting.standalone_parts().expect("native residency keeps its physical guards");
                 if actual >= state.accounted_bytes {
                     allocations.record_owned_bytes(actual - state.accounted_bytes, work)
-                        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+                        .map_err(|error| {
+                            error.into_work_or(crate::FsError::HandleAllocationFailed)
+                        })?;
                 } else {
                     allocations.release(state.accounted_bytes - actual)
-                        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+                        .map_err(|error| {
+                            error.into_work_or(crate::FsError::HandleAllocationFailed)
+                        })?;
                 }
                 work.verify(budget)?;
                 state.accounted_bytes = actual;
@@ -222,8 +230,16 @@ impl<'a, S> OperationReadCache<'a, S> {
 }
 impl<S> Drop for OperationReadCache<'_, S> {
     fn drop(&mut self) {
-        let state = self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let bytes = Self::slot_bytes(state).and_then(|slots| slots.checked_add(state.retained_owned_bytes).ok_or(WorkError::Overflow))
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bytes = Self::slot_bytes(state)
+            .and_then(|slots| {
+                slots
+                    .checked_add(state.retained_owned_bytes)
+                    .ok_or(WorkError::Overflow)
+            })
             .expect("cache residency was admitted before retaining each payload");
         drop(std::mem::take(&mut state.slots.values));
         if let Some(owner) = self.data_custody { owner.release_operation_cache_bytes(bytes); }
@@ -287,29 +303,62 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         -> Result<Option<async_storage::DecodedCacheValue>, ObjectStoreError> { self.store.decoded_cache_get(key) }
     fn decoded_cache_admit(&self, key: async_storage::DecodedCacheKey, value: async_storage::DecodedCacheValue)
         -> Result<async_storage::DecodedCacheAdmission, ObjectStoreError> { self.store.decoded_cache_admit(key, value) }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn decoded_cache_get_with_native_work(&self, key: async_storage::DecodedCacheKey, work: &crate::NativeMaterializationWork)
-        -> Result<Option<async_storage::DecodedCacheValue>, ObjectStoreError> { self.store.decoded_cache_get_with_native_work(key, work) }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn decoded_cache_admit_with_native_work(&self, key: async_storage::DecodedCacheKey, value: async_storage::DecodedCacheValue,
-        work: &crate::NativeMaterializationWork) -> Result<async_storage::DecodedCacheAdmission, ObjectStoreError> {
-        self.store.decoded_cache_admit_with_native_work(key, value, work)
-    }
-    async fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+
+    async fn put(
+        &self,
+        object_id: ObjectId,
+        bytes: OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                {
+                    let __object_args = (object_id, bytes, work, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                    let __object_result = self
+                        .store
+                        .put(__object_args.0, __object_args.1, &mut __object_work)
+                        .await;
+                    __object_result
+                }
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
         let result = async {
-            let resident = self.extra_resident()?;
-            let remaining = provider_remaining(&accounting, resident)?;
-            match self.store.put(object_id, bytes, remaining, cancellation).await {
+            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            let result = async {
+                let resident = self.extra_resident()?;
+                let remaining = provider_remaining(&accounting, resident)?;
+                match {
+                    let __object_args = (object_id, bytes, remaining, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = self
+                        .store
+                        .put(__object_args.0, __object_args.1, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                } {
                 Ok(receipt) => compose_backend(&mut accounting, receipt.work, resident),
                 Err(failure) => {
                     compose_backend(&mut accounting, *failure.work, resident)?;
                     Err(failure.error.into())
                 }
             }
-        }.await;
-        let work = accounting.spent();
-        result.map(|()| crate::OperationReceipt { value: (), work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+            }
+            .await;
+            let work = accounting.spent();
+            result
+                .map(|()| crate::OperationReceipt { value: (), work })
+                .map_err(|error| ObjectFailure::new(object_error(error), work))
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn historical_generation_evidence(
@@ -318,16 +367,42 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         record: &crate::DurableCommit,
         maximum_bytes: u64,
         maximum_objects: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Option<crate::kernel::HistoricalGenerationEvidence>> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<Option<crate::kernel::HistoricalGenerationEvidence>, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
         let result = async {
-            let resident = self.extra_resident()?;
-            let remaining = provider_remaining(&accounting, resident)?;
-            match self.store.historical_generation_evidence(
-                authority_id, record, maximum_bytes, maximum_objects, remaining, cancellation,
-            ).await {
+            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            let result = async {
+                let resident = self.extra_resident()?;
+                let remaining = provider_remaining(&accounting, resident)?;
+                match {
+                    let __object_args = (
+                        authority_id,
+                        record,
+                        maximum_bytes,
+                        maximum_objects,
+                        remaining,
+                        cancellation,
+                    );
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.4, __object_args.5);
+                    let __object_result = self
+                        .store
+                        .historical_generation_evidence(
+                            __object_args.0,
+                            __object_args.1,
+                            __object_args.2,
+                            __object_args.3,
+                            &mut __object_work,
+                        )
+                        .await;
+                    __object_work.receipt(__object_result)
+                } {
                 Ok(receipt) => {
                     compose_backend(&mut accounting, receipt.work, resident)?;
                     Ok(receipt.value)
@@ -337,36 +412,107 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                     Err(failure.error.into())
                 }
             }
-        }.await;
-        let work = accounting.spent();
-        result.map(|value| crate::OperationReceipt { value, work })
-            .map_err(|error| ObjectFailure::new(object_error(error), work))
+            }
+            .await;
+            let work = accounting.spent();
+            result
+                .map(|value| crate::OperationReceipt { value, work })
+                .map_err(|error| ObjectFailure::new(object_error(error), work))
+        }
+        .await;
+        context.accept(result)
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn put_with_native_work(&self, object_id: ObjectId, bytes: OwnedBytes,
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
-        -> Result<(), ObjectStoreError> {
-        self.store.put_with_native_work(object_id, bytes, work, cancellation).await
+
+    async fn put_hashed(
+        &self,
+        object: crate::storage::HashedObject,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                {
+                    let __object_args = (object, work, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .store
+                        .put_hashed(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_result
+                }
+            }
+            .await;
+        }
+        let (id, bytes) = object.into_parts();
+        self.put(id, bytes, context).await
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn put_hashed_with_native_work(&self, object: crate::storage::HashedObject,
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
-        -> Result<(), ObjectStoreError> {
-        self.store.put_hashed_with_native_work(object, work, cancellation).await
+    async fn put_many(
+        &self,
+        writes: &[crate::storage::ObjectWrite],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                {
+                    let __object_args = (writes, work, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .store
+                        .put_many(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_result
+                }
+            }
+            .await;
+        }
+        Err(crate::ObjectStoreError::Rejected(
+            "object backend has no batch-write primitive".to_owned(),
+        ))
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn put_many_with_native_work(&self, writes: &[crate::storage::ObjectWrite],
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
-        -> Result<(), ObjectStoreError> {
-        self.store.put_many_with_native_work(writes, work, cancellation).await
-    }
-    async fn flush_before_publish(&self, scope: async_storage::PublicationScope<'_>,
-        budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<crate::PublicationHold> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    async fn flush_before_publish(
+        &self,
+        scope: async_storage::PublicationScope<'_>,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::PublicationHold, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                {
+                    let __object_args = (scope, work, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .store
+                        .flush_before_publish(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_result
+                }
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
         let result = async {
-            let resident = self.extra_resident()?;
-            let remaining = provider_remaining(&accounting, resident)?;
-            match self.store.flush_before_publish(scope, remaining, cancellation).await {
+            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            let result = async {
+                let resident = self.extra_resident()?;
+                let remaining = provider_remaining(&accounting, resident)?;
+                match {
+                    let __object_args = (scope, remaining, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .store
+                        .flush_before_publish(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                } {
                 Ok(receipt) => {
                     compose_backend(&mut accounting, receipt.work, resident)?;
                     Ok(receipt.value)
@@ -376,72 +522,156 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                     Err(failure.error.into())
                 }
             }
-        }.await;
-        let work = accounting.spent();
-        result.map(|value| crate::OperationReceipt { value, work })
-            .map_err(|error| ObjectFailure::new(object_error(error), work))
+            }
+            .await;
+            let work = accounting.spent();
+            result
+                .map(|value| crate::OperationReceipt { value, work })
+                .map_err(|error| ObjectFailure::new(object_error(error), work))
+        }
+        .await;
+        context.accept(result)
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn flush_before_publish_with_native_work(&self, scope: async_storage::PublicationScope<'_>,
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
-        -> Result<crate::PublicationHold, ObjectStoreError> {
-        self.store.flush_before_publish_with_native_work(scope, work, cancellation).await
-    }
+
     async fn prepare_generation_publication(
-        &self, request: &crate::kernel::PublishGenerationRequest,
-        proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend,
-        scope: crate::PublicationScope<'_>, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        &self,
+        request: &crate::kernel::PublishGenerationRequest,
+        proof: &crate::kernel::GenerationProof,
+        append: &crate::GuardedAppend,
+        scope: crate::PublicationScope<'_>,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                {
+                    let __object_args = (request, proof, append, scope, original, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.4, __object_args.5);
+                    let __object_result = self
+                        .store
+                        .prepare_generation_publication(
+                            __object_args.0,
+                            __object_args.1,
+                            __object_args.2,
+                            __object_args.3,
+                            &mut __object_work,
+                        )
+                        .await;
+                    __object_result
+                }
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
         let result = async {
-            let resident = self.extra_resident()?;
-            let remaining = provider_remaining(&accounting, resident)?;
-            match self.store.prepare_generation_publication(
-                request, proof, append, scope, remaining, cancellation,
-            ).await {
+            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            let result = async {
+                let resident = self.extra_resident()?;
+                let remaining = provider_remaining(&accounting, resident)?;
+                match {
+                    let __object_args = (request, proof, append, scope, remaining, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.4, __object_args.5);
+                    let __object_result = self
+                        .store
+                        .prepare_generation_publication(
+                            __object_args.0,
+                            __object_args.1,
+                            __object_args.2,
+                            __object_args.3,
+                            &mut __object_work,
+                        )
+                        .await;
+                    __object_work.receipt(__object_result)
+                } {
                 Ok(receipt) => compose_backend(&mut accounting, receipt.work, resident),
                 Err(failure) => {
                     compose_backend(&mut accounting, *failure.work, resident)?;
                     Err(failure.error.into())
                 }
             }
-        }.await;
-        let work = accounting.spent();
-        result.map(|()| crate::OperationReceipt { value: (), work })
-            .map_err(|error| ObjectFailure::new(object_error(error), work))
+            }
+            .await;
+            let work = accounting.spent();
+            result
+                .map(|()| crate::OperationReceipt { value: (), work })
+                .map_err(|error| ObjectFailure::new(object_error(error), work))
+        }
+        .await;
+        context.accept(result)
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn prepare_generation_publication_with_native_work(
-        &self, request: &crate::kernel::PublishGenerationRequest,
-        proof: &crate::kernel::GenerationProof, append: &crate::GuardedAppend,
-        scope: crate::PublicationScope<'_>, original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(), ObjectStoreError> {
-        self.store.prepare_generation_publication_with_native_work(
-            request, proof, append, scope, original, cancellation,
-        ).await
-    }
+
     fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
         self.store.collection()
     }
     fn collection_sweeps(&self) -> u64 {
         self.store.collection_sweeps()
     }
-    async fn read(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,
-        cancellation: &CancellationToken) -> ObjectResult<ObjectRead> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    async fn read(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                let mut accounting = KernelAccounting::native(work, cancellation);
+                accounting.check().map_err(object_error)?;
+                if let Some(value) = self
+                    .probe(object_id, &mut accounting)
+                    .map_err(object_error)?
+                {
+            if usize_to_u64(value.bytes.len()) > maximum_bytes {
+                return Err(ObjectStoreError::TooLarge { observed: usize_to_u64(value.bytes.len()), maximum: maximum_bytes });
+            }
+            return Ok(value);
+        }
+                // No cache lock or original ledger borrow spans this backend await.
+                let read = {
+                    let __object_args = (object_id, maximum_bytes, work, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                    let __object_result = self
+                        .store
+                        .read(__object_args.0, __object_args.1, &mut __object_work)
+                        .await;
+                    __object_result
+                }?;
+                self.admit(object_id, &read.bytes, 0, &mut accounting)
+                    .map_err(object_error)?;
+                Ok(read)
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
         let result = async {
-            if let Some(value) = self.probe(object_id, &mut accounting)? {
+            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            let result = async {
+                if let Some(value) = self.probe(object_id, &mut accounting)? {
                 if usize_to_u64(value.bytes.len()) > maximum_bytes {
                     return Err(ObjectStoreError::TooLarge { observed: usize_to_u64(value.bytes.len()), maximum: maximum_bytes }.into());
                 }
                 return Ok(value);
             }
-            let resident = self.extra_resident()?;
-            let remaining = provider_remaining(&accounting, resident)?;
-            let receipt = self.store.read(object_id, maximum_bytes, remaining, cancellation).await;
-            let receipt = match receipt {
+                let resident = self.extra_resident()?;
+                let remaining = provider_remaining(&accounting, resident)?;
+                let receipt = {
+                    let __object_args = (object_id, maximum_bytes, remaining, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = self
+                        .store
+                        .read(__object_args.0, __object_args.1, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                };
+                let receipt = match receipt {
                 Ok(receipt) => receipt,
                 Err(failure) => {
                     if let Some(owner) = self.data_custody { owner.record_completed_leaf_work(*failure.work)?; }
@@ -449,53 +679,99 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
                     return Err(failure.error.into());
                 }
             };
-            if let Some(owner) = self.data_custody { owner.record_completed_leaf_work(receipt.work)?; }
-            compose_backend(&mut accounting, receipt.work, resident)?;
-            let owned = match receipt.value.retention { ObjectReadRetention::Shared => 0, ObjectReadRetention::Owned { logical_bytes } => logical_bytes };
-            // Resident backend aliases coexist with a new table during growth.
-            let (allocations, work, _, _) = accounting.standalone_parts().expect("ordinary read owns its standalone projection");
-            allocations.record_owned_bytes(resident.checked_add(owned).ok_or(WorkError::Overflow)?, work)
-                .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-            let mut value = receipt.value;
-            if self.admit(object_id, &value.bytes, owned, &mut accounting)? { value.retention = ObjectReadRetention::Shared; }
-            Ok::<_, crate::FsError>(value)
-        }.await;
-        let work = accounting.spent();
-        result.map(|value| crate::OperationReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn read_with_native_work(&self, object_id: ObjectId, maximum_bytes: u64,
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
-        -> Result<crate::storage::ObjectRead, ObjectStoreError> {
-        let mut accounting = KernelAccounting::native(work, cancellation);
-        accounting.check().map_err(object_error)?;
-        if let Some(value) = self.probe(object_id, &mut accounting).map_err(object_error)? {
-            if usize_to_u64(value.bytes.len()) > maximum_bytes {
-                return Err(ObjectStoreError::TooLarge { observed: usize_to_u64(value.bytes.len()), maximum: maximum_bytes });
+                if let Some(owner) = self.data_custody { owner.record_completed_leaf_work(receipt.work)?; }
+                compose_backend(&mut accounting, receipt.work, resident)?;
+                let owned = match receipt.value.retention { ObjectReadRetention::Shared => 0, ObjectReadRetention::Owned { logical_bytes } => logical_bytes };
+                // Resident backend aliases coexist with a new table during growth.
+                let (allocations, work, _, _) = accounting
+                    .standalone_parts()
+                    .expect("ordinary read owns its standalone projection");
+                allocations
+                    .record_owned_bytes(
+                        resident.checked_add(owned).ok_or(WorkError::Overflow)?,
+                        work,
+                    )
+                        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+                let mut value = receipt.value;
+                if self.admit(object_id, &value.bytes, owned, &mut accounting)? { value.retention = ObjectReadRetention::Shared; }
+                Ok::<_, crate::FsError>(value)
             }
-            return Ok(value);
+            .await;
+            let work = accounting.spent();
+            result
+                .map(|value| crate::OperationReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+    }
+        .await;
+        context.accept(result)
+    }
+
+    async fn read_with_custody(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+        observation: Option<&super::ProofDataCustody>,
+    ) -> ObjectResult<ObjectRead> {
+        let already_observed = observation.is_some_and(|observation| {
+            self.data_custody
+                .is_some_and(|owner| std::ptr::eq(observation, owner))
+        });
+        let result = {
+            let __object_args = (object_id, maximum_bytes, budget, cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = self
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        };
+        match observation {
+            Some(observation) if !already_observed => {
+                async_storage::observe_read(observation, result)
+            }
+            _ => result,
         }
-        // No cache lock or original ledger borrow spans this backend await.
-        let read = self.store.read_with_native_work(object_id, maximum_bytes, work, cancellation).await?;
-        self.admit(object_id, &read.bytes, 0, &mut accounting).map_err(object_error)?;
-        Ok(read)
     }
-    async fn read_with_custody(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,
-        cancellation: &CancellationToken, observation: Option<async_storage::ObjectReadObservation<'_>>) -> ObjectResult<ObjectRead> {
-        let already_observed = observation.is_some_and(|observation| self.data_custody.is_some_and(|owner| observation.is_for(owner)));
-        let result = self.read(object_id, maximum_bytes, budget, cancellation).await;
-        match observation { Some(observation) if !already_observed => observation.complete(result), _ => result }
+    async fn read_many(
+        &self,
+        requests: &[ObjectReadRequest],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        crate::async_storage::read_many_sequential(self, requests, context).await
     }
-    async fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<Vec<ObjectRead>> {
-        async_storage::read_many_sequential_async(self, requests, budget, cancellation).await
-    }
-    async fn contains(&self, object_id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<bool> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    async fn contains(
+        &self,
+        object_id: ObjectId,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
         let result = async {
-            if self.probe(object_id, &mut accounting)?.is_some() { return Ok(true); }
-            let resident = self.extra_resident()?;
-            let remaining = provider_remaining(&accounting, resident)?;
-            match self.store.contains(object_id, remaining, cancellation).await {
+            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            let result = async {
+                if self.probe(object_id, &mut accounting)?.is_some() {
+                    return Ok(true);
+                }
+                let resident = self.extra_resident()?;
+                let remaining = provider_remaining(&accounting, resident)?;
+                match {
+                    let __object_args = (object_id, remaining, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .store
+                        .contains(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                } {
                 Ok(receipt) => {
                     compose_backend(&mut accounting, receipt.work, resident)?;
                     Ok(receipt.value)
@@ -507,7 +783,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|value| crate::OperationReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+        result.map(|value| crate::OperationReceipt { value, work })
+            .map_err(|error| ObjectFailure::new(object_error(error), work))
+    }
+        .await;
+        context.accept(result)
     }
 }
 
@@ -656,7 +936,11 @@ fn drop_slots<T>(values: GuardedVec<T>, accounting: &mut KernelAccounting<'_>) -
 fn drop_bindings(values: GuardedVec<Option<super::TreeEntry>>, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
     let bytes = match &values.allocation {
         KernelOwnedAllocation::Standalone => Some(usize_to_u64(values.capacity()).checked_mul(size_of::<Option<super::TreeEntry>>() as u64)
-            .and_then(|bytes| values.iter().flatten().try_fold(bytes, |bytes, entry| bytes.checked_add(usize_to_u64(entry.name.retained_bytes()))))
+            .and_then(|bytes| {
+                    values.iter().flatten().try_fold(bytes, |bytes, entry| {
+                        bytes.checked_add(usize_to_u64(entry.name.retained_bytes()))
+                    })
+                })
             .ok_or(WorkError::Overflow)?),
         #[cfg(not(target_arch = "wasm32"))]
         KernelOwnedAllocation::NativeOriginal(_) => None,
@@ -694,7 +978,9 @@ pub(super) fn path_error(error: crate::FsError) -> PathLookupError {
         crate::FsError::Work(error) => PathLookupError::Work(error),
         crate::FsError::Cancelled(_) => PathLookupError::Tree(TreeReadError::Cancelled),
         #[cfg(not(target_arch = "wasm32"))]
-        crate::FsError::NativeKernel(error) => PathLookupError::Tree(TreeReadError::Storage(ObjectStoreError::Native(error))),
+        crate::FsError::NativeKernel(error) => {
+            PathLookupError::Tree(TreeReadError::Storage(ObjectStoreError::Native(error)))
+        }
         crate::FsError::Decode(error) => PathLookupError::Tree(TreeReadError::Decode(error)),
         _ => PathLookupError::AllocationFailed,
     }
@@ -924,7 +1210,9 @@ async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                 let file_id = binding.file_id;
                 let kind = binding.kind;
                 let entry_bytes = match &entry.allocation {
-                    KernelOwnedAllocation::Standalone => Some(usize_to_u64(binding.name.retained_bytes())),
+                    KernelOwnedAllocation::Standalone => {
+                        Some(usize_to_u64(binding.name.retained_bytes()))
+                    }
                     #[cfg(not(target_arch = "wasm32"))]
                     KernelOwnedAllocation::NativeOriginal(_) => None,
                 };
@@ -965,8 +1253,10 @@ async fn resolve_path_with_accounting<S: AsyncObjectStore>(
 }
 
 fn active_order(left: &ActivePath, right: &ActivePath, accounting: &mut KernelAccounting<'_>) -> Result<Ordering, crate::FsError> {
-    examine_item(accounting, None, || compare_object_id(&left.directory, &right.directory)
-        .then_with(|| left.path_index.cmp(&right.path_index)))
+    examine_item(accounting, None, || {
+        compare_object_id(&left.directory, &right.directory)
+        .then_with(|| left.path_index.cmp(&right.path_index))
+    })
 }
 fn sift_active(values: &mut [ActivePath], mut root: usize, end: usize, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
     loop {
@@ -1049,7 +1339,9 @@ fn retire_name_bytes(allocation: &mut KernelOwnedAllocation, accounting: &mut Ke
     match allocation {
         KernelOwnedAllocation::Standalone => release_standalone(accounting, bytes),
         #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(allocation) => allocation.release(bytes).map_err(Into::into),
+        KernelOwnedAllocation::NativeOriginal(allocation) => {
+            allocation.release(bytes).map_err(Into::into)
+        }
     }
 }
 fn standalone_live(accounting: &mut KernelAccounting<'_>) -> Result<Option<u64>, crate::FsError> {
@@ -1070,9 +1362,15 @@ fn cleanup_standalone(accounting: &mut KernelAccounting<'_>, initial: Option<u64
 }
 fn dependency_bytes(dependencies: &[Dependency], capacity: usize) -> Result<u64, WorkError> {
     dependencies.iter().try_fold(usize_to_u64(capacity).checked_mul(size_of::<Dependency>() as u64).ok_or(WorkError::Overflow)?,
-        |bytes, dependency| bytes.checked_add(match &dependency.region {
-            DependencyRegion::DirectoryName { name, .. } => usize_to_u64(name.retained_bytes()), _ => 0,
-        }).ok_or(WorkError::Overflow))
+        |bytes, dependency| {
+            bytes.checked_add(match &dependency.region {
+            DependencyRegion::DirectoryName { name, .. } => {
+                        usize_to_u64(name.retained_bytes())
+                    }
+                    _ => 0,
+        }).ok_or(WorkError::Overflow)
+        },
+    )
 }
 
 async fn path_queries_with_accounting<S: AsyncObjectStore>(
@@ -1137,7 +1435,9 @@ async fn path_queries_with_accounting<S: AsyncObjectStore>(
                 pending.clear();
                 active.clear();
                 for index in 0..count {
-                    let finished = examine_item(accounting, None, || done[index] != 0 || paths.get(index).depth() <= depth)?;
+                    let finished = examine_item(accounting, None, || {
+                        done[index] != 0 || paths.get(index).depth() <= depth
+                    })?;
                     if finished { continue; }
                     let FilePayload::Directory { entries: directory } = current[index].ok_or(PathLookupError::KindMismatch)?.payload else {
                         if matches!(mode, PathBatchMode::SelectedRestore) {
@@ -1156,7 +1456,9 @@ async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     let start = cursor;
                     cursor += 1;
                     while cursor < active.len() {
-                        let same_directory = examine_item(accounting, None, || active[cursor].directory == directory)?;
+                        let same_directory = examine_item(accounting, None, || {
+                            active[cursor].directory == directory
+                        })?;
                         if !same_directory { break; }
                         cursor += 1;
                     }
@@ -1180,7 +1482,9 @@ async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     for ((index, binding), name) in query_indices.iter().zip(bindings.iter()).zip(names.drain(..)) {
                         if observe {
                             let expected = match binding {
-                                Some(binding) => super::probe::capture_directory_name_state_with_accounting(binding, accounting, Some(cancellation), data_custody)?,
+                                Some(binding) => {
+                                    super::probe::capture_directory_name_state_with_accounting(binding, accounting, Some(cancellation), data_custody)?
+                                }
                                 None => DependencyState::Absent,
                             };
                             dependencies.push(Dependency { region: DependencyRegion::DirectoryName {
@@ -1263,10 +1567,12 @@ fn validate_path(path: &NamespacePath, config: VolumeConfig, accounting: &mut Ke
     let maximum_component_bytes =
         usize::try_from(config.limits.maximum_component_bytes).unwrap_or(usize::MAX);
     for component in path.components() {
-        let (too_long, admitted_encoding) = examine_item(accounting, None, || (
+        let (too_long, admitted_encoding) = examine_item(accounting, None, || {
+            (
             component.as_bytes().len() > maximum_component_bytes,
             component.encoding().is_admitted_in_profile(config.profile),
-        ))?;
+        )
+        })?;
         if too_long { return Err(PathLookupError::PathBounds.into()); }
         if !admitted_encoding {
             return Err(PathLookupError::UnsupportedNameEncoding.into());

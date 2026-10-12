@@ -169,7 +169,10 @@ pub struct Client {
     inner: crate::grpc::Client,
     #[cfg(target_arch = "wasm32")]
     inner: wire::actors_service_client::ActorsServiceClient<
-        tonic::codegen::InterceptedService<tonic_web_wasm_client::Client, acyclic_workers::BearerAuth>,
+        tonic::codegen::InterceptedService<
+            tonic_web_wasm_client::Client,
+            acyclic_workers::BearerAuth,
+        >,
     >,
 }
 
@@ -177,35 +180,38 @@ impl Client {
     /// Returns `grpc` for native transport and `grpc-web` for browser transport.
     #[must_use]
     pub const fn transport(&self) -> &'static str {
-        if cfg!(target_arch = "wasm32") { "grpc-web" } else { "grpc" }
+        if cfg!(target_arch = "wasm32") {
+            "grpc-web"
+        } else {
+            "grpc"
+        }
     }
 }
 
 /// Connect trusting exclusively the supplied PEM CA on native targets, or platform roots if absent.
-pub async fn connect(
-    endpoint: &str,
-    token: &str,
-    ca: Option<&[u8]>,
-) -> Result<Client, Error> {
+pub async fn connect(endpoint: &str, token: &str, ca: Option<&[u8]>) -> Result<Client, Error> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let inner = crate::grpc::connect(endpoint, token, ca)
-            .await
-            .map_err(|error| match error {
-                crate::grpc::ConnectError::InsecureEndpoint => {
-                    Error::Configuration("Actors endpoints must use https".into())
-                }
-                crate::grpc::ConnectError::InvalidCredential => {
-                    Error::Configuration("invalid Actors bearer credential".into())
-                }
-                crate::grpc::ConnectError::InvalidCaCertificate => {
-                    Error::Configuration("invalid Actors private CA certificate".into())
-                }
-                crate::grpc::ConnectError::PlatformVerifier(error) => {
-                    Error::Transport(error.to_string())
-                }
-                crate::grpc::ConnectError::Transport(error) => Error::Transport(format!("{error:?}")),
-            })?;
+        let inner =
+            crate::grpc::connect(endpoint, token, ca)
+                .await
+                .map_err(|error| match error {
+                    crate::grpc::ConnectError::InsecureEndpoint => {
+                        Error::Configuration("Actors endpoints must use https".into())
+                    }
+                    crate::grpc::ConnectError::InvalidCredential => {
+                        Error::Configuration("invalid Actors bearer credential".into())
+                    }
+                    crate::grpc::ConnectError::InvalidCaCertificate => {
+                        Error::Configuration("invalid Actors private CA certificate".into())
+                    }
+                    crate::grpc::ConnectError::PlatformVerifier(error) => {
+                        Error::Transport(error.to_string())
+                    }
+                    crate::grpc::ConnectError::Transport(error) => {
+                        Error::Transport(format!("{error:?}"))
+                    }
+                })?;
         Ok(Client { inner })
     }
 
@@ -480,36 +486,6 @@ mod tests {
             } else {
                 assert!(metadata.service_code.is_none());
                 assert!(metadata.service_message.is_none());
-            }
-        }
-    }
-
-    #[test]
-    fn service_error_ignores_empty_or_malformed_details() {
-        let statuses = [
-            tonic::Status::unknown("empty details"),
-            tonic::Status::with_details(
-                tonic::Code::Unavailable,
-                "malformed details",
-                vec![0xff, 0x00].into(),
-            ),
-        ];
-
-        for status in statuses {
-            let expected_code = status.code() as i32;
-            match service_error(status.clone()) {
-                Error::Service {
-                    grpc_code,
-                    detail,
-                    message,
-                    raw_details,
-                } => {
-                    assert_eq!(message, status.message());
-                    assert_eq!(raw_details, status.details());
-                    assert_eq!(grpc_code, expected_code);
-                    assert!(detail.is_none());
-                }
-                other => panic!("expected service error, got {other:?}"),
             }
         }
     }

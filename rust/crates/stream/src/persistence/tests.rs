@@ -1,9 +1,9 @@
 use super::*;
+use crate::OwnedBytes;
 use crate::{
     AppendRequest, CommitCondition, CommitConflict, CommitMutation, CommitRequest, ForkRequest,
     IdempotencyKey, MemoryStream, StreamProvider,
 };
-use crate::OwnedBytes;
 
 const BOUND: usize = 1024 * 1024;
 

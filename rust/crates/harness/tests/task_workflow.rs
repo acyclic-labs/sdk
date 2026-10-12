@@ -175,8 +175,10 @@ impl ToolExecutor for InterruptedTool {
 }
 
 impl ToolProjection for InterruptedTool {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(serde_json::json!({"kind":"json","value":result.value}))
+    fn project(&self, _: &ToolInvocation, result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+        self.supports_native_projection(work)?;
+        Ok((serde_json::json!({"kind":"json","value":result.value}), None))
     }
 }
 
@@ -466,7 +468,7 @@ where
         stream,
         issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     let events = aggregate.reducer().events_after(0, 64)?;
     assert_eq!(events.len(), 2, "request retry must reuse its ticket");
@@ -944,19 +946,14 @@ async fn worker_restart_with_options(
                 &signed,
                 65_536, None,
             )?);
-            let reader = Arc::new(FilesystemContentVerifier::new(
-                filesystem.clone(),
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                &signed,
-                65_536, None,
-            )?);
+            let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
             if with_policy && !reopened {
                 Box::pin(async {
                     let mut aggregate = acyclic_harness::store::StreamAggregate::open(
                         &stream,
                         conversation_issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
                         conversation_issuer.verifier(&mut None).expect("verifier copy"),
-                        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                     .await?;
                     aggregate
                         .execute(Command {
@@ -1984,7 +1981,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         host.create_volume(&private).await?;
         let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, VolumeOperation::Write)?;
         host.put_content(&project, &write, "shared.txt", b"base", "text/plain", "shared.txt", 128,
-            &IdempotencyKey::new("base")?).await?;
+            &IdempotencyKey::new("base")?, None, None).await?;
         let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
         let base = host.resolve(&workspace_ref(provider.clone(), &project.storage_name()?)?).await?;
         let fork = controller.fork_project(&base.generation, &source, &IdempotencyKey::new("fork")?).await?;
@@ -1995,8 +1992,8 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         target_head = host.apply(&target, None, &[WorkspaceMutation::PutFile {
             path: "/shared.txt".into(), bytes: b"target".as_slice().into(),
         }], &IdempotencyKey::new("target-edit")?).await?.generation;
-        let plan = controller.prepare_project_import(&source, &source_head).await?;
-        let JoinOutcome::Conflicted { conflicts, truncated } = controller.apply_project_merge(&plan, operation).await? else {
+        let plan = controller.prepare_project_import(&source, &source_head, None).await?;
+        let JoinOutcome::Conflicted { conflicts, truncated } = controller.apply_project_merge(&plan, operation, BTreeMap::new()).await?.0 else {
             return Err(Error::Invalid("custom merge must have a real conflict".into()));
         };
         let described = controller.describe_project_merge_conflicts(&plan, &conflicts, truncated).await?;
@@ -2036,7 +2033,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let candidate = acyclic_fs::decode_merge_candidate(record.next.state["candidate"].as_str()
             .ok_or_else(|| Error::Invalid("candidate missing".into()))?).map_err(|e| Error::Invalid(e.to_string()))?;
         let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
-        let plan = controller.prepare_project_import_at(&source, &source_head, &target_head).await?;
+        let plan = controller.prepare_project_import(&source, &source_head, Some(&target_head)).await?;
         let denied = issuer.issue("no-write", &Capabilities::new([source.capability(VolumeOperation::Read, &mut None)?]), Some(agent), None, &mut None).expect("scope proof");
         let unauthorized = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &denied, &project, None)?;
         assert!(unauthorized.apply_project_merge_candidate(&plan, operation, &candidate).await.is_err());
@@ -2048,7 +2045,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         if retry == 0 {
             let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, VolumeOperation::Write)?;
             host.put_content(&project, &write, "concurrent.txt", b"user edit", "text/plain", "concurrent.txt", 128,
-                &IdempotencyKey::new("concurrent")?).await?;
+                &IdempotencyKey::new("concurrent")?, None, None).await?;
         }
         assert_eq!(host.read(&workspace_ref(provider.clone(), &project.storage_name()?)?, None, "/concurrent.txt", 128).await?.as_ref(), b"user edit");
         assert_eq!(host.read(&workspace_ref(provider.clone(), &project.storage_name()?)?, None, "/shared.txt", 128).await?.as_ref(), b"custom resolution");
@@ -2191,12 +2188,7 @@ async fn stock_restart_with_publication_fault(
             &signed,
             65_536, None,
         )?);
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            filesystem.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &signed,
-            65_536, None,
-        )?);
+        let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
         let host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
                 .await?, stream.clone(), payloads.clone(), reader.clone(), &(authority), signed.clone(), issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), tasks.clone(), machines.clone(), Arc::new(SystemUnixMillisClock), None)?
         .with_session_limits(if reopened {

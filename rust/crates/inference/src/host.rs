@@ -1136,7 +1136,7 @@ mod tests {
     #[tokio::test]
     async fn calls_emit_spans_with_status_codes_and_no_content() -> Result<(), Error> {
         let _connect_trace = CONNECT_TRACE_TEST.lock().await;
-        use acyclic_grpc_observability::test_support::Capture;
+        use acyclic_grpc_observability::tests::Capture;
         use tracing_subscriber::layer::SubscriberExt as _;
 
         let seen = Capture::default();
