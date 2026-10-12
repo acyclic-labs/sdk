@@ -2272,7 +2272,7 @@ async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectSt
 type CapturePathState = (Option<HostStat>, NamespacePath, Option<FileRecord>);
 
 async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &Checkout<A, O>,
+    checkout: &mut Checkout<A, O>,
     (observations, paths): (Vec<Option<HostStat>>, Vec<NamespacePath>),
     page_size: usize, meter: &CaptureWorkScope,
 ) -> Result<Vec<CapturePathState>, CaptureError> {
@@ -4640,7 +4640,7 @@ async fn settled_sparse_ranges(native: &std::sync::Arc<acyclic_native_runtime::N
                         };
                         cause
                     })?;
-                Ok(value)
+                Ok::<_, CaptureError>(value)
             }).await?;
 
             let chunk = read;

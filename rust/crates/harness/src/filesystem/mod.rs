@@ -1478,12 +1478,19 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                     let binding = self.native_binding.as_ref().ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unauthorized, reason: "Filesystem verifier has no native authority" })?;
                     binding.require_seed(seed, native)?;
-                    for file in seed.inherited_context.iter()
-                        .chain(seed.reference_grants.iter().map(|grant| &grant.file))
-                        .chain(seed.attachment_manifests.iter())
-                        .chain(seed.summary.iter().flat_map(|summary| std::iter::once(&summary.context)
-                            .chain(summary.payloads.iter()).chain(summary.references.iter()))) {
+                    for file in &seed.inherited_context {
                         if file.volume().provider() == &self.host.provider { self.require_seed_file_with_io(seed, file, &io).await?; }
+                    }
+                    for grant in &seed.reference_grants {
+                        if grant.file.volume().provider() == &self.host.provider { self.require_seed_file_with_io(seed, &grant.file, &io).await?; }
+                    }
+                    for file in &seed.attachment_manifests {
+                        if file.volume().provider() == &self.host.provider { self.require_seed_file_with_io(seed, file, &io).await?; }
+                    }
+                    if let Some(summary) = &seed.summary {
+                        for file in std::iter::once(&summary.context).chain(&summary.payloads).chain(&summary.references) {
+                            if file.volume().provider() == &self.host.provider { self.require_seed_file_with_io(seed, file, &io).await?; }
+                        }
                     }
                 }
                 self.verify_with_io(seed, &io).await
