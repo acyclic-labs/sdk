@@ -821,7 +821,7 @@ where
         .await?;
         let retained = retained_model_step(&journal, &records, step, crate::executor::ModelPurpose::Response, limits, None)
         .await?;
-        if !retained.admission.completed() {
+        if !retained.admission.completed {
             return Err(Error::Indeterminate(operation));
         }
         let request = retained.request.ok_or(Error::Indeterminate(operation))?;
@@ -943,7 +943,7 @@ where
         )?.await?;
         io.absorb_native_custody(custody)?;
         drop(records);
-        if !retained.admission.completed() { return Err(Error::Indeterminate(operation)); }
+        if !retained.admission.completed { return Err(Error::Indeterminate(operation)); }
         let request = retained.request.ok_or(Error::Indeterminate(operation))?;
         for message in &request.request().messages {
             verify_native_model_files(context, &message.content, work).await?;
