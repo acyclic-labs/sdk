@@ -191,11 +191,8 @@ where
                 "interaction host requires a conversation, private volume, and positive limit"));
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            match io {
-                Some(io) => ContentGrant::verify_original_volume_with_io(
-                    verifier, owner_scope, private_volume, operation, io)?,
-                None => { ContentGrant::verify(verifier, owner_scope, private_volume, operation)?; }
-            }
+            ContentGrant::authorize_volume(verifier, owner_scope, private_volume,
+                operation, u64::MAX, &mut work)?;
         }
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -205,7 +202,7 @@ where
         };
         let verifier = verifier.clone_with_work(&mut work)?;
         let owner_scope = owner_scope.clone_with_work(&mut work)?;
-        let private_volume = private_volume.clone_with_work(&mut work)?;
+        let private_volume = private_volume.copy(&mut work)?;
         let schemas = schemas.clone_with_work(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {

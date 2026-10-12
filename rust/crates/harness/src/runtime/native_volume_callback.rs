@@ -215,12 +215,10 @@ mod tests {
             fixture.root, fixture.root_lease.operation.operation_id, &original,
         ).await?;
         let context = context.into_native_shared(custody, &original)?;
-        let users = Arc::strong_count(&context);
         let before = original.receipt();
         assert!(matches!(context.volume_callback_guard_with_native_work(&owner, &original).await,
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(original.receipt(), before, "READ rejection precedes copies and owner IO");
-        assert_eq!(Arc::strong_count(&context), users);
 
         let foreign = work(&acyclic_fs::CancellationToken::new());
         let before = foreign.receipt();

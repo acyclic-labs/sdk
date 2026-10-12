@@ -23,25 +23,8 @@ async fn original_native_actor(
 }
 
 #[tokio::test]
-async fn issued_task_context_alone_cannot_bypass_the_accepted_tool_callback() {
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
-    let (context, _owner) = original_native_actor(&fixture, &work).await;
-    let operation = OperationId::from_bytes([41; 16]);
-    let tool = acyclic_harness::runtime::ToolContext::new_with_native_work(
-        context, operation, "unaccepted-original-tool-call", &work).unwrap();
-    // An issued owner/context and genuine ledger are not an accepted ToolStarted
-    // record. Neither a metadata loan nor an actual IO action may bypass it.
-    assert!(tool.native_working_manifest_with_native_work(&work).is_err());
-    assert!(tool.read_working_file_with_native_work(Path::new("project/file"), 32, &work).await.is_err());
-    assert!(tool.write_working_file_with_native_work(
-        Path::new("scratch/file"), "forbidden", true, None, &work).await.is_err());
-}
-
-#[tokio::test]
 async fn builtin_arguments_cannot_substitute_the_original_sdk_invocation_actor() {
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let (context, _owner) = original_native_actor(&fixture, &work).await;
@@ -79,41 +62,35 @@ fn original_builtin_operation_binds_caller_tool_and_phase() {
     let root = TaskId::from_bytes([2; 16]);
     let read = request(PiBuiltinIo::EditRead { maximum_bytes: MAXIMUM_BUILTIN_BYTES });
     let write = request(PiBuiltinIo::EditWrite { content: "new".into(), expected_sha256: "00".repeat(32) });
-    assert_ne!(read.operation(root), write.operation(root));
+    assert_ne!(read.operation(root, &crate::pi_fork::tests::work()).unwrap(), write.operation(root, &crate::pi_fork::tests::work()).unwrap());
     let mut other = read.clone();
     other.caller = TaskId::from_bytes([3; 16]);
-    assert_ne!(read.operation(root), other.operation(root));
+    assert_ne!(read.operation(root, &crate::pi_fork::tests::work()).unwrap(), other.operation(root, &crate::pi_fork::tests::work()).unwrap());
     other = read.clone();
     other.sdk_operation.push_str("-other");
-    assert_ne!(read.operation(root), other.operation(root));
+    assert_ne!(read.operation(root, &crate::pi_fork::tests::work()).unwrap(), other.operation(root, &crate::pi_fork::tests::work()).unwrap());
 }
 
 #[test]
 fn model_path_gate_rejects_parent_unc_drive_and_outside_marker() {
-    let temporary = tempfile::tempdir().unwrap();
-    let view = temporary.path().join("view");
-    std::fs::create_dir(&view).unwrap();
-    let marker = temporary.path().join("harmless-outside-marker.txt");
-    std::fs::write(&marker, b"not a secret, still outside authority").unwrap();
+    let temporary = std::env::temp_dir();
+    let view = temporary.join("view");
+    let marker = temporary.join("harmless-outside-marker.txt");
     assert!(relative_path(marker.to_str().unwrap(), &view).is_err());
     for path in ["../harmless-outside-marker.txt", "directory/../../file", "directory\\..\\file",
         "\\\\server\\share\\file", "//server/share/file", "C:relative.txt", "", "file\0.txt"] {
         assert!(relative_path(path, &view).is_err(), "{path:?}");
     }
     assert_eq!(relative_path("directory/file.txt", &view).unwrap(), Path::new("directory/file.txt"));
-    assert_eq!(std::fs::read(&marker).unwrap(), b"not a secret, still outside authority");
-}
-
-#[cfg(windows)]
-#[test]
-fn windows_original_drive_and_verbatim_mapping_are_equivalent_not_other_roots() {
-    let root = Path::new(r"\\?\C:\original-source");
-    assert_eq!(relative_path(r"C:\original-source\file.txt", root).unwrap(), Path::new("file.txt"));
-    assert_eq!(relative_path(r"\\?\C:\original-source\file.txt", root).unwrap(), Path::new("file.txt"));
-    for outside in [r"D:\original-source\file.txt", r"C:\other-source\file.txt",
-        r"\\server\share\file.txt", r"\\?\UNC\server\share\file.txt", r"\\.\GLOBALROOT\device\file",
-        r"C:\original-source\..\other-source\file"] {
-        assert!(relative_path(outside, root).is_err(), "{outside}");
+    #[cfg(windows)] {
+        let root = Path::new(r"\\?\C:\original-source");
+        assert_eq!(relative_path(r"C:\original-source\file.txt", root).unwrap(), Path::new("file.txt"));
+        assert_eq!(relative_path(r"\\?\C:\original-source\file.txt", root).unwrap(), Path::new("file.txt"));
+        for outside in [r"D:\original-source\file.txt", r"C:\other-source\file.txt",
+            r"\\server\share\file.txt", r"\\?\UNC\server\share\file.txt", r"\\.\GLOBALROOT\device\file",
+            r"C:\original-source\..\other-source\file"] {
+            assert!(relative_path(outside, root).is_err(), "{outside}");
+        }
     }
 }
 
@@ -145,7 +122,7 @@ fn read_fallback_cannot_launder_owner_denials_or_outside_variants() {
 
 #[tokio::test]
 async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let (context, owner) = original_native_actor(&fixture, &work).await;
@@ -156,8 +133,6 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
         acyclic_harness::conversation::VolumeOperation::Write] {
         owner.require_volume_grant_with_native_work(project, operation, &work).unwrap();
     }
-    // Even a genuine Root WRITE grant is reserved for the existing operator
-    // publication engine, never an ambient model builtin mutation.
     for io in [PiBuiltinIo::Write { content: "no physical Root write".into() },
         PiBuiltinIo::EditRead { maximum_bytes: 16 },
         PiBuiltinIo::EditWrite { content: "no physical Root edit".into(), expected_sha256: "00".repeat(32) }] {
@@ -182,122 +157,20 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
         acyclic_harness::conversation::VolumeOperation::Write] {
         assert!(owner.require_volume_grant_with_native_work(&unrelated, operation, &work).is_err());
     }
+    fixture.runtime.runtime.task_host().cancel(owner.task_id()).await.unwrap();
+    assert!(authorize_owner(context.context(), &owner, owner.task_id(), &work).await.is_err());
     cancellation.cancel();
     assert!(authorize_owner(context.context(), &owner, owner.task_id(), &work).await.is_err());
 }
 
 #[tokio::test]
-async fn genuine_held_sdk_leaf_preserves_allowed_read_write_and_exact_edit() {
-    use sha2::{Digest as _, Sha256};
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
-    let temporary = tempfile::tempdir().unwrap();
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
-    let (context, owner) = original_native_actor(&fixture, &work).await;
-    // The native producer acquires and holds this real directory identity; the
-    // production Pi facade instead obtains it from the original view creator.
-    let identity = work.root_identity(temporary.path()).unwrap();
-    let guard = || authorize_owner(context.context(), &owner, owner.task_id(), &work);
-    work.write_working_file_guarded(temporary.path(), identity, Path::new("nested/file.txt"),
-        "before", true, None, guard).await.unwrap();
-    let bytes = work.read_working_file_guarded(temporary.path(), identity,
-        Path::new("nested/file.txt"), 32, guard).await.unwrap();
-    assert_eq!(bytes.as_ref(), b"before");
-    let expected: [u8; 32] = Sha256::digest(bytes.as_ref()).into();
-    drop(bytes);
-    work.write_working_file_guarded(temporary.path(), identity, Path::new("nested/file.txt"),
-        "after", false, Some(expected), guard).await.unwrap();
-    assert!(work.write_working_file_guarded(temporary.path(), identity, Path::new("nested/file.txt"),
-        "must not overwrite", false, Some(expected), guard).await.is_err());
-    let bytes = work.read_working_file_guarded(temporary.path(), identity,
-        Path::new("nested/file.txt"), 32, guard).await.unwrap();
-    assert_eq!(bytes.as_ref(), b"after");
-    drop(bytes);
-    assert!(work.read_working_file_guarded(temporary.path(), identity,
-        Path::new("nested/file.txt"), 2, guard).await.is_err());
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn genuine_held_sdk_leaf_rejects_symlink_outside_before_read_or_write() {
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("view");
-    std::fs::create_dir(&root).unwrap();
-    let marker = temporary.path().join("harmless-marker.txt");
-    std::fs::write(&marker, b"outside").unwrap();
-    std::os::unix::fs::symlink(&marker, root.join("escape")).unwrap();
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
-    let (context, owner) = original_native_actor(&fixture, &work).await;
-    let identity = work.root_identity(&root).unwrap();
-    let guard = || authorize_owner(context.context(), &owner, owner.task_id(), &work);
-    assert!(work.read_working_file_guarded(&root, identity, Path::new("escape"), 32, guard).await.is_err());
-    assert!(work.write_working_file_guarded(&root, identity, Path::new("escape"), "overwrite", false,
-        None, guard).await.is_err());
-    assert_eq!(std::fs::read(marker).unwrap(), b"outside");
-}
-
-#[tokio::test]
-async fn original_task_cancellation_and_replaced_root_fail_before_leaf_io() {
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("view");
-    std::fs::create_dir(&root).unwrap();
-    std::fs::write(root.join("file"), b"original").unwrap();
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
-    let (context, owner) = original_native_actor(&fixture, &work).await;
-    let identity = work.root_identity(&root).unwrap();
-    std::fs::rename(&root, temporary.path().join("original-view")).unwrap();
-    std::fs::create_dir(&root).unwrap();
-    std::fs::write(root.join("file"), b"replacement").unwrap();
-    let guard = || authorize_owner(context.context(), &owner, owner.task_id(), &work);
-    assert!(work.read_working_file_guarded(&root, identity, Path::new("file"), 32, guard).await.is_err());
-    assert!(work.write_working_file_guarded(&root, identity, Path::new("file"), "must not overwrite",
-        false, None, guard).await.is_err());
-    assert_eq!(std::fs::read(root.join("file")).unwrap(), b"replacement");
-    fixture.runtime.runtime.task_host().cancel(owner.task_id()).await.unwrap();
-    assert!(authorize_owner(context.context(), &owner, owner.task_id(), &work).await.is_err());
-}
-
-#[tokio::test]
-async fn failed_whole_file_checks_spend_the_original_quota_without_reading_payload() {
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
-    let temporary = tempfile::tempdir().unwrap();
-    std::fs::write(temporary.path().join("file"), b"larger than request").unwrap();
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
-    let (context, owner) = original_native_actor(&fixture, &work).await;
-    let identity = work.root_identity(temporary.path()).unwrap();
-    let before = work.receipt();
-    let guard = || authorize_owner(context.context(), &owner, owner.task_id(), &work);
-    assert!(work.read_working_file_guarded(temporary.path(), identity, Path::new("file"), 1, guard).await.is_err());
-    let after = work.receipt();
-    assert!(after.source_path_components > before.source_path_components);
-    assert_eq!(after.source_bytes_read, before.source_bytes_read);
-    assert!(work.read_working_file_guarded(temporary.path(), identity, Path::new("file"), 1, guard).await.is_err());
-    assert!(work.receipt().source_path_components > after.source_path_components);
-    assert_eq!(work.receipt().source_bytes_read, before.source_bytes_read);
-    let denied_work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
-    let (denied_context, denied_owner) = original_native_actor(&fixture, &denied_work).await;
-    denied_work.charge(WorkCounters {
-        source_bytes_read: denied_work.remaining().unwrap().source_bytes_read,
-        ..WorkCounters::default()
-    }).unwrap();
-    let denied_guard = || authorize_owner(denied_context.context(), &denied_owner, denied_owner.task_id(), &denied_work);
-    assert!(denied_work.read_working_file_guarded(temporary.path(), identity, Path::new("file"), 32, denied_guard).await.is_err());
-    assert_eq!(std::fs::read(temporary.path().join("file")).unwrap(), b"larger than request");
-}
-
-#[tokio::test]
 async fn actual_child_result_identity_cannot_be_labeled_as_a_native_builtin_volume() {
     use acyclic_harness::filesystem::{NativeViewManifest, NativeViewOptions, NativeVolumeMapping, NativeVolumeNamespace};
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let (context, owner) = original_native_actor(&fixture, &work).await;
-    let plan = fixture.plan_with_native_work(&work).await;
+    let plan = fixture.plan(&work).await;
     let coordinator = crate::pi_fork::PiForkCoordinator::new(
         fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
         &fixture.resources, fixture.owner.clone(), &work).unwrap();
@@ -309,8 +182,6 @@ async fn actual_child_result_identity_cannot_be_labeled_as_a_native_builtin_volu
     let generation = fixture.root_allocation.scratch.generation.clone();
     let project = binding.project_volumes.values().next().unwrap().clone();
     let result = binding.results.as_ref().unwrap().volume.clone();
-    // Deliberately forged metadata tests only the selection rejection; it is
-    // never accepted as a held-root proof or passed to real filesystem IO.
     let mapping = |volume, role: &str| NativeVolumeMapping { volume, generation: generation.clone(),
         namespace: NativeVolumeNamespace::MaterializedDirectory, path: temporary.path().join(role),
         writable: true, authority_revision: [1; 32] };

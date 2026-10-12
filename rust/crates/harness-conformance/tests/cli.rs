@@ -74,7 +74,7 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
             .stdin(Stdio::from(input))
             .stdout(Stdio::piped()),
     )?;
-    let output = child.wait_with_output(std::time::Duration::from_secs(30), 1024 * 1024)?;
+    let output = child.wait_with_output(std::time::Duration::from_secs(30), 1024 * 1024, None, || Ok(()), |_| Ok(acyclic_native_runtime::ProcessInput::default()), None, None).map_err(|failure| failure.error)?;
     if !output.status.success() {
         return Err("valid stdin report did not qualify".into());
     }

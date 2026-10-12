@@ -498,7 +498,7 @@ async fn native_lazy_workspace_lists_windows_source_directories()
     )
     .await?;
     for directory in ["/", "/dir"] {
-        let page = lazy.list_directory(directory, None, 64).await?;
+        let page = lazy.list_directory(directory, None, 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await?.value;
         assert_eq!(page.entries.len(), 1, "{directory}");
     }
     Ok(())

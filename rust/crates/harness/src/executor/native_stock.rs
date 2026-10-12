@@ -21,11 +21,6 @@ pub(super) struct NativeStockExecution<'a> {
     pub(super) interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
 }
 
-impl std::ops::Deref for StockExecution<'_> {
-    type Target = StockExecutor;
-    fn deref(&self) -> &Self::Target { self.stock }
-}
-
 impl<'a> StockExecution<'a> {
     pub(super) fn ordinary(stock: &'a StockExecutor) -> Self {
         Self { stock,
@@ -89,16 +84,6 @@ pub(crate) fn stock_string_copy(value: &str, io: Option<&PreparationIo>) -> Resu
     let mut copied = String::new();
     stock_string_push(&mut copied, value, io)?;
     Ok(copied)
-}
-
-pub(super) fn stock_context_copy(value: &crate::context::Context, io: Option<&PreparationIo>) -> Result<crate::context::Context> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let (copied, custody) = crate::context::clone_context_native(value, work)?;
-        io.absorb_native_custody(custody)?;
-        return Ok(copied);
-    }
-    Ok(value.clone())
 }
 
 pub(super) fn stock_count_copy(value: &crate::context::ModelTokenCount, io: Option<&PreparationIo>) -> Result<crate::context::ModelTokenCount> {
@@ -264,7 +249,7 @@ pub(super) async fn stock_append_if_tail(journal: &dyn ExecutionJournal, operati
     journal.append_if_tail(operation, tail, key.to_owned(), event.clone()).await
 }
 
-pub(super) async fn stage_media_bytes_with_io(journal: &dyn ExecutionJournal, operation: OperationId,
+pub(super) async fn stage_media_bytes(journal: &dyn ExecutionJournal, operation: OperationId,
     key: &str, bytes: &[u8], media: &'static str, io: Option<&PreparationIo>) -> Result<FileRef> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io && let Some(work) = io.original_native_work() {
@@ -281,7 +266,7 @@ pub(super) async fn stage_media_bytes_with_io(journal: &dyn ExecutionJournal, op
     journal.stage(operation, key.to_owned(), bytes.to_vec(), media).await
 }
 
-pub(super) async fn stage_bytes_with_io(journal: &dyn ExecutionJournal, operation: OperationId,
+pub(super) async fn stage_bytes(journal: &dyn ExecutionJournal, operation: OperationId,
     key: &str, bytes: &[u8], io: Option<&PreparationIo>) -> Result<FileRef> {
     let copied;
     #[cfg(feature = "filesystem")]
@@ -296,7 +281,7 @@ pub(super) async fn stage_bytes_with_io(journal: &dyn ExecutionJournal, operatio
         io.spent(acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64 * 2, ..Default::default() })?;
     }
     copied = stock_key(format_args!("{key}:{}", identity.to_hex()), io)?;
-    let reference = stage_media_bytes_with_io(journal, operation, &copied, bytes, "application/json", io).await?;
+    let reference = stage_media_bytes(journal, operation, &copied, bytes, "application/json", io).await?;
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
         || reference.descriptor().byte_length() != bytes.len() as u64
@@ -317,13 +302,13 @@ pub(crate) async fn stage_json<T: Serialize>(journal: &dyn ExecutionJournal,
         let hold;
         let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
         hold = io.guard_bytes(&bytes)?;
-        let result = stage_bytes_with_io(journal, operation, key, &bytes, Some(io)).await;
+        let result = stage_bytes(journal, operation, key, &bytes, Some(io)).await;
         drop(bytes);
         drop(hold);
         return result;
     }
     let bytes = crate::contract::canonical_json_bytes(value)?;
-    stage_bytes_with_io(journal, operation, key, &bytes, None).await
+    stage_bytes(journal, operation, key, &bytes, None).await
 }
 
 
@@ -471,8 +456,7 @@ pub(crate) fn load_json_with_native_work<'a, T: PreparationRecord + crate::files
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeStockExecutor {
     pub(super) stock: StockExecutor,
-    context: Option<Arc<crate::runtime::NativeTaskContext>>,
-    operation: Option<OperationId>,
+    context: Option<(Arc<crate::runtime::NativeTaskContext>, OperationId)>,
     pub(super) interactions: Option<Arc<dyn crate::runtime::InteractionRouter>>,
     custody: acyclic_fs::NativeAllocation,
 }
@@ -498,7 +482,7 @@ impl StockExecutor {
         let stock = Self::new(model, provider, pipeline, tools);
         let retained = io.owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
-        Ok(NativeStockExecutor { stock, context: None, operation: None, interactions: None, custody })
+        Ok(NativeStockExecutor { stock, context: None, interactions: None, custody })
     }
 }
 
@@ -555,8 +539,7 @@ impl NativeStockExecutor {
         let mut incoming = io.into_native_custody(retained)?;
         self.custody.absorb(&mut incoming)?;
         self.stock.task = Some((host, task, fence));
-        self.context = Some(context);
-        self.operation = Some(operation);
+        self.context = Some((context, operation));
         Ok(self)
     }
 
@@ -566,7 +549,7 @@ impl NativeStockExecutor {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         self.require_original_work(work)?;
-        let Some(context) = self.context.as_ref() else {
+        let Some((context, _)) = self.context.as_ref() else {
             return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock policy has no original context binding"));
         };
         context.context().validate_stock_scope_with_native_work(scope, self.stock.limits, work)?;
@@ -629,8 +612,8 @@ impl NativeStockExecutor {
         journal: &dyn ExecutionJournal, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         self.require_original_work(work)?;
-        if self.operation != Some(input.operation_id)
-            || self.context.as_ref().is_none_or(|original| !Arc::ptr_eq(original, context))
+        if self.context.as_ref().is_none_or(|(original, operation)|
+            *operation != input.operation_id || !Arc::ptr_eq(original, context))
             || !context.native_metadata_matches(work) {
             return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "native stock execution differs from its original binding"));
         }
@@ -725,7 +708,7 @@ pub(super) fn native_progress<'a>(
         io.absorb_native_custody(work.retain_owned(std::mem::size_of::<StockTurnProgress>() as u64)?)?;
         let progress = {
             let session = native_session(stock, context, input.operation_id, &io, reconcile, interactions);
-            session.execute_progress_engine(input, journal).await?
+            session.execute_progress(input, journal).await?
         };
         let retained = native_progress_owned_bytes(&progress)?;
         work.remaining()?;
@@ -766,7 +749,7 @@ pub(super) fn native_request_digest(session: &StockExecution<'_>, input: &TurnIn
     let work = io.original_native_work().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "native request binding has no original work"))?;
     let (contracts, custody) = session.context_pipeline().contracts_with_native_work(work)?;
     io.absorb_native_custody(custody)?;
-    let (tools, custody) = session.tools.definitions_with_native_work(work)?;
+    let (tools, custody) = session.stock.tools.definitions_with_native_work(work)?;
     io.absorb_native_custody(custody)?;
     let task_context = session.original_context().map(|context| IssuedContext {
         admission_operation: context.id(), execution_operation: input.operation_id,
@@ -774,13 +757,13 @@ pub(super) fn native_request_digest(session: &StockExecution<'_>, input: &TurnIn
         extensions: context.scope().extensions(),
     });
     preparation_digest(&Request {
-        executor: "acyclic.stock.v6", input, model: &session.model,
+        executor: "acyclic.stock.v6", input, model: &session.stock.model,
         max_output_tokens: session.output_tokens(), context: &contracts, tools: &tools,
-        limits: session.limits, tool_scope: (session.tool_scope.grants(), session.tool_scope.limits()),
-        policy: session.policy_identity.as_ref(),
-        inherited_prefix: session.inherited_prefix().map(|(reference, _)| reference),
+        limits: session.stock.limits, tool_scope: (session.stock.tool_scope.grants(), session.stock.tool_scope.limits()),
+        policy: session.stock.policy_identity.as_ref(),
+        inherited_prefix: session.stock.inherited_prefix().map(|(reference, _)| reference),
         compaction: session.compaction_policy(), model_capacity: session.model_capacity()?,
-        task_id: session.task.as_ref().map(|(_, task, _)| *task), task_context,
+        task_id: session.stock.task.as_ref().map(|(_, task, _)| *task), task_context,
     }, Some(io))
 }
 
@@ -965,14 +948,14 @@ impl StockExecution<'_> {
             crate::wire::ErrorCode::Storage, "stock policy has no original work"))?;
         for (_, policy) in context.stock_tool_policy_binding().into_iter().chain(context.stock_tool_policy_overrides()) {
             let Some(((approval_operation, request), custody)) = context.stock_policy_approval_with_native_work(
-                policy.as_ref(), &self.tool_scope, definition, invocation, work,
+                policy.as_ref(), &self.stock.tool_scope, definition, invocation, work,
             ).await? else { continue; };
             native.io.absorb_native_custody(custody)?;
-            if !self.tool_scope.grants().contains(capability::INTERACTION_ROUTE) {
+            if !self.stock.tool_scope.grants().contains(capability::INTERACTION_ROUTE) {
                 return Err(native_boundary(crate::wire::ErrorCode::Unauthorized,
                     "stock tool approval requires interaction:route"));
             }
-            let task = self.task.as_ref().map_or(TaskId::from_bytes(operation.into_bytes()), |(_, task, _)| *task);
+            let task = self.stock.task.as_ref().map_or(TaskId::from_bytes(operation.into_bytes()), |(_, task, _)| *task);
             let approval = stock_task_interaction_id(task, approval_operation, Some(native.io))?;
             journal.open_interaction_with_native_work(approval, &request, work)?.await?;
             let (outcome, custody) = journal.interaction_outcome_with_native_work(approval, work)?.await?;
@@ -1065,7 +1048,7 @@ fn native_progress_owned_bytes(progress: &StockTurnProgress) -> Result<u64> {
 impl StockExecutor {
     pub(crate) async fn execute_progress(&self, input: TurnInput, journal: &dyn ExecutionJournal) -> Result<StockTurnProgress> {
         let span = obs_span!("acyclic.harness.executor.execute", operation_id = format_args!("{}", input.operation_id));
-        traced(span, StockExecution::ordinary(self).execute_progress_engine(&input, journal)).await
+        traced(span, StockExecution::ordinary(self).execute_progress(&input, journal)).await
     }
 }
 
@@ -1120,7 +1103,7 @@ impl StockExecutor {
         let retained = io.owned_bytes()?;
         work.remaining()?;
         Ok(NativeStockExecutor {
-            stock, context: None, operation: None, interactions: None, custody: io.into_native_custody(retained)?,
+            stock, context: None, interactions: None, custody: io.into_native_custody(retained)?,
         })
     }
 }

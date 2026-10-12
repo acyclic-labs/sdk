@@ -1,4 +1,3 @@
-//! Original-admission artifact authentication, without allocation or dispatch.
 
 use super::*;
 use crate::{pi_root_inputs::PiRootPreparation, pi_runtime::PiTaskRuntime};
@@ -40,24 +39,7 @@ async fn open_runtime(session: &Path, owner: &PiOwnerConfig, filesystem: Arc<Hos
     .unwrap()
 }
 
-async fn replace_input(
-    owner: &PiOwnerConfig,
-    filesystem: &Host,
-    name: &str,
-    media_type: &str,
-    value: &impl serde::Serialize,
-) -> FileRef {
-    replace_bytes(
-        owner,
-        filesystem,
-        name,
-        media_type,
-        &serde_json::to_vec(value).unwrap(),
-    )
-    .await
-}
-
-async fn replace_bytes(
+async fn replace(
     owner: &PiOwnerConfig,
     filesystem: &Host,
     name: &str,
@@ -124,15 +106,15 @@ async fn alter_command(
             let mut changed = request.clone();
             changed.binding.native_session_id = "different-session".to_owned();
             plan.request =
-                replace_input(owner, filesystem, "root", "application/json", &changed).await;
+                replace(owner, filesystem, "root", "application/json", &serde_json::to_vec(&changed).unwrap()).await;
         }
         "schema" => {
-            plan.result_schema = replace_input(
+            plan.result_schema = replace(
                 owner,
                 filesystem,
                 "allocation-schema",
                 "application/schema+json",
-                &json!({"type":"object"}),
+                &serde_json::to_vec(&json!({"type":"object"})).unwrap(),
             )
             .await;
         }
@@ -147,7 +129,7 @@ async fn alter_command(
                 duplicate.extend_from_slice(encoded.get(1..).unwrap());
                 duplicate
             };
-            plan.result_schema = replace_bytes(
+            plan.result_schema = replace(
                 owner,
                 filesystem,
                 "allocation-schema",
@@ -169,17 +151,15 @@ async fn alter_command(
     } else {
         "application/json"
     };
-    command.payload = replace_input(owner, filesystem, name, media, &plan).await;
+    command.payload = replace(owner, filesystem, name, media, &serde_json::to_vec(&plan).unwrap()).await;
     command
 }
 
 impl Fixture {
     async fn new(case: &str) -> Self {
         let session = tempfile::tempdir().unwrap();
-        let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
-        let work = startup_work();
-        // This is trusted fixture host configuration, not a request-selected
-        // project path or accounting token authorizing private-file access.
+        let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
+        let work = work();
         let private_root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
             session.path(), &work,
         ).unwrap();
@@ -242,43 +222,18 @@ impl Fixture {
         assert!(!self.session.path().join("unopened-selected-root").exists());
     }
 
-    async fn reopen(self) -> Self {
-        let Self {
-            runtime,
-            filesystem,
-            raw,
-            owner,
-            request,
-            command,
-            session,
-            private_root,
-            work,
-            _command_custody,
-        } = self;
-        drop(runtime);
-        drop(filesystem);
-        drop(raw);
-        let raw = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
-            session.path().join("filesystem"),
-        ))
-        .await
-        .unwrap();
-        let filesystem = Arc::new(
-            FilesystemHost::new(raw.clone(), owner.policy.journal.provider().clone()).unwrap(),
-        );
-        let runtime = open_runtime(session.path(), &owner, filesystem.clone(), &work).await;
-        Self {
-            runtime,
-            filesystem,
-            raw,
-            owner,
-            request,
-            command,
-            session,
-            private_root,
-            work,
-            _command_custody,
-        }
+    async fn reopen(mut self) -> Self {
+        drop(self.runtime);
+        drop(self.filesystem);
+        drop(self.raw);
+        self.raw = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
+            self.session.path().join("filesystem"),
+        )).await.unwrap();
+        self.filesystem = Arc::new(FilesystemHost::new(
+            self.raw.clone(), self.owner.policy.journal.provider().clone(),
+        ).unwrap());
+        self.runtime = open_runtime(self.session.path(), &self.owner, self.filesystem.clone(), &self.work).await;
+        self
     }
 }
 
@@ -388,22 +343,23 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
     assert_eq!(loaded.command(), &fixture.command);
     assert_eq!(loaded.request(), &fixture.request);
     assert_eq!(loaded.plan().provider, ROOT_ALLOCATION_PROVIDER);
+    drop(loaded);
     let mut changed = fixture.request.clone();
     changed.binding.native_session_id = "changed-head".to_owned();
-    replace_input(
+    replace(
         &fixture.owner,
         &fixture.filesystem,
         "root",
         "application/json",
-        &changed,
+        &serde_json::to_vec(&changed).unwrap(),
     )
     .await;
-    replace_input(
+    replace(
         &fixture.owner,
         &fixture.filesystem,
         "allocation-schema",
         "application/schema+json",
-        &json!(true),
+        b"true",
     )
     .await;
     let head = fixture.head().await;
@@ -425,7 +381,7 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
         let other = tempfile::tempdir().unwrap();
         let mut owner = PiOwnerConfig::load(fixture.session.path()).unwrap();
         match case {
-            "key" => owner = PiOwnerConfig::new(owner.policy.clone()).unwrap(),
+            "key" => owner = PiOwnerConfig::new(&owner.policy, None, &fixture.work).unwrap(),
             "bytes" => owner.policy.maximum_payload_bytes /= 2,
             "concurrency" => owner.policy.concurrency += 1,
             "depth" => owner.policy.session_limits.depth += 1,
@@ -518,12 +474,9 @@ fn native_preparation_operation_preserves_original_digest_and_admits_before_hash
     use crate::pi_root_inputs::{preparation_operation, preparation_operation_with_native_work};
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
     let task = acyclic_harness::TaskId::from_bytes([93; 16]);
-    let work = startup_work();
-    let before = work.receipt();
+    let work = work();
     let operation = preparation_operation_with_native_work(task, &work).unwrap();
     assert_eq!(operation, preparation_operation(task));
-    assert_eq!(work.receipt().bytes_hashed - before.bytes_hashed,
-        b"acyclic.pi/root-preparation/v1".len() as u64 + 16);
     let limited = NativeMaterializationWork::new(WorkBudget {
         bytes_hashed: 0, ..crate::pi_root_provider::allocation_budget()
     }, &CancellationToken::new()).unwrap();

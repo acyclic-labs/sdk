@@ -1,14 +1,9 @@
 //! Shared JSON-RPC response boundary for HTTP and approved stdio.
 use super::McpToolResult;
-use crate::{Error, OperationId, Result};
+use crate::{Error, NativeWork, OperationId, Result};
 use rmcp::model::{JsonRpcRequest, RequestId};
 use serde::Deserialize;
 use serde_json::{Map, Value};
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) type NativeWork<'a> = Option<&'a acyclic_fs::NativeMaterializationWork>;
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-pub(super) type NativeWork<'a> = Option<&'a ()>;
 
 pub(super) fn rpc_result(
     mut value: Value, operation: OperationId, work: NativeWork<'_>,

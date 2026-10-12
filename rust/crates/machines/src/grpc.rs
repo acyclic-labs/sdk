@@ -957,8 +957,7 @@ impl GrpcProvider {
                                     Ok(Err(error)) if !retryable_watch_error(&error) => {
                                         return Err(watch_error(key, &error));
                                     }
-                                    // Silence, EOF and transient interruption trigger inspection of
-                                    // the same admitted operation, never a replacement mutation.
+                                    // Inspect the admitted operation after interruption; never resubmit.
                                     _ => break,
                                 }
                             }
@@ -2775,9 +2774,7 @@ mod tests {
             watch: WatchReply::Items(Vec::new()),
         };
         let (machines, shutdown, server) = serve_operation_service(service).await?;
-        // With one live dispatcher, a callsite that a concurrent test reaches
-        // first caches only that thread's (absent) interest; a second one
-        // makes every callsite consult this test's subscriber too.
+        // Two dispatchers make concurrent callsites recheck this subscriber.
         let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         let seen = Seen::default();
         let default = tracing::subscriber::set_default(
@@ -3173,10 +3170,7 @@ mod tests {
 fn retryable_observation_error(value: &tonic::Status, unknown_observations: &mut u8) -> bool {
     match value.code() {
         tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Cancelled => true,
-        // Tonic maps local readiness failures to Unknown, as a server may also
-        // do for an unreadable journal. Reconcile a brief readiness failure,
-        // but return the retained key after repeated ambiguous errors without
-        // any validated native observation. No elapsed-time failure is inferred.
+        // Repeated ambiguous errors return the retained recovery key.
         tonic::Code::Unknown => {
             *unknown_observations = unknown_observations.saturating_add(1);
             *unknown_observations < MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS

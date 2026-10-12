@@ -244,12 +244,12 @@ async fn lost_pair_ack_recovers_both_records_without_exposing_raw_source() -> Re
             .await,
         Err(Error::Storage(_))
     ));
-    assert_eq!(provider.tail_revision().await?, 2);
+    assert_eq!(provider.tail_revision(None).await?, 2);
     assert_eq!(provider.latest().await?, compacted);
     let pair = provider
         .append_compaction(0, source, compacted.clone(), reference, key)
         .await?;
-    assert_eq!(provider.tail_revision().await?, 2);
+    assert_eq!(provider.tail_revision(None).await?, 2);
     let pin = provider
         .latest_revision()
         .await?
@@ -288,12 +288,12 @@ async fn malformed_pair_receipts_preserve_exact_recovery() -> Result<()> {
                 .await,
             Err(Error::Storage(_))
         ));
-        assert_eq!(provider.tail_revision().await?, 2);
+        assert_eq!(provider.tail_revision(None).await?, 2);
         assert_eq!(provider.latest().await?, compacted);
         provider
             .append_compaction(0, source, compacted, reference, key)
             .await?;
-        assert_eq!(provider.tail_revision().await?, 2);
+        assert_eq!(provider.tail_revision(None).await?, 2);
     }
     Ok(())
 }

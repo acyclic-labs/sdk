@@ -7,23 +7,21 @@ use crate::{
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
     distributed::{ChildOperationPageRequest, DistributedCoordinator, SchedulerPayloadStore},
-    durable_tool::DurableToolRunner,
-    executor::ExecutionJournal,
-    interaction::{Interaction, InteractionOutcome},
     registry::ComponentIdentity,
     runtime::{
         BatchCancellationReport, BatchCancellationStatus, DurableBatchRequest,
         DurableEffectObserver, DurableTaskHost, InputKey, RuntimeScope, TaskAdmissionRecord,
-        TaskChild, TaskChildrenPage, TaskRegistry, ToolPolicy, check_tool_approval, read_granted,
+        TaskChild, TaskChildrenPage, TaskRegistry, ToolPolicy, read_granted,
         require_descendant_grant, validate_policy_identity, validate_task_schemas,
     },
     scheduler::{
         DurableOwner, EntrypointRef, InboxItem, OperationSpec, Orchestration, ParentLink,
         ResourceRequest,
     },
-    tool::ToolDefinition,
     workflow::MachineRegistry,
 };
+#[cfg(test)]
+use crate::{executor::ExecutionJournal, interaction::Interaction};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamKey, StreamError, StreamProvider,
@@ -200,10 +198,8 @@ pub struct CoordinatorTaskHost<P> {
     tasks: TaskRegistry,
     machines: MachineRegistry,
     clock: Arc<dyn UnixMillisClock>,
-    tools: Option<Arc<DurableToolRunner>>,
     policy: Option<Arc<dyn ToolPolicy>>,
     policy_binding: Option<ComponentIdentity>,
-    interactions: Option<Arc<dyn ExecutionJournal>>,
     effects: Option<Arc<dyn DurableEffectObserver>>,
     session_limits: Option<crate::scheduler::SessionLimits>,
     resource_creation: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
@@ -320,24 +316,6 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn fence_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation)> {
-        if !self._native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "created publication lease differs from its original SDK metadata ledger" });
-        }
-        let fence = self.fence.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Conflict, reason: "created resource task has no execution reservation",
-        })?;
-        let mut io = crate::store::history::native_work_io(work)?;
-        crate::store::history::HistoryIo::retain_owned(&mut io,
-            std::mem::size_of::<crate::scheduler::LeaseFence>() as u64)?;
-        let fence = host_fence_with_work(fence, &mut Some(&mut io))?;
-        let custody = io.into_custody();
-        Ok((fence, custody))
-    }
 }
 
 /// Original root binding cache, shared by its issued read witnesses.
@@ -366,7 +344,6 @@ impl RootBootstrapBindingWitness {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) struct TaskAdmissionReadonlyWitness<P> {
     host: Arc<CoordinatorTaskHost<P>>,
-    task: TaskId,
     admission: TaskAdmissionRecord,
     scratch: Option<crate::resource_preparation::ChildScratchCreationProof>,
     _native_custody: acyclic_fs::NativeAllocation,
@@ -374,7 +351,7 @@ pub(crate) struct TaskAdmissionReadonlyWitness<P> {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
-    pub(crate) const fn task(&self) -> TaskId { self.task }
+    pub(crate) const fn task(&self) -> TaskId { TaskId::from_bytes(self.admission.operation_id.into_bytes()) }
     pub(crate) const fn admission_operation(&self) -> OperationId {
         self.admission.operation_id
     }
@@ -416,7 +393,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
         let context = query.context();
         let scope = context.scope();
         if !self._native_custody.matches_work(work)
-            || context.durable_task_id() != Some(self.task)
+            || context.durable_task_id() != Some(self.task())
             || context.id() != self.admission.operation_id
             || scope.grants() != &self.admission.grants
             || scope.limits() != self.admission.limits
@@ -493,7 +470,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
             &self.admission.input, acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer)?;
         let supplied_digest = host_digest_with_work(
             request, acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer)?;
-        if origin.owner != self.host.owner || origin.preparation_task != self.task
+        if origin.owner != self.host.owner || origin.preparation_task != self.task()
             || self.admission.parent != Some(origin.parent_task)
             || request.child.parent != Some(origin.parent_task)
             || origin.intended_child != request.child.operation_id
@@ -730,7 +707,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 acyclic_stream::OwnedBytes::from(reader.read(file).await?)
             }
         };
-        file.descriptor().verify(&bytes)?;
+        file.descriptor().verify(&bytes, &mut None)?;
         match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
@@ -808,7 +785,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if self.readonly_original.is_some() && operation == crate::conversation::VolumeOperation::Write {
             return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "historical READ owner cannot authorize namespace WRITE"));
         }
-        volume.validate_with_work(work)?;
+        volume.validate(work)?;
         let observed = work.is_some();
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let digest = {
@@ -1603,7 +1580,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 return Err(Self::root_binding_denial(true, crate::wire::ErrorCode::Invalid,
                     "execution input file exceeds original task limits"));
             }
-        } else { self.input_limits.validate_file(file)?; }
+        } else { self.input_limits.validate_file(file, &mut None)?; }
         let mut history = io.map(crate::filesystem::PreparationIo::history_io);
         let mut work = history.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         let allowed = crate::runtime::read_granted_with_work(&self.input_grants, file, &mut work)?
@@ -2788,7 +2765,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let direct = Self::authorize_mail_route(
             event.sender, &sender_admission, receiver, &receiver_admission,
         )?;
-        receiver_admission.limits.validate_file(&event.payload)?;
+        receiver_admission.limits.validate_file(&event.payload, &mut None)?;
         if !direct && !read_granted(&receiver_admission.grants, &event.payload)? {
             return Err(Error::Unauthorized("custom parcel requires recipient file authority".into()));
         }
@@ -2815,7 +2792,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         let reference: FileRef = crate::contract::json_from_slice(&record.value)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        owner.input_limits().validate_file(&reference)?;
+        owner.input_limits().validate_file(&reference, &mut None)?;
         if record.sequence != index
             || crate::contract::canonical_json_bytes(&reference)?.as_slice() != record.value.as_ref()
         {
@@ -3027,7 +3004,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             let operation = coordinator
                 .scheduler()
-                .operation(event.operation_id)
+                .operation(event.event.operation_id())
                 .ok_or_else(|| Error::Storage("wake event operation is absent".into()))?;
             if operation.spec.owner.authority() != &self.owner {
                 continue;
@@ -3128,7 +3105,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         write!(&mut key, "task-command-wake:{task}:{revision}:{waiting}").expect("writing into String");
         let input = self.stage_payload_with_work(operation, &key, b"null", work).await?;
         let admission = self.admission_with_work(operation, work).await?;
-        admission.limits.validate_file(&input)?;
+        admission.limits.validate_file(&input, &mut None)?;
         if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
             return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                 "task cannot read its command wake"));
@@ -3179,7 +3156,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     "workflow resume input exceeds original task limits"));
             }
         }
-        admission.limits.validate_file(&input)?;
+        admission.limits.validate_file(&input, &mut None)?;
         if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
             return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                 "task cannot read its workflow resume input"));
@@ -3243,7 +3220,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let Some(input) = slot.input else {
             return Ok((None, 0));
         };
-        admission.limits.validate_file(&input)?;
+        admission.limits.validate_file(&input, &mut None)?;
         if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
             return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                 "task cannot read its retained workflow input"));
@@ -3455,7 +3432,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         io.retain_owned(std::mem::size_of::<TaskAdmissionReadonlyWitness<P>>() as u64)?;
         Ok(TaskAdmissionReadonlyWitness {
-            host: Arc::clone(self), task, admission, scratch,
+            host: Arc::clone(self), admission, scratch,
             _native_custody: io.into_custody(),
         })
     }
@@ -3997,10 +3974,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             tasks,
             machines,
             clock,
-            tools: None,
             policy: None,
             policy_binding: None,
-            interactions: None,
             effects: None,
             session_limits: None,
             resource_creation: Vec::new(),
@@ -4372,7 +4347,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let native = work.as_deref().and_then(|io| io.original_native_work()).cloned();
             let state = self.stage_payload_with_work(operation_id, &key, &bytes, work).await?;
-            state.descriptor().verify(&bytes)?;
+            state.descriptor().verify(&bytes, work)?;
             if !self.admission_bytes_match_with_work(&state, &bytes, false, work).await? {
                 return Err(admission_boundary(work, crate::wire::ErrorCode::Storage,
                     "staged task admission changed before publication"));
@@ -4482,12 +4457,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
     }
 
-    /// Installs a separately replaceable ref-only durable tool runner.
-    #[must_use]
-    pub fn with_tools(mut self, tools: Arc<DurableToolRunner>) -> Self {
-        self.tools = Some(tools);
-        self
-    }
+
 
     /// Pins the policy enforced by this owner, independently of caller contexts.
     pub fn with_policy(mut self, policy: Arc<dyn ToolPolicy>) -> Result<Self> {
@@ -4518,12 +4488,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(self)
     }
 
-    /// Binds the owner journal used to admit and reconcile addressable interactions.
-    #[must_use]
-    pub fn with_interactions(mut self, journal: Arc<dyn ExecutionJournal>) -> Self {
-        self.interactions = Some(journal);
-        self
-    }
+
 
     /// Binds the conversation-owned provider effect reconciler.
     #[must_use]
@@ -4825,10 +4790,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             reference.validate_with_native_work(native)?;
         } else {
-            reference.validate()?;
+            reference.validate(&mut None)?;
         }
         #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
-        reference.validate()?;
+        reference.validate(&mut None)?;
         if reference.descriptor().media_type() != "application/json" {
             return Err(admission_boundary(
                 work, crate::wire::ErrorCode::Invalid, "durable task payload is not JSON",
@@ -4840,7 +4805,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             None => (acyclic_stream::OwnedBytes::from(self.reader.read(reference).await?), 0),
         };
         custody.adopt(byte_retained)?;
-        reference.descriptor().verify_with_work(&bytes, custody.work())?;
+        reference.descriptor().verify(&bytes, custody.work())?;
         let (value, retained) = match custody.work().as_deref_mut() {
             Some(io) => io.decode_json_value(&bytes)?,
             None => (crate::contract::json_from_slice(&bytes)
@@ -5287,7 +5252,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation_id = OperationId::from_bytes(request.batch_id.into_bytes());
         let key = format!("batch-request:{}", request.batch_id);
         let reference = self.payloads.stage(operation_id, &key, &bytes).await?;
-        reference.descriptor().verify(&bytes)?;
+        reference.descriptor().verify(&bytes, &mut None)?;
         if self.read_json_with_work(&reference, &mut None).await.map(|(value, _)| value)? != canonical {
             return Err(Error::Storage("staged batch request changed".into()));
         }
@@ -5394,8 +5359,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, admission: &TaskAdmissionRecord, payload: &FileRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        payload.validate_with_work(work)?;
-        admission.limits.validate_file_with_work(payload, work)?;
+        payload.validate(work)?;
+        admission.limits.validate_file(payload, work)?;
         if !crate::runtime::read_granted_with_work(&admission.grants, payload, work)? {
             return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                 "mail donor cannot read its payload"));
@@ -5428,7 +5393,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Some(io) => crate::store::history::read_content_with_work(io, reader, payload).await?.0,
             None => reader.read(payload).await?,
         };
-        payload.descriptor().verify_with_work(&bytes, quota.work())?;
+        payload.descriptor().verify(&bytes, quota.work())?;
         Ok(bytes)
     }
 
@@ -5582,13 +5547,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             key
         };
-        let outcome = crate::distributed::append_keyed(
+        let outcome = crate::distributed::append(
             (stream, &self.stream),
-            OwnedBytes::copy_from_slice(bytes),
-            expected_tail,
+            [OwnedBytes::copy_from_slice(bytes)],
+            0, expected_tail,
             key,
             operation_id,
-            "control identity", &mut None
+            &mut None
         )
         .await?;
         match outcome {
@@ -6126,38 +6091,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         Box::pin(async move { self.cancel_with_work(task_id, &mut None).await })
     }
 
-    fn interact<'a>(
-        &'a self,
-        task_id: TaskId,
-        operation_id: OperationId,
-        interaction: Interaction,
-    ) -> BoxFuture<'a, Result<InteractionOutcome>> {
-        Box::pin(async move {
-            interaction.validate()?;
-            if operation_id.into_bytes() == task_id.into_bytes() {
-                return Err(Error::Invalid(
-                    "interaction operation must differ from task admission".into(),
-                ));
-            }
-            let admission = self
-                .admission_with_work(OperationId::from_bytes(task_id.into_bytes()), &mut None)
-                .await?;
-            if !admission.grants.contains(capability::INTERACTION_ROUTE) {
-                return Err(Error::Unauthorized(
-                    "task scope lacks interaction:route".into(),
-                ));
-            }
-            let journal = self.interactions.as_ref().ok_or_else(|| {
-                Error::Unsupported("durable interaction journal is not bound".into())
-            })?;
-            let id = task_interaction_id(task_id, operation_id);
-            journal.open_interaction(id, interaction).await?;
-            Ok(journal
-                .interaction_outcome(id)
-                .await?
-                .unwrap_or(InteractionOutcome::Indeterminate { operation_id }))
-        })
-    }
+
 
     fn send<'a>(
         &'a self,
@@ -6247,80 +6181,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         })
     }
 
-    fn execute_tool<'a>(
-        &'a self,
-        task_id: TaskId,
-        operation_id: OperationId,
-        definition: ToolDefinition,
-        arguments: Value,
-        scope: RuntimeScope,
-        context: crate::runtime::ToolContext,
-    ) -> BoxFuture<'a, Result<Outcome<Value>>> {
-        Box::pin(async move {
-            if operation_id.into_bytes() == task_id.into_bytes() {
-                return Err(Error::Invalid(
-                    "tool operation must differ from task admission".into(),
-                ));
-            }
-            let admission = self
-                .admission_with_work(OperationId::from_bytes(task_id.into_bytes()), &mut None)
-                .await?;
-            self.root_scope
-                .narrow(admission.grants, admission.limits)?
-                .narrow(scope.grants().clone(), scope.limits())?;
-            if context.task().durable_task_id() != Some(task_id)
-                || context.task().scope().grants() != scope.grants()
-                || context.task().scope().limits() != scope.limits()
-                || context.operation_id() != operation_id
-                || context.call_id() != operation_id.to_string()
-            {
-                return Err(Error::Unauthorized(
-                    "tool context does not match the admitted task".into(),
-                ));
-            }
-            let capability = capability::tool_call(&definition.name);
-            if !scope.grants().contains(&capability) {
-                return Err(Error::Unauthorized(format!(
-                    "task scope lacks {capability}"
-                )));
-            }
-            let tools = self
-                .tools
-                .as_ref()
-                .ok_or_else(|| Error::Unsupported("durable tool runner is not bound".into()))?;
-            if let Some(policy) = &self.policy {
-                if admission.policy.as_ref() != Some(&policy.identity()) {
-                    return Err(Error::Conflict(
-                        "durable policy changed before tool dispatch".into(),
-                    ));
-                }
-                if let Some((approval_id, request)) = context
-                    .task()
-                    .policy_approval(
-                        policy.as_ref(),
-                        &definition,
-                        &crate::tool::ToolInvocation {
-                            operation_id,
-                            call_id: operation_id.to_string(),
-                            name: definition.name.clone(),
-                            arguments: arguments.clone(),
-                        },
-                    )
-                    .await?
-                {
-                    check_tool_approval(self.interact(task_id, approval_id, request).await?)?;
-                }
-                if admission.policy.as_ref() != Some(&policy.identity()) {
-                    return Err(Error::Conflict(
-                        "durable policy changed before tool execution".into(),
-                    ));
-                }
-            }
-            tools
-                .run_with_context(task_id, operation_id, definition, arguments, context)
-                .await
-        })
-    }
+
 
     fn reconcile_effect<'a>(
         &'a self,
@@ -6803,7 +6664,7 @@ pub(crate) mod tests {
                     .get(reference.path())
                     .cloned()
                     .ok_or_else(|| Error::NotFound("payload".into()))?;
-                reference.descriptor().verify(&bytes)?;
+                reference.descriptor().verify(&bytes, &mut None)?;
                 Ok(bytes.into())
             })
         }

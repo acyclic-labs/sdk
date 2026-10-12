@@ -4383,7 +4383,7 @@ mod bindings {
                 BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().metadata,
                 BrowserResolvedFileEngine::Memory(file) => file.description().metadata,
             };
-            encode_file_metadata(metadata).map_err(js_error)
+            encode_file_metadata(metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(js_error)
         }
 
         /// Reads one exact logical range without another namespace lookup.
@@ -4753,7 +4753,7 @@ mod bindings {
             let (record, metadata_canonical_bytes) = match receipt.value {
                 Some(value) => (
                     Some(encode_file_record(value.record)),
-                    Some(encode_file_metadata(value.metadata).map_err(js_error)?),
+                    Some(encode_file_metadata(value.metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(js_error)?),
                 ),
                 None => (None, None),
             };
@@ -4809,7 +4809,7 @@ mod bindings {
                     .map_err(js_error)?
             });
             ts(BrowserMetadataResult {
-                canonical_bytes: encode_file_metadata(receipt.value).map_err(js_error)?,
+                canonical_bytes: encode_file_metadata(receipt.value, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(js_error)?,
                 work: browser_work(receipt.work),
             })
         }
@@ -4834,7 +4834,7 @@ mod bindings {
                     .map_err(js_error)?
             });
             ts(BrowserMetadataResult {
-                canonical_bytes: encode_file_metadata(receipt.value).map_err(js_error)?,
+                canonical_bytes: encode_file_metadata(receipt.value, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(js_error)?,
                 work: browser_work(receipt.work),
             })
         }
@@ -4852,7 +4852,7 @@ mod bindings {
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let metadata =
-                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
+                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
                     .map_err(js_error)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4881,7 +4881,7 @@ mod bindings {
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let metadata =
-                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
+                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
                     .map_err(js_error)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4908,7 +4908,7 @@ mod bindings {
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let metadata =
-                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
+                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
                     .map_err(js_error)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4941,7 +4941,7 @@ mod bindings {
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let metadata =
-                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
+                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
                     .map_err(js_error)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -5607,7 +5607,7 @@ mod bindings {
                     Ok(DirectoryRecordEntryResult {
                         name: entry.name.as_bytes().to_vec(),
                         record: encode_file_record(entry.record),
-                        metadata_canonical_bytes: encode_file_metadata(entry.metadata)
+                        metadata_canonical_bytes: encode_file_metadata(entry.metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed)
                             .map_err(js_error)?,
                     })
                 })
@@ -6927,10 +6927,7 @@ mod bindings {
                 canonical_bytes,
             } => AuthoredMutation::SetMetadata {
                 path: browser_path(&path, profile, limits)?,
-                metadata: decode_file_metadata(
-                    canonical_bytes.as_ref(),
-                    browser_decode_limits(limits),
-                )
+                metadata: decode_file_metadata(canonical_bytes.as_ref(), browser_decode_limits(limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
                 .map_err(js_error)?,
             },
             TransactionOperation::Resize {
