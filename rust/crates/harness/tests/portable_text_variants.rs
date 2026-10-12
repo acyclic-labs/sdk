@@ -139,7 +139,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let read_projector = read_tool.projection.clone();
     let read_definition = read_tool.definition.clone();
     let search_projector = search_tool.projection.clone();
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(read_tool)?;
     tools.register(search_tool)?;
     tools.register(files::read_file()?)?;

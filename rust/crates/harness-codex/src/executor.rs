@@ -193,7 +193,7 @@ impl CodexExecutor {
             return Ok(Vec::new());
         };
         self.tools
-            .definitions()?
+            .definitions(None)?
             .into_iter()
             .filter(|definition| {
                 scope
