@@ -424,8 +424,8 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                     .fork(
                         destination.as_str(),
                         ForkOptions::from_generation(generation.clone(), idempotency_key),
-                    )
-                    .await?;
+                    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let initial_generation = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 if child.id() != child_id {
                     return Err(WorkspaceLineageError::ConflictingRegistration);

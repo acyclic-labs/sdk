@@ -4573,11 +4573,11 @@ where
         work = account_work(work, generation.work, budget)?;
         let workspace = self
             .workspace
-            .fork_measured(
+            .fork(
                 destination,
                 ForkOptions::from_generation(generation.value, idempotency_key),
-                remaining_work(work, budget, 0)?,
-                cancellation,
+                crate::PublicationPermit::Unrestricted, remaining_work(work, budget, 0)?,
+                cancellation, |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })),
             )
             .await
             .map_err(|failure| measured_workspace_error(failure).with_prior_work(work))?;
@@ -4700,7 +4700,7 @@ where
                 let generation = work.accept(self.workspace.generation(
                     frozen.authored_generation, work.remaining()?, cancellation,
                 ).await.map_err(measured_workspace_error))?;
-                let workspace = work.accept(self.workspace.fork_measured_guarded(
+                let workspace = work.accept(self.workspace.fork(
                     destination, ForkOptions::from_generation(generation, baseline_key),
                     permit, work.remaining()?, cancellation, &mut seal_guard,
                 ).await.map_err(measured_workspace_error))?;
