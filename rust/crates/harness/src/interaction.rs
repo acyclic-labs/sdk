@@ -983,12 +983,12 @@ mod tests {
                 "interaction-private",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([8; 16])),
-            )?,
+             &mut None)?,
             path,
             "immutable-1",
-            FileDescriptor::from_bytes(bytes, "application/json")?,
+            FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
             "interaction.json",
-        )
+         &mut None)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1236,9 +1236,9 @@ mod tests {
             answer.volume().clone(),
             "answer.txt",
             "immutable-1",
-            FileDescriptor::from_bytes(response_bytes, "text/plain")?,
+            FileDescriptor::from_bytes(response_bytes, "text/plain", &mut None)?,
             "answer.txt",
-        )?;
+         &mut None)?;
         assert!(matches!(
             (InteractionResolution {
                 id: ticket.id,

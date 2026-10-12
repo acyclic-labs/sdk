@@ -129,12 +129,12 @@ mod tests {
                 "private",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([11; 16])),
-            )?,
+             &mut None)?,
             "file.txt",
             "pinned-1",
-            FileDescriptor::from_bytes(b"exact", "text/plain")?,
+            FileDescriptor::from_bytes(b"exact", "text/plain", &mut None)?,
             "file.txt",
-        )
+         &mut None)
     }
 
     #[test]
