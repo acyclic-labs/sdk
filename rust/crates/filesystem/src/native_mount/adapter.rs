@@ -10092,12 +10092,10 @@ mod tests {
         let demand = crate::demand::NativeSourceWork::from_native_materialization_work(&job).original_demand_work()
             .allocation_work();
         assert!(demand.execution.is_none());
-        let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(
-            job.reserve_work(crate::WorkCounters {
+        let credit = job.reserve_work(crate::WorkCounters {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
-            })?,
-        )?;
-        let original_work = credit.original_work().clone();
+            })?.into_runtime_credit()?;
+        let original_work = credit.work().clone();
         assert!(original_work.execution.as_ref().is_none());
         assert!(original_work.shares_ledger(&root));
         assert!(original_work.shares_resource_allowance(&volume));

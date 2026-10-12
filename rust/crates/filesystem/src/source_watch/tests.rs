@@ -385,7 +385,7 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
         .map_err(|(error, _)| error)?;
     let scope = root.native_volume_work(budget)?;
     let original = scope.original_demand_work();
-    let resource = Arc::downgrade(scope.resource_allowance().ok_or("birth resource absent")?);
+    let resource = Arc::downgrade(scope.resource.as_ref().ok_or("birth resource absent")?);
     let meter = Arc::downgrade(&original.state);
     let recorded = Arc::new(Recorded::default());
     let before = scope.receipt();
@@ -400,7 +400,7 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     assert!(Arc::ptr_eq(&birth.state, &original.state));
     assert!(Arc::ptr_eq(
         birth.resource.as_ref().ok_or("retained resource absent")?,
-        scope.resource_allowance().ok_or("birth resource absent")?,
+        scope.resource.as_ref().ok_or("birth resource absent")?,
     ));
 
     let wait = crate::CancellationToken::new();
@@ -474,7 +474,7 @@ fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cance
         .map_err(|(error, _)| error)?;
     let scope = root.native_volume_work(budget)?;
     let original = scope.original_demand_work();
-    let resource = Arc::downgrade(scope.resource_allowance().ok_or("birth resource absent")?);
+    let resource = Arc::downgrade(scope.resource.as_ref().ok_or("birth resource absent")?);
     let meter = Arc::downgrade(&original.state);
     let watch = NativeSourceWatch::start_with_work(
         &host, Arc::new(Recorded::default()), &mut NativeSourceWork::from_original_work(&original),

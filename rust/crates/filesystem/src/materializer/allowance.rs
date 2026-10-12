@@ -8,15 +8,15 @@ pub(crate) struct NativeResourceAllowance {
     pub(super) state: Mutex<NativeResourceState>,
     pub(super) self_ref: Weak<Self>,
     pub(super) parent: Option<Arc<Self>>,
-    pub(super) _root_only_metadata_guard: NativeAllocation,
+    pub(super) metadata: NativeAllocation,
 }
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct NativeResourceState {
-    pub(super) work: WorkCounters,
-    pub(super) pending: WorkCounters,
-    pub(super) live: u64,
-    pub(super) reserved_allocation_bytes: u64,
-    pub(super) poisoned: bool,
+    work: WorkCounters,
+    pending: WorkCounters,
+    live: u64,
+    reserved_allocation_bytes: u64,
+    poisoned: bool,
 }
 #[derive(Clone, Copy)]
 pub(crate) enum NativeResourceCredit {
@@ -61,14 +61,14 @@ impl NativeResourceAllowance {
         }
         Ok(state)
     }
-    fn retirement_state(&self) -> MutexGuard<'_, NativeResourceState> {
+    fn retire_state(&self) -> MutexGuard<'_, NativeResourceState> {
         self.state.lock().unwrap_or_else(|error| {
             let mut state = error.into_inner();
             state.poisoned = true;
             state
         })
     }
-    fn local_delta(
+    fn allocation_delta(
         state: &NativeResourceState,
         mut delta: WorkCounters,
         bytes: u64,
@@ -76,18 +76,19 @@ impl NativeResourceAllowance {
         delta.peak_allocation_bytes = state.live.checked_add(bytes).ok_or(WorkError::Overflow)?;
         Ok(delta)
     }
-    fn admission_delta(
+    fn check(
+        &self,
         state: &NativeResourceState,
         delta: WorkCounters,
         bytes: u64,
-    ) -> Result<WorkCounters, DemandError> {
-        Self::local_delta(
-            state,
-            delta,
-            bytes
-                .checked_add(state.reserved_allocation_bytes)
-                .ok_or(WorkError::Overflow)?,
-        )
+    ) -> Result<(), DemandError> {
+        let bytes = bytes
+            .checked_add(state.reserved_allocation_bytes)
+            .ok_or(WorkError::Overflow)?;
+        Ok(state.work.admit(
+            &Self::allocation_delta(state, delta, bytes)?,
+            &state.pending.remaining(self.budget)?,
+        )?)
     }
     pub(super) fn contains_scope(&self, other: &Self) -> bool {
         std::ptr::eq(self, other)
@@ -100,12 +101,7 @@ impl NativeResourceAllowance {
         if let Some(parent) = &self.parent {
             parent.admit(delta, bytes)?;
         }
-        let state = self.lock()?;
-        state.work.admit(
-            &Self::admission_delta(&state, delta, bytes)?,
-            &state.pending.remaining(self.budget)?,
-        )?;
-        Ok(())
+        self.check(&*self.lock()?, delta, bytes)
     }
     pub(crate) fn admission<T>(
         &self,
@@ -115,11 +111,8 @@ impl NativeResourceAllowance {
     ) -> Result<T, DemandError> {
         let mut admitted = || {
             let mut state = self.lock()?;
-            let local = Self::local_delta(&state, delta, bytes)?;
-            state.work.admit(
-                &Self::admission_delta(&state, delta, bytes)?,
-                &state.pending.remaining(self.budget)?,
-            )?;
+            self.check(&state, delta, bytes)?;
+            let local = Self::allocation_delta(&state, delta, bytes)?;
             let value = operation()?;
             state.work.try_add_assign(&local)?;
             state.live += bytes;
@@ -137,19 +130,18 @@ impl NativeResourceAllowance {
         excluded: Option<&Self>,
         operation: &mut dyn FnMut() -> Result<T, DemandError>,
     ) -> Result<T, DemandError> {
-        if excluded.is_some_and(|excluded| excluded.contains_scope(self)) {
+        if excluded.is_some_and(|scope| scope.contains_scope(self)) {
             return operation();
         }
         let mut reserved = || {
             let mut state = self.lock()?;
-            let delta = if maximum.allocation_operations == 0 {
-                maximum
+            if maximum.allocation_operations != 0 {
+                self.check(&state, maximum, bytes)?;
             } else {
-                Self::admission_delta(&state, maximum, bytes)?
-            };
-            state
-                .work
-                .admit(&delta, &state.pending.remaining(self.budget)?)?;
+                state
+                    .work
+                    .admit(&maximum, &state.pending.remaining(self.budget)?)?;
+            }
             let pending = state.pending.checked_add(maximum)?;
             let allocation = state
                 .reserved_allocation_bytes
@@ -170,26 +162,25 @@ impl NativeResourceAllowance {
             .parent
             .as_ref()
             .map_or(Ok(()), |parent| parent.completed(delta, bytes));
-        let mut state = self.retirement_state();
-        let local = Self::local_delta(&state, delta, bytes)?;
-        state.work.try_add_assign(&local)?;
+        let mut state = self.retire_state();
+        let delta = Self::allocation_delta(&state, delta, bytes)?;
+        state.work.try_add_assign(&delta)?;
         state.live += bytes;
-        let checked = if state.poisoned {
-            Err(DemandError::OriginalWorkPoisoned)
-        } else {
-            state
-                .work
-                .verify(state.pending.remaining(self.budget)?)
-                .map_err(Into::into)
-        };
+        let checked = Self::verify(&state, self.budget);
         parent.and(checked)
+    }
+    fn verify(state: &NativeResourceState, budget: WorkBudget) -> Result<(), DemandError> {
+        if state.poisoned {
+            return Err(DemandError::OriginalWorkPoisoned);
+        }
+        Ok(state.work.verify(state.pending.remaining(budget)?)?)
     }
     pub(crate) fn retire(&self, bytes: u64) -> Result<(), DemandError> {
         let parent = self
             .parent
             .as_ref()
             .map_or(Ok(()), |parent| parent.retire(bytes));
-        let mut state = self.retirement_state();
+        let mut state = self.retire_state();
         match state.live.checked_sub(bytes) {
             Some(live) => state.live = live,
             None => {
@@ -220,14 +211,14 @@ impl NativeResourceAllowance {
         unused: WorkCounters,
         excluded: Option<&Self>,
     ) -> Result<(), DemandError> {
-        if excluded.is_some_and(|excluded| excluded.contains_scope(self)) {
+        if excluded.is_some_and(|scope| scope.contains_scope(self)) {
             return Ok(());
         }
         let parent = self
             .parent
             .as_ref()
             .map_or(Ok(()), |parent| parent.refund(unused, excluded));
-        let mut state = self.retirement_state();
+        let mut state = self.retire_state();
         match unused.remaining(state.pending) {
             Ok(pending) => state.pending = pending,
             Err(error) => {
@@ -243,14 +234,14 @@ impl NativeResourceAllowance {
         actual: WorkCounters,
         excluded: Option<&Self>,
     ) -> Result<(), DemandError> {
-        if excluded.is_some_and(|excluded| excluded.contains_scope(self)) {
+        if excluded.is_some_and(|scope| scope.contains_scope(self)) {
             return Ok(());
         }
         let parent = self
             .parent
             .as_ref()
             .map_or(Ok(()), |parent| parent.complete(maximum, actual, excluded));
-        let mut state = self.retirement_state();
+        let mut state = self.retire_state();
         let pending = maximum.remaining(state.pending);
         state.work.try_add_assign(&actual)?;
         match pending {
@@ -263,15 +254,7 @@ impl NativeResourceAllowance {
         if actual.intersect_budget(maximum) != actual {
             return Err(DemandError::InvalidRequest);
         }
-        let checked = if state.poisoned {
-            Err(DemandError::OriginalWorkPoisoned)
-        } else {
-            state
-                .work
-                .verify(state.pending.remaining(self.budget)?)
-                .map_err(Into::into)
-        };
-        parent.and(checked)
+        parent.and(Self::verify(&state, self.budget))
     }
     pub(super) fn start_reserved_work<T>(
         &self,
@@ -300,7 +283,7 @@ impl NativeResourceAllowance {
         operation: &mut dyn FnMut() -> Result<T, DemandError>,
     ) -> Result<T, DemandError> {
         let mut settled = || {
-            let mut state = self.retirement_state();
+            let mut state = self.retire_state();
             if record && state.poisoned {
                 return Err(DemandError::OriginalWorkPoisoned);
             }
@@ -310,15 +293,17 @@ impl NativeResourceAllowance {
                 .reserved_allocation_bytes
                 .checked_sub(bytes)
                 .ok_or(WorkError::Overflow)?;
-            let (live, work) = if record {
-                (
-                    state.live.checked_add(bytes).ok_or(WorkError::Overflow)?,
-                    state
-                        .work
-                        .checked_add(Self::local_delta(&state, delta, bytes)?)?,
-                )
+            let live = if record {
+                state.live.checked_add(bytes).ok_or(WorkError::Overflow)?
             } else {
-                (state.live, state.work)
+                state.live
+            };
+            let work = if record {
+                state
+                    .work
+                    .checked_add(Self::allocation_delta(&state, delta, bytes)?)?
+            } else {
+                state.work
             };
             let value = operation()?;
             state.pending = pending;
@@ -336,9 +321,8 @@ impl NativeResourceAllowance {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self._root_only_metadata_guard
+        self.metadata
             .work()
-            .state(|demand| demand.with_resource_scope(Some(self.self_ref.clone()), operation))
+            .state(|state| state.with_resource_scope(Some(self.self_ref.clone()), operation))
     }
 }
-impl_original_native_read_meter!(NativeResourceAllowance);

@@ -96,12 +96,11 @@ pub(super) fn rewrite(
     Ok(match placed {
         Placed::Nothing => Replaced::Released,
         Placed::Retry => Replaced::Busy,
-        placed => Replaced::Rewritten(Box::new(WrittenEntry {
-            file_id: lookup.node.file_id,
+        placed => Replaced::Rewritten(WrittenEntry {
             owned: placed.owned(),
             facts: Some(entry.facts),
             basis,
-        })),
+        }),
     })
 }
 

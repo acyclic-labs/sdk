@@ -4,12 +4,11 @@ use std::sync::{Arc, Weak};
 pub(crate) struct NativeInvocationView {
     pub(super) cancellation: crate::CancellationToken,
     pub(super) self_ref: Weak<Self>,
-    pub(super) _metadata: NativeAllocation,
+    pub(super) metadata: NativeAllocation,
 }
 impl std::fmt::Debug for NativeInvocationView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeInvocationView")
-            .field("cancelled", &self.cancellation.is_cancelled())
             .finish_non_exhaustive()
     }
 }
@@ -23,7 +22,7 @@ impl NativeInvocationView {
         &self.cancellation
     }
     pub(crate) fn owns_resource(&self, resource: Option<&Arc<NativeResourceAllowance>>) -> bool {
-        match (&self._metadata.work().resource, resource) {
+        match (&self.metadata.work().resource, resource) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
@@ -33,17 +32,15 @@ impl NativeInvocationView {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self._metadata
+        self.metadata
             .work()
-            .state(|demand| demand.with_invocation_scope(Some(self.self_ref.clone()), operation))
+            .state(|state| state.with_invocation_scope(Some(self.self_ref.clone()), operation))
     }
 }
-impl_original_native_read_meter!(NativeInvocationView);
-
 #[cfg(feature = "native-mount")]
 pub(crate) struct NativeSourceExecutionView {
-    pub(super) _lease: crate::native_mount::NativeSourceIoLease,
-    pub(super) _metadata: NativeAllocation,
+    pub(super) lease: crate::native_mount::NativeSourceIoLease,
+    pub(super) metadata: NativeAllocation,
 }
 #[cfg(feature = "native-mount")]
 impl std::fmt::Debug for NativeSourceExecutionView {
@@ -58,11 +55,6 @@ impl NativeSourceExecutionView {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self._metadata.work().with_original_leaf(operation)
+        self.metadata.work().with_original_leaf(operation)
     }
 }
-#[cfg(feature = "native-mount")]
-impl_original_native_read_meter!(
-    NativeSourceExecutionView,
-    |view: &NativeSourceExecutionView| Some(view._metadata.work().runtime_meter())
-);

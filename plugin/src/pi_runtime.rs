@@ -211,18 +211,12 @@ where
         work.admit(WorkCounters::UNCHARGED)?;
         // Source authority data precedes its original decoder/constructor AL.
         let (agent, root_task) = authority.0.validate_with_native_work(journal, work)?;
-        let mut tools = ToolRegistry::new(work)?;
+        let (tools, custody) = ToolRegistry::new(work)?;
+        let mut tools = (tools, Some(custody));
         let builtin = super::pi_builtin::builtin_tool_definition_with_native_work(work)?;
         let executor = super::pi_builtin::builtin_tool_executor_with_native_work(work)?;
         let projection = Arc::new(acyclic_harness::tool::JsonToolProjection);
-        tools.0.register_with_native_work(
-            builtin.0,
-            builtin.1,
-            executor,
-            projection,
-            &mut tools.1,
-            work,
-        )?;
+        tools.0.register((acyclic_harness::tool::Tool { definition: builtin.0, executor, projection }, Some(builtin.1)), &mut tools.1, Some(work))?;
         let resumable_tools = acyclic_harness::durable_tool::ResumableToolRegistry::default();
         let slot = work.claim(
             std::mem::size_of::<Self>() as u64,

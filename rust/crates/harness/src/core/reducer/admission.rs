@@ -467,7 +467,7 @@ impl Reducer {
             work,
         )?;
         if let Some(observer) = work.as_deref_mut().filter(|io| !copying::is_native(*io)) {
-            let reservation = inventory::source_inventory(&event)?;
+            let reservation = event_owned_bytes(&event)?;
             if matches!(&event.payload, EventPayload::ForkPublished { .. }) {
                 observer.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
             }

@@ -2,7 +2,8 @@ use super::*;
 
 #[test]
 fn positional_io_preserves_cursor_and_bounds_ranges() -> io::Result<()> {
-    let mut file = tempfile::tempfile()?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let mut file = temporary.reopen()?;
     write_all_at(&file, 2, &[0x22; 3], None)?;
     write_all_at(&file, 16, &[0x33; 5], None)?;
     sync_file(&file, Durability::Full, None)?;
@@ -280,7 +281,8 @@ fn invalid_positional_batches_leave_contents_and_cursor_unchanged() -> io::Resul
 #[cfg(windows)]
 #[test]
 fn native_read_batch_preserves_empty_and_eof_ranges() -> io::Result<()> {
-    let file = tempfile::tempfile()?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let file = temporary.reopen()?;
     write_all_at(&file, 0, b"abc", None)?;
     let requests = [(0, 0), (3, 4), (30, 4)]
         .map(|(offset, length)| OwnedRead { offset, length })
