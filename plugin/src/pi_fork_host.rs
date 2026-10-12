@@ -415,7 +415,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 .await?;
                 source_custody = Some(custody);
                 owner
-                    .verify(false)
+                    .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                     .await?;
                 snapshot
             } else {
@@ -897,7 +897,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         .await?;
         let snapshot = frozen.0;
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))
             .await?;
         let observed = ObservedSource {
             caller: input.caller,
@@ -915,7 +915,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         )
         .await?;
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))
             .await?;
         ready(
             &PiRootSource {
@@ -982,13 +982,13 @@ pub(crate) async fn freeze_created_root_source(
         work,
         || async {
             owner
-                .verify(false)
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             provider
                 .verify_created_source(owner, key, &original.0.1, work)
                 .await?;
             owner
-                .verify(false)
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await
         },
     )
@@ -1054,7 +1054,7 @@ where
         });
     }
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let observed = physical.observe_with_native_work(work, &mut guard).await?;
     guard().await?;
@@ -1085,7 +1085,7 @@ where
         });
     }
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     drop(rebound);
     drop(observed.0);
@@ -1114,13 +1114,13 @@ pub(crate) async fn freeze_child_source<P: acyclic_stream::StreamProvider>(
         });
     }
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let checkpoint = view
         .checkpoint_projects_with_native_work(owner, work)?
         .await?;
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let mut selected = checkpoint
         .0

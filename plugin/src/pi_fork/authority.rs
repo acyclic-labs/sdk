@@ -21,7 +21,7 @@ impl<'a> PiForkCoordinator<'a> {
             self.runtime
                 .verify_owner_with_native_work(&self.owner, work)?;
             owner
-                .verify(false)
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             let (value, allocation) = host
                 .observe_admission_with_native_work(owner.task_id(), work)
@@ -249,14 +249,14 @@ impl<'a> PiForkCoordinator<'a> {
             .await
             .map_err(native_workspace_error)?;
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         let head = workspace
             .head(work, work.cancellation())
             .await
             .map_err(|error| native_workspace_error((error, None)))?;
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         acyclic_harness::resources::GenerationRef::new_with_native_work(
             volume.provider(),

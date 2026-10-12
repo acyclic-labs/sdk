@@ -31,7 +31,7 @@ impl<'a> PiForkCoordinator<'a> {
         self.validate_plan(plan, owner.task_id())?;
         self.require_original_plan(plan).await?;
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         self.admit_original(&plan.preparation, fence).await?;
         Ok(())
@@ -59,7 +59,7 @@ impl<'a> PiForkCoordinator<'a> {
         self.validate_plan(plan, owner.task_id())?;
         self.require_original_plan(plan).await?;
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         cancel.check().map_err(|_| Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
@@ -71,7 +71,7 @@ impl<'a> PiForkCoordinator<'a> {
             .await?;
         let host = self.runtime.runtime.task_host();
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         self.admit_original(&plan.preparation, fence).await?;
         if self
@@ -188,7 +188,7 @@ impl<'a> PiForkCoordinator<'a> {
             });
         }
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         Ok(Some(report))
     }
@@ -224,7 +224,7 @@ impl<'a> PiForkCoordinator<'a> {
         };
         let host = self.runtime.runtime.task_host();
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         cancel.check().map_err(|_| Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
@@ -244,7 +244,7 @@ impl<'a> PiForkCoordinator<'a> {
             });
         }
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         self.publish(
             context,
@@ -268,7 +268,7 @@ impl<'a> PiForkCoordinator<'a> {
             )
             .await?;
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         Ok(Some(prepared))
     }
@@ -304,7 +304,7 @@ impl<'a> PiForkCoordinator<'a> {
                 reason: "Pi cold child has no successful published original creator",
             })?;
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         Ok(prepared)
     }
