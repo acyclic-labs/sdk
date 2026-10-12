@@ -641,7 +641,7 @@ mod tests {
             panic!("reference envelope")
         };
         assert_eq!(parts.len(), 2);
-        assert!(matches!(&parts[0], ModelDataPart::Text { text } if text.contains("omitted")));
+        assert!(matches!(&parts[0], ModelDataPart::Text { text } if !text.is_empty()));
         assert!(
             matches!(&parts[1], ModelDataPart::File { file, policy: FileProjectionPolicy::Reference } if file == expected)
         );

@@ -169,52 +169,56 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             binding.custody.is_some() && binding.provider.supports_native_source())
     }
 
-    fn owner<'a>(&'a self, context: &'a ToolContext, tool: &'a ResumableTool, invocation: &'a ToolInvocation,
-        cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<RecursiveToolOwner<P, A, O>>> {
-        Box::pin(async move { self.authenticate_caller(context, false).await?; self.runtime(None)?.recursive_tool_owner(context, tool, invocation, cancellation, None).await })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn owner_with_native_work<'a>(&'a self, context: &'a ToolContext,
-        tool: &'a ResumableTool, invocation: &'a ToolInvocation,
-        cancellation: &'a CancellationToken, work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, (RecursiveToolOwner<P, A, O>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = super::PreparationIo::from_native_work(work)?;
-            let runtime = self.runtime(Some(&io))?;
-            let owner = runtime.recursive_tool_owner(
-                context, tool, invocation, cancellation, Some(&io),
-            ).await?;
-            self.authenticate_native_caller(
-                context.task(), owner.journal_owner.as_ref(), false, work,
-            ).await?;
-            Ok((owner, io.into_native_custody(0)?))
+    fn owner<'a>(&'a self, context: &'a ToolContext, tool: &'a ResumableTool,
+        invocation: &'a ToolInvocation, cancellation: &'a CancellationToken,
+        io: Option<&'a crate::filesystem::PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveToolOwner<P, A, O>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+                let owner = self.runtime(Some(io))?.recursive_tool_owner(context, tool, invocation, cancellation, Some(io)).await?;
+                self.authenticate_native_caller(context.task(), owner.journal_owner.as_ref(), false,
+                    io.original_native_work().expect("native source IO")).await?;
+                return Ok(owner);
+            }
+            if io.is_some() { return Err(crate::filesystem::fork_preparer_io::failure(io,
+                crate::wire::ErrorCode::Unsupported, "finite recursive source requires original native work")); }
+            self.authenticate_caller(context, false).await?;
+            self.runtime(None)?.recursive_tool_owner(context, tool, invocation, cancellation, None).await
         })
     }
-    fn select<'a>(&'a self, context: &'a ToolContext, arguments: &'a ForkToolArguments, cancellation: &'a CancellationToken)
-        -> BoxProviderFuture<'a, Result<RecursiveForkSourceIntent>> {
-        Box::pin(self.select_source(context, arguments, cancellation))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn select_with_native_work<'a>(&'a self, context: &'a ToolContext,
-        arguments: &'a ForkToolArguments, cancellation: &'a CancellationToken,
-        work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, (RecursiveForkSourceIntent, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || self.native_select_source(context, arguments, cancellation, work))
+    fn select<'a>(&'a self, context: &'a ToolContext, arguments: &'a ForkToolArguments,
+        cancellation: &'a CancellationToken, io: Option<&'a crate::filesystem::PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveForkSourceIntent>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+                let (value, custody) = self.native_select_source(context, arguments, cancellation,
+                    io.original_native_work().expect("native source IO")).await?;
+                io.absorb_native_custody(custody)?;
+                return Ok(value);
+            }
+            if io.is_some() { return Err(crate::filesystem::fork_preparer_io::failure(io,
+                crate::wire::ErrorCode::Unsupported, "finite recursive source requires original native work")); }
+            self.select_source(context, arguments, cancellation).await
+        })
     }
     fn fork<'a>(&'a self, context: &'a ToolContext, arguments: &'a ForkToolArguments,
-        intent: &'a RecursiveForkSourceIntent, original: Option<&'a RecursiveForkToolPlan>, cancellation: &'a CancellationToken)
-        -> BoxProviderFuture<'a, Result<RecursiveForkToolBinding<P, A, O>>> {
-        Box::pin(self.fork_binding(context, arguments, intent, original, cancellation))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn fork_with_native_work<'a>(&'a self, context: &'a ToolContext,
-        arguments: &'a ForkToolArguments, intent: &'a RecursiveForkSourceIntent,
-        original: Option<&'a RecursiveForkToolPlan>, cancellation: &'a CancellationToken,
-        work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, (RecursiveForkToolBinding<P, A, O>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || self.native_fork_binding(context, arguments, intent, original, cancellation, work))
+        intent: &'a RecursiveForkSourceIntent, original: Option<&'a RecursiveForkToolPlan>,
+        cancellation: &'a CancellationToken, io: Option<&'a crate::filesystem::PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveForkToolBinding<P, A, O>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+                let (value, custody) = self.native_fork_binding(context, arguments, intent, original, cancellation,
+                    io.original_native_work().expect("native source IO")).await?;
+                io.absorb_native_custody(custody)?;
+                return Ok(value);
+            }
+            if io.is_some() { return Err(crate::filesystem::fork_preparer_io::failure(io,
+                crate::wire::ErrorCode::Unsupported, "finite recursive source requires original native work")); }
+            self.fork_binding(context, arguments, intent, original, cancellation).await
+        })
     }
     fn preparation<'a>(&'a self, context: &'a TaskContext, token: &'a TaskResourcePreparation,
         cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<RetainedSourceBinding<A, O>>> {
@@ -237,17 +241,22 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     ) -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || self.native_preparation_source(context, token, cancellation, work, true))
     }
-    fn merge<'a>(&'a self, context: &'a ToolContext, arguments: &'a MergeToolArguments, original: Option<&'a RecursiveMergeToolPlan>,
-        cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<RecursiveMergeToolBinding<P, A, O>>> {
-        Box::pin(self.merge_binding(context, arguments, original, cancellation))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn merge_with_native_work<'a>(&'a self, context: &'a ToolContext,
-        arguments: &'a MergeToolArguments, original: Option<&'a RecursiveMergeToolPlan>,
-        cancellation: &'a CancellationToken, work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, (RecursiveMergeToolBinding<P, A, O>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || self.native_merge_binding(context, arguments, original, cancellation, work))
+    fn merge<'a>(&'a self, context: &'a ToolContext, arguments: &'a MergeToolArguments,
+        original: Option<&'a RecursiveMergeToolPlan>, cancellation: &'a CancellationToken,
+        io: Option<&'a crate::filesystem::PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveMergeToolBinding<P, A, O>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+                let (value, custody) = self.native_merge_binding(context, arguments, original, cancellation,
+                    io.original_native_work().expect("native source IO")).await?;
+                io.absorb_native_custody(custody)?;
+                return Ok(value);
+            }
+            if io.is_some() { return Err(crate::filesystem::fork_preparer_io::failure(io,
+                crate::wire::ErrorCode::Unsupported, "finite recursive source requires original native work")); }
+            self.merge_binding(context, arguments, original, cancellation).await
+        })
     }
 }
 

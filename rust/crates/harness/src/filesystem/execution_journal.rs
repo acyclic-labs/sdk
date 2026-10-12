@@ -1580,7 +1580,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             } else {
                 ContentGrant::verify(&self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, self.maximum_payload_bytes, &mut None)?
             };
-            self.host.read_content(reference, &grant, self.maximum_payload_bytes).await?;
+            self.host.read_content(reference, &grant, self.maximum_payload_bytes, None).await?;
         }
         Ok(())
     }
@@ -2617,19 +2617,8 @@ mod tests {
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]), Some(agent), None, &mut None).expect("scope proof");
-        let content = Arc::new(super::super::FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &scope,
-            4096, None,
-        )?);
-        let publisher = super::super::FilesystemContentPublisher::new(
-            host.clone(),
-            &volume,
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &scope,
-            4096, None,
-        )?;
+        let content = super::super::FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4096, None)?;
+        let publisher = super::super::FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4096, None)?;
         let mut aggregate = StreamAggregate::open(
             &client,
             authority.clone(),

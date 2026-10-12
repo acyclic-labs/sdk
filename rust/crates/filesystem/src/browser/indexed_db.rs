@@ -1047,7 +1047,7 @@ let result: AuthorityResult<CreateAuthorityOutcome> = async {
                 work: gate_work,
             });
         }
-        let read_work = authority_backend_read_work();
+        let read_work = authority_fixed_read_work(0);
         let head = Head::genesis(genesis_epoch);
         let encoded = encode_head(head);
         let write_work = read_work
@@ -1121,7 +1121,7 @@ let result: AuthorityResult<AppendOutcome> = async {
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let payload_bytes = self.payload_bytes(&commit, WorkCounters::default())?;
+        self.validate_payload(&commit, WorkCounters::default())?;
         let work = authority_fixed_read_work(HEAD_BYTES);
         Self::admit(work, budget)?;
         let transaction = transaction(&self.database, &[ AUTHORITY_HEADS, AUTHORITY_COMMITS, AUTHORITY_OPERATIONS, AUTHORITY_GATES, OPERATION_WINDOWS, ], TransactionMode::Readwrite)
@@ -1192,7 +1192,6 @@ let result: AuthorityResult<AppendOutcome> = async {
             epoch,
             actual,
             commit,
-            payload_bytes,
             budget,
             work,
         )?;
@@ -1338,17 +1337,189 @@ let value = context.accept(result)?;
 Ok(value)
 }
 async fn replay(&self, authority_id: AuthorityId, after: Sequence, limit: ReplayLimit, context: &mut crate::AuthorityWork<'_>) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+    if limit.records == 0 || limit.payload_bytes == 0 { return Err(AuthorityStoreError::InvalidReplayLimit); }
+    if limit.records > 4_096 { return Err(AuthorityStoreError::Rejected(format!("browser replay page has {} records; maximum is 4096", limit.records))); }
+    let head = AsyncAuthorityStore::head(self, authority_id, context).await?;
+    let budget = context.remaining()?;
+    let cancellation = context.cancellation;
+    let result: AuthorityResult<Vec<DurableCommit>> = async {
+        let mut work = WorkCounters::default();
+        if after > head.sequence { return Err(AuthorityFailure::new(AuthorityStoreError::Rejected("replay cursor is ahead of authority head".to_owned()), work)); }
+        if after == head.sequence { return Ok(crate::OperationReceipt { value: Vec::new(), work }); }
+        let requested = u64::from(limit.records).min(head.sequence.get() - after.get());
+        let maximum_payload_bytes = limit.payload_bytes;
 
-let budget = context.remaining()?;
-let cancellation = context.cancellation;
-let result: AuthorityResult<Vec<DurableCommit>> = async {
+        let start = after.checked_next().map_err(|error| {
+            AuthorityFailure::new(
+                AuthorityStoreError::Rejected(format!("replay cursor cannot advance: {error}")),
+                work,
+            )
+        })?;
+        let count = requested
+            .checked_add(u64::from(after != Sequence::GENESIS))
+            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
+        let handle_bytes = count
+            .checked_mul((size_of::<(Sequence, Blob)>() as u64))
+            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
+        let allocation_work = work
+            .checked_add(WorkCounters {
+                allocation_operations: u64::from(count != 0),
+                peak_allocation_bytes: handle_bytes,
+                ..WorkCounters::default()
+            })
+            .map_err(|error| AuthorityFailure::new(error.into(), work))?;
+        Self::admit(allocation_work, budget)
+            .map_err(|failure| AuthorityFailure::new(failure.error, work))?;
+        let mut blobs = Vec::new();
+        blobs
+            .try_reserve_exact(usize::try_from(count).map_err(|error| Self::backend(error, work))?)
+            .map_err(|error| Self::backend(error, work))?;
+        work = allocation_work;
+        let transaction = transaction(&self.database, &[AUTHORITY_COMMITS], TransactionMode::Readonly)
+            .map_err(|error| Self::backend(error, work))?;
+        let mut returned_payload_bytes = 0_u64;
+        for offset in 0..count {
+            let value = if after != Sequence::GENESIS {
+                after.get().checked_add(offset)
+            } else {
+                start.get().checked_add(offset)
+            }
+            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
+            let sequence = Sequence::new(value);
+            let prospective = work
+                .checked_add(WorkCounters {
+                    backend_read_operations: 1,
+                    ..WorkCounters::default()
+                })
+                .map_err(|error| AuthorityFailure::new(error.into(), work))?;
+            Self::admit(prospective, budget)?;
+            let blob = {
+                let commits = transaction
+                    .object_store(AUTHORITY_COMMITS)
+                    .map_err(|error| Self::backend(error, work))?;
+                Self::get_blob(
+                    &commits,
+                    &commit_key(authority_id, sequence),
+                    cancellation,
+                    prospective,
+                )
+                .await?
+                .ok_or_else(|| {
+                    Self::corrupt("contiguous authority commit is missing", prospective)
+                })?
+            };
+            work = prospective;
+            let encoded_length = Self::blob_length(&blob, work)?;
+            let payload_length =
+                authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
+            let is_predecessor = sequence == after && after != Sequence::GENESIS;
+            if !is_predecessor {
+                let next_payload = returned_payload_bytes
+                    .checked_add(payload_length)
+                    .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
+                if next_payload > maximum_payload_bytes {
+                    if returned_payload_bytes == 0 {
+                        return Err(AuthorityFailure::new(
+                            AuthorityStoreError::ReplayRecordTooLarge {
+                                observed: payload_length,
+                                maximum: maximum_payload_bytes,
+                            },
+                            work,
+                        ));
+                    }
+                    break;
+                }
+                returned_payload_bytes = next_payload;
+            }
+            blobs.push((sequence, blob));
+        }
+        drop(transaction);
 
-        self.replay_page(authority_id, after, limit, budget, cancellation)
-            .await
+        let mut previous_digest = crate::Digest::ZERO;
+        let count = blobs.len() as u64;
+        let vector_bytes = count
+            .checked_mul((size_of::<DurableCommit>() as u64))
+            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
+        let blob_vector_bytes = (blobs.capacity() as u64)
+            .checked_mul((size_of::<(Sequence, Blob)>() as u64))
+            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
+        let mut retained = vector_bytes
+            .checked_add(blob_vector_bytes)
+            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
+        let prospective = work
+            .checked_add(WorkCounters {
+                allocation_operations: u64::from(count != 0),
+                peak_allocation_bytes: retained,
+                ..WorkCounters::default()
+            })
+            .map_err(|error| AuthorityFailure::new(error.into(), work))?;
+        Self::admit(prospective, budget).map_err(|failure| AuthorityFailure::new(failure.error, work))?;
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(blobs.len())
+            .map_err(|error| Self::backend(error, work))?;
+        work = prospective;
+        for (sequence, blob) in blobs {
+            let encoded_length = Self::blob_length(&blob, work)?;
+            let payload_length = authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
+            let mut read_work = authority_commit_read_work(encoded_length, payload_length);
+            read_work.peak_allocation_bytes = retained
+                .checked_add(read_work.peak_allocation_bytes)
+                .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
+            let prospective = work
+                .checked_add(read_work)
+                .map_err(|error| AuthorityFailure::new(error.into(), work))?;
+            Self::admit(prospective, budget)?;
+            let encoded = Self::materialize_blob(
+                &blob,
+                encoded_length,
+                cancellation,
+                prospective,
+            )
+            .await?;
+            let commit = decode_commit_owned(authority_id, encoded, self.maximum_payload_bytes)
+                .map_err(|error| Self::corrupt(error, prospective))?;
+            if commit.sequence != sequence {
+                return Err(Self::corrupt(
+                    "authority commit key does not match its sequence",
+                    prospective,
+                ));
+            }
+            if sequence == after {
+                previous_digest = commit.digest;
+            } else {
+                if commit.previous_digest != previous_digest {
+                    return Err(Self::corrupt(
+                        "authority replay hash chain is discontinuous",
+                        prospective,
+                    ));
+                }
+                previous_digest = commit.digest;
+                // Bytes::slice retains the complete canonical encoded buffer.
+                retained = retained
+                    .checked_add(encoded_length)
+                    .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), prospective))?;
+                output.push(commit);
+            }
+            work = prospective;
+        }
+        if output
+            .last()
+            .is_some_and(|commit| commit.sequence == head.sequence)
+            && previous_digest != head.digest
+        {
+            return Err(Self::corrupt(
+                "authority head digest does not match its terminal commit",
+                work,
+            ));
+        }
+        Ok(crate::OperationReceipt {
+            value: output,
+            work,
+        })
 
-}.await;
-let value = context.accept(result)?;
-Ok((value, None))
+    }.await;
+    Ok((context.accept(result)?, None))
 }
 async fn fence(&self, authority_id: AuthorityId, expected: Head, context: &mut crate::AuthorityWork<'_>) -> Result<FenceOutcome, AuthorityStoreError> {
 
