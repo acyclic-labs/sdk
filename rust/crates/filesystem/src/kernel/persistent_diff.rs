@@ -4,7 +4,7 @@ use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::file_table_mutation::FileTableFormat;
 use super::persistent_btree::{Format, Page};
 use super::persistent_io::{self, OwnedPage, PageLease};
-use super::persistent_point::{Owned, absorb, retire_allocation, split_allocation};
+use super::persistent_point::{Owned, retire_allocation, split_allocation};
 use super::tree_mutation::TreeFormat;
 use super::{CanonicalDecodeError, DecodeLimits, FileRecord, LogicalName, TreeEntry};
 use crate::async_storage::AsyncObjectStore;
@@ -228,9 +228,9 @@ fn insert_value<F: Format>(
         let position = super::search::binary_search_with_accounting(&values.value, accounting, |entry| entry.key.cmp(F::key(&value.value)))?;
         if let Err(index) = position {
             values.ensure_for_push(maximum.saturating_add(1), accounting).map_err(allocation_error)?;
-            let (key, guard) = persistent_io::clone_key_with_accounting::<F>(F::key(&value.value), limits.maximum_name_bytes, accounting)?;
+            let (key, mut guard) = persistent_io::clone_key_with_accounting::<F>(F::key(&value.value), limits.maximum_name_bytes, accounting)?;
             let bytes = F::key_owned_bytes(&key);
-            absorb(&mut values.allocation, guard)?;
+            values.allocation.absorb(&mut guard)?;
             values.bytes = values.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
             values.value.insert(index, ValueChange { key, before: None, after: None });
         }
@@ -246,8 +246,8 @@ fn insert_value<F: Format>(
         drop(old);
         retire_allocation(guard, bytes, accounting)?;
     }
-    let Owned { value, allocation, bytes } = value;
-    absorb(&mut values.allocation, allocation)?;
+    let Owned { value, mut allocation, bytes } = value;
+    values.allocation.absorb(&mut allocation)?;
     values.bytes = values.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
     *destination = Some(value);
     Ok(())

@@ -33,14 +33,11 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         let mut native = match work {
             Some(work) => {
-                host.provider.validate(&mut Some(&mut crate::store::native_work_io(work)?))?;
                 Some((work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(Error::from)?,
                     crate::store::history::native_work_io(work)?))
             }
-            None => { host.provider.validate(&mut None)?; None }
+            None => None,
         };
-        #[cfg(target_arch = "wasm32")]
-        host.provider.validate(&mut None)?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut history = native.as_mut().map(|(_, io)| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]
@@ -491,8 +488,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         if volume != &self.allocation.request.volume {
             return Err(io.invalid("Root source path names another namespace"));
         }
-        if !path.is_empty() { bounded_io::validate_content_path(path, Some(io))?; }
-        if !prefix.is_empty() { bounded_io::validate_content_path(prefix, Some(io))?; }
+        if !path.is_empty() { crate::executor::with_history_io(Some(io), |work| crate::conversation::validate_content_path(path, work))?; }
+        if !prefix.is_empty() { crate::executor::with_history_io(Some(io), |work| crate::conversation::validate_content_path(prefix, work))?; }
         if crate::conversation::is_internal_path(path) || crate::conversation::is_internal_path(prefix)
             || (!prefix.is_empty() && path != prefix
                 && !path.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with('/')))
@@ -547,7 +544,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         {
             return Err(io.invalid("Root path differs from its immutable source selection or limit"));
         }
-        bounded_io::validate_content_path(path, Some(io))?;
+        crate::executor::with_history_io(Some(io), |work| crate::conversation::validate_content_path(path, work))?;
         self.authorize_path(volume, prefix, path, io)?;
         self.authenticate(volume, Some(io)).await?;
         let bytes = self.read_snapshot_bytes(snapshot, path, maximum, io).await?;

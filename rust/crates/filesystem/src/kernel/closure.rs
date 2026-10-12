@@ -1045,75 +1045,27 @@ impl<'a> ProofMeter<'a> {
     fn decode_root(
         &self, read: &crate::storage::ObjectRead, limits: DecodeLimits,
     ) -> Result<(GenerationRoot, ProofGuard), crate::FsError> {
-        self.decode_accounted(|collector| {
-            let mut admitted = 0;
-            super::generation::decode_generation_root(&read.bytes, limits, |step| {
-                use super::codec::ReadAllocationStep;
-                use super::generation::GenerationRootDecodeStep;
-                match step {
-                    GenerationRootDecodeStep::Wire(step) => collector.observe(step)?,
-                    GenerationRootDecodeStep::BeforeParentsAllocation(count) => {
-                        admitted = proof_capacity_bytes::<GenerationId>(count)?;
-                        collector.observe(ReadAllocationStep::Allocate {
-                            bytes: admitted, operations: u64::from(count != 0),
-                        })?;
-                    }
-                    GenerationRootDecodeStep::ParentsCapacity(capacity) => {
-                        collector.observe(ReadAllocationStep::Capacity {
-                            admitted_bytes: admitted,
-                            actual_bytes: proof_capacity_bytes::<GenerationId>(capacity)?,
-                        })?;
-                    }
-                    GenerationRootDecodeStep::BeforeParent => collector.admit(WorkCounters {
-                        bytes_copied: usize_to_u64(size_of::<GenerationId>()),
-                        items_examined: 1, ..WorkCounters::UNCHARGED
-                    })?,
-                    GenerationRootDecodeStep::ParentCopied => collector.record_completed(WorkCounters {
-                        bytes_copied: usize_to_u64(size_of::<GenerationId>()),
-                        items_examined: 1, ..WorkCounters::UNCHARGED
-                    })?,
-                    GenerationRootDecodeStep::ReserveFailed(error) =>
-                        collector.observe(ReadAllocationStep::ReserveFailed(error))?,
-                }
-                Ok::<(), super::file_read::ReadDecodeError>(())
-            })
+        self.decode_steps(|observe| {
+            super::generation::decode_generation_root(&read.bytes, limits, observe)
         })
     }
 
     fn decode_steps<T>(
         &self,
         decode: impl FnOnce(&mut dyn FnMut(super::codec::ReadAllocationStep)
-            -> Result<(), super::file_read::ReadDecodeError>)
-            -> Result<T, super::file_read::ReadDecodeError>,
-    ) -> Result<(T, ProofGuard), crate::FsError> {
-        self.decode_accounted(|collector| decode(&mut |step| collector.observe(step)))
-    }
-
-    // The canonical projector retains claims until parser-owned data has died.
-    fn decode_accounted<T>(
-        &self,
-        decode: impl FnOnce(&mut super::file_read::OriginalReadAccounting<'_, '_>)
-            -> Result<T, super::file_read::ReadDecodeError>,
+            -> Result<(), crate::FsError>)
+            -> Result<T, crate::FsError>,
     ) -> Result<(T, ProofGuard), crate::FsError> {
         self.owned(|accounting| {
             let mut collector = super::file_read::OriginalReadAccounting::new(accounting)?;
-            match decode(&mut collector) {
+            match decode(&mut |step| collector.observe(step)) {
                 Ok(value) => {
                     let (allocation, bytes) = collector.into_parts();
                     Ok((value, allocation, bytes))
                 }
                 Err(error) => {
                     collector.release_failed()?;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if matches!(&self.kind, ProofMeterKind::Native(_)) {
-                        return Err(error.into_original_fs_error());
-                    }
-                    Err(match error {
-                        super::file_read::ReadDecodeError::Canonical(error) => error.into(),
-                        super::file_read::ReadDecodeError::AllocationFailed(_) =>
-                            super::CanonicalDecodeError::AllocationFailed.into(),
-                        super::file_read::ReadDecodeError::Accounting(error) => error,
-                    })
+                    Err(error)
                 }
             }
         })

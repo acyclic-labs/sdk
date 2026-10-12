@@ -46,11 +46,11 @@ async fn ntfs_demand_identifies_hard_links_by_file_identity()
     std::fs::write(source.path().join("linked"), b"linked")?;
     std::fs::hard_link(source.path().join("linked"), source.path().join("alias"))?;
     let demand = NativeDemandSource::open(
-        source.path(),
+        std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
         FilesystemProfile::Windows,
-        VolumeLimits::default(), None, None,
+        VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
     )
-    .await?;
+    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut identities = Vec::new();
     for (name, links) in [("single", 1), ("linked", 2), ("alias", 2)] {
         let path = host_path_to_namespace(
@@ -86,11 +86,11 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
     let demand = Arc::new(
         NativeDemandSource::open(
-            source.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
             FilesystemProfile::Windows,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
         )
-        .await?,
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
     );
     let lazy = LazyWorkspace::attach(
         &fs,
@@ -330,11 +330,11 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     let started = Instant::now();
     let demand = Arc::new(
         NativeDemandSource::open(
-            source.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
             FilesystemProfile::Windows,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
         )
-        .await?,
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
     );
     let lazy = LazyWorkspace::attach(
         &fs,
@@ -414,11 +414,11 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     let phase_fs = Fs::local(LocalOptions::new(phase_state.path())).await?;
     let phase_demand = Arc::new(
         NativeDemandSource::open(
-            source.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
             FilesystemProfile::Windows,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
         )
-        .await?,
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
     );
     let phase_lazy = LazyWorkspace::attach(
         &phase_fs,
@@ -481,11 +481,11 @@ async fn native_lazy_workspace_lists_windows_source_directories()
     let fs = Fs::local(LocalOptions::new(store.path())).await?;
     let demand = Arc::new(
         NativeDemandSource::open(
-            source.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
             FilesystemProfile::Windows,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
         )
-        .await?,
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
     );
     let lazy = LazyWorkspace::attach_with_config(
         &fs,

@@ -2686,23 +2686,7 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
             _ => return Err(boundary(crate::wire::ErrorCode::Unauthorized, "native action acceptance requires the original running owner")),
         };
         let template = self.completion_template(journal).await?;
-        let prepared = crate::distributed::PreparedMaterializationCommit::prepare(
-            owner, template, &self.work,
-        ).await?;
-        let future = crate::NativeFutureBundle::new(&self.work, || async move {
-            let (mut journal, mut output_custody) = prepared.finish(&owner.stream()).await?;
-            match journal.custody.as_mut() {
-                Some(custody) => {
-                    if let Err(cause) = custody.absorb(&mut output_custody) {
-                        drop(journal);
-                        return Err(Error::NativeWork { cause, custody: Some(output_custody) });
-                    }
-                }
-                None => journal.custody = Some(output_custody),
-            }
-            Ok(journal)
-        })?;
-        Ok(future)
+        crate::distributed::prepare_materialization_commit(owner, template, &self.work).await
     }
 
     async fn load(&self, operation: acyclic_fs::OperationId) -> Result<Option<acyclic_fs::MaterializationJournal>> {

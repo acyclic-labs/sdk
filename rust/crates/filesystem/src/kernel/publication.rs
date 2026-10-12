@@ -320,7 +320,6 @@ pub(crate) fn decode_publication_evidence_with_accounting<'a>(
 ) -> Result<BorrowedPublicationEvidence<'a>, crate::FsError> {
     super::file_read::decode_owned(accounting, |observe| decode_publication_evidence(bytes, maximum_payload_bytes, observe))
         .map(|(value, _guard)| value)
-        .map_err(super::file_read::ReadDecodeError::into_original_fs_error)
 }
 
 /// Successful or semantically rejected generation publication.

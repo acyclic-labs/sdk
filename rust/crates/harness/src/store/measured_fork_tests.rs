@@ -497,7 +497,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let mut source_io = crate::store::history::native_work_io(&query)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let observation_scope = creator.issue("owner", &fixture.root_scope.grants(), Some(agent), None, &mut None).expect("scope proof");
-    let original_reservation = crate::distributed::original_reservation_proof_with_work(
+    let original_reservation = crate::distributed::original_reservation_proof(
         &fixture.stream, owner.root_bootstrap_owner(), &observation_scope, &creator.verifier(&mut None).expect("verifier copy"),
         original_root.operation_id, bootstrap.binding().fence(), &mut Some(&mut source_io),
     ).await?;

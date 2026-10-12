@@ -57,10 +57,13 @@ pub(crate) fn absorb(output: &mut Allocation, incoming: Allocation) -> std::io::
     Ok(())
 }
 
-#[derive(Default)]
-pub(crate) struct MemoryOutput<T> {
-    pub(crate) value: T,
-    pub(crate) allocation: Allocation,
+pin_project_lite::pin_project! {
+    #[derive(Default)]
+    pub(crate) struct MemoryOutput<T> {
+        #[pin]
+        pub(crate) value: T,
+        pub(crate) allocation: Allocation,
+    }
 }
 
 impl<T> MemoryOutput<T> {

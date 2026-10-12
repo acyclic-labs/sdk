@@ -75,7 +75,7 @@ fn session_state(binding: &PiTaskBinding) -> AdapterState {
         workspace_id: [37; 16],
         generation: acyclic_harness::resources::GenerationRef::new(
             root.scratch.volume.provider().clone(),
-            [38; 32],
+            [38; 32].into(),
             None,
         )
         .unwrap(),

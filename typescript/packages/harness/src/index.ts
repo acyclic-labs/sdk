@@ -380,10 +380,7 @@ export class Harness {
     const encoded = toBinary(
       CommandEnvelopeSchema,
       create(CommandEnvelopeSchema, {
-        protocol: create(ProtocolIdentitySchema, {
-          version: this.#protocol.version,
-          descriptorDigest: this.#protocol.descriptor_digest,
-        }),
+        protocol: create(ProtocolIdentitySchema, this.protocolIdentity()),
         authority: encodeAuthority(command.authority),
         operation: create(OperationIdentitySchema, {
           operationId: command.operation_id,
@@ -409,16 +406,21 @@ export class Harness {
     }
     const eventWire = toBinary(EventEnvelopeSchema, response.event);
     const payload: unknown = this.#contracts.decodeCanonicalJson(response.event.canonicalPayloadJson);
+    const authority = decodeAuthority(response.event.authority);
+    const scope = response.event.scope;
+    if (scope === undefined) throw new Error("event scope is missing");
     const event: Event<unknown> = {
-      authority: decodeAuthority(response.event.authority),
+      authority,
       revision: response.event.revision,
       operationId: this.#contracts.validateIdentity("operation", response.event.operationId),
       intentDigest: response.event.intentDigest,
-      scope: decodeRecordedScope(response.event.scope, this.#contracts),
+      scope: { id: scope.id, capabilities: scope.capabilities, issuer: scope.issuer,
+        agent: scope.agentId === "" ? null : this.#contracts.validateIdentity("agent", scope.agentId) },
       attestation: response.event.attestation,
       ...(response.event.causalParent === undefined
         ? {}
-        : { causalParent: decodeReference(response.event.causalParent) }),
+        : { causalParent: { authority: decodeAuthority(response.event.causalParent.authority),
+          revision: response.event.causalParent.revision } }),
       payload,
     };
     return response.state === ApplyState.APPLIED
@@ -465,26 +467,4 @@ function encodeReference(reference: EventReference) {
     throw new TypeError("event reference revision must be a non-negative bigint");
   }
   return create(EventReferenceSchema, { authority: encodeAuthority(reference.authority), revision: reference.revision });
-}
-
-function decodeReference(reference: {
-  authority?: { kind: number; id: string } | undefined;
-  revision: bigint;
-}): EventReference {
-  return { authority: decodeAuthority(reference.authority), revision: reference.revision };
-}
-
-function decodeRecordedScope(scope: {
-  id: string;
-  capabilities: string[];
-  issuer: string;
-  agentId: string;
-} | undefined, contracts: NativeContracts): RecordedScope {
-  if (scope === undefined) throw new Error("event scope is missing");
-  return {
-    id: scope.id,
-    capabilities: scope.capabilities,
-    issuer: scope.issuer,
-    agent: scope.agentId === "" ? null : contracts.validateIdentity("agent", scope.agentId),
-  };
 }

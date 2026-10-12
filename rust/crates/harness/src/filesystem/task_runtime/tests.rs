@@ -267,7 +267,7 @@ impl Fixture {
     async fn admit_only(&self, runtime: &Runtime, kind: &str, command: Value) -> Result<OperationId> {
         let operation = OperationId::from_bytes([104; 16]);
         let payloads = FilesystemSchedulerPayloadStore::new(self.filesystem.clone(), &(self.volume), &self.issuer.verifier(&mut None).expect("verifier copy"), &self.signed, 65_536, None)?;
-        let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(&command)?).await?;
+        let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(&command)?, None)?.await?;
         let definition = self.tasks.get_version::<Value, Value>("test.deadline", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         let input = json!({"command":WorkflowCommand {
             operation_id: OperationId::from_bytes([105; 16]),
@@ -507,7 +507,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         runtime.task_host().start_task(&lease, None).await?;
         let fence = LeaseFence::from(&lease.reservation);
         let turn = OperationId::from_bytes([106; 16]);
-        let model = Model::new("synthetic", "deadline", "1", Value::Null)?;
+        let model = Model::new("synthetic".into(), "deadline".into(), "1".into(), Value::Null)?;
         let provider = Arc::new(PendingModel {
             clock: fixture.clock.clone(),
             generated: AtomicUsize::new(0),
@@ -545,7 +545,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         } else {
             assert!(execution.reconcile(input, 1_000).await?.is_some());
             assert_eq!(provider.reconciled.load(Ordering::SeqCst), 1);
-            assert!(reopened.execution_journal(task, fence, turn).await?.is_quiescent().await?);
+            assert!(reopened.execution_journal(task, fence, turn).await?.is_quiescent(None).await?);
         }
         assert_eq!(provider.generated.load(Ordering::SeqCst), usize::from(!expired_before_dispatch));
         assert!(reopened.task_host().observe_task(task).await?.outcome.is_none());
@@ -559,7 +559,7 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
     let runtime = fixture.runtime().await?;
     let task = TaskId::from_bytes([104; 16]);
     let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, 65_536, None)?;
-    let file = payloads.stage(OperationId::from_bytes([106; 16]), "mail-body", b"7").await?;
+    let file = payloads.stage(OperationId::from_bytes([106; 16]), "mail-body", b"7", None)?.await?;
     let lease = fixture.admit_command(
         &runtime, super::super::MAIL_SEND_TASK_COMMAND_KIND,
         serde_json::to_value(&super::super::MailSendTaskCommand { recipient:task, payload:file })
@@ -845,7 +845,7 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     let provider = Arc::new(PendingModel {
         clock: Arc::clone(&fixture.clock), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
     });
-    let model = Model::new("synthetic", "deadline", "1", Value::Null)?;
+    let model = Model::new("synthetic".into(), "deadline".into(), "1".into(), Value::Null)?;
     let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -915,7 +915,7 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
     let provider = Arc::new(PendingModel {
         clock: Arc::clone(&fixture.clock), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
     });
-    let model = Model::new("synthetic", "deadline", "1", Value::Null)?;
+    let model = Model::new("synthetic".into(), "deadline".into(), "1".into(), Value::Null)?;
     let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -941,7 +941,7 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
 async fn native_stock_model_configuration_denies_before_copy_or_provider_on_original_work() -> Result<()> {
     let fixture = Fixture::new().await?;
     let runtime = fixture.runtime().await?;
-    let model = Model::new("synthetic", "original-config", "1", serde_json::json!({"configured": true}))?;
+    let model = Model::new("synthetic".into(), "original-config".into(), "1".into(), serde_json::json!({"configured": true}))?;
     let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let provider = Arc::new(PendingModel {
@@ -971,7 +971,7 @@ async fn native_stock_model_configuration_denies_before_copy_or_provider_on_orig
 async fn native_stock_model_configuration_retains_original_custody_and_rejects_foreign_rebinding() -> Result<()> {
     let fixture = Fixture::new().await?;
     let runtime = fixture.runtime().await?;
-    let model = Model::new("synthetic", "original-config", "1", json!({"configured": "retained"}))?;
+    let model = Model::new("synthetic".into(), "original-config".into(), "1".into(), json!({"configured": "retained"}))?;
     let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let provider = Arc::new(PendingModel {

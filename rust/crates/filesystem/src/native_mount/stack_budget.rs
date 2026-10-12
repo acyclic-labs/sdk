@@ -223,7 +223,7 @@ async fn lazy_workspace(
     } else {
         FilesystemProfile::Posix
     };
-    let demand = NativeDemandSource::open(&source_root, profile, VolumeLimits::default(), None, None).await?;
+    let demand = NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()), profile, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let engine = Fs::local(LocalOptions::new(root.join("state"))).await?;
     let lazy = Arc::new(
         LazyWorkspace::attach(
@@ -271,7 +271,7 @@ fn measure_common(view: &dyn MountFilesystem, measurements: &mut Measurements) -
         measurements.measure("read-pinned", || view.read_range(&read, 0, CONTENT))?;
     }
     measurements.measure("create", || {
-        view.create_file(&path("created.txt"), FileMetadata::default())
+        view.create_file(&path("created.txt"), FileMetadata::default(), None, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
     })?;
     let created = view.open_file(&path("created.txt"))?;
     measurements.measure("write", || {
@@ -378,7 +378,7 @@ async fn checkout_callbacks_fit_their_stack_budgets() -> TestResult {
                 super::adapter::boundary(authored.cancellation(), |work| authored.create_directory(&directory, FileMetadata::default(), work))?;
             }
         }
-        authored.create_file(&file, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(authored.cancellation(), |work| authored.create_file(&file, FileMetadata::default(), None, work))?;
         authored
             .open_file(&file)?
             .write_range(0, Bytes::from(vec![7_u8; CONTENT as usize]))?;

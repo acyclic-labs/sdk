@@ -308,7 +308,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
                 key, key_owned, work);
             crate::distributed::add_condition(&mut request, CommitCondition::Absent { path: path.clone() })?;
             crate::distributed::add_record(&mut request, path.clone(), bytes.clone())?;
-            crate::distributed::commit(request, client, None, None, None, None).await?
+            crate::distributed::commit(request, client, None, None).await?
         } else {
             let mut conditions = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
             reserve_chunk_slot(&mut conditions, 1, work)?;

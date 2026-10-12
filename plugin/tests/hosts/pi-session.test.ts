@@ -20,10 +20,10 @@ export default function (pi) {
 }
 `;
 
-function probeArguments(session: string, extension: string, model = "probe") {
+function probeArguments(session: string, extension: string) {
   return [
     "--print", "--mode", "text", "--session", session,
-    "--provider", "acyclic-qualification", "--model", model,
+    "--provider", "acyclic-qualification", "--model", "probe",
     "--no-extensions", "--no-mcp", "--no-builtin-tools", "-e", extension,
   ];
 }
