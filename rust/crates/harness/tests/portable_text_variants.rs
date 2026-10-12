@@ -349,8 +349,8 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             );
             assert_eq!(reader.reads.load(Ordering::SeqCst), before);
             for wrong in [
-                ToolContext::new(context.clone(), OperationId::new(), "retained-read")?,
-                ToolContext::new(context.clone(), invocation.operation_id, "different-call")?,
+                ToolContext::new(std::sync::Arc::new(context.clone()), OperationId::new(), "retained-read", None)?,
+                ToolContext::new(std::sync::Arc::new(context.clone()), invocation.operation_id, "different-call", None)?,
             ] {
                 assert!(matches!(
                     executor
@@ -390,7 +390,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
         ]),
         Limits::default(),
     )?;
-    let runtime = bindings.build()?;
+    let runtime = bindings.build(None)?;
     let task = runtime.task::<(), ()>("fixture.text_variants")?;
     assert_eq!(
         runtime.spawn(&task, ()).await?.result().await?,
