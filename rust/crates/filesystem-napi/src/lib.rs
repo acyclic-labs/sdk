@@ -1230,7 +1230,7 @@ pub struct NativeWatcher {
 struct PendingWatchBatch {
     batch: WatchBatch,
     poll_work: acyclic_fs::WorkCounters,
-    capture: Option<WatchCaptureReceipt>,
+    capture: Option<acyclic_fs::OperationReceipt<WatchCaptureReceipt>>,
     operation_id: OperationId,
 }
 
@@ -2941,8 +2941,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .create_dir_all(&path)
-            .await
+            .create_dir_all(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -2956,8 +2956,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .create_directory(&path)
-            .await
+            .create_directory(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -2971,8 +2971,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .create_symbolic_link(&path, bytes::Bytes::from(target.to_vec()))
-            .await
+            .create_symbolic_link(&path, bytes::Bytes::from(target.to_vec()), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -2986,8 +2986,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .write(&path, bytes::Bytes::from(bytes.to_vec()))
-            .await
+            .write(&path, bytes::Bytes::from(bytes.to_vec()), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -3001,8 +3001,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .remove(&path)
-            .await
+            .remove(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -3046,8 +3046,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .hard_link(&source, &destination)
-            .await
+            .hard_link(&source, &destination, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -3064,9 +3064,8 @@ impl NativeWorkspaceTransaction {
             .write_range(
                 &path,
                 bigint_u64(&offset, "offset")?,
-                bytes::Bytes::from(bytes.to_vec()),
-            )
-            .await
+                bytes::Bytes::from(bytes.to_vec()), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -6508,10 +6507,7 @@ impl NativeWatcher {
                 .map_err(napi_error)?;
         }
         let receipt = if let Some(capture) = pending.capture {
-            acyclic_fs::OperationReceipt {
-                value: capture,
-                work: capture.capture.work,
-            }
+            capture
         } else {
             let expected_root_identity =
                 lock_state(&self.inner, "native watcher state")?.root_identity();
@@ -6531,7 +6527,7 @@ impl NativeWatcher {
             .await
             .map_err(napi_error)?;
             if let Some(retained) = lock_state(&self.pending, "native watcher state")?.as_mut() {
-                retained.capture = Some(receipt.value);
+                retained.capture = Some(receipt.clone());
             }
             receipt
         };

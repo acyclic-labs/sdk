@@ -332,7 +332,7 @@ impl HttpStream {
                 )))
             },
         );
-        Ok(obs::Scoped { inner: Some(follow), context: (!context.is_disabled()).then_some(context) }.boxed())
+        Ok(obs::Scoped::with_context(follow, (!context.is_disabled()).then_some(context)).boxed())
     }
     async fn commit_request(
         &self,

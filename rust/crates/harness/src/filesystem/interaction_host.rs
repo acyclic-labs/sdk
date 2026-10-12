@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 /// Stages participant data privately and commits only references to one conversation history.
 pub struct FilesystemInteractionHost<P, A, O> {
-    stream: Arc<P>,
+    stream: acyclic_stream::StreamClient<P>,
     host: Arc<FilesystemHost<A, O>>,
     authority: Authority,
     verifier: AuthorityVerifier,
@@ -65,7 +65,6 @@ impl PreparationRecord for Interaction {
 }
 
 impl PreparationRecord for InteractionResponse {
-    fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
     fn diagnostic_label_bytes() -> u64 {
         crate::contract::preparation_serde_diagnostic_label_bytes() + INTERACTION_DIAGNOSTIC_LABEL_BYTES
     }
@@ -203,18 +202,18 @@ where
         let verifier = verifier.copy(&mut work)?;
         let owner_scope = owner_scope.copy(&mut work)?;
         let private_volume = private_volume.copy(&mut work)?;
-        let schemas = schemas.clone_with_work(&mut work)?;
+        let schemas = schemas.copy(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
             Some(io) => {
-                io.claim(std::mem::size_of::<Self>() as u64)?;
+                io.retain_owned(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                     .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                         "interaction host custody underflows"))?)?)
             }
             None => None,
         };
-        Ok(Self { stream, host, authority, verifier, schemas, owner_scope, private_volume,
+        Ok(Self { stream: acyclic_stream::StreamClient::new(stream), host, authority, verifier, schemas, owner_scope, private_volume,
             maximum_bytes, #[cfg(not(target_arch = "wasm32"))] _native_metadata })
     }
 
@@ -248,7 +247,7 @@ where
             deadline_unix_ms,
             approval,
         };
-        ticket.validate_with_work(&mut borrowed.as_mut().map(
+        ticket.validate(&mut borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo))?;
         Ok(ticket)
     }
@@ -267,7 +266,7 @@ where
         let copied = acyclic_fs::WorkCounters { bytes_copied: length as u64, ..Default::default() };
         if let Some(io) = io {
             io.preflight(copied)?;
-            io.claim(length as u64)?;
+            io.retain_owned(length as u64)?;
             io.allocation_attempt(length as u64)?;
         }
         let mut kind = String::with_capacity(length);
@@ -318,10 +317,7 @@ where
                     "interaction attempt custody underflows"))?)).transpose()?;
             let command = Command { operation_id, idempotency_key, expected_revision,
                 scope, causal_parent: None, action: Action::OpenInteraction { ticket: command_ticket } };
-            let result = match owner {
-                Some(owner) => aggregate.execute_task_command_with_work(command, owner, &mut work).await,
-                None => aggregate.execute_with_work(command, &mut work).await,
-            };
+            let result = aggregate.execute(command, owner, &mut work).await;
             drop(aggregate);
             drop(attempt_hold);
             match result {
@@ -377,7 +373,7 @@ where
         let command = Command {
             operation_id, idempotency_key, expected_revision, scope, causal_parent: None, action: Action::ResolveInteraction { resolution },
         };
-        let result = aggregate.execute_with_work(command, &mut work).await;
+        let result = aggregate.execute(command, None, &mut work).await;
         drop(aggregate);
         drop(aggregate_hold);
         drop(command_hold);
@@ -548,22 +544,20 @@ where
         };
         let request = match io {
             Some(io) => {
-                ContentGrant::verify_original_volume_with_io(&self.verifier, &self.owner_scope,
-                    ticket.request.volume(), VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(&self.verifier, &self.owner_scope, ticket.request.volume(), VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
                 let bytes_hold;
                 let bytes = self.host.read_pinned_io(&ticket.request, self.maximum_bytes, Some(io)).await?;
                 bytes_hold = io.guard_bytes(&bytes)?;
                 let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
                 let mut borrowed = io.history_io();
-                ticket.validate_decoded_request_with_work(&request, &mut Some(&mut borrowed))?;
-                let request = request.into_retained();
+                ticket.validate_decoded_request_with_work(&request.0, &mut Some(&mut borrowed))?;
+                let request = crate::filesystem::retain_decoded(request);
                 drop(bytes);
                 drop(bytes_hold);
                 request
             }
             None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
-                    ticket.request.volume(), VolumeOperation::Read)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, ticket.request.volume(), VolumeOperation::Read, u64::MAX, &mut None)?;
                 let bytes = self.host.read_content(&ticket.request, &grant, self.maximum_bytes).await?;
                 ticket.validate_request_bytes(&bytes)?
             }
@@ -600,13 +594,11 @@ where
     ) -> Result<acyclic_stream::OwnedBytes> {
         match io {
             Some(io) => {
-                ContentGrant::verify_original_volume_with_io(&self.verifier, &self.owner_scope,
-                    reference.volume(), VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(&self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
                 self.host.read_pinned_io(reference, self.maximum_bytes, Some(io)).await
             }
             None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
-                    reference.volume(), VolumeOperation::Read)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read, u64::MAX, &mut None)?;
                 self.host.read_content(reference, &grant, self.maximum_bytes).await
             }
         }
@@ -647,8 +639,8 @@ where
         let request = match io {
             Some(io) => {
                 let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
-                ticket.validate_decoded_request_with_work(&request, &mut work)?;
-                request.into_retained()
+                ticket.validate_decoded_request_with_work(&request.0, &mut work)?;
+                crate::filesystem::retain_decoded(request)
             }
             None => ticket.validate_request_bytes(&bytes)?,
         };
@@ -672,10 +664,10 @@ where
                 Some(io) => {
                     let response = io.decode_preparation::<InteractionResponse>(&bytes, crate::wire::ErrorCode::Storage)?;
                     ticket.validate_decoded_decision_with_work(
-                        &request, &resolution.outcome, detail, &response, &mut work)?;
+                        &request, &resolution.outcome, detail, &response.0, &mut work)?;
                 }
                 None => ticket.validate_decision_bytes(
-                    &request, &resolution.outcome, detail, &bytes)?,
+                    &request, &resolution.outcome, detail, &bytes, &mut None)?,
             }
             drop(bytes);
             drop(detail_bytes_hold);
@@ -698,13 +690,13 @@ where
         };
         let aggregate_verifier = self.verifier.copy(&mut work)?;
         if let Some(io) = io {
-            io.claim(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
+            io.retain_owned(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
             io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
         }
         let content_verifier = FilesystemContentVerifier::new(Arc::clone(&self.host), &self.verifier, &self.owner_scope, self.maximum_bytes, io)?;
         let content_verifier = Arc::new(content_verifier);
-        let aggregate = StreamAggregate::open_with_read_limits_with_work(
-            &self.stream, authority, aggregate_verifier, self.schemas.clone(), crate::store::default_projection_read_limits(), &mut work).await?.with_content_verifier(content_verifier);
+        let aggregate = StreamAggregate::open(
+            &self.stream, authority, aggregate_verifier, self.schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut work).await?.with_content_verifier(content_verifier);
         let agent = aggregate
             .reducer()
             .conversation()
@@ -749,8 +741,7 @@ where
                 "application/json", &name, self.maximum_bytes, &key,
                 InternalContentClass::Interaction, io).await,
             None => {
-                let grant = ContentGrant::verify(
-                    &self.verifier, &self.owner_scope, &self.private_volume, VolumeOperation::Write)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, &self.private_volume, VolumeOperation::Write, u64::MAX, &mut None)?;
                 self.host.put_internal_content(&self.private_volume, &grant, &path, &bytes,
                     "application/json", &name, self.maximum_bytes, &key,
                     InternalContentClass::Interaction).await
@@ -797,7 +788,7 @@ fn interaction_text(
     let copied = acyclic_fs::WorkCounters { bytes_copied: length as u64, ..Default::default() };
     if let Some(io) = io {
         io.preflight(copied)?;
-        io.claim(length as u64)?;
+        io.retain_owned(length as u64)?;
         io.allocation_attempt(length as u64)?;
     }
     let mut text = String::with_capacity(length);

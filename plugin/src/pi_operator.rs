@@ -128,8 +128,7 @@ pub(crate) fn build_control_request(owner: &PiOwnerConfig, cwd: PathBuf,
     let hash_custody = body_hash(&body, work)?;
     let hash = &hash_custody.0;
     let authority = owner.authority()?;
-    let operator = authority.issuer.root_for_agent(owner.policy().agent,
-        format!("pi:operator:{}:{hash}", body.session()), Capabilities::new([capability(&body, &hash)]));
+    let operator = authority.issuer.issue(&format!("pi:operator:{}:{hash}", body.session()), &Capabilities::new([capability(&body, &hash)]), Some(owner.policy().agent), None, &mut None).expect("scope proof");
     let session_id = body.session().to_owned();
     let event = match &body { PiOperatorBody::Inspect { .. } => "OperatorInspect", PiOperatorBody::Approval { .. } => "OperatorApproval" };
     let request = PiOperatorRequest { session_id, body, operator };

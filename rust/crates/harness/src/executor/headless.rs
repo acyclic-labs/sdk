@@ -40,7 +40,7 @@ impl StockExecution<'_> {
         let retained = retained_model_step(
             journal, &records, step, ModelPurpose::Response, self.stock.limits, self.io(),
         ).await?;
-        if !retained.admission.completed() {
+        if !retained.admission.completed {
             return Err(Error::Indeterminate(input.operation_id));
         }
         let mut messages = Vec::new();
