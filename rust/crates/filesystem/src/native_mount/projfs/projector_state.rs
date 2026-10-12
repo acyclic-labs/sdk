@@ -7,10 +7,8 @@ pub(super) struct Materialized {
 
 pub(super) const MATERIALIZE_WORKERS: usize = 8;
 
-pub(super) struct SharedProjection<'a>(pub(super) Projection<'a>);
-
 // SAFETY: the shared runtime synchronizes mutations and retains the SDK context.
-unsafe impl Sync for SharedProjection<'_> {}
+unsafe impl Sync for Projection<'_> {}
 
 pub(super) struct MaterializeQueue {
     pub(super) state: Mutex<MaterializeProgress>,

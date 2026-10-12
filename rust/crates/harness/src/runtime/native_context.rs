@@ -408,7 +408,7 @@ impl NativeTaskContext {
     #[cfg(feature = "native-execution")]
     pub async fn bind_root_output_context_with_native_work(
         &self,
-        source: crate::filesystem::NativeRootOutputSource,
+        source: Arc<crate::filesystem::NativeRootOutputSource>,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         self.context.require_original_native_dispatch(work)?;
@@ -425,7 +425,6 @@ impl NativeTaskContext {
         if installed.is_some() {
             return Ok(());
         }
-        let source = source.into_native_shared(work)?;
         let content = source.retained_content_binding();
         let binding = (source, content);
         if let Err(binding) = self.context.native_root_output.set(binding) {
@@ -631,7 +630,7 @@ impl ToolContext {
                 work,
             )
             .await?;
-        view.read_builtin_file(self.operation_id, relative, maximum, work)?
+        view.read_builtin_file(relative, maximum, work)?
             .await
     }
 
@@ -662,7 +661,6 @@ impl ToolContext {
             )
             .await?;
         view.write_builtin_file(
-            self.operation_id,
             relative,
             content,
             create_parents,

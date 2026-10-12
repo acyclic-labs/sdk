@@ -1,12 +1,5 @@
 use super::*;
 
-#[derive(Clone, Copy)]
-pub(super) struct AttributeDefaults {
-    pub(super) writable: bool,
-    pub(super) mount_uid: u32,
-    pub(super) mount_gid: u32,
-}
-
 pub(super) struct Resolved {
     pub(super) lookup: MountLookup,
     pub(super) stamp: Option<ViewStamp>,
@@ -14,6 +7,7 @@ pub(super) struct Resolved {
 }
 
 pub(super) enum NodeFacts {
+    Current(Resolved),
     Handle(FuseOpenFile),
     Names {
         file_id: Option<crate::FileId>,
@@ -43,13 +37,8 @@ impl ChildName {
             .transpose()?;
         Ok(Self { spelled, folded })
     }
-
     pub(super) fn key(&self) -> &MountPath {
         self.folded.as_deref().unwrap_or(&self.spelled)
-    }
-
-    pub(super) fn is_exact(&self) -> bool {
-        self.folded.is_none()
     }
 }
 
@@ -59,12 +48,14 @@ pub(super) struct Entry {
 }
 
 pub(super) struct ProjectionState {
-    pub(super) defaults: AttributeDefaults,
+    pub(super) writable: bool,
+    pub(super) mount_uid: u32,
+    pub(super) mount_gid: u32,
     pub(super) next_inode: u64,
     pub(super) next_handle: u64,
     pub(super) by_inode: HashMap<u64, InodeEntry>,
     pub(super) inode_by_path: HashMap<FuseOwned<MountPath>, u64>,
-    pub(super) inode_by_file: HashMap<crate::FileId, u64>,
+    pub(super) inode_by_file: HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
     pub(super) files: HashMap<u64, FileHandle>,
     pub(super) implicit: HashMap<u64, (u64, crate::NativeAllocation)>,
     pub(super) streams: DirectoryStreams,
@@ -73,9 +64,11 @@ pub(super) struct ProjectionState {
 }
 
 impl ProjectionState {
-    pub(super) fn new(defaults: AttributeDefaults) -> Self {
+    pub(super) fn new(writable: bool, mount_uid: u32, mount_gid: u32) -> Self {
         Self {
-            defaults,
+            writable,
+            mount_uid,
+            mount_gid,
             next_inode: ROOT_INODE + 1,
             next_handle: 1,
             by_inode: HashMap::new(),
@@ -94,13 +87,6 @@ impl ProjectionState {
             .get(&inode)
             .and_then(|entry| entry.bindings.first())
             .map(|binding| &*binding.path)
-            .ok_or(libc::ESTALE)
-    }
-
-    pub(super) fn node(&self, inode: u64) -> Result<MountNode, i32> {
-        self.by_inode
-            .get(&inode)
-            .map(|entry| entry.lookup.node)
             .ok_or(libc::ESTALE)
     }
 
@@ -125,7 +111,7 @@ impl ProjectionState {
     }
 
     pub(super) fn admit_write(&self) -> Result<(), i32> {
-        self.defaults.writable.then_some(()).ok_or(libc::EROFS)
+        self.writable.then_some(()).ok_or(libc::EROFS)
     }
 
     pub(super) fn intern(
@@ -151,21 +137,23 @@ impl ProjectionState {
                     .is_some_and(|binding| binding.kernel.is_some()),
                 None => false,
             };
-            if held {
-                if let Some(parent) = fuse_parent(&path, work)? {
-                    if let Some(parent) = self.inode_by_path.get(&*parent).copied() {
-                        let name =
-                            fuse_copy_bytes(path.components().last().ok_or(libc::ESTALE)?, work)?;
-                        fuse_reserve(&mut self.invalidation.deferred, 1, work)?;
-                        self.invalidation
-                            .deferred
-                            .push(KernelCacheItem::Entry { parent, name });
-                    }
-                }
+            if held
+                && let Some(parent) = fuse_parent(&path, work)?
+                && let Some(parent) = self.inode_by_path.get(&*parent).copied()
+            {
+                let name = fuse_copy_bytes(path.components().last().ok_or(libc::ESTALE)?, work)?;
+                fuse_reserve(&mut self.invalidation.deferred, 1, work)?;
+                self.invalidation
+                    .deferred
+                    .push(KernelCacheItem::Entry { parent, name });
             }
             self.remove_binding(previous, &path, work)?;
         }
-        if let Some(inode) = self.inode_by_file.get(&lookup.node.file_id).copied() {
+        if let Some(inode) = self
+            .inode_by_file
+            .get(&lookup.node.file_id)
+            .map(|(inode, _)| *inode)
+        {
             forget_unbound_names(
                 &mut self.by_inode,
                 &mut self.inode_by_path,
@@ -211,7 +199,7 @@ impl ProjectionState {
         let Some(entry) = self
             .inode_by_file
             .get(&file_id)
-            .and_then(|inode| self.by_inode.get(inode))
+            .and_then(|(inode, _)| self.by_inode.get(inode))
         else {
             return Ok(names);
         };
@@ -220,10 +208,10 @@ impl ProjectionState {
             if *binding.path == *path {
                 continue;
             }
-            if let Some(stamp) = binding.verified {
-                if source.unchanged_since_with_meter(&binding.path, None, stamp, work)? {
-                    continue;
-                }
+            if let Some(stamp) = binding.verified
+                && source.unchanged_since_with_meter(&binding.path, None, stamp, work)?
+            {
+                continue;
             }
             let name = fuse_clone_path(&binding.path, work)?;
             fuse_reserve(&mut names, 1, work)?;
@@ -263,22 +251,18 @@ impl ProjectionState {
         if forgotten && let Some(implicit) = self.implicit.remove(&inode) {
             let _ = self.discard_file_handle(inode, implicit.0);
         }
-        let remove = self
+        if self
             .by_inode
             .get(&inode)
-            .is_some_and(|entry| entry.lookup_references == 0 && entry.open_handles == 0);
-        if remove && let Some(mut entry) = self.by_inode.remove(&inode) {
+            .is_some_and(|entry| entry.lookup_references == 0 && entry.open_handles == 0)
+            && let Some(entry) = self.by_inode.remove(&inode)
+        {
             for binding in entry.bindings.iter() {
                 if self.inode_by_path.get(&binding.path) == Some(&inode) {
                     self.inode_by_path.remove(&binding.path);
                 }
             }
-            forget_file(
-                &mut self.inode_by_file,
-                entry.lookup.node.file_id,
-                inode,
-                &mut entry.identity_storage,
-            );
+            forget_file(&mut self.inode_by_file, entry.lookup.node.file_id, inode);
         }
     }
 
@@ -339,7 +323,7 @@ impl ProjectionState {
         work: &crate::NativeMaterializationWork,
     ) -> Result<Duration, NativeMountError> {
         let attributes = self.admit_attributes(source, inode, stamp, work)?;
-        if !name.is_exact() {
+        if name.folded.is_some() {
             return Ok(Duration::ZERO);
         }
         let Some(entry) = self.by_inode.get(&inode) else {
@@ -352,16 +336,12 @@ impl ProjectionState {
             stamp,
             work,
         )?;
-        if let Some(entry) = self.by_inode.get_mut(&inode) {
-            if let Some(binding) = entry.binding_mut(name.key(), work)? {
-                hold(&mut binding.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
-            }
+        if let Some(entry) = self.by_inode.get_mut(&inode)
+            && let Some(binding) = entry.binding_mut(name.key(), work)?
+        {
+            hold(&mut binding.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
         }
         Ok(if admitted { attributes } else { Duration::ZERO })
-    }
-
-    pub(super) fn empty_since(&self, inode: u64) -> Option<ViewStamp> {
-        self.by_inode.get(&inode)?.empty_since
     }
 
     pub(super) fn negative_entry(
@@ -372,50 +352,34 @@ impl ProjectionState {
         stamp: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Entry, NativeMountError> {
-        let ttl = self
-            .admit_negative(source, parent, name, stamp, work)?
-            .ok_or(libc::ENOENT)?;
-        let mut attr = self.node_attr(ROOT_INODE).map_err(|_| libc::ESTALE)?;
+        let stamp = stamp.ok_or(libc::ENOENT)?;
+        if name.folded.is_some() || !self.admissible(source, name.key(), None, Some(stamp), work)? {
+            return Err(libc::ENOENT.into());
+        }
+        let component = name.key().components().last().ok_or(libc::ENOENT)?;
+        let entry = self.by_inode.get_mut(&parent).ok_or(libc::ENOENT)?;
+        if !entry.remember_negative_child(component, stamp, work)? {
+            return Err(libc::ENOENT.into());
+        }
+        let lookup = self.by_inode.get(&ROOT_INODE).ok_or(libc::ESTALE)?.lookup;
+        let mut attr = self.attr(ROOT_INODE, &lookup).map_err(|_| libc::ESTALE)?;
         attr.ino = INodeNo(0);
-        Ok(Entry { attr, ttl })
+        Ok(Entry {
+            attr,
+            ttl: CACHE_TTL,
+        })
     }
 
     pub(super) fn absent_since(&self, parent: u64, name: &ChildName) -> Option<ViewStamp> {
-        let component = name.key().components().last()?;
-        name.is_exact()
-            .then(|| {
-                self.by_inode
-                    .get(&parent)?
-                    .negative_children
-                    .get(component.as_slice())
-                    .copied()
-            })
-            .flatten()
-    }
-
-    pub(super) fn admit_negative(
-        &mut self,
-        source: &dyn MountFilesystem,
-        parent: u64,
-        name: &ChildName,
-        stamp: Option<ViewStamp>,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<Option<Duration>, NativeMountError> {
-        let Some(stamp) = stamp else {
-            return Ok(None);
-        };
-        if !name.is_exact() || !self.admissible(source, name.key(), None, Some(stamp), work)? {
-            return Ok(None);
+        if name.folded.is_some() {
+            return None;
         }
-        let Some(component) = name.key().components().last() else {
-            return Ok(None);
-        };
-        let Some(entry) = self.by_inode.get_mut(&parent) else {
-            return Ok(None);
-        };
-        Ok(entry
-            .remember_negative_child(component, stamp, work)?
-            .then_some(CACHE_TTL))
+        let component = name.key().components().last()?;
+        self.by_inode
+            .get(&parent)?
+            .negative_children
+            .get(component.as_slice())
+            .copied()
     }
 
     pub(super) fn admit_listing(
@@ -466,10 +430,10 @@ impl ProjectionState {
         }
         entry.lookup = lookup;
         entry.facts = resolved.stamp;
-        if let Some(path) = resolved.through.as_ref() {
-            if let Some(binding) = entry.binding_mut(path, work)? {
-                binding.verified = resolved.stamp;
-            }
+        if let Some(path) = resolved.through.as_ref()
+            && let Some(binding) = entry.binding_mut(path, work)?
+        {
+            binding.verified = resolved.stamp;
         }
         let ttl = self.admit_attributes(source, inode, resolved.stamp, work)?;
         Ok((self.attr(inode, &lookup)?, ttl))
@@ -481,18 +445,18 @@ impl ProjectionState {
         inode: u64,
         handle: Option<u64>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Result<Resolved, NodeFacts>, NativeMountError> {
+    ) -> Result<NodeFacts, NativeMountError> {
         fuse_item(work)?;
         let entry = self.by_inode.get(&inode).ok_or(libc::ESTALE)?;
         if let Some(handle) = handle {
             let open_file = self.open_handle(inode, handle, work)?;
             return Ok(match entry.current_facts(source, work)? {
-                Some(stamp) => Ok(Resolved {
+                Some(stamp) => NodeFacts::Current(Resolved {
                     lookup: entry.lookup,
                     stamp: Some(stamp),
                     through: None,
                 }),
-                None => Err(NodeFacts::Handle(open_file)),
+                None => NodeFacts::Handle(open_file),
             });
         }
         if let Some(stamp) = entry.current_facts(source, work)? {
@@ -501,7 +465,7 @@ impl ProjectionState {
                 .first()
                 .map(|binding| fuse_clone_path(&binding.path, work))
                 .transpose()?;
-            return Ok(Ok(Resolved {
+            return Ok(NodeFacts::Current(Resolved {
                 lookup: entry.lookup,
                 stamp: Some(stamp),
                 through,
@@ -510,7 +474,7 @@ impl ProjectionState {
         if entry.bindings.is_empty() {
             return self
                 .open_inode(inode, work)?
-                .map(|file| Err(NodeFacts::Handle(file)))
+                .map(NodeFacts::Handle)
                 .ok_or(libc::ESTALE.into());
         }
         let mut paths = fuse_vec(entry.bindings.len(), work)?;
@@ -518,22 +482,16 @@ impl ProjectionState {
             fuse_item(work)?;
             paths.push(fuse_clone_path(&binding.path, work)?);
         }
-        Ok(Err(NodeFacts::Names {
+        Ok(NodeFacts::Names {
             file_id: (inode != ROOT_INODE).then_some(entry.lookup.node.file_id),
             paths,
-        }))
-    }
-
-    pub(super) fn node_attr(&self, inode: u64) -> Result<FileAttr, i32> {
-        let lookup = self.by_inode.get(&inode).ok_or(libc::ESTALE)?.lookup;
-        self.attr(inode, &lookup)
+        })
     }
 
     pub(super) fn attr(&self, inode: u64, lookup: &MountLookup) -> Result<FileAttr, i32> {
         let node = lookup.node;
         let kind = file_type(node.kind)?;
-        let defaults = self.defaults;
-        let default_mode = if defaults.writable { 0o755 } else { 0o555 };
+        let default_mode = if self.writable { 0o755 } else { 0o555 };
         Ok(FileAttr {
             ino: INodeNo(inode),
             size: node.logical_bytes,
@@ -546,11 +504,14 @@ impl ProjectionState {
             perm: u16::try_from(metadata_or(lookup.metadata.posix_mode, default_mode) & 0o7777)
                 .unwrap_or(0o7777),
             nlink: u32::try_from(node.link_count).unwrap_or(u32::MAX),
-            uid: metadata_or(lookup.metadata.posix_uid, defaults.mount_uid),
-            gid: metadata_or(lookup.metadata.posix_gid, defaults.mount_gid),
+            uid: metadata_or(lookup.metadata.posix_uid, self.mount_uid),
+            gid: metadata_or(lookup.metadata.posix_gid, self.mount_gid),
             rdev: node
                 .device
-                .map(|(major, minor)| native_device_number(major, minor))
+                .map(|(major, minor)| {
+                    crate::native_mount::device::join_device(major, minor)
+                        .and_then(|device| u32::try_from(device).map_err(|_| libc::EOVERFLOW))
+                })
                 .transpose()?
                 .unwrap_or(0),
             blksize: 4096,

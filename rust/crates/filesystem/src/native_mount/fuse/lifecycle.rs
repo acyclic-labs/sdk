@@ -187,16 +187,10 @@ pub(super) fn fuse_recovery_is_mounted(
     let parent = destination
         .parent()
         .ok_or(NativeMountError::InvalidDestination)?;
-    let parent = crate::native_host::unix_name(
-        parent.as_os_str(),
-        &mut &*work,
-        fuse_recovery_stat,
-    )?;
-    let destination = crate::native_host::unix_name(
-        destination.as_os_str(),
-        &mut &*work,
-        fuse_recovery_stat,
-    );
+    let parent =
+        crate::native_host::unix_name(parent.as_os_str(), &mut &*work, fuse_recovery_stat)?;
+    let destination =
+        crate::native_host::unix_name(destination.as_os_str(), &mut &*work, fuse_recovery_stat);
     match destination {
         Ok(metadata) => Ok(metadata.st_dev != parent.st_dev),
         Err(crate::NativeTreeMaterializationError::Io(error))

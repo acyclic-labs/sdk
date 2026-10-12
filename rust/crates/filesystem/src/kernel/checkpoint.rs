@@ -60,7 +60,6 @@ fn checkpoint_error(error: crate::FsError) -> CheckpointError {
     match error {
         crate::FsError::Checkpoint(error) => error,
         crate::FsError::Work(error) => error.into(),
-        crate::FsError::RootReadWorkMerge { error, .. } => error.into(),
         crate::FsError::Decode(error) => error.into(),
         crate::FsError::Object(error) => error.into(),
         crate::FsError::Cancelled(_) => ObjectStoreError::Cancelled.into(),

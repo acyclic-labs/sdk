@@ -16,6 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let digest = input.request.approval_digest(
         TaskId::parse(&input.task)?,
         OperationId::parse(&input.command)?,
+        None,
     )?;
     serde_json::to_writer(std::io::stdout().lock(), &digest)?;
     Ok(())

@@ -663,7 +663,6 @@ impl MountSourceError {
             | Self::NativeRecordCorrupt(_, allocation) => Some(allocation),
             Self::MutationFinalization { custody, .. } => Some(custody),
             Self::NativeWorkspaceCause(cause) => Some(&mut cause.custody),
-            Self::NativeWork(error) => error.native_failure_allocation_mut(),
             _ => None,
         }
     }
@@ -732,7 +731,6 @@ pub(crate) fn native_workspace_failure_is_fatal(error: &crate::WorkspaceError) -
         Some(
             crate::WorkspaceError::Work(_)
                 | crate::WorkspaceError::Cancelled(_)
-                | crate::WorkspaceError::Filesystem(crate::FsError::RootReadWorkMerge { .. })
         )
     ) || matches!(
         error,
@@ -750,7 +748,7 @@ pub(crate) fn native_materialization_failure_is_fatal(
             | crate::NativeTreeMaterializationError::Cancelled
             | crate::NativeTreeMaterializationError::AllocationFailed(_)
             | crate::NativeTreeMaterializationError::IndeterminatePreparation
-            | crate::NativeTreeMaterializationError::ExternalMutation(..)
+            | crate::NativeTreeMaterializationError::ExternalMutation
             | crate::NativeTreeMaterializationError::AllocationChanged { .. }
     )
 }

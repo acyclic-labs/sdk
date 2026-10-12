@@ -91,7 +91,7 @@ async fn root_input_fixture(
     let owner = PiOwnerConfig::new(&policy, None, &work()).unwrap();
     publish_owner(&owner, session, &work()).unwrap();
     let filesystem =
-        FilesystemHost::new(raw.clone(), owner.policy.journal.provider().clone()).unwrap();
+        FilesystemHost::new(raw.clone(), owner.policy.journal.provider(), None).unwrap();
     filesystem
         .create_volume(&owner.policy.journal)
         .await
