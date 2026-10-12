@@ -206,7 +206,7 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
     // Simulate collection of old closures while preserving the complete current
     // closure in an actual independent Objects provider.
     let latest = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
-    let current = crate::kernel::prove_generation_closure_async(
+    let current = crate::kernel::prove_generation_closure(
         &objects, root(latest),
         crate::kernel::ClosureLimits {
             decode: crate::kernel::DecodeLimits::default(),
@@ -415,7 +415,7 @@ async fn prove_original(
     root: ObjectId,
     config: crate::model::VolumeConfig,
 ) -> Result<crate::kernel::GenerationProof, Box<dyn Error>> {
-    Ok(crate::kernel::prove_generation_closure_async(
+    Ok(crate::kernel::prove_generation_closure(
         objects, root,
         crate::kernel::ClosureLimits {
             decode: crate::kernel::DecodeLimits::default(),

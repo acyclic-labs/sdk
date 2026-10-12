@@ -13,7 +13,7 @@ use crate::foundation::{
 use crate::kernel::{
     ClosureLimits, DecodeLimits, RetentionKind, decode_published_generation,
     decode_retention_created, decode_volume_created, decode_workspace_deleted,
-    prove_generation_closure_async, retention_authority_id, volume_authority_id,
+    prove_generation_closure, retention_authority_id, volume_authority_id,
 };
 use crate::model::VolumeConfig;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
@@ -608,7 +608,7 @@ async fn prove_bytes<O: AsyncObjectStore>(
     // Without a provider archive, authenticate only the root named by this
     // historical record. Missing collected bodies fail closed; a current head
     // is never a substitute for the original generation.
-    let proof = prove_generation_closure_async(
+    let proof = prove_generation_closure(
         objects, root, limits, measured.remaining()?, cancellation,
     ).await.map_err(|failure| AccountingError::Proof(failure.error.to_string()))?;
     measured.backend(proof.work)?;

@@ -4,6 +4,7 @@ use super::{
     WasmLimitsInput, WasmReducer, WasmTaskRunLimitsInput, from_js, js_error, key_bytes,
     wasm_limits, wasm_run_limits,
 };
+use crate::runtime::TaskStateProvider;
 use crate::{
     Admission, Error, OperationId, Result, TaskId,
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
@@ -696,7 +697,7 @@ impl WasmTaskRuntime {
         ).map_err(js_error)?;
         let mut tools = registry.tools.clone();
         let mut resumable_tools = crate::durable_tool::ResumableToolRegistry::default();
-        for definition in defaults.tools.definitions().map_err(js_error)? {
+        for definition in defaults.tools.definitions(None).map_err(js_error)? {
             if tools.get(&definition.name).is_none() {
                 tools.register(defaults.tools.get(&definition.name).expect("registered default").clone())
                     .map_err(js_error)?;

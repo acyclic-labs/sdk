@@ -119,7 +119,7 @@ fn finish_encoding<T>(mut diagnostics: DecodeReservation<'_>, result: Result<T>)
 }
 
 /// Audited closed Harness DTOs only, including their Value/string/vector containers.
-pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {
+pub(crate) trait PreparationRecord: serde::de::DeserializeOwned {
     fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
     /// Static diagnostic label bound.
     fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
@@ -842,8 +842,12 @@ impl PreparationIo {
         &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
     ) -> Result<T> {
         let mut decoded = self.value_decode_with_schema::<T>(
-            source, code, T::json_value_schema(), preparation_slot_bytes::<T>(),
-            T::diagnostic_label_bytes(), None,
+            source, code, T::json_value_schema(), T::diagnostic_label_bytes(), |shape| {
+                crate::contract::json_typed_value_decode_owned_bytes(shape, preparation_slot_bytes::<T>())
+                    .map_err(|error| decode_allowance_with_code(error, Some(code)))?
+                    .checked_add(std::mem::size_of::<T>() as u64)
+                    .ok_or_else(|| decode_allowance_error("typed Value reservation overflow", Some(code)))
+            },
         )?;
         let actual = (std::mem::size_of::<T>() as u64)
             .checked_add(decoded.0.logical_owned_bytes()?)
@@ -857,17 +861,16 @@ impl PreparationIo {
         &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
     ) -> Result<(T, DecodeReservation<'_>)> {
         self.value_decode_with_schema(
-            source, code, T::json_value_schema(), T::maximum_slot_bytes(),
-            T::diagnostic_label_bytes(), Some(T::decode_owned_allowance),
+            source, code, T::json_value_schema(), T::diagnostic_label_bytes(),
+            |shape| T::decode_owned_allowance(shape, 0, shape.input_bytes(), Some(code)),
         )
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn value_decode_with_schema<T: serde::de::DeserializeOwned>(
         &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
-        schema: crate::contract::JsonValueSchema, slot_bytes: u64,
-        diagnostic_label_bytes: u64,
-        profile: Option<fn(crate::contract::JsonValueShape, u64, u64, Option<crate::wire::ErrorCode>) -> Result<u64>>,
+        schema: crate::contract::JsonValueSchema, diagnostic_label_bytes: u64,
+        mut allowance: impl FnMut(crate::contract::JsonValueShape) -> Result<u64>,
     ) -> Result<(T, DecodeReservation<'_>)> {
         if self.original_native_work().is_none() {
             return Err(self.invalid("native Value decoding requires original work"));
@@ -882,14 +885,7 @@ impl PreparationIo {
         let result = crate::contract::json_from_value_bounded(
             std::borrow::Cow::Borrowed(source), bounds, 0, code, schema, &mut |next| match next {
                 crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
-                    let allowance = match profile {
-                        Some(profile) => profile(value_shape, 0, value_shape.input_bytes(), Some(code))?,
-                        None => crate::contract::json_typed_value_decode_owned_bytes(
-                            value_shape, slot_bytes,
-                        ).map_err(|error| decode_allowance_with_code(error, Some(code)))?
-                            .checked_add(std::mem::size_of::<T>() as u64)
-                            .ok_or_else(|| decode_allowance_error("typed Value reservation overflow", Some(code)))?,
-                    };
+                    let allowance = allowance(value_shape)?;
                     let diagnostics = if schema == crate::contract::JsonValueSchema::Root {
                         0
                     } else {
