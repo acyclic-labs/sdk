@@ -84,7 +84,7 @@ impl McpCallbackRequest {
             Some("sampling/createMessage") if self.policy.sampling => validate_sampling(params),
             Some("elicitation/create") if self.policy.elicitation => {
                 let _: rmcp::model::ElicitRequestParams = rmcp::model::ElicitRequestParams::deserialize(params).map_err(|error| Error::Invalid(error.to_string()))?;
-                if let Some(schema) = params.get("requestedSchema") { crate::contract::compile_json_schema(schema, "MCP elicitation", None)?; }
+                if let Some(schema) = params.get("requestedSchema") { crate::contract::compile_json_schema(schema, "MCP elicitation", &mut None)?; }
                 Ok(())
             }
             _ => Err(Error::Unsupported("MCP callback is not enabled by pinned policy".into())),
@@ -105,7 +105,7 @@ impl McpCallbackRequest {
                     && let Some(schema) = self.message.pointer("/params/requestedSchema")
                 {
                     let content = response.result.get("content").ok_or_else(|| Error::Invalid("accepted MCP form has no content".into()))?;
-                    crate::contract::validate_json_schema_value(schema, content, "MCP elicitation answer", None)?;
+                    crate::contract::validate_json_schema_value(schema, content, "MCP elicitation answer", &mut None)?;
                 }
                 Ok(())
             }

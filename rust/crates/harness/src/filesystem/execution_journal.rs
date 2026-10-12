@@ -1219,8 +1219,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     ) -> Result<(IdempotencyKey, String)> {
         let digest = {
             let _input_hold;
-            let input = crate::contract::preparation_format(
-                format_args!("{operation_id}:{idempotency_key}"), io)?;
+            let input = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{operation_id}:{idempotency_key}"), work))?;
             _input_hold = io.map(|io| io.guard_owned(input.capacity() as u64)).transpose()?;
             if let Some(io) = io {
                 let hashing = acyclic_fs::WorkCounters { bytes_hashed: input.len() as u64, ..Default::default() };
@@ -1229,10 +1228,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             }
             blake3::hash(input.as_bytes())
         };
-        let key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("journal-{}", digest.to_hex()), io)?)?;
-        let path = crate::contract::preparation_format(
-            format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()), io)?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("journal-{}", digest.to_hex()), work))?)?;
+        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()), work))?;
         Ok((key, path))
     }
 
@@ -1316,8 +1313,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         let mut result: Vec<(ExecutionRecord, Option<ModelEvent>)> = Vec::with_capacity(capacity);
         let _path_hold;
-        let path = crate::contract::preparation_format(
-            format_args!("harness/v2/execution/{operation_id}"), io)?;
+        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("harness/v2/execution/{operation_id}"), work))?;
         _path_hold = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let _stream_hold;
         _stream_hold = if let Some(io) = io {

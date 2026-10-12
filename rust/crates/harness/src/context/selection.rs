@@ -92,7 +92,7 @@ impl ContextAttribute {
     ) -> Result<()> {
         crate::contract::validate_trusted_json_byte_bound(self, u64::MAX, work)?;
         self.validate_identity(work)?;
-        crate::contract::validate_json_schema_value_with_work(
+        crate::contract::validate_json_schema_value(
             &self.schema,
             &self.value,
             "context attribute",

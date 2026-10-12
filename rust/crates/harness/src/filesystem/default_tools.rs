@@ -817,11 +817,11 @@ fn transition_identity(
 ) -> Result<(OperationId, IdempotencyKey)> {
     let operation = {
         let _label;
-        let label = crate::contract::preparation_format(format_args!("transition-{revision}"), io)?;
+        let label = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("transition-{revision}"), work))?;
         _label = io.map(|io| io.guard_owned(label.capacity() as u64)).transpose()?;
         derived(effect, &label, io)?
     };
-    let key = crate::contract::preparation_format(format_args!("recursive-tool:{effect}:{revision}"), io)?;
+    let key = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("recursive-tool:{effect}:{revision}"), work))?;
     if let Some(io) = io { io.retain_owned(std::mem::size_of::<IdempotencyKey>() as u64)?; }
     Ok((operation, IdempotencyKey(key)))
 }
@@ -1424,8 +1424,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         let receipt_copy = crate::executor::with_history_io(io, |work| receipt.clone_with_work_and_custody(work))?.0;
         let receipt_copy = recursive_box(receipt_copy, io)?;
-        let key = crate::contract::preparation_format(
-            format_args!("recursive-merge-publication:{}", context.operation_id()), io)?;
+        let key = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("recursive-merge-publication:{}", context.operation_id()), work))?;
         let command = Command {
             operation_id: context.operation_id(), idempotency_key: IdempotencyKey(key),
             expected_revision: binding.destination.reducer().revision(),
@@ -1677,11 +1676,10 @@ async fn stage(context: &ToolContext, operation: OperationId, label: &str, value
         let work = io.original_native_work().expect("native staging preserves its original ledger");
         let bytes = io.encode(value, maximum.min(context.effective_scope().limits().file_bytes), true)?;
         let _path;
-        let path = crate::contract::preparation_format(
-            format_args!("recursive-tools/{}/{label}.json", context.operation_id()), Some(io))?;
+        let path = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("recursive-tools/{}/{label}.json", context.operation_id()), work))?;
         _path = io.guard_owned(path.capacity() as u64)?;
         let _display;
-        let display = crate::contract::preparation_format(format_args!("{label}.json"), Some(io))?;
+        let display = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("{label}.json"), work))?;
         _display = io.guard_owned(display.capacity() as u64)?;
         let (file, custody) = context.stage_file_once_with_native_work(
             operation, &path, &bytes, "application/json", &display, work).await?;

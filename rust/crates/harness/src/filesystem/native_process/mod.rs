@@ -167,7 +167,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         }
         let bytes = self.authority.result_content.read(&reference, maximum, Some(&io))?.await?;
         let value = io.decode(std::marker::PhantomData::<serde_json::Value>, &bytes, crate::wire::ErrorCode::Invalid)?;
-        crate::contract::validate_json_schema_value(&invocation.result_schema, &value.0, "native process result", Some(&io))?;
+        crate::executor::with_history_io(Some(&io), |work| crate::contract::validate_json_schema_value(&invocation.result_schema, &value.0, "native process result", work))?;
         drop(value);
         drop(bytes);
         drop(io);

@@ -259,10 +259,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let name = io.capability(&allocation.volume, "harness-")?;
         let read = bounded_io::join_text("volume:read:", &name["harness-".len()..], io)?;
         let write = bounded_io::join_text("volume:write:", &name["harness-".len()..], io)?;
-        let id = crate::contract::preparation_format(
-            format_args!("created:{}:{name}", proof.preparation),
-            Some(io),
-        )?;
+        let id = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("created:{}:{name}", proof.preparation), work))?;
         io.retain_owned((2 * std::mem::size_of::<String>()) as u64)?;
         let capabilities = Capabilities::new([read, write]);
         let temporary =

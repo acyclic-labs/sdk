@@ -156,12 +156,12 @@ fn decode_schema(reference: &FileRef, bytes: &[u8], io: Option<&crate::executor:
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io {
         let schema = io.decode(std::marker::PhantomData::<Value>, bytes, crate::wire::ErrorCode::Storage)?;
-        drop(crate::contract::compile_json_schema(&schema.0, "effect result", Some(io))?);
+        drop(crate::executor::with_history_io(Some(io), |work| crate::contract::compile_json_schema(&schema.0, "effect result", work))?);
         return Ok(crate::filesystem::retain_decoded(schema));
     }
     let schema: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result schema is not JSON: {error}")))?;
-    crate::contract::compile_json_schema(&schema, "effect result", None)?;
+    crate::contract::compile_json_schema(&schema, "effect result", &mut None)?;
     Ok(schema)
 }
 
@@ -199,7 +199,7 @@ pub(crate) fn validate_result_bytes(
         result.descriptor().verify(bytes, work)?;
         let value: Value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("effect result is not JSON: {error}")))?;
-        return crate::contract::validate_json_schema_value(&schema, &value, "effect result", None);
+        return crate::contract::validate_json_schema_value(&schema, &value, "effect result", &mut None);
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {
@@ -216,8 +216,8 @@ pub(crate) fn validate_result_bytes(
         }
         result.descriptor().verify(bytes, work)?;
         let value = decode.decode(std::marker::PhantomData::<Value>, bytes, crate::wire::ErrorCode::Storage)?;
-        return crate::contract::validate_json_schema_value(
-            &schema, &value.0, "effect result", Some(&decode));
+        return crate::executor::with_history_io(Some(&decode), |work| crate::contract::validate_json_schema_value(
+            &schema, &value.0, "effect result", work));
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     Err(Error::Unsupported("native effect result validation is unavailable".into()))

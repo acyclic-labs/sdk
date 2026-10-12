@@ -1279,10 +1279,7 @@ where
                         "approval tool differs from model request",
                     ));
                 }
-                let grant = crate::contract::preparation_format(
-                    format_args!("tool:call:{}", pinned.name),
-                    io,
-                )?;
+                let grant = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("tool:call:{}", pinned.name), work))?;
                 let grant_hold = io
                     .map(|io| io.guard_owned(grant.capacity() as u64))
                     .transpose()?;

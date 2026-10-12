@@ -179,14 +179,11 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             ForkAllocationRole::Project => "project",
             ForkAllocationRole::Result => "result",
         };
-        let creation = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!(
+        let creation = IdempotencyKey::new(crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!(
                 "fork:{}:{}:{suffix}",
                 fork.operation_id,
                 blake3::Hash::from(digest)
-            ),
-            Some(io),
-        )?)?;
+            ), work))?)?;
         let key = bounded_io::operation_key(&creation, Some(io))?;
         io.remaining()?;
         let initial = io

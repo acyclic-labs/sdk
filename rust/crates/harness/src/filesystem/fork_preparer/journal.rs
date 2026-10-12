@@ -5,10 +5,7 @@ pub(super) fn preparation_journal(
     operation: OperationId,
     io: Option<&PreparationIo>,
 ) -> Result<WorkspaceRef> {
-    let name = crate::contract::preparation_format(
-        format_args!("harness-fork-preparation-{operation}"),
-        io,
-    )?;
+    let name = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("harness-fork-preparation-{operation}"), work))?;
     let provider = match io {
         Some(io) => provider.clone_with_io(io)?,
         None => provider.clone(),
@@ -26,7 +23,7 @@ pub(super) fn allocation_ref(
         .map(|io| io.guard_owned(volume_name.capacity() as u64))
         .transpose()?;
     let name =
-        crate::contract::preparation_format(format_args!("fork-allocation-{volume_name}"), io)?;
+        crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("fork-allocation-{volume_name}"), work))?;
     drop(volume_name);
     drop(hold);
     let provider = match io {

@@ -8,7 +8,7 @@ use crate::{
         ExecutionEvent, ExecutionJournal, ToolFailureKind, load_json, replay_execution, stage_json,
     },
     runtime::ToolContext,
-    tool::{ToolDefinition, ToolInvocation, ToolRegistry, ToolResult, validate_value},
+    tool::{ToolDefinition, ToolInvocation, ToolRegistry, ToolResult},
     workflow::{
         DurableWorkflowHost, MachineCheckpoint, MachineRegistry, MachineStatus, MachineTransition,
         ResumableMachine, WorkflowAdmission, WorkflowJournal,
@@ -212,13 +212,13 @@ impl ResumableTool {
             ));
         }
         let scope = context.effective_scope();
-        let required = crate::contract::preparation_format(format_args!("tool:call:{}", self.definition.name), io)?;
+        let required = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("tool:call:{}", self.definition.name), work))?;
         #[cfg(feature = "filesystem")]
         let _required = io.map(|io| io.guard_owned(required.capacity() as u64)).transpose()?;
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input", io)?;
+        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&self.definition.input_schema, &invocation.arguments, "tool input", work))?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let identity = match native {
             Some(work) => self.machine.identity_with_native_work(work)?,
@@ -248,7 +248,7 @@ impl ResumableTool {
             revision: 0,
             state,
         };
-        validate_value(self.machine.state_schema(), &initial.state, "tool state", io)?;
+        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(self.machine.state_schema(), &initial.state, "tool state", work))?;
         let admission = WorkflowAdmission {
             operation_id: invocation.operation_id,
             request_digest: crate::executor::preparation_digest(&(
@@ -320,7 +320,7 @@ impl ResumableTool {
         }
         drop(grant);
         drop(grant_hold);
-        crate::contract::validate_json_schema_value(&self.definition.input_schema, &invocation.arguments, "tool input", Some(io))?;
+        crate::executor::with_history_io(Some(io), |work| crate::contract::validate_json_schema_value(&self.definition.input_schema, &invocation.arguments, "tool input", work))?;
         let registry_custody;
         let mut registry = MachineRegistry::default();
         registry_custody = registry.register_with_native_work(self.machine.clone(), work)?;
@@ -432,7 +432,7 @@ impl ResumableToolSession {
         self.host
             .step(operation_id, idempotency_key, input, |transition| {
                 if let MachineStatus::Completed { value } = &transition.status {
-                    validate_value(output_schema, value, "tool output", None)?;
+                    crate::contract::validate_json_schema_value(output_schema, value, "tool output", &mut None)?;
                 }
                 Ok(())
             })
@@ -491,7 +491,7 @@ impl NativeResumableToolSession<'_> {
             let result = self.host.step_checked_with_native_work(
                 operation_id, input.0.0, input.0.1, work, |transition| {
                     if let MachineStatus::Completed { value } = &transition.status {
-                        crate::contract::validate_json_schema_value(output_schema, value, "tool output", Some(&io))?;
+                        crate::executor::with_history_io(Some(&io), |work| crate::contract::validate_json_schema_value(output_schema, value, "tool output", work))?;
                     }
                     Ok(())
                 },
@@ -773,7 +773,7 @@ impl DurableToolRunner {
                     if tool_propagate(&error, io) { return Err(error); }
                     return Err(Error::Conflict("durable tool history exceeds admitted limits".into()));
                 }
-                crate::contract::validate_json_schema_value(&definition.output_schema, &result.0.value, "tool output", io)?;
+                crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&definition.output_schema, &result.0.value, "tool output", work))?;
                 tool_validate_projection(definition, &projection.0, projection_limits, io)?;
                 return tool_success(result, io);
             }
@@ -847,8 +847,8 @@ impl DurableToolRunner {
                     Err(error) => return Err(error),
                 }
             };
-            if let Err(error) = crate::contract::validate_json_schema_value(
-                &definition.output_schema, &result.0.value, "tool output", io)
+            if let Err(error) = crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(
+                &definition.output_schema, &result.0.value, "tool output", work))
             {
                 if tool_propagate(&error, io) { return Err(error); }
                 fail!(ToolFailureKind::InvalidOutput);
@@ -916,7 +916,7 @@ impl DurableToolRunner {
             if !scope.grants().contains(&grant) {
                 return Err(tool_error(io, crate::wire::ErrorCode::Unauthorized, "scope lacks tool call grant"));
             }
-            crate::contract::validate_json_schema_value(&definition.input_schema, &invocation.arguments, "tool input", io)?;
+            crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&definition.input_schema, &invocation.arguments, "tool input", work))?;
             tool.executor.authorize_with_native_context(context, invocation, work)?;
             drop(grant);
             drop(grant_hold);
@@ -929,7 +929,7 @@ impl DurableToolRunner {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        validate_value(&definition.input_schema, &invocation.arguments, "tool input", None)?;
+        crate::contract::validate_json_schema_value(&definition.input_schema, &invocation.arguments, "tool input", &mut None)?;
         tool.executor.authorize_with_context(context, invocation)?;
         match context.task().authorize_tool(definition, invocation).await? {
             Some(operation) => Err(Error::Indeterminate(operation)),

@@ -167,7 +167,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     ) -> Result<()> {
         crate::executor::with_history_io(io, |work| self.verifier.verify(scope, work))?;
         let grant_hold;
-        let grant = crate::contract::preparation_format(format_args!("interaction:respond:{id}"), io)?;
+        let grant = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("interaction:respond:{id}"), work))?;
         grant_hold = io.map(|io| io.guard_owned(grant.capacity() as u64)).transpose()?;
         let examined = acyclic_fs::WorkCounters { items_examined: 2, ..Default::default() };
         if let Some(io) = io { io.preflight(examined)?; }
@@ -205,7 +205,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     ) -> Result<FileRef> {
         if expected_version == 0 { return Err(interaction_boundary(io, ErrorCode::Invalid, "interaction answer version must be positive")); }
         let kind_hold;
-        let kind = crate::contract::preparation_format(format_args!("answer-{expected_version}-{operation_id}"), io)?;
+        let kind = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("answer-{expected_version}-{operation_id}"), work))?;
         kind_hold = io.map(|io| io.guard_owned(kind.capacity() as u64)).transpose()?;
         let result = self.stage(id, &kind, response, io).await;
         drop(kind);
@@ -489,7 +489,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         drop(committed);
         let after_aggregate = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let scope = scope.copy(&mut work)?;
-        let idempotency_key = IdempotencyKey::new(crate::contract::preparation_format(format_args!("interaction:{operation_id}"), io)?)?;
+        let idempotency_key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("interaction:{operation_id}"), work))?)?;
         command_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(after_aggregate)
             .ok_or_else(|| interaction_boundary(Some(io), ErrorCode::Invalid, "interaction command custody underflows"))?)).transpose()?;
         let command = Command { operation_id, idempotency_key, expected_revision, scope, causal_parent: None, action };
@@ -531,9 +531,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         if bytes.len() as u64 > self.maximum_bytes { return Err(interaction_boundary(io, ErrorCode::Invalid, "interaction payload exceeds limit")); }
         let names_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let path = crate::contract::preparation_format(format_args!(".system/interactions/{id}/{kind}.json"), io)?;
-        let name = crate::contract::preparation_format(format_args!("{kind}.json"), io)?;
-        let key = IdempotencyKey::new(crate::contract::preparation_format(format_args!("interaction:{id}:{kind}"), io)?)?;
+        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/interactions/{id}/{kind}.json"), work))?;
+        let name = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{kind}.json"), work))?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("interaction:{id}:{kind}"), work))?)?;
         names_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), ErrorCode::Invalid, "interaction name custody underflows"))?)).transpose()?;
         let result = match io {

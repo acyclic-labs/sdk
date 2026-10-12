@@ -488,10 +488,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
                 None => {}
             }
-            let key = IdempotencyKey::new(crate::contract::preparation_format(
-                format_args!("fork:{}:seed", seed.operation_id),
-                io,
-            )?)?;
+            let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("fork:{}:seed", seed.operation_id), work))?)?;
             write_record(
                 self,
                 &journal,
@@ -561,10 +558,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "allocation journal name is not UTF-8",
             )
         })?;
-        let creation_key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("fork:{}:allocation-journal", claim.operation_id),
-            io,
-        )?)?;
+        let creation_key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("fork:{}:allocation-journal", claim.operation_id), work))?)?;
         bounded_io::create(
             self,
             name,
@@ -588,10 +582,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             None => {}
         }
-        let key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("fork:{}:allocation", claim.operation_id),
-            io,
-        )?)?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("fork:{}:allocation", claim.operation_id), work))?)?;
         write_record(
             self,
             &journal,

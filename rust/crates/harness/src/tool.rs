@@ -334,7 +334,7 @@ impl ToolDefinition {
             &self.output_schema,
             &self.projection_schema,
         ] {
-            crate::contract::compile_json_schema_with_work(schema, "tool", work)?;
+            crate::contract::compile_json_schema(schema, "tool", work)?;
         }
         Ok(())
     }
@@ -386,12 +386,7 @@ impl ToolDefinition {
             && let Some(work) = io.original_native_work()
         {
             let decode = crate::filesystem::PreparationIo::from_native_work(work)?;
-            validate_value(
-                &self.projection_schema,
-                value,
-                "tool projection",
-                Some(&decode),
-            )?;
+            crate::executor::with_history_io(Some(&decode), |work| crate::contract::validate_json_schema_value(&self.projection_schema, value, "tool projection", work))?;
             let content: crate::model::ToolResultContent =
                 decode.value_decode(value, crate::wire::ErrorCode::Invalid)?;
             crate::executor::with_history_io(Some(&decode), |work| {
@@ -401,7 +396,7 @@ impl ToolDefinition {
             io.absorb_native_custody(decode.into_native_custody(retained)?)?;
             return Ok(content);
         }
-        validate_value(&self.projection_schema, value, "tool projection", io)?;
+        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&self.projection_schema, value, "tool projection", work))?;
         let content = crate::model::ToolResultContent::deserialize(value).map_err(|error| {
             Error::Invalid(format!("tool projection envelope is invalid: {error}"))
         })?;
@@ -1285,7 +1280,6 @@ impl ToolRegistry {
     }
 }
 
-pub(crate) use crate::contract::validate_json_schema_value as validate_value;
 
 #[cfg(test)]
 mod tests {
@@ -1418,26 +1412,11 @@ mod tests {
                 )
                 .is_err()
         );
-        validate_value(
-            &definition.output_schema,
-            &json!({"count": 2}),
-            "result",
-            None,
-        )?;
-        validate_value(
-            &definition.projection_schema,
-            &json!({"kind":"json","value":"two"}),
-            "projection",
-            None,
-        )?;
-        assert!(validate_value(&definition.output_schema, &json!("two"), "result", None).is_err());
+        crate::contract::validate_json_schema_value(&definition.output_schema, &json!({"count": 2}), "result", &mut None)?;
+        crate::contract::validate_json_schema_value(&definition.projection_schema, &json!({"kind":"json","value":"two"}), "projection", &mut None)?;
+        assert!(crate::contract::validate_json_schema_value(&definition.output_schema, &json!("two"), "result", &mut None).is_err());
         assert!(
-            validate_value(
-                &definition.projection_schema,
-                &json!({"count": 2}),
-                "projection",
-                None
-            )
+            crate::contract::validate_json_schema_value(&definition.projection_schema, &json!({"count": 2}), "projection", &mut None)
             .is_err()
         );
         let mut changed = definition.clone();

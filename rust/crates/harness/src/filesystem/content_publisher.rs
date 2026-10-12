@@ -103,8 +103,7 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
             if let Some(io) = io { io.preflight(hashing)?; }
             let digest = blake3::hash(path.as_bytes());
             if let Some(io) = io { io.charge(hashing)?; }
-            let retry = IdempotencyKey::new(crate::contract::preparation_format(
-                format_args!("filesystem-upload:{operation_id}:{}", digest.to_hex()), io)?)?;
+            let retry = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("filesystem-upload:{operation_id}:{}", digest.to_hex()), work))?)?;
             let retry_hold = io.map(|io| io.guard_owned(retry.as_str().len() as u64)).transpose()?;
             let file = self.host.put_content_impl(&self.volume, &self.grant, path, bytes,
                 media_type, display_name, self.maximum_bytes, &retry, None, None, io, None, None).await?;

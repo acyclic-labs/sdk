@@ -36,7 +36,6 @@ mod registry;
 pub use registry::{Tool, ToolRegistry};
 mod codec;
 use codec::*;
-pub(crate) use crate::contract::validate_json_schema_value as validate_value;
 
 #[cfg(test)]
 mod tests;

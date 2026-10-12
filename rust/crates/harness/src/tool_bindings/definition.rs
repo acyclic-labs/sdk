@@ -88,7 +88,7 @@ impl ToolDefinition {
             &self.output_schema,
             &self.projection_schema,
         ] {
-            crate::contract::compile_json_schema_with_work(schema, "tool", work)?;
+            crate::contract::compile_json_schema(schema, "tool", work)?;
         }
         Ok(())
     }
@@ -125,7 +125,7 @@ impl ToolDefinition {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io && let Some(work) = io.original_native_work() {
             let decode = crate::filesystem::PreparationIo::from_native_work(work)?;
-            validate_value(&self.projection_schema, value, "tool projection", Some(&decode))?;
+            crate::executor::with_history_io(Some(&decode), |work| crate::contract::validate_json_schema_value(&self.projection_schema, value, "tool projection", work))?;
             let content: crate::model::ToolResultContent =
                 decode.value_decode(value, crate::wire::ErrorCode::Invalid)?;
             crate::executor::with_history_io(Some(&decode), |work| content.validate_limits(limits, work))?;
@@ -133,7 +133,7 @@ impl ToolDefinition {
             io.absorb_native_custody(decode.into_native_custody(retained)?)?;
             return Ok(content);
         }
-        validate_value(&self.projection_schema, value, "tool projection", io)?;
+        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&self.projection_schema, value, "tool projection", work))?;
         let content = crate::model::ToolResultContent::deserialize(value).map_err(|error| {
             Error::Invalid(format!("tool projection envelope is invalid: {error}"))
         })?;

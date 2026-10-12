@@ -39,7 +39,7 @@ pub(super) async fn execute<P: StreamProvider>(
         let bytes = {
             let io = crate::filesystem::PreparationIo::from_native_work(original)?;
             let value = io.value_json(&captured, u64::from(request.maximum_result_bytes))?;
-            crate::contract::validate_json_schema_value(schema, &value, "native process result", Some(&io))?;
+            crate::executor::with_history_io(Some(&io), |work| crate::contract::validate_json_schema_value(schema, &value, "native process result", work))?;
             io.encode(&value, u64::from(request.maximum_result_bytes), true)?
         };
         drop(captured);

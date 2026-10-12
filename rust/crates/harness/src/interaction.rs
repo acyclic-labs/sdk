@@ -697,7 +697,7 @@ impl Interaction {
                 },
                 InteractionResponse::Form { value },
             ) => {
-                crate::contract::validate_json_schema_value_with_work(
+                crate::contract::validate_json_schema_value(
                     response_schema, value, "interaction response", work,
                 )
             }
@@ -840,7 +840,7 @@ fn validate_schema(
     schema: &Value,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    crate::contract::compile_json_schema_with_work(schema, "interaction", work).map(drop)
+    crate::contract::compile_json_schema(schema, "interaction", work).map(drop)
 }
 
 fn nonempty(
