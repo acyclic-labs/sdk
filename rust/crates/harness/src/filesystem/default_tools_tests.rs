@@ -254,7 +254,7 @@ async fn dropped_invocation_guard_rejects_the_next_real_filesystem_request_befor
         "text/plain", "original.txt", 64, &IdempotencyKey::new("cancel-original")?).await?;
     let cancellation = CancellationToken::new();
     let guard = InvocationCancellation(cancellation.clone());
-    let budget = finite_budget(4096, 1 << 20);
+    let budget = acyclic_fs::performance::work_budget(4096, 1 << 20);
     let live = fixture.host.read_content_measured(&file, &read, 64, budget, &cancellation).await
         .map_err(|failure| failure.error)?;
     assert_eq!(live.value, b"original");

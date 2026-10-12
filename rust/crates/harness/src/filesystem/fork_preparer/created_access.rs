@@ -1151,7 +1151,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 /// Caller work and original creation limits constrain the same actual ledger.
 fn content_io(request: &ResourcePreparationRequest, budget: WorkBudget,
     cancellation: &CancellationToken) -> Result<PreparationIo> {
-    PreparationIo::from_budget(budget.intersect_budget(bounded_io::budget(request.maximum_work, request.maximum_bytes)), cancellation)
+    PreparationIo::from_budget(budget.intersect_budget(acyclic_fs::performance::work_budget(request.maximum_work, request.maximum_bytes)), cancellation)
 }
 
 fn content_result<T>(io: &PreparationIo, result: Result<T>) -> MeasuredResult<OperationReceipt<T>, Error> {
@@ -1619,7 +1619,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn observation_work() -> Result<acyclic_fs::NativeMaterializationWork> {
         acyclic_fs::NativeMaterializationWork::new(
-            bounded_io::budget(1_048_576, 128 * 1_048_576), &CancellationToken::new())
+            acyclic_fs::performance::work_budget(1_048_576, 128 * 1_048_576), &CancellationToken::new())
             .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })
     }
 

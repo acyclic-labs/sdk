@@ -90,7 +90,6 @@ mod task_runtime;
 mod recursive;
 mod mailbox_machine;
 mod default_tools;
-pub(crate) use default_tools::finite_budget;
 mod configured_recursive_tools;
 pub use configured_recursive_tools::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller,

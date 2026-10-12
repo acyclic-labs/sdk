@@ -3470,20 +3470,7 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_authority_budget() -> WorkBudget {
-        const N: u64 = 1 << 28;
-        WorkBudget {
-            authority_records_read: N, authority_records_appended: N,
-            authority_bytes_read: N, authority_bytes_written: N,
-            object_probes: N, backend_read_operations: N, backend_write_operations: N,
-            durability_operations: N, page_reads: N, page_writes: N,
-            object_bytes_read: N, object_bytes_written: N, bytes_hashed: N,
-            bytes_copied: N, bytes_encoded: N, source_bytes_read: N,
-            source_path_components: N, source_entries_visited: N, output_bytes: N,
-            items_examined: N, items_returned: N, allocation_operations: N,
-            peak_allocation_bytes: N, materializations: N,
-        }
-    }
+    const NATIVE_AUTHORITY_BUDGET: WorkBudget = crate::performance::work_budget(1 << 28, 1 << 28);
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
@@ -3497,8 +3484,8 @@ mod tests {
         let cancellation = CancellationToken::new();
         let store = StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default()));
         let authority = AuthorityId::from_bytes([0x86; 16]);
-        store.create_authority(authority, Epoch::GENESIS, native_authority_budget(), &cancellation).await?;
-        let original = crate::NativeMaterializationWork::new(native_authority_budget(), &cancellation)
+        store.create_authority(authority, Epoch::GENESIS, NATIVE_AUTHORITY_BUDGET, &cancellation).await?;
+        let original = crate::NativeMaterializationWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
         let expected = Head::genesis(Epoch::GENESIS);
         let request = crate::GuardedAppend { authority_id: authority, epoch: expected.epoch, expected,
@@ -3516,7 +3503,7 @@ mod tests {
             request.clone(), &original, &cancellation, &mut reject).await;
         assert!(matches!(failure, Err(OwnerError::Rejected)));
         assert_eq!(original.receipt().backend_write_operations, 0);
-        assert_eq!(store.head(authority, native_authority_budget(), &cancellation).await?.value, expected);
+        assert_eq!(store.head(authority, NATIVE_AUTHORITY_BUDGET, &cancellation).await?.value, expected);
         let (outcome, allocation) = store.compare_and_append_guarded_with_native_work(
             request.clone(), &original, &cancellation).await?;
         assert!(matches!(outcome, FsAppendOutcome::Committed(_)));
@@ -3537,7 +3524,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let store = StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default()));
         let authority = AuthorityId::from_bytes([0x89; 16]);
-        let mut budget = native_authority_budget();
+        let mut budget = NATIVE_AUTHORITY_BUDGET;
         budget.allocation_operations = 1;
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
@@ -3559,7 +3546,7 @@ mod tests {
             | Err(AuthorityStoreError::NativeOriginal(crate::NativeTreeMaterializationError::Cancelled))));
         assert_eq!(original.receipt(), spent);
         let fresh = CancellationToken::new();
-        assert!(matches!(store.head(authority, native_authority_budget(), &fresh).await,
+        assert!(matches!(store.head(authority, NATIVE_AUTHORITY_BUDGET, &fresh).await,
             Err(failure) if matches!(failure.error, AuthorityStoreError::Missing)));
         Ok(())
     }
@@ -3572,7 +3559,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let provider = Arc::new(ReleaseSpy::new(Arc::new(acyclic_stream::MemoryStream::default())));
         let store = StreamAuthorityStore::new(Arc::clone(&provider));
-        let original = crate::NativeMaterializationWork::new(native_authority_budget(), &cancellation)
+        let original = crate::NativeMaterializationWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
         let authority = AuthorityId::from_bytes([0x7a; 16]);
         assert!(matches!(&store.head_with_native_work(authority, &original, &cancellation).await,
@@ -3593,7 +3580,7 @@ mod tests {
         assert_eq!(original.receipt().backend_read_operations, 0);
         assert_eq!(original.receipt().backend_write_operations, 0);
         assert_eq!(original.receipt().authority_records_read, 0);
-        original.receipt().verify(native_authority_budget())?;
+        original.receipt().verify(NATIVE_AUTHORITY_BUDGET)?;
         Ok(())
     }
 

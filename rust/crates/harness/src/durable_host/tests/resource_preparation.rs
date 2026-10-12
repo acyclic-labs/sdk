@@ -299,7 +299,7 @@ async fn check_native_preparation_authority(
     ordinary: &crate::resource_preparation::TaskResourcePreparation,
 ) -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)
+    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)
         .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
     let before = work.receipt();
     assert!(matches!(ordinary.verify_creation_with_native_work(&work),
@@ -337,7 +337,7 @@ async fn check_native_preparation_authority(
 
     let foreign_cancellation = acyclic_fs::CancellationToken::new();
     let foreign = acyclic_fs::NativeMaterializationWork::new(
-        test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &foreign_cancellation,
+        acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &foreign_cancellation,
     ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
     let before = foreign.receipt();
     assert!(matches!(token.verify_creation_with_native_work(&foreign),

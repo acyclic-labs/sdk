@@ -20,7 +20,7 @@ use crate::{
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult},
     workflow::{MachineIdentity, MachineStatus, MachineTransition, ResumableMachine, WorkflowCommand, WorkflowJournal},
 };
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ConflictSide, JoinOutcome, WorkBudget};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ConflictSide, JoinOutcome};
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1511,7 +1511,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     Some(owner.journal_owner.as_ref()), &mut Some(&mut io.history_io())).await?;
                 break 'publication None;
             }
-            let budget = finite_budget(fork.request.maximum_work, fork.request.maximum_bytes);
+            let budget = acyclic_fs::performance::work_budget(fork.request.maximum_work, fork.request.maximum_bytes);
             let published = binding.parent.publish_fork_report_measured(report_copy, binding.parent_scope,
                 owner.journal_owner.as_ref(), budget, &owner.cancellation).await.map_err(|failure| failure.error)?;
             break 'publication Some(published.work.remaining(budget).map_err(|error| Error::Invalid(error.to_string()))?);
@@ -1840,7 +1840,7 @@ async fn retained_payload(
         return Ok(io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained());
     }
     let _ = io;
-    let bytes = context.task().read_file_measured(file, finite_budget(maximum, maximum), cancellation).await
+    let bytes = context.task().read_file_measured(file, acyclic_fs::performance::work_budget(maximum, maximum), cancellation).await
         .map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     crate::contract::json_from_slice(&bytes).map_err(|error| Error::Storage(error.to_string()))
 }
@@ -1863,24 +1863,11 @@ async fn stage(context: &ToolContext, operation: OperationId, label: &str, value
         return Ok(file);
     }
     let _ = io;
-    let io = super::fork_preparer::PreparationIo::from_budget(finite_budget(maximum, maximum), cancellation)?;
+    let io = super::fork_preparer::PreparationIo::from_budget(acyclic_fs::performance::work_budget(maximum, maximum), cancellation)?;
     let bytes = io.encode(value, maximum.min(context.scope().limits().file_bytes), true)?;
     io.receive_content(context.stage_file_once_measured(operation,
         &format!("recursive-tools/{}/{label}.json", context.operation_id()), &bytes,
         "application/json", &format!("{label}.json"), io.remaining()?, cancellation).await)
-}
-pub(crate) fn finite_budget(work: u64, bytes: u64) -> WorkBudget {
-    WorkBudget {
-        authority_records_read: work, authority_records_appended: work,
-        authority_bytes_read: bytes, authority_bytes_written: bytes,
-        object_probes: work, backend_read_operations: work, backend_write_operations: work,
-        durability_operations: work, page_reads: work, page_writes: work,
-        object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
-        bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
-        source_path_components: work, source_entries_visited: work, output_bytes: bytes,
-        items_examined: work, items_returned: work, allocation_operations: work,
-        peak_allocation_bytes: bytes, materializations: work,
-    }
 }
 async fn validate_fork_binding<P, A, O>(context: &ToolContext, arguments: &ForkToolArguments,
     binding: &RecursiveForkToolBinding<P, A, O>, cancellation: &CancellationToken,
@@ -2011,7 +1998,7 @@ async fn recursive_read_bytes(context: &ToolContext, file: &FileRef, limits: For
         return context.read_file_with_native_work(file, work).await;
     }
     let _ = io;
-    context.read_file_measured(file, finite_budget(limits.work, limits.bytes), cancellation)
+    context.read_file_measured(file, acyclic_fs::performance::work_budget(limits.work, limits.bytes), cancellation)
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
 }
 fn validate_merge_binding<P, A, O>(context: &ToolContext, source_task: TaskId,

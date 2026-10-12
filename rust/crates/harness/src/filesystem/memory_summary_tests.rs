@@ -78,21 +78,7 @@ impl ModelProvider for SummaryModel {
     }
 }
 
-fn finite_summary_budget() -> acyclic_fs::WorkBudget {
-    let units = 1_000_000;
-    let bytes = 134_217_728;
-    acyclic_fs::WorkBudget {
-        authority_records_read: units, authority_records_appended: units,
-        authority_bytes_read: bytes, authority_bytes_written: bytes,
-        object_probes: units, backend_read_operations: units, backend_write_operations: units,
-        durability_operations: units, page_reads: units, page_writes: units,
-        object_bytes_read: bytes, object_bytes_written: bytes,
-        bytes_hashed: bytes, bytes_copied: bytes, bytes_encoded: bytes,
-        source_bytes_read: bytes, source_path_components: units, source_entries_visited: units,
-        output_bytes: bytes, items_examined: units, items_returned: units,
-        allocation_operations: units, peak_allocation_bytes: bytes, materializations: units,
-    }
-}
+const FINITE_SUMMARY_BUDGET: acyclic_fs::WorkBudget = acyclic_fs::performance::work_budget(1_000_000, 134_217_728);
 
 struct SummaryLeaseMachine {
     identity: MachineIdentity,
@@ -466,7 +452,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         ForkHistoryPolicy::Summary(Box::new(selection)),
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let proof_io = PreparationIo::from_budget(finite_summary_budget(), &cancellation)?;
+    let proof_io = PreparationIo::from_budget(FINITE_SUMMARY_BUDGET, &cancellation)?;
     let proof_hold;
     let finite = preparer.prepare_bound_summary(&request, Some(&proof_io)).await?
         .ok_or_else(|| Error::Invalid("finite Summary source proof missing".into()))?;
@@ -482,7 +468,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let small_io = PreparationIo::from_budget(acyclic_fs::WorkBudget::default(), &cancellation)?;
     assert!(preparer.prepare_bound_summary(&request, Some(&small_io)).await.is_err());
     assert_eq!(small_io.owned_bytes()?, 0);
-    let cancelled_io = PreparationIo::from_budget(finite_summary_budget(), &cancellation)?;
+    let cancelled_io = PreparationIo::from_budget(FINITE_SUMMARY_BUDGET, &cancellation)?;
     cancellation.cancel();
     assert!(preparer.prepare_bound_summary(&request, Some(&cancelled_io)).await.is_err());
     assert_eq!(cancelled_io.receipt(), acyclic_fs::WorkCounters::default());
