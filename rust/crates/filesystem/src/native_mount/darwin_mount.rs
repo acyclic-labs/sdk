@@ -256,8 +256,8 @@ impl DirectoryHandle {
     fn is_current(&self, context: &DarwinMountContext, work: &DarwinCallbackWork<'_>) -> Result<bool, i32> {
         Ok(match self.epochs {
             Some(epochs) => {
-                context.source.view_is_stable_with_meter(work.native).map_err(|error| work.source_error(error))?
-                    && context.source.binding_epoch_with_meter(work.native).map_err(|error| work.source_error(error))? == Some(epochs.binding)
+                context.source.view_is_stable_with_meter(work.native).map_err(|error| work.native_error(error.into()))?
+                    && context.source.binding_epoch_with_meter(work.native).map_err(|error| work.native_error(error.into()))? == Some(epochs.binding)
                     && context.unchanged_since(&self.path, None, epochs.view, work)?
             }
             None => context.cache_epochs(work)?.is_none(),
@@ -269,7 +269,7 @@ impl DirectoryHandle {
             if self.epochs.is_none() || self.is_current(context, work)? {
                 return Ok(());
             }
-            if self.emitted > 2 || context.source.binding_epoch_with_meter(work.native).map_err(|error| work.source_error(error))? != self.binding_epoch {
+            if self.emitted > 2 || context.source.binding_epoch_with_meter(work.native).map_err(|error| work.native_error(error.into()))? != self.binding_epoch {
                 return Err(libc::ESTALE);
             }
             self.epochs = context.cache_epochs(work)?;
@@ -485,7 +485,7 @@ impl FlushLedger {
             return Ok(());
         }
         let covered = self.latest();
-        source.flush_with_meter(work.native).map_err(|error| work.source_error(error))?;
+        source.flush_with_meter(work.native).map_err(|error| work.native_error(error.into()))?;
         self.flushed.fetch_max(covered, Ordering::AcqRel);
         Ok(())
     }
@@ -723,26 +723,26 @@ impl DarwinMountContext {
 
     fn cache_stamp(&self, work: &DarwinCallbackWork<'_>) -> Result<Option<CacheStamp>, i32> {
         let forgotten = self.forgotten.load(Ordering::Acquire);
-        Ok(self.source.view_stamp_with_meter(work.native).map_err(|error| work.source_error(error))?
+        Ok(self.source.view_stamp_with_meter(work.native).map_err(|error| work.native_error(error.into()))?
             .map(|view| CacheStamp { forgotten, view }))
     }
 
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: CacheStamp, work: &DarwinCallbackWork<'_>) -> Result<bool, i32> {
         if stamp.forgotten != self.forgotten.load(Ordering::Acquire) { return Ok(false); }
         self.source.unchanged_since_with_meter(path, file_id, stamp.view, work.native)
-            .map_err(|error| work.source_error(error))
+            .map_err(|error| work.native_error(error.into()))
     }
 
     fn reported_unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: CacheStamp, work: &DarwinCallbackWork<'_>) -> Result<bool, i32> {
         if stamp.forgotten != self.forgotten.load(Ordering::Acquire) { return Ok(false); }
         self.source.reported_unchanged_since_with_meter(path, file_id, stamp.view, work.native)
-            .map_err(|error| work.source_error(error))
+            .map_err(|error| work.native_error(error.into()))
     }
 
     fn cache_epochs(&self, work: &DarwinCallbackWork<'_>) -> Result<Option<CacheEpochs>, i32> {
-        if !self.source.view_is_stable_with_meter(work.native).map_err(|error| work.source_error(error))? { return Ok(None); }
+        if !self.source.view_is_stable_with_meter(work.native).map_err(|error| work.native_error(error.into()))? { return Ok(None); }
         let Some(view) = self.cache_stamp(work)? else { return Ok(None); };
-        let Some(binding) = self.source.binding_epoch_with_meter(work.native).map_err(|error| work.source_error(error))? else { return Ok(None); };
+        let Some(binding) = self.source.binding_epoch_with_meter(work.native).map_err(|error| work.native_error(error.into()))? else { return Ok(None); };
         Ok(Some(CacheEpochs { view, binding }))
     }
 
@@ -830,7 +830,7 @@ impl DarwinMountContext {
                 return cached.ok_or(libc::ENOENT);
             }
         }
-        let lookup = self.source.lookup_with_meter(path, work.native).map_err(|error| work.source_error(error))?;
+        let lookup = self.source.lookup_with_meter(path, work.native).map_err(|error| work.native_error(error.into()))?;
         if let Some(stamp) = stamp {
             self.remember_lookup(path, lookup, stamp, work)?;
         }
@@ -891,8 +891,8 @@ impl DarwinMountContext {
             }
             entry.file_id
         };
-        let file = work.retained_file(self.source.open_file_with_meter(path, work.native).map_err(|error| work.source_error(error))?)?;
-        if file.0.lookup_with_meter(work.native).map_err(|error| work.source_error(error))?.node.file_id != file_id {
+        let file = work.retained_file(self.source.open_file_with_meter(path, work.native).map_err(|error| work.native_error(error.into()))?)?;
+        if file.0.lookup_with_meter(work.native).map_err(|error| work.native_error(error.into()))?.node.file_id != file_id {
             return Err(libc::ESTALE);
         }
         let mut files = self.files.write().map_err(|_| libc::EIO)?;
@@ -919,9 +919,9 @@ impl DarwinMountContext {
         let result: Result<Option<DarwinFile>, i32> = (|| {
             let detached = if has_open {
                 Some(work.retained_file(self.source.detach_file_with_meter(path, work.native)
-                    .map_err(|error| work.source_error(error))?)?)
+                    .map_err(|error| work.native_error(error.into()))?)?)
             } else { None };
-            unlink().map_err(|error| work.source_error(error))?;
+            unlink().map_err(|error| work.native_error(error.into()))?;
             Ok(detached)
         })();
         self.ledger.record();
@@ -943,7 +943,7 @@ impl DarwinMountContext {
 
     fn file_target(&self, path: &MountPath, handle: u64, work: &DarwinCallbackWork<'_>) -> Result<(DarwinFile, Option<Arc<DarwinOwned<AtomicU64>>>), i32> {
         if handle == 0 {
-            let file = work.retained_file(self.source.open_file_with_meter(path, work.native).map_err(|error| work.source_error(error))?)?;
+            let file = work.retained_file(self.source.open_file_with_meter(path, work.native).map_err(|error| work.native_error(error.into()))?)?;
             return Ok((file, None));
         }
         let file = self.bind(path, handle, work)?;
@@ -954,7 +954,7 @@ impl DarwinMountContext {
 
     fn mutate<T>(&self, mutation: impl FnOnce() -> Result<T, MountSourceError>, work: &DarwinCallbackWork<'_>) -> Result<T, i32> {
         self.admit_write(work)?;
-        let result = mutation().map_err(|error| work.source_error(error));
+        let result = mutation().map_err(|error| work.native_error(error.into()));
         self.ledger.record();
         result.and_then(|value| { self.admit_write(work)?; Ok(value) })
     }
@@ -966,7 +966,7 @@ impl DarwinMountContext {
         mutation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>, work: &DarwinCallbackWork<'_>) -> Result<T, i32> {
         self.admit_write(work)?;
         let target = self.file_target(path, handle, work)?;
-        let result = mutation(target.0.0.as_ref()).map_err(|error| work.source_error(error));
+        let result = mutation(target.0.0.as_ref()).map_err(|error| work.native_error(error.into()));
         let sequence = self.ledger.record();
         if let Some(written) = target.1 {
             written.fetch_max(sequence, Ordering::AcqRel);
@@ -991,7 +991,7 @@ impl DarwinMountContext {
             }
         }
         let stamp = self.cache_stamp(work)?;
-        let lookup = self.bind(path, handle, work)?.0.lookup_with_meter(work.native).map_err(|error| work.source_error(error))?;
+        let lookup = self.bind(path, handle, work)?.0.lookup_with_meter(work.native).map_err(|error| work.native_error(error.into()))?;
         if stamp.is_some() {
             let mut observation = observation.lock().map_err(|_| libc::EIO)?;
             observation.stamp = stamp;
@@ -1057,7 +1057,7 @@ impl DarwinMountContext {
             flags: u32::try_from(metadata_or(lookup.metadata.posix_flags, 0)).unwrap_or(u32::MAX),
             change: self.changes.label(
                 node.file_id, stamp,
-                self.source.binding_epoch_with_meter(work.native).map_err(|error| work.source_error(error))?,
+                self.source.binding_epoch_with_meter(work.native).map_err(|error| work.native_error(error.into()))?,
                 path, lookup,
                 |stamp| self.unchanged_since(path, Some(node.file_id), stamp, work),
                 |stamp| self.reported_unchanged_since(path, Some(node.file_id), stamp, work),
@@ -3509,12 +3509,6 @@ impl DarwinCallbackWork<'_> {
         DarwinCallbackWork { native, failure: std::cell::RefCell::new(None) }
     }
 
-    fn source_error(&self, error: MountSourceError) -> i32 {
-        let status = darwin_source_errno(&error);
-        *self.failure.borrow_mut() = Some(error.into());
-        status
-    }
-
     fn native_error(&self, error: NativeMountError) -> i32 {
         let status = darwin_handler_errno(&error);
         *self.failure.borrow_mut() = Some(error);
@@ -3687,7 +3681,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_read(
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let chunk = context.file_target(&*mount_path(path, work)?, handle, work)?.0.0
             .read_up_to_with_meter(offset, requested_length, work.native)
-            .map_err(|error| work.source_error(error))?;
+            .map_err(|error| work.native_error(error.into()))?;
         let bytes = work.source_chunk(chunk);
         if bytes.len() > usize::try_from(requested_length).unwrap_or(usize::MAX) {
             return Err(libc::EIO);
@@ -3774,11 +3768,11 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
     let _span = callback_span!(TRACE, opendir);
     ffi(address, &_span, false, |context, work| {
         let path = mount_path(path, work)?;
-        let binding_epoch = context.source.binding_epoch_with_meter(work.native).map_err(|error| work.source_error(error))?;
+        let binding_epoch = context.source.binding_epoch_with_meter(work.native).map_err(|error| work.native_error(error.into()))?;
         let epochs = context.cache_epochs(work)?;
 
         let _binding_lease = context.source.acquire_binding_lease_with_meter(binding_epoch, work.native)
-            .map_err(|error| work.source_error(error))?;
+            .map_err(|error| work.native_error(error.into()))?;
         if context.lookup(&path, work)?.node.kind != MountNodeKind::Directory {
             return Err(libc::ENOTDIR);
         }
@@ -3814,7 +3808,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             .ok_or(libc::ESTALE)?;
         let mut directory = directory.lock().map_err(|_| libc::EIO)?;
         let _binding_lease = context.source.acquire_binding_lease_with_meter(directory.binding_epoch, work.native)
-            .map_err(|error| work.source_error(error))?;
+            .map_err(|error| work.native_error(error.into()))?;
         directory.keep_current(context, work)?;
         if offset < 0 {
             return Err(libc::EINVAL);
@@ -3965,7 +3959,7 @@ fn ensure_directory_page(
                 &directory.path,
                 directory.cursor.as_deref(),
                 DIRECTORY_PAGE_SIZE, work.native)
-            .map_err(|error| work.source_error(error))?;
+            .map_err(|error| work.native_error(error.into()))?;
         directory.keep_current(context, work)?;
         if directory.epochs != read_in {
             // Started over in a newer view; this page is from the older one.
@@ -4154,7 +4148,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
             return Err(libc::ERANGE);
         }
         let chunk = context.source.read_link_with_meter(&*mount_path(path, work)?, work.native)
-            .map_err(|error| work.source_error(error))?;
+            .map_err(|error| work.native_error(error.into()))?;
         let target = work.source_chunk(chunk);
         if target.len() >= length {
             return Err(libc::ENAMETOOLONG);
@@ -4291,7 +4285,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
             return Err(libc::ENOATTR);
         }
         let chunk = context.source.read_attribute_with_meter(&path, c_bytes(name, work)?, work.native)
-            .map_err(|error| work.source_error(error))?
+            .map_err(|error| work.native_error(error.into()))?
             .ok_or(libc::ENOATTR)?;
         let bytes = work.source_chunk(chunk);
         copy_variable_result(&bytes, value, length, work)
@@ -4347,7 +4341,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
         let mut encoded = DarwinOwned::empty(Vec::new());
         loop {
             let mut page = context.source.list_attributes_with_meter(&path, cursor.as_ref().map(|cursor| cursor.0.as_slice()), ATTRIBUTE_PAGE_SIZE, work.native)
-                .map_err(|error| work.source_error(error))?;
+                .map_err(|error| work.native_error(error.into()))?;
             for name in &page.0.names {
                 for byte in name {
                     work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
@@ -4418,7 +4412,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_lseek(
         };
         let result = context.file_target(&*mount_path(path, work)?, handle, work)?.0.0
             .seek_with_meter(offset, target, work.native)
-            .map_err(|error| work.source_error(error))?
+            .map_err(|error| work.native_error(error.into()))?
             .ok_or(libc::ENXIO)?;
         i64::try_from(result).map_err(|_| libc::EOVERFLOW)
     })

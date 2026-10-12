@@ -30,62 +30,28 @@ use std::sync::{
 use std::time::{Duration, SystemTime};
 
 #[cfg(test)]
-struct TestWriteGate {
-    admitted: std::sync::mpsc::SyncSender<()>,
-    release: std::sync::mpsc::Receiver<()>,
-}
-
-#[cfg(test)]
-static TEST_WRITE_GATE: std::sync::OnceLock<std::sync::Mutex<Option<TestWriteGate>>> =
-    std::sync::OnceLock::new();
+static TEST_WRITE_GATE: OnceLock<Mutex<Option<(
+    std::sync::mpsc::SyncSender<()>, std::sync::mpsc::Receiver<()>,
+)>>> = OnceLock::new();
 
 /// Pauses one FUSE write after handle admission.
 #[cfg(test)]
-pub(super) struct TestWriteControl {
-    admitted: std::sync::mpsc::Receiver<()>,
-    release: std::sync::mpsc::SyncSender<()>,
-}
-
-#[cfg(test)]
-impl TestWriteControl {
-    pub(super) fn wait_until_admitted(&self, timeout: Duration) -> bool {
-        self.admitted.recv_timeout(timeout).is_ok()
-    }
-
-    pub(super) fn release(self) -> bool {
-        self.release.send(()).is_ok()
-    }
-}
-
-#[cfg(test)]
-pub(super) fn pause_next_write_after_admission() -> TestWriteControl {
+pub(super) fn pause_next_write_after_admission()
+    -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::SyncSender<()>) {
     let (admitted_send, admitted_receive) = std::sync::mpsc::sync_channel(0);
     let (release_send, release_receive) = std::sync::mpsc::sync_channel(0);
-    let gate = TEST_WRITE_GATE.get_or_init(|| std::sync::Mutex::new(None));
-    *gate
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(TestWriteGate {
-        admitted: admitted_send,
-        release: release_receive,
-    });
-    TestWriteControl {
-        admitted: admitted_receive,
-        release: release_send,
-    }
+    *TEST_WRITE_GATE.get_or_init(|| Mutex::new(None)).lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some((admitted_send, release_receive));
+    (admitted_receive, release_send)
 }
 
 #[cfg(test)]
 fn pause_test_write() {
-    let Some(gate) = TEST_WRITE_GATE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-    else {
-        return;
-    };
-    let _ = gate.admitted.send(());
-    let _ = gate.release.recv_timeout(Duration::from_secs(10));
+    let Some((admitted, release)) = TEST_WRITE_GATE.get_or_init(|| Mutex::new(None))
+        .lock().unwrap_or_else(PoisonError::into_inner).take()
+    else { return; };
+    let _ = admitted.send(());
+    let _ = release.recv_timeout(Duration::from_secs(10));
 }
 
 const ROOT_INODE: u64 = 1;
@@ -449,46 +415,39 @@ fn fuse_source_chunk(bytes: &[u8], work: &crate::NativeMaterializationWork)
     Ok(crate::kernel::OwnedSourceChunk::intrinsic(owned, logical_owned_bytes))
 }
 
-#[derive(Default)]
-struct ConfirmedNames {
-    names: HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
+fn confirm_name(
+    names: &mut HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
+    file_id: crate::FileId, mut name: FuseOwned<MountPath>, stamp: Option<ViewStamp>,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), FuseRequestError> {
+    for ((known_id, known_name), held) in names.iter_mut() {
+        fuse_item(work)?;
+        if *known_id == file_id && **known_name == *name {
+            *held = stamp;
+            return Ok(());
+        }
+    }
+    name.claim(std::mem::size_of::<((crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>)>() as u64, work)?;
+    names.try_reserve(1).map_err(NativeMountError::Allocation)?;
+    names.insert((file_id, name), stamp);
+    Ok(())
 }
 
-impl ConfirmedNames {
-    fn confirm(&mut self, file_id: crate::FileId, mut name: FuseOwned<MountPath>,
-        stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<(), FuseRequestError>
-    {
-        for ((known_id, known_name), held) in &mut self.names {
-            fuse_item(work)?;
-            if *known_id == file_id && **known_name == *name {
-                *held = stamp;
-                return Ok(());
-            }
+fn name_is_bound(
+    names: &HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
+    source: &dyn MountFilesystem, file_id: crate::FileId, name: &MountPath,
+    work: &crate::NativeMaterializationWork,
+) -> Result<bool, FuseRequestError> {
+    for ((known_id, known_name), stamp) in names {
+        fuse_item(work)?;
+        if *known_id == file_id && **known_name == *name {
+            return match stamp {
+                Some(stamp) => Ok(source.unchanged_since_with_meter(name, None, *stamp, work)?),
+                None => Ok(true),
+            };
         }
-        name.claim(std::mem::size_of::<((crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>)>() as u64, work)?;
-        self.names.try_reserve(1).map_err(NativeMountError::Allocation)?;
-        self.names.insert((file_id, name), stamp);
-        Ok(())
     }
-
-    fn still_bound(
-        &self,
-        source: &dyn MountFilesystem,
-        file_id: crate::FileId,
-        name: &MountPath,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<bool, FuseRequestError> {
-        for ((known_id, known_name), stamp) in &self.names {
-            fuse_item(work)?;
-            if *known_id == file_id && **known_name == *name {
-                return match stamp {
-                    Some(stamp) => Ok(source.unchanged_since_with_meter(name, None, *stamp, work)?),
-                    None => Ok(true),
-                };
-            }
-        }
-        Ok(false)
-    }
+    Ok(false)
 }
 
 struct DirectoryStream {
@@ -498,7 +457,7 @@ struct DirectoryStream {
     page: Option<super::MountDirectoryPage>,
     entry_position: usize,
     entries_stamp: Option<ViewStamp>,
-    confirmed: ConfirmedNames,
+    confirmed: HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
     exhausted: bool,
     emitted: u64,
     parked: u64,
@@ -1033,7 +992,7 @@ impl ProjectionState {
 
     fn intern(
         &mut self, source: &dyn MountFilesystem, path: FuseOwned<MountPath>, lookup: &MountLookup,
-        stamp: Option<ViewStamp>, lookup_reference: bool, confirmed: &ConfirmedNames,
+        stamp: Option<ViewStamp>, lookup_reference: bool, confirmed: &HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<u64, FuseRequestError> {
         fuse_item(work)?;
@@ -1060,7 +1019,7 @@ impl ProjectionState {
             forget_unbound_names(
                 &mut self.by_inode, &mut self.inode_by_path, inode, &path,
                 |name, verified| {
-                    if confirmed.still_bound(source, lookup.node.file_id, name, work)? { return Ok(true); }
+                    if name_is_bound(confirmed, source, lookup.node.file_id, name, work)? { return Ok(true); }
                     match verified {
                         Some(stamp) => Ok(source.unchanged_since_with_meter(name, None, stamp, work)?),
                         None => Ok(false),
@@ -1570,7 +1529,7 @@ impl ProjectionState {
             .and_then(|parent| self.inode_by_path.get(&*parent).copied()).unwrap_or(ROOT_INODE);
         Ok(DirectoryStream {
             path, parent_inode, binding_epoch: source.binding_epoch_with_meter(work)?,
-            page: None, entry_position: 0, entries_stamp: None, confirmed: ConfirmedNames::default(),
+            page: None, entry_position: 0, entries_stamp: None, confirmed: HashMap::new(),
             exhausted: false, emitted: 0, parked: 0, park_replacement: None, storage: FuseOwned::empty(()),
         })
     }
@@ -3733,10 +3692,10 @@ impl FuseProjection {
 
     fn confirm_names<'a>(
         &self,
-        mut confirmed: ConfirmedNames,
+        mut confirmed: HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
         resolved: impl IntoIterator<Item = (&'a MountPath, MountNode)>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<ConfirmedNames, FuseRequestError> {
+    ) -> Result<HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>, FuseRequestError> {
         let source = self.core.source.as_ref();
         for (path, node) in resolved {
             fuse_item(work)?;
@@ -3745,12 +3704,12 @@ impl FuseProjection {
             for name in names.drain(..) {
                 match resolve_path(source, &name, work) {
                     Ok((Some(found), stamp)) if found.node.file_id == node.file_id => {
-                        confirmed.confirm(node.file_id, name, stamp, work)?;
+                        confirm_name(&mut confirmed, node.file_id, name, stamp, work)?;
                     }
                     Ok(_) => {}
                     Err(error) => {
                         self.core.record_handler_failure(work, NativeMountError::from(error));
-                        confirmed.confirm(node.file_id, name, None, work)?;
+                        confirm_name(&mut confirmed, node.file_id, name, None, work)?;
                     }
                 }
             }
@@ -3782,9 +3741,9 @@ impl FuseProjection {
         let (found, stamp) = resolve_path(source, &child.spelled, work)?;
         let confirmed = match found {
             Some(lookup) => {
-                self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)], work)?
+                self.confirm_names(HashMap::new(), [(child.key(), lookup.node)], work)?
             }
-            None => ConfirmedNames::default(),
+            None => HashMap::new(),
         };
         let mut state = self.core.state()?;
         let Some(lookup) = found else {
@@ -3919,7 +3878,7 @@ impl FuseProjection {
         } else { None };
         // A node just created has no recorded name to confirm.
         let confirmed =
-            self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)], work)?;
+            self.confirm_names(HashMap::new(), [(child.key(), lookup.node)], work)?;
         let mut state = self.core.state()?;
         let inode = state.intern(
             source,
@@ -4327,7 +4286,7 @@ impl FuseProjection {
                 }
                 // Confirmed before the open changes anything.
                 let confirmed =
-                    self.confirm_names(ConfirmedNames::default(), [(child.key(), existing.node)], work)?;
+                    self.confirm_names(HashMap::new(), [(child.key(), existing.node)], work)?;
                 let claimed = claim(existing.node.file_id)?;
                 let open_file = FuseOpenFile::Source(fuse_open_file(source.open_file_with_meter(path, work)?, work)?);
                 let opened = open_file.file(work)?.lookup_with_meter(work).map_err(FuseRequestError::from)?;
@@ -4355,7 +4314,7 @@ impl FuseProjection {
                 true,
                 claimed,
                 // A file just created has no other name.
-                ConfirmedNames::default(),
+                HashMap::new(),
             )
         };
         let mut state = self.core.state()?;
@@ -4644,7 +4603,7 @@ impl FuseProjection {
         entries: &[MountDirectoryEntry],
         stamp: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<ConfirmedNames, FuseRequestError> {
+    ) -> Result<HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>, FuseRequestError> {
         let source = self.core.source.as_ref();
         let mut listed = fuse_vec(entries.len(), work)?;
         for entry in entries {
@@ -4654,12 +4613,12 @@ impl FuseProjection {
             listed.push((fuse_clone_path(name.key(), work)?, entry.node));
         }
         let mut confirmed = self.confirm_names(
-            ConfirmedNames::default(),
+            HashMap::new(),
             listed.iter().map(|(path, node)| (&**path, *node)),
             work,
         )?;
         for (path, node) in listed.drain(..) {
-            confirmed.confirm(node.file_id, path, stamp, work)?;
+            confirm_name(&mut confirmed, node.file_id, path, stamp, work)?;
         }
         Ok(confirmed)
     }
@@ -5769,7 +5728,7 @@ mod tests {
         MountSourceError, MountViewLease, ViewObserver,
     };
     use super::{
-        ConfirmedNames, InodeEntry, KernelCacheItem,
+        InodeEntry, KernelCacheItem, confirm_name, name_is_bound,
         MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY, MountFilesystem, MountLookup, MountNode,
         MountNodeKind, MountOpenFile, MountPath, MountSeekTarget, PageStores,
         ROOT_INODE, ViewStamp, admit_open, cached_projected_lookup, changes_content,
@@ -6256,7 +6215,7 @@ mod tests {
             page: None,
             entry_position: 0,
             entries_stamp: None,
-            confirmed: ConfirmedNames::default(),
+            confirmed: HashMap::new(),
             exhausted: false,
             emitted,
             parked: 0,
@@ -6373,24 +6332,24 @@ mod tests {
         let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
 
         let work = super::fuse_fixture_work();
-        let mut confirmed = ConfirmedNames::default();
-        confirmed.confirm(file_id, super::FuseOwned::empty(name("b")), Some(stamp), &work).expect("confirmed name");
-        confirmed.confirm(file_id, super::FuseOwned::empty(name("a")), None, &work).expect("confirmed name");
-        assert!(confirmed.still_bound(&source, file_id, &name("b"), &work).expect("name history"));
-        assert!(confirmed.still_bound(&source, file_id, &name("a"), &work).expect("name history"));
-        assert!(!confirmed.still_bound(&source, FileId::new(), &name("b"), &work).expect("name history"));
-        assert!(!confirmed.still_bound(&source, file_id, &name("c"), &work).expect("name history"));
+        let mut confirmed = HashMap::new();
+        confirm_name(&mut confirmed, file_id, super::FuseOwned::empty(name("b")), Some(stamp), &work).expect("confirmed name");
+        confirm_name(&mut confirmed, file_id, super::FuseOwned::empty(name("a")), None, &work).expect("confirmed name");
+        assert!(name_is_bound(&confirmed, &source, file_id, &name("b"), &work).expect("name history"));
+        assert!(name_is_bound(&confirmed, &source, file_id, &name("a"), &work).expect("name history"));
+        assert!(!name_is_bound(&confirmed, &source, FileId::new(), &name("b"), &work).expect("name history"));
+        assert!(!name_is_bound(&confirmed, &source, file_id, &name("c"), &work).expect("name history"));
 
         // The name changes after the page was read, before it is emitted.
         source.remove(&name("b"), Some(file_id))?;
         source.create_file(&name("b"), FileMetadata::default())?;
-        assert!(!confirmed.still_bound(&source, file_id, &name("b"), &work).expect("name history"));
+        assert!(!name_is_bound(&confirmed, &source, file_id, &name("b"), &work).expect("name history"));
         // A sibling changing leaves another name's confirmation standing.
-        let mut sibling = ConfirmedNames::default();
+        let mut sibling = HashMap::new();
         let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
-        sibling.confirm(file_id, super::FuseOwned::empty(name("a")), Some(stamp), &work).expect("confirmed name");
+        confirm_name(&mut sibling, file_id, super::FuseOwned::empty(name("a")), Some(stamp), &work).expect("confirmed name");
         source.create_file(&name("c"), FileMetadata::default())?;
-        assert!(sibling.still_bound(&source, file_id, &name("a"), &work).expect("name history"));
+        assert!(name_is_bound(&sibling, &source, file_id, &name("a"), &work).expect("name history"));
         Ok(())
     }
 
