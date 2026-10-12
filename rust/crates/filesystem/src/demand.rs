@@ -3378,7 +3378,7 @@ impl<D> FilteredDemandSource<D> {
             for index in 0..count {
                 let entry = &page.entries[index];
                 if !self.excluded.excludes(directory, Some(entry.name()), |delta| work.charge(delta), true)? {
-                    selected.push(page.entries.backing_index(index).ok_or(DemandError::InvalidRequest)?);
+                    selected.push(page.entries.indices.as_ref().map_or(page.entries.range.start + index, |indices| indices[index]));
                 }
             }
             Ok::<_, DemandError>(())
@@ -3890,7 +3890,7 @@ impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
                 let entry = &page.value.entries[index];
                 if !self.excluded.excludes(directory, Some(&entry.name),
                     |delta| page.work.charge(&delta, &budget).map_err(Into::into), false)? {
-                    selected.push(page.value.entries.backing_index(index).ok_or(DemandError::InvalidRequest)?);
+                    selected.push(page.value.entries.indices.as_ref().map_or(page.value.entries.range.start + index, |indices| indices[index]));
                 }
             }
             page.value.entries.indices = Some(selected);
