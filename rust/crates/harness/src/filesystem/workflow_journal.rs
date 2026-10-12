@@ -987,21 +987,18 @@ where
         let appended = self.append_reference(&path, "admission", 0, admission.operation_id,
             &reference, io).await;
         match appended {
-            Ok(true) => Ok(admission),
-            Err(error) if self.owner.is_some() => Err(error),
-            Ok(false) | Err(Error::Conflict(_)) =>
-                match self.read_admission(io).await? {
-                    Some(existing) if existing == admission => Ok(existing),
-                    Some(_) => Err(Error::Conflict("workflow admission identity is already bound".into())),
-                    None if self.owner.is_some() => Err(Error::Conflict("workflow admission ownership changed".into())),
-                    None => Err(Error::Indeterminate(admission.operation_id)),
-                },
-            Err(Error::Indeterminate(_)) => match self.read_admission(io).await {
-                Ok(Some(existing)) if existing == admission => Ok(existing),
-                Ok(Some(_)) => Err(Error::Conflict("workflow admission identity is already bound".into())),
-                Ok(None) | Err(Error::Storage(_)) => Err(Error::Indeterminate(admission.operation_id)),
-                Err(error) => Err(error),
-            },
+            Ok(true) => return Ok(admission),
+            Err(error) if self.owner.is_some() => return Err(error),
+            Ok(false) | Err(Error::Conflict(_) | Error::Indeterminate(_)) => {}
+            Err(error) => return Err(error),
+        }
+        match self.read_admission(io).await {
+            Ok(Some(existing)) if existing == admission => Ok(existing),
+            Ok(Some(_)) => Err(Error::Conflict("workflow admission identity is already bound".into())),
+            Ok(None) if self.owner.is_some() => Err(Error::Conflict("workflow admission ownership changed".into())),
+            Ok(None) => Err(Error::Indeterminate(admission.operation_id)),
+            Err(Error::Storage(_)) if matches!(appended, Err(Error::Indeterminate(_))) =>
+                Err(Error::Indeterminate(admission.operation_id)),
             Err(error) => Err(error),
         }
     }
