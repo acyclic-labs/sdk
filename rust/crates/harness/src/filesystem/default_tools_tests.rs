@@ -342,11 +342,13 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
     let private = workspace_ref(fixture.private.provider().clone(), &fixture.private.storage_name(&mut None)?)?;
     let stream_provider = ProviderRef::new("recursive-default-test".into(), "stream".into(), "1".into(), &mut None)?;
     let request = ForkRequest {
+        authorized_source: None,
         operation_id: effect, parent: fixture.parent.reducer().authority().clone(),
         parent_revision: fixture.parent.reducer().revision(),
         child: Authority { kind: AggregateKind::Conversation, id: "new-source-pin-child".into() },
         child_agent, attached_agents: Vec::new(),
         preparation: crate::fork::ForkPreparation {
+            child_result_volume: None,
             child_project_volume: VolumeRef::new(fixture.project.provider().clone(), "new-source-pin-project".into(),
                 VolumeClass::Project, VolumeOwner::Project("new-source-pin-child".into()), &mut None)?,
             child_private_volume: VolumeRef::new(fixture.private.provider().clone(), "new-source-pin-private".into(),

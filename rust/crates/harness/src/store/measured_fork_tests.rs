@@ -259,7 +259,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
         &setup.owner, budget, &cancelled).await.is_err());
     assert!(publish(&mut setup.parent, setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, WorkBudget { peak_allocation_bytes: 1, ..budget }, &cancellation).await.is_err());
-    let wrong_parent_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.parent.clone()).issue("not-original-admitted-parent", &Capabilities::new(["fork:publish".into()]), Some(AgentId::from_bytes([80; 16])), None, &mut None).expect("scope proof");
+    let wrong_parent_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.parent.clone()).issue("not-original-admitted-parent", &Capabilities::new(["fork:publish"]), Some(AgentId::from_bytes([80; 16])), None, &mut None).expect("scope proof");
     assert!(publish(&mut setup.parent, setup.report.clone(), wrong_parent_agent,
         &setup.owner, budget, &cancellation).await.is_err());
     let mut hostile_report = setup.report.clone();
@@ -573,11 +573,11 @@ fn projection_locator_original_serde_cause_and_predecode_denials() -> Result<()>
     duplicate.extend_from_slice(&original[1..]);
     mutations.push(duplicate);
     for field in ["authority", "revision", "bytes", "digest", "chunks"] {
-        let mut value: serde_json::Value = crate::contract::json_from_slice(&original)?;
+        let mut value: serde_json::Value = crate::contract::json_from_slice(&original).map_err(|error| Error::Invalid(error.to_string()))?;
         value[field] = serde_json::json!("wrong field type");
         mutations.push(crate::contract::canonical_json_bytes(&value)?);
     }
-    let mut value: serde_json::Value = crate::contract::json_from_slice(&original)?;
+    let mut value: serde_json::Value = crate::contract::json_from_slice(&original).map_err(|error| Error::Invalid(error.to_string()))?;
     value["chunks"][0]["digest"] = serde_json::json!([3]);
     mutations.push(crate::contract::canonical_json_bytes(&value)?);
     mutations.push(br#"{"authority":{},"revision":64,"bytes":1,"digest":[0],"chunks":[],"extra":true}"#.to_vec());
@@ -672,7 +672,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
         for mutation in &mut request.mutations {
             let CommitMutation::Append { path, records } = mutation else { continue; };
             if path.as_str() == head {
-                let mut location: serde_json::Value = crate::contract::json_from_slice(&records[0])?;
+                let mut location: serde_json::Value = crate::contract::json_from_slice(&records[0]).map_err(|error| Error::Invalid(error.to_string()))?;
                 match mode {
                     0 => location["authority"]["id"] = serde_json::json!("another-authority"),
                     1 => location["revision"] = serde_json::json!(63),

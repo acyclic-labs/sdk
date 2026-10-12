@@ -588,9 +588,8 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "options.json",
             options_bytes,
             "application/json",
-            "options.json",
-        )
-        .await?;
+            "options.json", None,
+        )?.await?.0;
     let extension = ExtensionDependency {
         name: "fixture.media".into(),
         version: 1,
@@ -687,9 +686,8 @@ async fn exercise_live_native_boundary() -> Result<()> {
                     &format!("media/{index}.bin"),
                     body,
                     "application/x-harness-native-fixture",
-                    "native.bin",
-                )
-                .await?,
+                    "native.bin", None,
+                )?.await?.0,
             policy(
                 intents
                     .get(index)
@@ -1142,9 +1140,8 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "options.json",
             next_bytes,
             "application/json",
-            "options.json",
-        )
-        .await?;
+            "options.json", None,
+        )?.await?.0;
     agent.validate_configuration_bytes(&extension, &next, next_bytes, None)?;
     for (revision, action) in [
         (
@@ -1275,9 +1272,8 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "malformed-options.json",
             malformed_bytes,
             "application/json",
-            "malformed-options.json",
-        )
-        .await?;
+            "malformed-options.json", None,
+                )?.await?.0;
     let counts = adapter.counts.load(Ordering::SeqCst);
     let generated = adapter.generates.load(Ordering::SeqCst);
     assert!(
@@ -1612,7 +1608,7 @@ where
                     .last()
                     .ok_or_else(|| Error::NotFound("derived capture".into()))?
                     .bytes.as_ref(),
-                derived_bytes
+                derived_bytes.as_ref()
             );
             for (captured, (file, policy)) in media.iter().zip(&expected) {
                 assert_eq!(&captured.file, file);
@@ -1656,18 +1652,16 @@ where
                     "media/0.bin",
                     b"replaced mutable media",
                     "application/octet-stream",
-                    "replacement",
-                )
-                .await?;
+                    "replacement", None,
+                )?.await?.0;
             writer
                 .stage(
                     OperationId::new(),
                     "options.json",
                     br#"{"mode":"strict","scale":4}"#,
                     "application/json",
-                    "replacement options",
-                )
-                .await?;
+                    "replacement options", None,
+                )?.await?.0;
         }
     }
     Ok(())
@@ -1875,7 +1869,7 @@ where
                 sequence: 1,
                 kind: acyclic_harness::conversation::MessageKind::User,
                 content: prefix.clone(),
-                attachments: admitted
+                attachments: acyclic_harness::conversation::ReferencedAttachments::Inline { items: admitted
                     .request()
                     .messages
                     .iter()
@@ -1889,8 +1883,7 @@ where
                     })
                     .into_iter()
                     .map(|file| acyclic_harness::conversation::Attachment { file, label: None })
-                    .collect::<Vec<_>>()
-                    .into(),
+                    .collect::<Vec<_>>() },
                 reply_to: None,
                 tool_call_id: None,
                 extensions: BTreeMap::new().into(),

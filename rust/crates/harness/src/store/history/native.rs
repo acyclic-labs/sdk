@@ -690,7 +690,7 @@ mod tests {
             .expect("pre-admitted concrete byte allocation");
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(8).expect("real test byte buffer");
-        allocation.reconcile_capacity(bytes.capacity() as u64)
+        allocation.reconcile_capacity(bytes.capacity())
             .expect("actual byte capacity");
         meter.admit_codec(0, 8, 0).expect("actual source copy admission");
         bytes.extend_from_slice(b"original");
@@ -1236,11 +1236,15 @@ mod tests {
         assert!(matches!(io.reserve_text(&mut text, 1), Err(Error::NativeBoundary { .. })));
         assert!(matches!(io.clone_text("owned clone"), Err(Error::NativeBoundary { .. })));
         assert!(matches!(io.decode_json_value(b"null"), Err(Error::NativeBoundary { .. })));
+        let value_shape = crate::contract::json::admit_json_value_shape(
+            b"null", crate::contract::JsonBounds::IDENTITY, crate::contract::JsonValueSchema::Root,
+            &mut |_| Ok(()),
+        ).expect("SDK-issued fixture shape");
         for charge in [
             crate::contract::JsonCodecCharge::Retain { bytes: 1 },
             crate::contract::JsonCodecCharge::Release { bytes: 1 },
             crate::contract::JsonCodecCharge::Read { bytes: 1 },
-            crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes: 1 },
+            crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes: 1, value_shape },
         ] {
             assert!(matches!(io.codec_charge(charge), Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported, ..
