@@ -9985,7 +9985,7 @@ mod tests {
             drop(held);
             drop(view);
             let reopened = LazyWorkspace::open(
-                fs.open_workspace("bounded-mount-fault").await?, demand, store,
+                fs.open_workspace("bounded-mount-fault", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, demand, store,
             ).await?;
             assert!(matches!(reopened.lookup("/a").await,
                 Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)));

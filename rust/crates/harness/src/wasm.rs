@@ -1734,7 +1734,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         "interaction_resolution" => {
             let value: InteractionResolution = from_js(value)?;
             let ticket: InteractionTicket = from_js(context)?;
-            ticket.validate().map_err(js_error)?;
+            ticket.validate(&mut None).map_err(js_error)?;
             value.validate(&ticket).map_err(js_error)?;
             to_js_admitted(&value)
         }
@@ -2509,7 +2509,7 @@ pub fn decode_apply_response(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
         .event
         .ok_or_else(|| JsValue::from_str("apply response event is missing"))?;
     let (_, event) =
-        crate::wire_codec::decode_event(&envelope.encode_to_vec()).map_err(js_error)?;
+        crate::wire_codec::decode_event(&envelope.encode_to_vec(), &mut None).map_err(js_error)?.0;
     let result = match crate::wire::ApplyState::try_from(response.state)
         .map_err(|_| JsValue::from_str("apply response state is invalid"))?
     {
@@ -2759,7 +2759,7 @@ pub fn validate_model_token_count(
     let prepared =
         crate::model::PreparedModelRequest::prepare(request, from_js(limits)?, None).map_err(js_error)?;
     let count: crate::context::ModelTokenCount = from_js(count)?;
-    count.validate(&prepared).map_err(js_error)
+    count.validate(&prepared, &mut None).map_err(js_error)
 }
 
 /// Parses a bounded frontmatter prefix without fetching or interpreting a skill body.

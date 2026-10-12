@@ -187,7 +187,7 @@ where
             || private_volume.class() != VolumeClass::AgentPrivate
             || private_volume.provider() != &host.provider || maximum_bytes == 0
         {
-            return Err(super::fork_preparer_io::invalid(io,
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
                 "interaction host requires a conversation, private volume, and positive limit"));
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
@@ -771,7 +771,7 @@ where
         let bytes_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let bytes = match io {
-            Some(io) => io.encode_json(value, self.maximum_bytes, false)?,
+            Some(io) => io.encode(value, self.maximum_bytes, false)?,
             None => serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
         bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)

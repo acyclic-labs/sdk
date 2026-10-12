@@ -395,7 +395,7 @@ pub(crate) fn native_preparation_error(error: acyclic_stream::PreparedOwnedBytes
     match error {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => error.into(),
         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-        | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+        =>
             NativeObjectsError::Admission(std::io::ErrorKind::InvalidData.into()),
     }
 }

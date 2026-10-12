@@ -1979,6 +1979,132 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
 }
 
 #[tokio::test]
+async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> Result<()> {
+    use acyclic_fs::{ConflictKey, ConflictSide, JoinOutcome, MergeDriver, MergeDriverRegistry,
+        MergeResolution, MemoryMergeResolutionCache, resolve_merge_plan};
+    use acyclic_harness::conversation::ContentGrant;
+    use acyclic_harness::core::Reducer;
+    use acyclic_harness::filesystem::{FilesystemWorkflowJournal, ParentProjectController, WorkspaceMutation, workspace_ref};
+    use acyclic_harness::workflow::{MachineCheckpoint, WorkflowAdmission};
+
+    struct Driver(AtomicUsize);
+    impl MergeDriver for Driver {
+        fn fingerprint(&self) -> &[u8] { b"review-policy@7" }
+        fn resolve(&self, conflict: &acyclic_fs::ConflictView)
+            -> std::result::Result<MergeResolution, acyclic_fs::DriverError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(match conflict.key {
+                ConflictKey::File(_) | ConflictKey::ContentRange { .. } => MergeResolution::Text("custom resolution".into()),
+                _ => MergeResolution::Select(ConflictSide::Theirs),
+            })
+        }
+    }
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let options = LocalOptions::new(directory.path().join("filesystem"));
+    let stream_root = directory.path().join("streams");
+    let provider = ProviderRef::new("custom-merge", "filesystem", "2")?;
+    let agent = AgentId::from_bytes([141; 16]);
+    let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project("review".into()))?;
+    let source = VolumeRef::new(provider.clone(), "source", VolumeClass::Project, project.owner().clone())?;
+    let private = VolumeRef::new(provider.clone(), "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+    let authority = Authority { kind: AggregateKind::Conversation, id: "custom-merge-parent".into() };
+    let issuer = AuthorityIssuer::new("custom-merge", [142; 32], authority.clone());
+    let signed = issuer.root_for_agent(agent, "owner", Capabilities::new([
+        "conversation:bind".into(), "fork:publish".into(), "project:merge".into(),
+        project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
+        source.capability(VolumeOperation::Read)?, source.capability(VolumeOperation::Write)?,
+        private.capability(VolumeOperation::Read)?, private.capability(VolumeOperation::Write)?,
+    ]));
+    let mut parent = Reducer::new(authority, issuer.verifier(), SchemaRegistry::new());
+    parent.apply(Command { operation_id: OperationId::from_bytes([143; 16]), idempotency_key: IdempotencyKey::new("bind")?,
+        expected_revision: 0, scope: signed.clone(), causal_parent: None, action: Action::BindConversation { agent } })?;
+    let driver = Arc::new(Driver(AtomicUsize::new(0)));
+    let operation = OperationId::from_bytes([144; 16]);
+    let admission;
+    let resolution_record;
+    let source_head;
+    let target_head;
+    {
+        let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
+        host.create_volume(&project).await?;
+        host.create_volume(&private).await?;
+        let write = ContentGrant::verify(&issuer.verifier(), &signed, &project, VolumeOperation::Write)?;
+        host.put_content(&project, &write, "shared.txt", b"base", "text/plain", "shared.txt", 128,
+            &IdempotencyKey::new("base")?).await?;
+        let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(), &signed, project.clone())?;
+        let base = host.resolve(&workspace_ref(provider.clone(), &project.storage_name()?)?).await?;
+        let fork = controller.fork_project(&base.generation, &source, &IdempotencyKey::new("fork")?).await?;
+        source_head = host.apply(&fork.workspace, Some(&fork.generation), &[WorkspaceMutation::PutFile {
+            path: "/shared.txt".into(), bytes: b"source".as_slice().into(),
+        }], &IdempotencyKey::new("source-edit")?).await?.generation;
+        let target = workspace_ref(provider.clone(), &project.storage_name()?)?;
+        target_head = host.apply(&target, None, &[WorkspaceMutation::PutFile {
+            path: "/shared.txt".into(), bytes: b"target".as_slice().into(),
+        }], &IdempotencyKey::new("target-edit")?).await?.generation;
+        let plan = controller.prepare_project_import(&source, &source_head).await?;
+        let JoinOutcome::Conflicted { conflicts, truncated } = controller.apply_project_merge(&plan, operation).await? else {
+            return Err(Error::Invalid("custom merge must have a real conflict".into()));
+        };
+        let described = controller.describe_project_merge_conflicts(&plan, &conflicts, truncated).await?;
+        let state = json!({"policy":"review", "revision":"7", "plan":acyclic_fs::encode_merge_plan(&described)
+            .map_err(|e| Error::Invalid(e.to_string()))?});
+        admission = WorkflowAdmission { operation_id: operation, request_digest: acyclic_harness::contract::canonical_json_digest(&state)?,
+            initial: MachineCheckpoint { machine: MachineIdentity { name: "test.custom-merge".into(), version: "7".into(), digest: [145; 32] },
+                revision: 0, state } };
+        let journal = FilesystemWorkflowJournal::new(StreamClient::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
+            .map_err(|e| Error::Storage(e.to_string()))?)), host.clone(), "custom-merge", private.clone(), issuer.verifier(), signed.clone(), 65_536)?;
+        assert_eq!(journal.admit(admission.clone()).await?, admission);
+        let mut registry = MergeDriverRegistry::new();
+        registry.register("review", driver.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
+        registry.set_default("review").map_err(|e| Error::Invalid(e.to_string()))?;
+        let candidate = resolve_merge_plan(described, &registry, &mut MemoryMergeResolutionCache::default(), false)
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let input = json!(acyclic_fs::encode_merge_candidate(&candidate).map_err(|e| Error::Invalid(e.to_string()))?);
+        let state = json!({"candidate":input});
+        resolution_record = WorkflowRecord { operation_id: OperationId::from_bytes([146; 16]),
+            idempotency_key: IdempotencyKey::new("driver-result")?, input_digest: acyclic_harness::contract::canonical_json_digest(&input)?,
+            prior: admission.initial.clone(), input,
+            transition: MachineTransition { state: state.clone(), commands: Vec::new(), status: MachineStatus::Suspended },
+            next: MachineCheckpoint { machine: admission.initial.machine.clone(), revision: 1, state } };
+        journal.commit(0, resolution_record.idempotency_key.clone(), resolution_record.clone()).await?;
+    }
+    let calls = driver.0.load(Ordering::SeqCst);
+    assert!(calls > 0);
+    for retry in 0..2 {
+        let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
+        let journal = FilesystemWorkflowJournal::new(StreamClient::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
+            .map_err(|e| Error::Storage(e.to_string()))?)), host.clone(), "custom-merge", private.clone(), issuer.verifier(), signed.clone(), 65_536)?;
+        let retained = journal.admission().await?.ok_or_else(|| Error::NotFound("merge admission".into()))?;
+        assert_eq!(retained, admission);
+        let records = journal.replay(0, 1).await?;
+        assert_eq!(records, vec![resolution_record.clone()]);
+        let record = records.first().ok_or_else(|| Error::NotFound("driver result".into()))?;
+        let candidate = acyclic_fs::decode_merge_candidate(record.next.state["candidate"].as_str()
+            .ok_or_else(|| Error::Invalid("candidate missing".into()))?).map_err(|e| Error::Invalid(e.to_string()))?;
+        let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(), &signed, project.clone())?;
+        let plan = controller.prepare_project_import_at(&source, &source_head, &target_head).await?;
+        let denied = issuer.root_for_agent(agent, "no-write", Capabilities::new([source.capability(VolumeOperation::Read)?]));
+        let unauthorized = ParentProjectController::new(&host, &parent, &issuer.verifier(), &denied, project.clone())?;
+        assert!(unauthorized.apply_project_merge_candidate(&plan, operation, &candidate).await.is_err());
+        let mut changed = candidate.clone();
+        changed.plan.ours = candidate.plan.base;
+        assert!(controller.apply_project_merge_candidate(&plan, operation, &changed).await.is_err());
+        let outcome = controller.apply_project_merge_candidate(&plan, operation, &candidate).await?;
+        assert!(if retry == 0 { matches!(outcome, JoinOutcome::Applied(_)) } else { matches!(outcome, JoinOutcome::AlreadyApplied(_)) });
+        if retry == 0 {
+            let write = ContentGrant::verify(&issuer.verifier(), &signed, &project, VolumeOperation::Write)?;
+            host.put_content(&project, &write, "concurrent.txt", b"user edit", "text/plain", "concurrent.txt", 128,
+                &IdempotencyKey::new("concurrent")?).await?;
+        }
+        assert_eq!(host.read(&workspace_ref(provider.clone(), &project.storage_name()?)?, None, "/concurrent.txt", 128).await?.as_ref(), b"user edit");
+        assert_eq!(host.read(&workspace_ref(provider.clone(), &project.storage_name()?)?, None, "/shared.txt", 128).await?.as_ref(), b"custom resolution");
+        assert_eq!(host.resolve(&workspace_ref(provider.clone(), &source.storage_name()?)?).await?.generation, source_head);
+    }
+    assert_eq!(driver.0.load(Ordering::SeqCst), calls);
+    Ok(())
+}
+
+#[tokio::test]
 async fn direct_stock_turn_reconciles_through_runtime_after_provider_reopen() -> Result<()> {
     stock_restart_with_publication_fault(None, false, true).await
 }

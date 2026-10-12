@@ -1661,7 +1661,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         request: acyclic_stream::CommitRequest,
         fork_guard: Option<Box<dyn crate::fork::ForkPublicationGuard>>,
     ) -> Result<ApplyResult> {
-        let append = self.client.commit(request).await;
+        let append = self.client.provider.commit(request).await;
         let outcome = match append {
             Ok(outcome) => outcome,
             Err(StreamError::Unavailable) => {
@@ -2093,7 +2093,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Ok(Some(result));
         }
         let key = stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
-        let Some(observation) = self.client.inspect_idempotency(key).await? else {
+        let Some(observation) = self.client.provider.inspect_idempotency(key).await? else {
             return Ok(None);
         };
         match observation.outcome {
@@ -4610,7 +4610,7 @@ mod tests {
                 .await?;
         } else {
             let outcome = client
-                .commit(CommitRequest {
+                .provider.commit(CommitRequest {
                     conditions: vec![
                         CommitCondition::Tail {
                             path: stream.path().clone(),

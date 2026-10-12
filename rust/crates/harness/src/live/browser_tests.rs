@@ -4,12 +4,12 @@ use wasm_bindgen_test::wasm_bindgen_test;
 
 #[wasm_bindgen_test]
 async fn browser_live_admission_rejection_and_owned_cancellation_need_no_tokio_runtime() {
-    let group = TaskGroup::new(1);
+    let group = TaskGroup::new(1, None).unwrap();
     let handle = group.spawn(async { 17_u32 }).await;
     assert!(matches!(handle.result().await, Outcome::Succeeded(17)));
     let pending = group.spawn(futures::future::pending::<u32>()).await;
     let original = *pending.id();
-    let owned = pending.result_owned();
+    let owned = pending.result();
     drop(owned);
     sleep_millis(1).await.unwrap();
     assert!(!group.state.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.contains_key(&original));

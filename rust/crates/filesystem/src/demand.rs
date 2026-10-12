@@ -6678,7 +6678,7 @@ pub mod native {
                         crate::native_name::original_name_error(original.runtime_error(error))
                     }
                     acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                    | acyclic_stream::PreparedOwnedBytesError::NotUnique => DemandError::InvalidRequest,
+                    => DemandError::InvalidRequest,
                 })?)
             } else {
                 bytes.resize(size, 0);

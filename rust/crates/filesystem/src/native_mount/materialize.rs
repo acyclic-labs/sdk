@@ -2085,7 +2085,7 @@ where
             ).map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
                 acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                | acyclic_stream::PreparedOwnedBytesError::NotUnique => crate::NativeTreeMaterializationError::InvalidLayout,
+                => crate::NativeTreeMaterializationError::InvalidLayout,
             });
             let bytes = receipt.custody_result(bytes)?;
             let written = write_generation_bytes(&file, 0, bytes, 0, receipt, before_effect).await?;

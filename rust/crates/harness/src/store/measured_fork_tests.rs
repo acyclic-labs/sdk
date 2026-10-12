@@ -691,7 +691,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
             };
             Some(records.remove(0))
         } else { None };
-        client.commit(request).await?;
+        client.provider.commit(request).await?;
         if let Some(bytes) = detached {
             client.stream(&head)?.append_at(bytes, 0).await?;
         }
