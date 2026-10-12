@@ -18,7 +18,7 @@ pub enum NativeObjectsCause {
 }
 
 /// One preadmitted actual grouped failure, retaining its original cause to last alias.
-pub type NativeObjectsSharedFailure = Guarded<std::sync::OnceLock<NativeObjectsError>>;
+pub type NativeObjectsSharedFailure = Guarded<Option<NativeObjectsError>>;
 
 impl NativeObjectsSharedFailure {
     pub(crate) fn prepare(
@@ -27,7 +27,7 @@ impl NativeObjectsSharedFailure {
         let allocation =
             acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<Self>())?;
         Ok(std::sync::Arc::new(Self {
-            value: std::sync::OnceLock::new(),
+            value: None,
             _allocation: Some(allocation),
         }))
     }
@@ -35,7 +35,7 @@ impl NativeObjectsSharedFailure {
     /// Borrows the same original typed cause; published aliases are always initialized.
     pub fn error(&self) -> &NativeObjectsError {
         self.value
-            .get()
+            .as_ref()
             .expect("only an initialized original failure is published")
     }
 }
@@ -190,6 +190,10 @@ impl NativeTransportErrors {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .0
             .take()
+    }
+
+    pub(crate) fn original(&self, error: Error) -> NativeObjectsError {
+        self.take().unwrap_or_else(|| error.into())
     }
 
     pub(crate) fn retain_wire(

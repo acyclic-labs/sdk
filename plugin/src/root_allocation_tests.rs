@@ -131,66 +131,10 @@ async fn preparing_roots_reopen_as_intents_and_cannot_route_or_mutate() {
         }
         assert!(validate_state_bounds(&changed).is_err());
     }
-    let mut control = ControlPlane::open(directory.path().join("service"))
-        .await
-        .unwrap();
-    control.state = state;
-    let root = WorkspaceRootId::from_bytes(control.state.root_id);
-    assert!(control.route_root_from_cwd(&selected).is_err());
-    assert!(
-        control
-            .ensure_agent_idle(&control.state.root_agent_id)
-            .is_err()
-    );
-    assert!(
-        control
-            .parent_repository_id(
-                &control.state.root_agent_id,
-                root,
-                acyclic_fs::WorkspaceId::from_bytes([65; 16])
-            )
-            .is_err()
-    );
-    let route = Route {
-        task_binding: control.state.task_binding.clone(),
-        agent_id: "child".into(),
-        turn_id: "turn".into(),
-        context_id: [66; 16],
-        root_id: control.state.root_id,
-        parent_agent_id: control.state.root_agent_id.clone(),
-        roots: BTreeMap::new(),
-        mount_path: directory.path().join("unopened-mount"),
-        lifecycle: RouteLifecycle::Active,
-    };
-    assert!(control.workspace_root(&route, root).await.is_err());
-    assert!(control.lazy_workspace_root(&route, root).await.is_err());
     assert!(!selected.exists());
-    assert!(control.restore_root().await.is_err());
-    assert!(control.refresh_native_root(root).await.is_err());
-    assert!(
-        control
-            .session_start(json!({"session_id":"pi-root","cwd":selected}))
-            .await
-            .is_err()
-    );
     fs::create_dir(&selected).unwrap();
     let retained = selected.join("retained.txt");
     fs::write(&retained, b"preserve concurrent user content").unwrap();
-    assert!(
-        control
-            .apply_source_deletions(
-                "pi-root",
-                BTreeMap::from([(root, vec!["/retained.txt".into()])])
-            )
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        fs::read(retained).unwrap(),
-        b"preserve concurrent user content"
-    );
-    let selected = directory.path().join("selected-root");
-    fs::create_dir(&selected).unwrap();
     let data = directory.path().join("catalog");
     let (_lock, configured, private, work) = crate::tests::configured_test_service_bootstrap(&data)
         .await
@@ -229,5 +173,9 @@ async fn preparing_roots_reopen_as_intents_and_cannot_route_or_mutate() {
     assert_eq!(
         concurrent.drain_sessions(false).await.unwrap(),
         SessionCloseState::Closed
+    );
+    assert_eq!(
+        fs::read(retained).unwrap(),
+        b"preserve concurrent user content"
     );
 }

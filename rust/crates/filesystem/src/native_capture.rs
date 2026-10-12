@@ -843,16 +843,12 @@ impl acyclic_native_runtime::NativeReadMeter for CapturedRuntimeReadMeter {
     fn release(&self, bytes: u64) { self.base.release(bytes); }
     fn admit_bytes(&self, maximum: usize) -> std::io::Result<()> { self.base.admit_bytes(maximum) }
     fn admit_read(&self, maximum: usize) -> std::io::Result<()> { self.base.admit_read(maximum) }
-    fn admit_operations(&self, count: u64) -> std::io::Result<()> { self.base.admit_operations(count) }
-    fn record_operations(&self, count: u64) -> std::io::Result<()> { self.base.record_operations(count) }
     fn record_read(&self, bytes: usize) -> std::io::Result<()> { self.base.record_read(bytes) }
     fn finish_read(&self, requested: usize, completed: usize) -> std::io::Result<()> {
         self.base.finish_read(requested, completed)
     }
     fn admit_write(&self, maximum: usize) -> std::io::Result<()> { self.base.admit_write(maximum) }
     fn record_write(&self, bytes: usize) -> std::io::Result<()> { self.base.record_write(bytes) }
-    fn admit_write_operations(&self, count: u64) -> std::io::Result<()> { self.base.admit_write_operations(count) }
-    fn record_write_operations(&self, count: u64) -> std::io::Result<()> { self.base.record_write_operations(count) }
     fn admit_durability(&self) -> std::io::Result<()> { self.base.admit_durability() }
     fn reserve_cleanup_write(&self) -> std::io::Result<u64> { self.base.reserve_cleanup_write() }
     fn cancel_cleanup_write(&self, reservation: u64) { self.base.cancel_cleanup_write(reservation); }
@@ -4075,13 +4071,13 @@ async fn settled_sparse_ranges(native: &std::sync::Arc<acyclic_native_runtime::N
             }).await?;
 
             let chunk = read;
-            let read_end = position + chunk.bytes.len() as u64;
+            let read_end = position + chunk.0.len() as u64;
             report_stands = { let scanned: Result<bool, CaptureError> = (|| {
                     let mut start = position;
                     while start < read_end {
                         meter.source().check().map_err(capture_demand_error)?;
                         let block_end = start.saturating_add(BLOCK - start % BLOCK).min(read_end);
-                        let block = chunk.bytes.get((start - position) as usize..(block_end - position) as usize)
+                        let block = chunk.0.get((start - position) as usize..(block_end - position) as usize)
                             .ok_or(CaptureError::InvalidOptions)?;
                         let mut nonzero = false;
                         for byte in block {
@@ -4226,8 +4222,8 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
                         crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Io(error))
                     })
             })?;
-        if result.bytes.len() != maximum { return Err(crate::FsError::SourceSnapshotStale); }
-        destination[..maximum].copy_from_slice(&result.bytes);
+        if result.0.len() != maximum { return Err(crate::FsError::SourceSnapshotStale); }
+        destination[..maximum].copy_from_slice(&result.0);
         copy.record_completed(WorkCounters { bytes_copied: maximum as u64, ..WorkCounters::UNCHARGED })?;
         // The packet retains its buffer until the copy and late checks finish.
         drop(result);

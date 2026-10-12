@@ -20,12 +20,8 @@ macro_rules! impl_original_native_read_meter {
             fn admit_examination(&self, items: u64, copied: u64) -> std::io::Result<()> { self.with_io(|demand| demand.admit(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED })) }
             fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> { self.with_io(|demand| demand.record(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED })) }
             fn admit_bytes(&self, maximum: usize) -> std::io::Result<()> { self.with_io(|demand| demand.admit(crate::WorkCounters { source_bytes_read: maximum as u64, ..crate::WorkCounters::UNCHARGED })) }
-            fn admit_operations(&self, count: u64) -> std::io::Result<()> { self.with_io(|demand| demand.admit(crate::WorkCounters { backend_read_operations: count, ..crate::WorkCounters::UNCHARGED })) }
-            fn record_operations(&self, count: u64) -> std::io::Result<()> { self.with_io(|demand| demand.record(crate::WorkCounters { backend_read_operations: count, ..crate::WorkCounters::UNCHARGED })) }
             fn record_read(&self, bytes: usize) -> std::io::Result<()> { self.with_io(|demand| demand.record(crate::WorkCounters { source_bytes_read: bytes as u64, ..crate::WorkCounters::UNCHARGED })) }
             fn record_write(&self, bytes: usize) -> std::io::Result<()> { self.with_io(|demand| demand.record(crate::WorkCounters { output_bytes: bytes as u64, ..crate::WorkCounters::UNCHARGED })) }
-            fn admit_write_operations(&self, count: u64) -> std::io::Result<()> { self.with_io(|demand| demand.admit(crate::WorkCounters { backend_write_operations: count, ..crate::WorkCounters::UNCHARGED })) }
-            fn record_write_operations(&self, count: u64) -> std::io::Result<()> { self.with_io(|demand| demand.record(crate::WorkCounters { backend_write_operations: count, ..crate::WorkCounters::UNCHARGED })) }
             fn admit_durability(&self) -> std::io::Result<()> { self.with_io(|demand| demand.charge(crate::WorkCounters { durability_operations: 1, ..crate::WorkCounters::UNCHARGED })) }
             fn check(&self) -> std::io::Result<()> { self.with_io(|demand| demand.check()) }
             fn reserve_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) -> std::io::Result<()> {

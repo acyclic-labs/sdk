@@ -15,9 +15,6 @@ where
     fn manifest(&self) -> &NativeViewManifest {
         &self.preparation.manifest
     }
-    fn operation_cancellation(&self) -> &acyclic_fs::CancellationToken {
-        self.work().cancellation()
-    }
     fn original_native_work(&self) -> &NativeMaterializationWork {
         self.work()
     }
@@ -275,7 +272,7 @@ where
                 let volume = &self.volumes[receipt.mounts.len()];
                 let proof = match &volume.view {
                     NativePreparedVolumeBackend::Materialized { view, .. } => {
-                        view.retire_with_work(wait)?
+                        view.retire(wait)?
                     }
                     NativePreparedVolumeBackend::HeldLazy(lazy) => lazy.retire(wait)?,
                 };
@@ -332,26 +329,6 @@ where
         Ok(())
     }
 
-    /// Transfers this view into an admitted Arc.
-    pub fn into_arc_with_native_work(
-        mut self,
-        work: &NativeMaterializationWork,
-    ) -> Result<Arc<Self>> {
-        if !self.work().shares_ledger(work) {
-            return Err(boundary(
-                crate::wire::ErrorCode::Conflict,
-                "native view Arc requires its actual original operation",
-            ));
-        }
-        let mut custody = work.claim(
-            std::mem::size_of::<Self>() as u64,
-            1,
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )?;
-        self.preparation._custody.absorb(&mut custody)?;
-        Ok(Arc::new(self))
-    }
-
     /// Returns this attachment's original preparation.
     pub fn preparation(&self) -> &NativePreparationReceipt {
         &self.preparation
@@ -367,7 +344,6 @@ where
     pub async fn read_builtin_file<P: StreamProvider>(
         &self,
         owner: &TaskJournalOwner<P>,
-        _original_operation: crate::OperationId,
         relative: &Path,
         maximum_bytes: usize,
         work: &NativeMaterializationWork,
@@ -406,7 +382,6 @@ where
     pub async fn write_builtin_file<P: StreamProvider>(
         &self,
         owner: &TaskJournalOwner<P>,
-        _original_operation: crate::OperationId,
         relative: &Path,
         content: &str,
         create_parents: bool,

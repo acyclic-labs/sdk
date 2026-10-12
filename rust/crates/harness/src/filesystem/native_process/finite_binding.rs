@@ -15,7 +15,7 @@ pub(super) fn require_view_family<P: StreamProvider>(
     view: &dyn NativeProcessView<P>, work: &NativeMaterializationWork,
 ) -> Result<()> {
     require_family(view.original_native_work(), work)?;
-    view.operation_cancellation().check()
+    view.original_native_work().cancellation().check()
         .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)
         .map_err(Error::from)
 }
@@ -74,7 +74,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             let request = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<NativeProcessRequest>,
                 bytes.as_ref(), crate::wire::ErrorCode::Invalid)?);
             drop(bytes);
-            request.view.validate_with_io(Some(&io))?;
+            request.view.validate(Some(&io))?;
             for mapping in &request.view.volumes {
                 owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
                 if mapping.writable {
@@ -106,7 +106,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             for operation in [crate::conversation::VolumeOperation::Write, crate::conversation::VolumeOperation::Read] {
                 owner.require_volume_grant(authority.results.volume(), operation, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             }
-            let approval_digest = request.approval_digest_with_io(owner.task_binding().0, command, Some(&io))?;
+            let approval_digest = request.approval_digest(owner.task_binding().0, command, Some(&io))?;
             authority.approvals.verify_with_native_work(approval, command, approval_digest, work)?.await?;
             let invocation = arc(Invocation { view, request, result_schema, approval_digest }, &io)?;
             let provider = assemble(io, owner, command, plan, Some(invocation), approval, authority, work)?;

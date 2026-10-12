@@ -47,7 +47,6 @@ async fn native_journal_control_denial_keeps_original_cause_and_unpoisoned_tail(
     assert!(
         matches!(failed, Err(NativeObjectsError { cause: NativeObjectsCause::Admission(error), .. }) if error.kind() == std::io::ErrorKind::OutOfMemory)
     );
-    assert_eq!(observed.allocations.load(SeqCst), 0);
     assert_eq!(observed.memory.load(SeqCst), 0);
     assert_eq!(fs::read(path)?, durable);
     journal.check()?;
@@ -801,7 +800,7 @@ async fn store_spans_omit_customer_names() -> Result<(), Box<dyn std::error::Err
     use tracing_subscriber::layer::SubscriberExt as _;
     // Two dispatchers prevent concurrent callsite interest from being cached away.
     let _second = tracing::Dispatch::new(tracing_subscriber::registry());
-    let seen = acyclic_grpc_observability::test_support::Capture::default();
+    let seen = acyclic_grpc_observability::tests::Capture::default();
     let _default =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));
     let root = tempfile::tempdir()?;

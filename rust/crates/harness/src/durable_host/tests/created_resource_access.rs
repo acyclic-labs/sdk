@@ -552,10 +552,10 @@ impl CreationFixture {
             &mut None,
         )?;
         let fs = Fs::memory();
-        let filesystem = Arc::new(FilesystemHost::new(
+        let filesystem = FilesystemHost::new(
             fs.clone(),
-            filesystem_provider.clone(),
-        )?);
+            &filesystem_provider, None,
+        )?;
         let payload_volume = VolumeRef::new(
             filesystem_provider.clone(),
             "scheduler".into(),

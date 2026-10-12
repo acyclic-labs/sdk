@@ -1353,10 +1353,6 @@ pub(crate) struct DemandCancellationRoots {
     watch_capacity: crate::kernel::allocation::LogicalVecCapacity,
     #[cfg(feature = "native-mount")]
     view_gates: crate::native_mount::ViewGateReadAdmissions,
-    #[cfg(feature = "native-mount")]
-    view_observers: crate::native_mount::ViewObserverAdmissions,
-    #[cfg(feature = "native-mount")]
-    view_ledgers: crate::native_mount::ViewLedgerAdmissions,
     native_mount_admissions: NativeMountAllocationAdmissions,
 }
 
@@ -1479,10 +1475,6 @@ impl DemandCancellationRoots {
         }
         #[cfg(feature = "native-mount")]
         self.view_gates.reconcile(allocations)?;
-        #[cfg(feature = "native-mount")]
-        self.view_observers.reconcile(allocations)?;
-        #[cfg(feature = "native-mount")]
-        self.view_ledgers.reconcile(allocations)?;
         self.native_mount_admissions.reconcile(allocations)?;
         Ok(())
     }
@@ -1512,16 +1504,7 @@ impl DemandCancellationRoots {
         let freed = freed
             .checked_add(self.view_gates.freed_bytes())
             .expect("retained registry proofs cannot exceed the ledger's owned byte range");
-        #[cfg(feature = "native-mount")]
-        let freed = freed
-            .checked_add(self.view_observers.freed_bytes())
-            .expect("retained observer registry proofs belong to the original ledger");
-        #[cfg(feature = "native-mount")]
-        let freed = freed
-            .checked_add(self.view_ledgers.freed_bytes())
-            .expect("known native change-map admissions belong to the original ledger");
-        let freed = freed
-            .checked_add(self.native_mount_admissions.freed_bytes())
+        let freed = freed.checked_add(self.native_mount_admissions.freed_bytes())
             .expect("native lifecycle admissions belong to the original ledger");
         let overflow = self.observer_overflow.as_ref().map(|overflow| {
             overflow
@@ -2448,13 +2431,9 @@ impl acyclic_native_runtime::NativeReadMeter for ScopedSourceReadMeter<'_> {
         complete release(bytes: u64) -> ();
         admit admit_bytes(maximum: usize) -> io::Result<()>;
         admit admit_read(maximum: usize) -> io::Result<()>;
-        admit admit_operations(additional: u64) -> io::Result<()>;
-        complete record_operations(completed: u64) -> io::Result<()>;
         complete record_read(bytes: usize) -> io::Result<()>;
         admit admit_write(maximum: usize) -> io::Result<()>;
         complete record_write(bytes: usize) -> io::Result<()>;
-        admit admit_write_operations(additional: u64) -> io::Result<()>;
-        complete record_write_operations(completed: u64) -> io::Result<()>;
         admit admit_durability() -> io::Result<()>;
         admit reserve_cleanup_write() -> io::Result<u64>;
         complete cancel_cleanup_write(reservation: u64) -> ();
@@ -2956,57 +2935,6 @@ impl DemandWork {
             &mut self.work,
             self.budget,
         ))
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn view_observer_admission_parts(
-        &mut self,
-    ) -> Result<
-        (
-            &mut crate::native_mount::ViewObserverAdmissions,
-            &mut crate::kernel::allocation::AllocationLedger,
-            &mut WorkCounters,
-            WorkBudget,
-        ),
-        DemandError,
-    > {
-        self.reconcile_cancellation_registry()?;
-        Ok((
-            &mut self.cancellation_wait.view_observers,
-            &mut self.allocations,
-            &mut self.work,
-            self.budget,
-        ))
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn view_ledger_admission_parts(
-        &mut self,
-    ) -> Result<
-        (
-            &mut crate::native_mount::ViewLedgerAdmissions,
-            &mut crate::kernel::allocation::AllocationLedger,
-            &mut WorkCounters,
-            WorkBudget,
-        ),
-        DemandError,
-    > {
-        self.reconcile_cancellation_registry()?;
-        Ok((
-            &mut self.cancellation_wait.view_ledgers,
-            &mut self.allocations,
-            &mut self.work,
-            self.budget,
-        ))
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn restore_view_ledger_admission(
-        &mut self,
-        slot: usize,
-        admission: crate::native_mount::ViewLedgerAdmission,
-    ) {
-        self.cancellation_wait.view_ledgers.restore(slot, admission);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -10990,12 +10918,8 @@ mod native_io_meter {
             record_examination(items: u64, bytes_copied: u64) => record { items_examined: items, bytes_copied: bytes_copied };
             examine(items: u64, bytes_copied: u64) => charge { items_examined: items, bytes_copied: bytes_copied };
             admit_bytes(maximum: usize) => admit { source_bytes_read: maximum as u64 };
-            admit_operations(additional: u64) => admit { backend_read_operations: additional };
-            record_operations(completed: u64) => record { backend_read_operations: completed };
             record_read(bytes: usize) => record { source_bytes_read: bytes as u64 };
             record_write(bytes: usize) => record { output_bytes: bytes as u64 };
-            admit_write_operations(additional: u64) => admit { backend_write_operations: additional };
-            record_write_operations(completed: u64) => record { backend_write_operations: completed };
             admit_durability() => charge { durability_operations: 1 };
         }
         fn reserve_operations(

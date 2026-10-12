@@ -710,10 +710,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         ] {
             add(text.capacity() as u64)?;
         }
-        add(crate::core::value_owned_bytes(
+        add(crate::contract::json_value_logical_owned_bytes(
             &self.workflow.initial.state,
         )?)?;
-        add(crate::core::value_owned_bytes(&self.output_schema)?)?;
+        add(crate::contract::json_value_logical_owned_bytes(&self.output_schema)?)?;
         add(self.input_grants.logical_owned_bytes()?)?;
         if let Some(extensions) = &self.extensions {
             add(extensions.logical_owned_bytes()?)?;
@@ -9089,10 +9089,10 @@ pub(crate) mod tests {
             "2".into(),
             &mut None,
         )?;
-        let filesystem = Arc::new(FilesystemHost::new(
+        let filesystem = FilesystemHost::new(
             acyclic_fs::Fs::memory(),
-            filesystem_provider.clone(),
-        )?);
+            &filesystem_provider, None,
+        )?;
         let agent = AgentId::from_bytes([1; 16]);
         let volume = VolumeRef::new(
             filesystem_provider.clone(),
@@ -9782,10 +9782,10 @@ pub(crate) mod tests {
                 "2".into(),
                 &mut None,
             )?;
-            let filesystem = Arc::new(crate::filesystem::FilesystemHost::new(
+            let filesystem = crate::filesystem::FilesystemHost::new(
                 acyclic_fs::Fs::memory(),
-                provider.clone(),
-            )?);
+                &provider, None,
+            )?;
             let volume = VolumeRef::new(
                 provider,
                 "owned-private".into(),

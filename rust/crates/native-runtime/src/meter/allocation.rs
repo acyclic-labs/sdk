@@ -22,13 +22,9 @@ impl ReadAllocationReservation {
         let bytes = self.bytes.expect("allocation credit is still held");
         self.meter.record_reserved_allocation(bytes)?;
         self.bytes = None;
-        Ok(ReadAllocation {
-            meter: self
-                .meter
-                .allocation_owner()
-                .unwrap_or_else(|| Arc::clone(&self.meter)),
-            bytes,
-        })
+        let mut allocation = ReadAllocation::empty(&self.meter);
+        allocation.bytes = bytes;
+        Ok(allocation)
     }
 }
 
@@ -56,12 +52,9 @@ impl ReadAllocation {
         } else {
             meter.allocate(bytes)?;
         }
-        Ok(Self {
-            meter: meter
-                .allocation_owner()
-                .unwrap_or_else(|| Arc::clone(meter)),
-            bytes,
-        })
+        let mut allocation = Self::empty(meter);
+        allocation.bytes = bytes;
+        Ok(allocation)
     }
 
     /// Borrows the same original meter without an allocation or resource grant.
@@ -82,12 +75,9 @@ impl ReadAllocation {
         } else {
             meter.adopt(bytes)?;
         }
-        Ok(Self {
-            meter: meter
-                .allocation_owner()
-                .unwrap_or_else(|| Arc::clone(meter)),
-            bytes,
-        })
+        let mut allocation = Self::empty(meter);
+        allocation.bytes = bytes;
+        Ok(allocation)
     }
 
     /// Admits another genuine positive allocation attempt before it occurs.

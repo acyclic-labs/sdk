@@ -12,7 +12,7 @@ pub(crate) fn canonical_directory_wide<W: NativeHostWork>(
         VOLUME_NAME_DOS,
     };
     let query = |buffer: &mut [u16], work: &mut W| -> Result<usize, W::Error> {
-        native_read(work)?;
+        work.started_io(READ)?;
         // SAFETY: the held handle and admitted mutable native buffer remain live; the API supports an empty slice for its required-size query.
         let count = unsafe {
             GetFinalPathNameByHandleW(
@@ -126,7 +126,7 @@ pub(crate) fn cwd_path<W: NativeHostWork<Error = DemandError, Allocation = u64>>
     let current = Dir::from_std_file(open_unix(libc::AT_FDCWD, c".", cwd_metadata_flags(), work)?);
     let mut bytes = [0u8; libc::PATH_MAX as usize];
     let result = loop {
-        native_read(work)?;
+        work.started_io(READ)?;
         #[cfg(target_os = "linux")]
         // SAFETY: the kernel receives the complete writable stack buffer.
         let count = unsafe { libc::syscall(libc::SYS_getcwd, bytes.as_mut_ptr(), bytes.len()) };

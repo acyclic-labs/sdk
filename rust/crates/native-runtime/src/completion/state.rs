@@ -8,7 +8,6 @@ pub(crate) struct CompletionState<T> {
     pub(crate) _allocation: Option<ReadAllocation>,
 }
 
-/// Publication authority for the existing task's already-funded state Arc.
 impl<T> Default for CompletionState<T> {
     fn default() -> Self {
         Self {

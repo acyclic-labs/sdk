@@ -6,7 +6,6 @@ use crate::{
     conversation::{ContentResidencyVerifier, FileRef, Limits},
     model::ModelMessage,
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -78,8 +77,10 @@ impl ContextAttribute {
     ) -> Result<()> {
         for label in [&self.type_name, &self.type_revision, &self.state_revision] {
             if !crate::is_valid_component_label(label) {
-                return Err(selection_boundary(work,
-                    "context attribute identity is invalid"));
+                return Err(selection_boundary(
+                    work,
+                    "context attribute identity is invalid",
+                ));
             }
         }
         Ok(())
@@ -89,15 +90,15 @@ impl ContextAttribute {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        crate::contract::validate_trusted_json_byte_bound(
-            self, u64::MAX, work,
-        )?;
+        crate::contract::validate_trusted_json_byte_bound(self, u64::MAX, work)?;
         self.validate_identity(work)?;
         crate::contract::validate_json_schema_value_with_work(
-            &self.schema, &self.value, "context attribute", work,
+            &self.schema,
+            &self.value,
+            "context attribute",
+            work,
         )
     }
-
 }
 
 /// A pinned input; a file reference conveys no read authority.
@@ -187,30 +188,37 @@ impl ContextSelection {
                 if let ContextExtent::Span { start, end } = self.extent
                     && (start >= end || end > file.descriptor().byte_length())
                 {
-                    return Err(selection_boundary(work,
-                        "context span is outside pinned file"));
+                    return Err(selection_boundary(
+                        work,
+                        "context span is outside pinned file",
+                    ));
                 }
             }
             ContextSourceValue::Attribute { attribute } => {
                 attribute.validate_preflighted(work)?;
                 if self.extent != ContextExtent::Whole {
-                    return Err(selection_boundary(work,
-                        "attributes require whole selection"));
+                    return Err(selection_boundary(
+                        work,
+                        "attributes require whole selection",
+                    ));
                 }
             }
         }
         Ok(())
     }
-
 }
 
-fn selection_has_native_work(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
-) -> bool {
+fn selection_has_native_work(work: &Option<&mut dyn crate::store::history::HistoryIo>) -> bool {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    { work.as_deref().is_some_and(|observer| observer.original_native_work().is_some()) }
+    {
+        work.as_deref()
+            .is_some_and(|observer| observer.original_native_work().is_some())
+    }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    { let _ = work; false }
+    {
+        let _ = work;
+        false
+    }
 }
 
 fn selection_boundary(
@@ -219,7 +227,10 @@ fn selection_boundary(
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if selection_has_native_work(work) {
-        return crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
+        return crate::Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason,
+        };
     }
     let _ = work;
     Error::Invalid(reason.into())
@@ -266,12 +277,19 @@ pub trait ContextRenderer: acyclic_stream::ProviderPlatform {
     /// Immutable implementation identity retained by the optional ledger.
     fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value>;
     /// Renders a selection under admitted limits and the optional original ledger.
-    fn render<'a>(&'a self, selection: &'a ContextSelection, mode: ContextRenderMode,
-        input: &'a ContextInput, limits: Limits, io: Option<&'a crate::executor::PreparationIo>,
+    fn render<'a>(
+        &'a self,
+        selection: &'a ContextSelection,
+        mode: ContextRenderMode,
+        input: &'a ContextInput,
+        limits: Limits,
+        io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>>;
     /// Reports original-ledger support before a stage invokes the renderer.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native(&self) -> bool { false }
+    fn supports_native(&self) -> bool {
+        false
+    }
 }
 
 /// Selection/renderer adapter, reusing the existing stage engine and content verifier.
@@ -329,33 +347,73 @@ impl ContextStage for SelectionStage {
             let renderer_hold;
             let renderer = self.renderer.contract(io)?;
             if !renderer.is_object() {
-                return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context renderer contract must be an object"));
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "context renderer contract must be an object",
+                ));
             }
-            let retained = io.expect("native ledger").owned_bytes()?.checked_sub(before)
-                .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "renderer contract released outer custody"))?;
+            let retained = io
+                .expect("native ledger")
+                .owned_bytes()?
+                .checked_sub(before)
+                .ok_or_else(|| {
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "renderer contract released outer custody",
+                    )
+                })?;
             renderer_hold = io.expect("native ledger").guard_owned(retained)?;
             crate::executor::with_history_io(io, |work| observe_selection_value(&renderer, work))?;
             #[derive(Serialize)]
-            struct Contract<'a> { name: &'a str, selection: &'a ContextSelection, renderer: &'a Value,
-                mode: ContextRenderMode, placement: &'a str, limits: Limits }
-            let placement = match self.placement { ContextPlacement::Prepend => "prepend", ContextPlacement::Append => "append" };
-            let (value, custody) = super::context_contract_native(&Contract { name: &self.name,
-                selection: &self.selection, renderer: &renderer, mode: self.mode, placement, limits: self.limits }, work)?;
+            struct Contract<'a> {
+                name: &'a str,
+                selection: &'a ContextSelection,
+                renderer: &'a Value,
+                mode: ContextRenderMode,
+                placement: &'a str,
+                limits: Limits,
+            }
+            let placement = match self.placement {
+                ContextPlacement::Prepend => "prepend",
+                ContextPlacement::Append => "append",
+            };
+            let (value, custody) = super::context_contract_native(
+                &Contract {
+                    name: &self.name,
+                    selection: &self.selection,
+                    renderer: &renderer,
+                    mode: self.mode,
+                    placement,
+                    limits: self.limits,
+                },
+                work,
+            )?;
             drop(renderer);
             drop(renderer_hold);
             io.expect("native ledger").absorb_native_custody(custody)?;
             return Ok(value);
         }
         let _ = io;
-        Ok(serde_json::json!({"name": self.name, "selection": self.selection, "renderer": self.renderer.contract(None)?,
-            "mode": self.mode, "placement": self.placement, "limits": self.limits}))
+        Ok(
+            serde_json::json!({"name": self.name, "selection": self.selection, "renderer": self.renderer.contract(None)?,
+            "mode": self.mode, "placement": self.placement, "limits": self.limits}),
+        )
     }
 
-    fn apply<'a>(&'a self, input: &'a ContextInput, context: Context, limits: Limits,
+    fn apply<'a>(
+        &'a self,
+        input: &'a ContextInput,
+        context: Context,
+        limits: Limits,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if io.and_then(crate::executor::PreparationIo::original_native_work).is_some() {
+        if io
+            .and_then(crate::executor::PreparationIo::original_native_work)
+            .is_some()
+        {
             self.validate(io)?;
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -366,33 +424,48 @@ impl ContextStage for SelectionStage {
                 crate::executor::with_history_io(io, |work| limits.validate_file(file, work))?;
                 self.verifier.verify(file, limits.file_bytes, io)?.await?;
             }
-            let messages = self.renderer.render(&self.selection, self.mode, input, limits, io)?.await?;
-            let context = place_messages_with_io(context, messages,
-                projection_placement(self.mode, self.placement), limits, io)?;
+            let messages = self
+                .renderer
+                .render(&self.selection, self.mode, input, limits, io)?
+                .await?;
+            let context = place_messages_with_io(
+                context,
+                messages,
+                projection_placement(self.mode, self.placement),
+                limits,
+                io,
+            )?;
             super::validate_projected_context(&context, limits, io)?;
             Ok(context)
         })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native(&self) -> bool { self.renderer.supports_native() }
-
-
-
-
-
+    fn supports_native(&self) -> bool {
+        self.renderer.supports_native()
+    }
 
     fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         if !crate::is_valid_component_label(&self.name) {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "selection stage identity is invalid"));
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "selection stage identity is invalid",
+            ));
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
             work.remaining()?;
             if !self.renderer.supports_native() {
-                return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Unsupported, "context renderer has no native capability"));
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "context renderer has no native capability",
+                ));
             }
-            return crate::executor::with_history_io(io, |work| self.selection.validate(self.limits, work));
+            return crate::executor::with_history_io(io, |work| {
+                self.selection.validate(self.limits, work)
+            });
         }
         Ok(())
     }
@@ -412,18 +485,30 @@ pub fn apply_context_projection(
     Ok(context)
 }
 
-
-
 fn projection_placement(mode: ContextRenderMode, placement: ContextPlacement) -> ContextPlacement {
-    if mode == ContextRenderMode::Update { ContextPlacement::Append } else { placement }
+    if mode == ContextRenderMode::Update {
+        ContextPlacement::Append
+    } else {
+        placement
+    }
 }
 
 pub(crate) fn place_messages_with_io(
-    context: Context, messages: Vec<ModelMessage>, placement: ContextPlacement,
-    limits: Limits, io: Option<&crate::executor::PreparationIo>,
+    context: Context,
+    messages: Vec<ModelMessage>,
+    placement: ContextPlacement,
+    limits: Limits,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Context> {
     place_context(
-        context, Context { messages, ..Context::default() }, placement, limits, io,
+        context,
+        Context {
+            messages,
+            ..Context::default()
+        },
+        placement,
+        limits,
+        io,
     )
 }
 
@@ -438,19 +523,17 @@ pub(super) fn place_context(
     compose_context_with_io(context, contribution, placement, marker, io)
 }
 
-
-
-
-
-pub(super) fn place_snapshot(context: Context, snapshot: &Context,
-    placement: ContextPlacement, limits: Limits, io: Option<&crate::executor::PreparationIo>,
+pub(super) fn place_snapshot(
+    context: Context,
+    snapshot: &Context,
+    placement: ContextPlacement,
+    limits: Limits,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Context> {
     let marker = preflight_context_composition(&context, snapshot, placement, limits, io)?;
     let snapshot = super::copy_context(snapshot, io)?;
     compose_context_with_io(context, snapshot, placement, marker, io)
 }
-
-
 
 struct JoinedMetadata<'a>(
     &'a std::collections::BTreeMap<String, FileRef>,
@@ -491,32 +574,44 @@ fn preflight_context_composition(
             .checked_add(contribution.metadata.len())
             .is_none_or(|count| count > limits.attachments)
     {
-        return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-            "context composition exceeds declared count bounds"));
+        return Err(crate::executor::stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "context composition exceeds declared count bounds",
+        ));
     }
     if contribution
         .metadata
         .keys()
         .any(|name| context.metadata.contains_key(name))
     {
-        return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Conflict,
-            "context composition repeats a metadata key"));
+        return Err(crate::executor::stock_boundary(
+            io,
+            crate::wire::ErrorCode::Conflict,
+            "context composition repeats a metadata key",
+        ));
     }
     let current_input_index = match (
         context.current_input_index,
         contribution.current_input_index,
     ) {
         (Some(_), Some(_)) => {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                "context composition has two active inputs"));
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "context composition has two active inputs",
+            ));
         }
         (Some(index), None) if placement == ContextPlacement::Prepend => Some(
             u32::try_from(contribution.messages.len())
                 .ok()
                 .and_then(|count| index.checked_add(count))
                 .ok_or_else(|| {
-                    crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                        "current input index exceeds portable count")
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "current input index exceeds portable count",
+                    )
                 })?,
         ),
         (None, Some(index)) if placement == ContextPlacement::Append => Some(
@@ -524,8 +619,11 @@ fn preflight_context_composition(
                 .ok()
                 .and_then(|count| index.checked_add(count))
                 .ok_or_else(|| {
-                    crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                        "current input index exceeds portable count")
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "current input index exceeds portable count",
+                    )
                 })?,
         ),
         (Some(index), None) | (None, Some(index)) => Some(index),
@@ -547,19 +645,21 @@ fn preflight_context_composition(
         metadata: JoinedMetadata<'a>,
         current_input_index: Option<u32>,
     }
-    crate::executor::with_history_io(io, |work| crate::contract::validate_trusted_json_byte_bound(
-        &JoinedContext {
-            messages: super::ContextMessages {
-                first,
-                user: None,
-                second,
+    crate::executor::with_history_io(io, |work| {
+        crate::contract::validate_trusted_json_byte_bound(
+            &JoinedContext {
+                messages: super::ContextMessages {
+                    first,
+                    user: None,
+                    second,
+                },
+                metadata: JoinedMetadata(&context.metadata, &contribution.metadata),
+                current_input_index,
             },
-            metadata: JoinedMetadata(&context.metadata, &contribution.metadata),
-            current_input_index,
-        },
-        limits.render_bytes,
-        work,
-    ))?;
+            limits.render_bytes,
+            work,
+        )
+    })?;
     Ok(current_input_index)
 }
 
@@ -612,13 +712,19 @@ mod native_source_tests {
             state_revision: "1".into(),
             value,
         };
-        attribute.validate(&mut None).expect("ordinary deep attribute remains legal");
+        attribute
+            .validate(&mut None)
+            .expect("ordinary deep attribute remains legal");
         let work = NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
         let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
         assert!(attribute.validate(&mut Some(&mut observer)).is_err());
         attribute.value = Value::Array(vec![Value::Null]);
-        let control = NativeMaterializationWork::new(budget, &cancellation).expect("control ledger");
-        let mut observer = crate::store::history::native_work_io(&control).expect("control observer");
-        attribute.validate(&mut Some(&mut observer)).expect("bounded source is valid");
+        let control =
+            NativeMaterializationWork::new(budget, &cancellation).expect("control ledger");
+        let mut observer =
+            crate::store::history::native_work_io(&control).expect("control observer");
+        attribute
+            .validate(&mut Some(&mut observer))
+            .expect("bounded source is valid");
     }
 }
