@@ -2780,7 +2780,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         let owner = NativeParentMergePublicationOwner::new(&self.verifier, &self.scope, &self.project, work)?;
         let mut guard = move |original: &acyclic_fs::NativeMaterializationWork|
             std::future::ready(owner.check(original));
-        plan.plan.apply_with_permit_guarded_with_native_work(
+        plan.plan.apply_with_native_work(
             Self::merge_options(plan, native_project_join_key(operation, work)?),
             acyclic_fs::PublicationPermit::Unrestricted, work, work.cancellation(),
             &mut guard,
