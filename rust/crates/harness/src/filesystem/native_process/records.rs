@@ -69,7 +69,7 @@ impl NativeProcessReceipt {
         let Self { original_fence, effect, diagnostic, publication_failure,
             invocation_failure, published, _custody: mut custody, .. } = self;
         drop((original_fence, diagnostic, publication_failure, invocation_failure, published));
-        custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
+        custody.release(custody.bytes().checked_sub(receipt_observation::effect_bytes(&effect)?).ok_or(acyclic_fs::WorkError::Overflow)?)?;
         Ok((effect, custody))
     }
 }

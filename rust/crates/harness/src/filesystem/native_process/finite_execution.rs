@@ -334,7 +334,7 @@ async fn capture<P: StreamProvider>(
             Ok(Err(output)) => output.stdout.capacity() + output.stderr.capacity(),
             Err(_) => 0,
         };
-        if let Err(error) = custody.substitute(retained as u64) {
+        if let Err(error) = custody.bytes().checked_sub(retained as u64).ok_or(acyclic_fs::NativeTreeMaterializationError::from(acyclic_fs::WorkError::Overflow)).and_then(|bytes| custody.release(bytes)) {
             *failure.borrow_mut() = Some(Error::from(error));
         }
         (output, failure.into_inner(), custody)
@@ -354,7 +354,7 @@ async fn capture<P: StreamProvider>(
     }).map_err(|error| Error::from(original.runtime_error(error)))?;
     if let Some(error) = original_failure {
         drop(output);
-        custody.substitute(0)?;
+        custody.release(custody.bytes())?;
         return Err(match error {
             Error::NativeWork { cause, custody: None } => Error::NativeWork { cause, custody: Some(custody) },
             Error::NativeTimeout { source, custody: None } => Error::NativeTimeout { source, custody: Some(custody) },
@@ -373,7 +373,7 @@ async fn capture<P: StreamProvider>(
                     cause => {
                         drop(failure.stdout);
                         drop(failure.stderr);
-                        custody.substitute(0)?;
+                        custody.release(custody.bytes())?;
                         return Err(Error::NativeWork { cause, custody: Some(custody) });
                     }
                 };

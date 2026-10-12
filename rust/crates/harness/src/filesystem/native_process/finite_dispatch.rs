@@ -178,7 +178,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             supervisor.snapshot(attempt)?;
             drop(path);
             drop((diagnostic, published));
-            custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
+            custody.release(custody.bytes().checked_sub(receipt_observation::effect_bytes(&effect)?).ok_or(acyclic_fs::WorkError::Overflow)?)?;
 
             drop(execution_custody);
             Ok((effect, custody))
