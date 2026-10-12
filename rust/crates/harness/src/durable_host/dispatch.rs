@@ -1,17 +1,19 @@
-//! Main durable task operations.
+//! Retained model dispatch authorization.
 use super::*;
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
-    /// Authenticates retained model claims without requiring an execution lease.
-    /// Passive readers gain no publication or provider-dispatch authority.
     #[cfg(feature = "filesystem")]
-    pub(crate) async fn verify_model_history(
+    pub(crate) async fn verify_model_history<'a>(
         &self,
         task: TaskId,
         operation: OperationId,
-        records: &[crate::executor::ExecutionRecord],
+        records: impl Iterator<Item = &'a crate::executor::ExecutionRecord> + Clone,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
-        if !records.iter().any(|record| {
+        if let Some(io) = work.as_deref() {
+            io.check_cancellation()?;
+        }
+        if !records.clone().any(|record| {
             matches!(
                 record.event,
                 crate::executor::ExecutionEvent::ModelStarted { .. }
@@ -21,12 +23,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let task_operation = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh(&mut None).await?;
+        coordinator.refresh(work).await?;
         coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
-            task_operation, &mut None)?;
+            task_operation,
+            work,
+        )?;
         for record in records {
             if let crate::executor::ExecutionEvent::ModelStarted {
                 step,
@@ -39,7 +43,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     task_operation,
                     purpose.attempt_operation(operation, None)?,
                     *step,
-                    request_digest, &mut None)?;
+                    request_digest,
+                    work,
+                )?;
             }
         }
         Ok(())

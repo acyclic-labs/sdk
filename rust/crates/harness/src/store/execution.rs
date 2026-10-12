@@ -32,7 +32,6 @@ pub(super) fn stream_idempotency_key_with_work(
 
 impl<P: StreamProvider> StreamAggregate<P> {
     /// Plans, CAS-appends, and only then applies one command.
-
     pub async fn execute(
         &mut self,
         command: Command,
@@ -184,7 +183,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     /// Reconciles a possibly committed append without issuing another append.
-
     pub async fn reconcile(&mut self, command: &Command) -> Result<Option<ApplyResult>> {
         async {
             let result = self.reconcile_inner(command).await?;

@@ -51,28 +51,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         file_ids: impl IntoIterator<Item = FileId>,
         maximum_entries: u32,
     ) -> Result<BTreeMap<FileId, Vec<String>>, WorkspaceError> {
-        self.namespace_records_for_file_ids(file_ids, maximum_entries)
-            .await?
-            .records
-            .into_iter()
-            .map(|(file_id, records)| {
-                records
-                    .into_iter()
-                    .map(|(path, _)| namespace_path_text(&path))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(|paths| (file_id, paths))
-            })
-            .collect()
-    }
-
-    pub(super) async fn namespace_records_for_file_ids(
-        &self,
-        file_ids: impl IntoIterator<Item = FileId>,
-        maximum_entries: u32,
-    ) -> Result<NamespaceRecordSearch, WorkspaceError> {
-        let cancellation = crate::CancellationToken::new();
-        let mut accounting =
-            KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let cancellation = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let ids = sorted_changed_file_ids(file_ids, &mut accounting)?;
         self.namespace_records_with_accounting(
             &ids.0,
@@ -80,8 +60,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             &mut accounting,
             &cancellation,
         )
-        .await
-        .map(|owned| owned.0)
+        .await?
+        .0
+        .records
+        .into_iter()
+        .map(|(file_id, records)| {
+            records
+                .into_iter()
+                .map(|(path, _)| namespace_path_text(&path))
+                .collect::<Result<Vec<_>, _>>()
+                .map(|paths| (file_id, paths))
+        })
+        .collect()
     }
 
     pub(super) async fn namespace_records_with_accounting(

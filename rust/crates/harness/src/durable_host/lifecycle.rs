@@ -10,7 +10,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .pull_owned(&self.owner, &self.owner_scope, &self.verifier, worker, None, &mut None)
+            .pull_owned(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                worker,
+                None,
+                &mut None,
+            )
             .await
     }
 
@@ -46,18 +53,22 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.admission(operation_id).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
-        let operation = coordinator.observe_operation(
-            &self.owner,
-            &self.owner_scope,
-            &self.verifier,
-            operation_id, &mut None)?;
-        let Some(reservation) = operation.reservation.clone() else {
+        let operation = coordinator
+            .observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+                &mut None,
+            )?
+            .clone();
+        let Some(reservation) = operation.reservation else {
             return Ok(WorkPull::Idle);
         };
         let lease = WorkLease {
-            operation: operation.spec.clone(),
+            operation: operation.spec,
             reservation,
-            checkpoint: operation.checkpoint.clone(),
+            checkpoint: operation.checkpoint,
             operation_revision: operation.revision,
         };
         if operation.cancellation_requested
@@ -82,11 +93,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.admission(operation_id).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
-        let operation = coordinator.observe_operation(
-            &self.owner,
-            &self.owner_scope,
-            &self.verifier,
-            operation_id, &mut None)?;
+        let operation = coordinator
+            .observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+                &mut None,
+            )?
+            .clone();
         if operation.spec != lease.operation
             || operation.reservation.as_ref() != Some(&lease.reservation)
         {
@@ -108,10 +123,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 fence: fence.clone(),
             }
         };
-        let key = worker_key("start", operation_id, &fence, operation.revision)?;
         coordinator
             .apply(
-                key,
+                worker_key("start", operation_id, &fence, operation.revision)?,
                 event,
                 &mut None,
             )
@@ -131,10 +145,19 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let admission = self.admission(operation_id).await?;
         self.verify_owner(task, &fence, true).await?;
-        let digest = crate::contract::canonical_json_digest(&outcome, u64::MAX, &mut None)?;
+        let digest = crate::contract::canonical_json_digest(
+            &outcome,
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            &mut None,
+        )?;
         let key = IdempotencyKey::new(format!(
             "task-settle:{operation_id}:{}:{}",
-            blake3::Hash::from_bytes(crate::contract::canonical_json_digest(&fence, u64::MAX, &mut None)?).to_hex(),
+            blake3::Hash::from_bytes(crate::contract::canonical_json_digest(
+                &fence,
+                acyclic_stream::MAX_RECORD_BYTES as u64,
+                &mut None
+            )?)
+            .to_hex(),
             blake3::Hash::from_bytes(digest).to_hex()
         ))?;
         let outcome = match outcome {
@@ -186,11 +209,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
-        let operation = coordinator.observe_operation(
-            &self.owner,
-            &self.owner_scope,
-            &self.verifier,
-            OperationId::from_bytes(task_id.into_bytes()), &mut None)?;
+        let operation = coordinator
+            .observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                OperationId::from_bytes(task_id.into_bytes()),
+                &mut None,
+            )?
+            .clone();
         crate::scheduler::require_execution_owner(&operation, fence, settlement, &mut None)
     }
 
@@ -210,7 +237,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .ok_or_else(|| Error::Unsupported("pinned task machine is unavailable".into()))?;
         let workflow = crate::workflow::WorkflowAdmission {
             operation_id: admission.operation_id,
-            request_digest: crate::contract::canonical_json_digest(&admission, u64::MAX, &mut None)?,
+            request_digest: crate::contract::canonical_json_digest(
+                &admission,
+                acyclic_stream::MAX_RECORD_BYTES as u64,
+                &mut None,
+            )?,
             initial: crate::workflow::MachineCheckpoint {
                 machine: admission.machine.clone(),
                 revision: 0,
@@ -218,22 +249,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             },
         };
         self.machines.validate_checkpoint(&workflow.initial, None)?;
-        let stream = Arc::clone(&self.stream);
         let owner = TaskJournalOwner {
             host: self.clone(),
-            stream,
-            task_id,
             fence,
             workflow,
-            maximum_payload_bytes: admission.limits.file_bytes,
-            output_schema: admission.output_schema,
-            input_grants: admission.grants,
-            input_limits: admission.limits,
-            extensions: admission.extensions,
-            extension_schemas: self.root_scope.extension_schema_registry().cloned(),
-            extension_runtime: self.root_scope.extension_runtime(),
+            admission: Arc::new(admission),
         };
-        owner.verify(true).await?;
+        owner.verify(true, &mut None).await?;
         Ok(owner)
     }
 

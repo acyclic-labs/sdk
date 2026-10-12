@@ -260,66 +260,51 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
     }
 }
 
-/// The original one-record lookup with receipts at each visible SDK boundary.
+/// Reads one exact record and rejects a producer exceeding the bound.
 pub(crate) async fn one_record<P: StreamProvider>(
     client: &std::sync::Arc<P>,
     path: &StreamPath,
     from: u64,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn crate::store::HistoryIo>,
 ) -> Result<Option<ObservedRecord>> {
-    let mut records = match read_records(client, path, from, 1, work).await? {
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut records = match read_records(client, path, from, 1, quota.work()).await? {
         Ok(records) => records,
         Err(error) if *sdk_source(&error) == acyclic_stream::StreamError::NotFound => {
-            drop(error);
             return Ok(None);
         }
-        Err(error) => return Err(sdk_error(error, work)),
+        Err(error) => return Err(sdk_error(error, quota.work())),
     };
-    let mut first = None;
-    let mut extra = None;
-    let mut received = 0;
-    let result = async {
-        if let Some(observer) = work.as_deref_mut() {
-            observer.check_cancellation()?;
-        }
-        first = records.next(work).await?;
-        if let Some(record) = &first {
-            received += sdk_record_retained_bytes(record, work);
-        }
-        if let Some(observer) = work.as_deref_mut() {
-            observer.check_cancellation()?;
-        }
-        extra = records.next(work).await?;
-        if let Some(record) = &extra {
-            received += sdk_record_retained_bytes(record, work);
-            return Err(crate::store::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Storage,
-                "operation lookup exceeded its one-record bound",
-            ));
-        }
-        if let Some(record) = &first
-            && (record.sequence != from || record.value.len() > acyclic_stream::MAX_RECORD_BYTES)
-        {
-            return Err(crate::store::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Storage,
-                "operation location record is invalid",
-            ));
-        }
-        Ok(())
+    if let Some(io) = quota.work().as_deref() {
+        io.check_cancellation()?;
     }
-    .await;
-    drop(records);
-    drop(extra);
-    match result {
-        Ok(()) => Ok(first),
-        Err(error) => {
-            drop(first);
-            if let Some(observer) = work.as_deref_mut() {
-                let _ = observer.release_owned(received);
-            }
-            Err(error)
-        }
+    let first = records.next(quota.work()).await?;
+    if let Some(record) = &first {
+        let held = sdk_record_retained_bytes(record, quota.work());
+        quota.adopt(held)?;
     }
+    if let Some(io) = quota.work().as_deref() {
+        io.check_cancellation()?;
+    }
+    let extra = records.next(quota.work()).await?;
+    if let Some(record) = &extra {
+        let held = sdk_record_retained_bytes(record, quota.work());
+        quota.adopt(held)?;
+        return Err(crate::store::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Storage,
+            "operation lookup exceeded its one-record bound",
+        ));
+    }
+    if let Some(record) = &first
+        && (record.sequence != from || record.value.len() > acyclic_stream::MAX_RECORD_BYTES)
+    {
+        return Err(crate::store::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Storage,
+            "operation location record is invalid",
+        ));
+    }
+    quota.transfer();
+    Ok(first)
 }

@@ -126,7 +126,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &machine,
             Some(&admission.input_schema),
             &output_schema,
-            Some(&admission.input), &mut None)?;
+            Some(&admission.input),
+            &mut None,
+        )?;
         admission.validate(&mut None)?;
         let canonical = admission.canonical_value();
         let bytes = crate::contract::canonical_json_bytes(&canonical)?;
@@ -143,7 +145,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 }
                 (retained.state, retained.owner_scope)
             } else {
-                let state = self.payloads.stage(operation_id, &key, &bytes, None)?.await?;
+                let state = self
+                    .payloads
+                    .stage(operation_id, &key, &bytes, None)?
+                    .await?;
                 state.descriptor().verify(&bytes, &mut None)?;
                 if self.read_json(&state).await? != canonical {
                     return Err(Error::Storage(
@@ -252,11 +257,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if reference.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("durable task payload is not JSON".into()));
         }
-        let bytes = self.reader.read(reference, reference.descriptor().byte_length(), None)?.await?;
+        let bytes = self
+            .reader
+            .read(reference, reference.descriptor().byte_length(), None)?
+            .await?;
         reference.descriptor().verify(&bytes, &mut None)?;
         let value: Value = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        if crate::contract::canonical_json_bytes(&value)? != bytes.as_ref() {
+        if crate::contract::canonical_json_bytes(&value)?.as_slice() != bytes.as_ref() {
             return Err(Error::Invalid(
                 "durable task payload is not canonical JSON".into(),
             ));
@@ -275,7 +283,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &self.owner_scope,
             &self.verifier,
             operation_id,
-            &declaration_key, &mut None)
+            &declaration_key,
+            &mut None,
+        )
         .await?;
         if indexed.is_some() {
             return Ok(indexed);
@@ -290,7 +300,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
-                operation_id, &mut None) {
+                operation_id,
+                &mut None,
+            ) {
                 Ok(operation) => Ok(Some(operation.spec.clone())),
                 Err(Error::NotFound(_)) => Ok(None),
                 Err(error) => Err(error),
@@ -313,16 +325,22 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let spec = self
             .retained_declaration(operation_id)
             .await?
-            .ok_or_else(|| Error::NotFound("task admission".into()))?;
+            .ok_or_else(|| Error::NotFound("task admission".into()))?
+            .clone();
         if let Some(limits) = self.session_limits {
             let mut coordinator = self.coordinator.lock().await;
             // Session configuration and parent links are immutable. A cached
             // hierarchy can check these pinned ceilings without refreshing
             // unrelated lifecycle events; unknown descendants still bootstrap.
-            let retained = match coordinator.scheduler().session_limits(operation_id, &mut None) {
+            let retained = match coordinator
+                .scheduler()
+                .session_limits(operation_id, &mut None)
+            {
                 Err(Error::NotFound(_)) => {
                     coordinator.refresh(&mut None).await?;
-                    coordinator.scheduler().session_limits(operation_id, &mut None)?
+                    coordinator
+                        .scheduler()
+                        .session_limits(operation_id, &mut None)?
                 }
                 other => other?,
             };
@@ -333,7 +351,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
         }
         let value = self.read_admission_json(&spec.state).await?;
-        let (admission, _) = TaskAdmissionRecord::from_canonical_value(value, &mut None)?;
+        let admission = TaskAdmissionRecord::from_canonical_value(value, &mut None)?.0;
         if admission.policy != self.policy.as_ref().map(|policy| policy.identity()) {
             return Err(Error::Conflict(
                 "durable task policy differs from its admission".into(),
@@ -362,7 +380,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 })
             || admission.machine.name != admission.task.name
             || admission.machine.version != admission.task.version
-            || self.machines.resolve(&admission.machine, &mut None)?.is_none()
+            || self
+                .machines
+                .resolve(&admission.machine, &mut None)?
+                .is_none()
         {
             return Err(Error::Conflict(
                 "durable task admission disagrees with its declaration".into(),
@@ -373,7 +394,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &admission.machine,
             Some(&admission.input_schema),
             &admission.output_schema,
-            Some(&admission.input), &mut None)?;
+            Some(&admission.input),
+            &mut None,
+        )?;
         Ok(admission)
     }
 

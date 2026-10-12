@@ -58,11 +58,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
-        coordinator.observe_operation(
-            &self.owner,
-            &self.owner_scope,
-            &self.verifier,
-            operation_id, &mut None)?;
+        coordinator
+            .observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+                &mut None,
+            )?
+            .clone();
         let key = worker_key("suspend", operation_id, &fence, revision)?;
         let event = crate::scheduler::SchedulerEvent::WorkflowSuspended {
             operation_id,
@@ -77,11 +81,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             coordinator.apply(key, event, &mut None).await?;
         }
-        let current = coordinator.observe_operation(
-            &self.owner,
-            &self.owner_scope,
-            &self.verifier,
-            operation_id, &mut None)?;
+        let current = coordinator
+            .observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+                &mut None,
+            )?
+            .clone();
         if current.phase != crate::scheduler::OperationPhase::Suspended
             || current.workflow.as_ref().is_none_or(|slot| {
                 slot.revision != revision || slot.waiting_command != waiting_command
@@ -153,11 +161,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             if operation.spec.owner.authority() != &self.owner {
                 continue;
             }
-            let operation = coordinator.observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                event.operation_id(), &mut None)?;
+            let operation = coordinator
+                .observe_operation(
+                    &self.owner,
+                    &self.owner_scope,
+                    &self.verifier,
+                    event.operation_id(),
+                    &mut None,
+                )?
+                .clone();
             if operation.phase == crate::scheduler::OperationPhase::Suspended
                 && !operation.cancellation_requested
                 && operation
@@ -184,17 +196,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
-        let operation = coordinator.observe_operation(
-            &self.owner,
-            &self.owner_scope,
-            &self.verifier,
-            OperationId::from_bytes(task.into_bytes()), &mut None)?;
+        let operation = coordinator
+            .observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                OperationId::from_bytes(task.into_bytes()),
+                &mut None,
+            )?
+            .clone();
         if operation.phase != crate::scheduler::OperationPhase::Suspended
             || operation.cancellation_requested
         {
             return Ok(None);
         }
-        Ok(operation.workflow.clone())
+        Ok(operation.workflow)
     }
 
     #[cfg(feature = "filesystem")]
@@ -286,13 +302,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let slot = {
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh(&mut None).await?;
-            let operation = coordinator.observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation_id, &mut None)?;
+            let operation = coordinator
+                .observe_operation(
+                    &self.owner,
+                    &self.owner_scope,
+                    &self.verifier,
+                    operation_id,
+                    &mut None,
+                )?
+                .clone();
             crate::scheduler::require_execution_owner(&operation, fence, false, &mut None)?;
-            operation.workflow.clone()
+            operation.workflow
         };
         let Some(slot) = slot else { return Ok(None) };
         let Some(input) = slot.input else {

@@ -12,38 +12,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         message_id: OperationId,
         payload: FileRef,
     ) -> Result<()> {
-        let owner = self.journal_owner(sender, fence.clone()).await?;
-        let bytes = OwnedBytes::from(
-            self.mail_bytes(sender, recipient, message_id, payload)
-                .await?,
-        );
-        let path = acyclic_stream::StreamPath::new(format!("harness/v2/mail/{recipient}"))?;
-        let key = Self::event_key("mail", recipient, message_id)?;
-        loop {
-            self.verify_owner(sender, &fence, false).await?;
-            let (tail, found) = self.mail_state(recipient, message_id, &bytes).await?;
-            if found {
-                self.verify_owner(sender, &fence, false).await?;
-                return Ok(());
-            }
-            if owner
-                .append(
-                    path.clone(),
-                    tail,
-                    &key,
-                    bytes.clone(),
-                    crate::distributed::JournalWrite::Fresh,
-                )
-                .await?
-            {
-                self.verify_owner(sender, &fence, false).await?;
-                return Ok(());
-            }
-        }
+        let bytes = self
+            .mail_bytes(sender, recipient, message_id, payload)
+            .await?;
+        self.publish_mail(sender, recipient, message_id, &bytes, Some(&fence))
+            .await
     }
 
     pub(super) fn mailbox(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
-        acyclic_stream::Stream::new(Arc::clone(&self.stream), format!("harness/v2/mail/{task_id}"))
+        acyclic_stream::Stream::new(self.stream.clone(), format!("harness/v2/mail/{task_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -64,63 +41,167 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let recipient_admission = self
             .admission(OperationId::from_bytes(recipient.into_bytes()))
             .await?;
-        recipient_admission.limits.validate_file(&payload, &mut None)?;
+        sender_admission.limits.validate_file(&payload, &mut None)?;
+        if !read_granted(&sender_admission.grants, &payload)? {
+            return Err(Error::Unauthorized(
+                "sender cannot read the mailed file".into(),
+            ));
+        }
+        recipient_admission
+            .limits
+            .validate_file(&payload, &mut None)?;
         if !read_granted(&recipient_admission.grants, &payload)? {
             return Err(Error::Unauthorized(
                 "recipient cannot read the mailed file".into(),
             ));
         }
-        self.reader.verify(&payload, recipient_admission.limits.file_bytes, None)?.await?;
+        self.reader
+            .verify(&payload, payload.descriptor().byte_length(), None)?
+            .await?;
         let event = MailEvent {
             sender,
+            recipient,
             message_id,
             payload,
         };
         crate::contract::canonical_json_bytes(&event)
     }
 
-    pub(super) async fn mail_state(
+    pub(super) async fn publish_mail(
         &self,
+        sender: TaskId,
         recipient: TaskId,
-        message_id: OperationId,
+        message: OperationId,
         bytes: &[u8],
-    ) -> Result<(u64, bool)> {
-        let mailbox = self.mailbox(recipient)?;
-        let tail = match mailbox.bounds().await {
-            Ok(bounds) => bounds.tail,
-            Err(StreamError::NotFound) => 0,
-            Err(error) => return Err(error.into()),
+        fence: Option<&crate::scheduler::LeaseFence>,
+    ) -> Result<()> {
+        use acyclic_stream::{
+            CommitCondition, CommitMutation, CommitOutcome, CommittedMutation, Stream,
         };
-        let mut after = 0;
-        let mut found = false;
-        while after < tail {
-            let page = mailbox
-                .read(after, (tail - after).min(64) as u32)
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-            if page.is_empty() || page.len() > 64 {
-                return Err(Error::Storage("invalid mail replay page".into()));
+        let mailbox = self.mailbox(recipient)?;
+        let intent = Stream::new(
+            self.stream.clone(),
+            format!("harness/v2/mail-intents/{sender}/{message}"),
+        )?;
+        loop {
+            if let Some(fence) = fence {
+                self.verify_owner(sender, fence, false).await?;
             }
-            for record in page {
-                if record.sequence != after || after >= tail {
-                    return Err(Error::Storage("mail replay sequence differs".into()));
-                }
-                let event: MailEvent = crate::contract::json_from_slice(&record.value)
-                    .map_err(|error| Error::Storage(error.to_string()))?;
-                event.payload.validate(&mut None)?;
-                if crate::contract::canonical_json_bytes(&event)? != record.value.as_ref() {
-                    return Err(Error::Storage("mail event is not canonical JSON".into()));
-                }
-                if event.message_id == message_id {
-                    if found || record.value.as_ref() != bytes {
+            match intent.bounds().await {
+                Ok(bounds) => {
+                    let records = intent.read(0, 1).await?.try_collect::<Vec<_>>().await?;
+                    let [record] = records.as_slice() else {
+                        return Err(Error::Storage("mail intent is missing".into()));
+                    };
+                    if bounds.tail != 1 || record.sequence != 0 || record.value.as_ref() != bytes {
                         return Err(Error::Conflict("mail identity reused".into()));
                     }
-                    found = true;
+                    return Ok(());
                 }
-                after += 1;
+                Err(StreamError::NotFound) => (),
+                Err(error) => return Err(error.into()),
+            }
+            let (tail, mailbox_guard) = match mailbox.bounds().await {
+                Ok(bounds) => (
+                    bounds.tail,
+                    CommitCondition::Tail {
+                        path: mailbox.path().clone(),
+                        expected: bounds.tail,
+                    },
+                ),
+                Err(StreamError::NotFound) => (
+                    0,
+                    CommitCondition::Absent {
+                        path: mailbox.path().clone(),
+                    },
+                ),
+                Err(error) => return Err(error.into()),
+            };
+            let mut conditions = vec![
+                mailbox_guard,
+                CommitCondition::Absent {
+                    path: intent.path().clone(),
+                },
+            ];
+            let mut hash = blake3::Hasher::new();
+            hash.update(b"harness/v2/mail-intent\0");
+            hash.update(&sender.into_bytes());
+            hash.update(&message.into_bytes());
+            hash.update(&tail.to_le_bytes());
+            hash.update(blake3::hash(bytes).as_bytes());
+            if let Some(fence) = fence {
+                let guard = self
+                    .coordinator
+                    .lock()
+                    .await
+                    .journal_condition(
+                        &self.owner,
+                        &self.owner_scope,
+                        &self.verifier,
+                        OperationId::from_bytes(sender.into_bytes()),
+                        fence,
+                        crate::distributed::JournalWrite::Fresh,
+                        &mut None,
+                    )
+                    .await?;
+                let CommitCondition::Tail { expected, .. } = &guard else {
+                    return Err(Error::Storage("mail owner guard is invalid".into()));
+                };
+                hash.update(&expected.to_le_bytes());
+                conditions.push(guard);
+            }
+            let request = acyclic_stream::CommitRequest {
+                conditions,
+                mutations: vec![
+                    CommitMutation::Append {
+                        path: intent.path().clone(),
+                        records: vec![OwnedBytes::copy_from_slice(bytes)],
+                    },
+                    CommitMutation::Append {
+                        path: mailbox.path().clone(),
+                        records: vec![OwnedBytes::copy_from_slice(bytes)],
+                    },
+                ],
+                idempotency_key: StreamKey::new(OwnedBytes::copy_from_slice(
+                    hash.finalize().as_bytes(),
+                ))?,
+            };
+            let mut work = None;
+            let request = (request, crate::wire_codec::CodecQuota::new(&mut work, 0)?);
+            match crate::distributed::commit(request, &self.stream, Some(message), None)
+                .await?
+                .0
+            {
+                CommitOutcome::Conflict(_) => continue,
+                CommitOutcome::Committed(envelope) => {
+                    let [
+                        CommittedMutation::Append(saved),
+                        CommittedMutation::Append(delivered),
+                    ] = envelope.mutations.as_slice()
+                    else {
+                        return Err(Error::Indeterminate(message));
+                    };
+                    for (append, path, start) in
+                        [(saved, intent.path(), 0), (delivered, mailbox.path(), tail)]
+                    {
+                        if &append.path != path
+                            || append.start != start
+                            || append.end
+                                != start.checked_add(1).ok_or_else(|| {
+                                    Error::Storage("mail sequence exhausted".into())
+                                })?
+                            || append.tail != append.end
+                            || append.records.len() != 1
+                            || append.records[0].sequence != start
+                            || append.records[0].value.as_ref() != bytes
+                            || append.records[0].commit_id != envelope.commit_id
+                        {
+                            return Err(Error::Indeterminate(message));
+                        }
+                    }
+                    return Ok(());
+                }
             }
         }
-        Ok((tail, found))
     }
 }
