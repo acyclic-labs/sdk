@@ -146,9 +146,16 @@ impl PiTaskMachine {
             bytes_hashed: source_bytes,
             ..acyclic_fs::WorkCounters::default()
         }).map_err(native_work_error)?;
-        let mut identity = MachineIdentity::new_with_native_work(
-            "acyclic.pi", "1", machine_digest(), work,
-        )?;
+        let mut identity = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(native_work_error)?;
+            let identity = MachineIdentity {
+                name: acyclic_harness::store::history::HistoryIo::clone_text(&mut io, "acyclic.pi")?,
+                version: acyclic_harness::store::history::HistoryIo::clone_text(&mut io, "1")?,
+                digest: machine_digest(),
+            };
+            identity.validate(&mut Some(&mut io))?;
+            (identity, io.into_custody())
+        };
         let mut schema = super::pi_root_provider::guarded_pi_decode(
             STATE_SCHEMA.as_bytes(), NATIVE_METADATA_MAXIMUM, std::mem::size_of::<Value>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::Root, 0, work,
