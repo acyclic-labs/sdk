@@ -91,8 +91,8 @@ fn test_config() -> VolumeConfig {
 fn string_paths_and_directory_cursors_use_native_profile() -> Result<()> {
     let mut config = test_config();
     config.profile = FilesystemProfile::Windows;
-    let path = native_path("/é.txt", config)?;
-    let cursor = native_name("é.txt", config)?;
+    let path = native_path("/Ã©.txt", config)?;
+    let cursor = native_name("Ã©.txt", config)?;
     assert_eq!(path.components(), &[cursor]);
     assert_eq!(
         path.components().first().map(LogicalName::encoding),
@@ -468,15 +468,7 @@ async fn native_named_workspace_is_durable_binary_and_fork_exact()
         },
     )
     .await?;
-    let workspace = fs
-        .create_workspace(
-            "main".to_owned(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = fs.create_workspace("main".to_owned()).await?;
     assert_eq!(workspace.name(), "main");
     let committed = workspace
         .write("/value.bin".to_owned(), Buffer::from(vec![0, 1, 2, 255]))
@@ -563,14 +555,8 @@ async fn native_named_workspace_is_durable_binary_and_fork_exact()
         },
     )
     .await?
-    .open_workspace(
-        "main".to_owned(),
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &acyclic_fs::CancellationToken::new(),
-    )
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
+    .open_workspace("main".to_owned())
+    .await?;
     assert_eq!(
         reopened
             .read("/value.bin".to_owned(), bigint(16))
@@ -653,15 +639,7 @@ async fn native_workspace_change_sets_compose_and_join_atomically()
         },
     )
     .await?;
-    let main = fs
-        .create_workspace(
-            "main".to_owned(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let main = fs.create_workspace("main".to_owned()).await?;
     main.write("/base".to_owned(), Buffer::from(vec![1_u8]))
         .await?;
     let agent = main.fork("agent".to_owned(), None).await?;
@@ -717,15 +695,7 @@ async fn napi_operation_windows_share_the_native_authority_fence()
         },
     )
     .await?;
-    let workspace = fs
-        .create_workspace(
-            "leased".to_owned(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = fs.create_workspace("leased".to_owned()).await?;
     let coordinator = fs.operation_windows();
     let parent = workspace
         .inner
