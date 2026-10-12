@@ -53,7 +53,7 @@ impl Fixture {
     }
     async fn pull(&self, runtime: &Runtime) -> Result<WorkLease> {
         match runtime.task_host().pull_work(&Worker { id:"pi-mail-worker".into(), available:ResourceSnapshot::default(), labels:BTreeMap::new() }).await? {
-            WorkPull::Claimed(lease) => { runtime.task_host().start_task(&lease).await?; Ok(lease) }
+            WorkPull::Claimed(lease) => { runtime.task_host().start_task(&lease, None).await?; Ok(lease) }
             _ => Err(Error::NotFound("mail lease".into())),
         }
     }

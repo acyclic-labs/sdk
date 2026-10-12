@@ -91,7 +91,7 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
     fixture.scope = RuntimeScope::new(fixture.signed.capabilities().clone(), Limits::default())?;
     let runtime = runtime(&fixture).await?;
     let lease = fixture.admit(&runtime).await?;
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     let parent = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
     for id in [121, 122, 123] {
@@ -168,7 +168,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     fixture.scope = RuntimeScope::new(fixture.signed.capabilities().clone(), Limits::default())?;
     let runtime = runtime(&fixture).await?;
     let lease = fixture.admit(&runtime).await?;
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let provider = Arc::new(ModelFixture(AtomicUsize::new(0)));
     let execution = runtime.stock_execution(task, LeaseFence::from(&lease.reservation), OperationId::from_bytes([130; 16]),

@@ -1087,7 +1087,7 @@ where
     else {
         return Err(Error::NotFound("native lease".into()));
     };
-    task.task_host().start_task(&lease).await?;
+    task.task_host().start_task(&lease, None).await?;
     let owner_fence = crate::scheduler::LeaseFence::from(&lease.reservation);
     let owner = match original_work {
         Some(work) => task.task_host().journal_owner_with_native_work(
@@ -1814,7 +1814,7 @@ async fn preparation_fixture_on<P: StreamProvider + 'static>(
     let crate::distributed::WorkPull::Claimed(lease) = task.task_host().pull_work(&crate::distributed::Worker {
         id: "preparation-worker".into(), available: Default::default(), labels: BTreeMap::new(),
     }).await? else { return Err(Error::NotFound("native preparation lease".into())); };
-    task.task_host().start_task(&lease).await?;
+    task.task_host().start_task(&lease, None).await?;
     let owner = Arc::new(task.task_host().journal_owner(
         TaskId::from_bytes([53; 16]), crate::scheduler::LeaseFence::from(&lease.reservation),
     ).await?);
