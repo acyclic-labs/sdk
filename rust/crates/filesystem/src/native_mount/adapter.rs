@@ -7451,7 +7451,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         A: 'static,
         O: 'static,
     {
-        let native_work = carrier.original_native_work().expect("capture uses its native invocation");
+        carrier.original_native_work().expect("capture uses its native invocation");
         let (effect, _allocation) = installed_changes(
             &candidate.base, &candidate.checkout, scope, carrier, cancellation,
         ).await?;
@@ -9308,7 +9308,9 @@ mod tests {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"actual")?;
         let identity = capture_root_identity(directory.path())?;
-        let baseline = Arc::new(NativeViewBaseline::new(identity));
+        let baseline_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+        let baseline = NativeViewBaseline::new(identity, false, &baseline_work)?;
         let cancellation = CancellationToken::new();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
         runtime.block_on(async {
@@ -9684,7 +9686,9 @@ mod tests {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"child")?;
         let identity = capture_root_identity(directory.path())?;
-        let baseline = Arc::new(NativeViewBaseline::new(identity));
+        let baseline_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+        let baseline = NativeViewBaseline::new(identity, false, &baseline_work)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -10074,7 +10078,7 @@ mod tests {
         let data = Box::new(*b"retained");
         let demand = crate::demand::NativeSourceWork::from_native_materialization_work(&job).original_demand_work()
             .allocation_work();
-        assert!(demand.source_execution_view().is_none());
+        assert!(demand.execution.is_none());
         let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(
             job.reserve_work(crate::WorkCounters {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
@@ -13225,9 +13229,9 @@ fn capture_mount_error(error: crate::CaptureError) -> MountSourceError {
             | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error))) => MountSourceError::Work(error),
         crate::CaptureError::Kernel(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error))) => MountSourceError::Allocation(error),
         crate::CaptureError::Kernel(crate::FsError::NativeKernel(error)) => MountSourceError::NativeWork(error),
+        crate::CaptureError::Kernel(crate::FsError::Cancelled(_)) => MountSourceError::Cancelled,
+        crate::CaptureError::Kernel(crate::FsError::SourceSnapshotStale) => MountSourceError::Stale,
         crate::CaptureError::Kernel(error) => MountSourceError::Filesystem(error),
-        crate::CaptureError::Cancelled => MountSourceError::Cancelled,
-        crate::CaptureError::StaleVersion => MountSourceError::Stale,
         error => engine_error(error),
     }
 }
