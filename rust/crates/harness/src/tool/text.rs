@@ -1,8 +1,8 @@
 //! Bounded UTF-8 selections and literal search, independent of storage or models.
 
+use super::edit::AlgorithmWork;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use super::edit::AlgorithmWork;
 
 fn finite(value: u64, field: &str) -> Result<()> {
     if value == 0 || value > crate::conversation::MAX_EXACT_JS_INTEGER {
@@ -72,7 +72,10 @@ pub struct TextSelection {
 
 /// Selects exactly the requested interval, rejecting invalid UTF-8 boundaries.
 pub(crate) fn read_range(
-    source: &str, range: TextRange, options: ReadOptions, work: &mut AlgorithmWork,
+    source: &str,
+    range: TextRange,
+    options: ReadOptions,
+    work: &mut AlgorithmWork,
 ) -> Result<TextSelection> {
     if options.maximum_input_bytes == 0
         || options.maximum_input_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
@@ -94,8 +97,8 @@ pub(crate) fn read_range(
     }
     let start = usize::try_from(range.start)
         .map_err(|_| work.invalid("read start cannot be represented"))?;
-    let end = usize::try_from(range.end)
-        .map_err(|_| work.invalid("read end cannot be represented"))?;
+    let end =
+        usize::try_from(range.end).map_err(|_| work.invalid("read end cannot be represented"))?;
     let text = source
         .get(start..end)
         .ok_or_else(|| work.invalid("read range splits a UTF-8 character"))?;
@@ -171,7 +174,10 @@ pub struct SearchMatches {
 
 /// Searches every legal candidate under an actual comparison counter.
 pub(crate) fn literal_search(
-    source: &str, query: &str, options: SearchOptions, work: &mut AlgorithmWork,
+    source: &str,
+    query: &str,
+    options: SearchOptions,
+    work: &mut AlgorithmWork,
 ) -> Result<SearchMatches> {
     if options.maximum_input_bytes == 0
         || options.maximum_input_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
@@ -179,7 +185,8 @@ pub(crate) fn literal_search(
         || options.maximum_query_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
         || options.maximum_work == 0
         || options.maximum_work > crate::conversation::MAX_EXACT_JS_INTEGER
-        || options.maximum_matches == 0 || options.maximum_matches == u32::MAX
+        || options.maximum_matches == 0
+        || options.maximum_matches == u32::MAX
     {
         return Err(work.invalid("search allowances must be positive and finite"));
     }
@@ -255,7 +262,12 @@ mod tests {
     #[test]
     fn read_records_omissions_and_preserves_exact_utf8_and_crlf() -> Result<()> {
         assert_eq!(
-            read_range("a\r\n🦀\r\nb", TextRange { start: 3, end: 9 }, READ, &mut AlgorithmWork::ordinary())?,
+            read_range(
+                "a\r\n🦀\r\nb",
+                TextRange { start: 3, end: 9 },
+                READ,
+                &mut AlgorithmWork::ordinary()
+            )?,
             TextSelection {
                 range: TextRange { start: 3, end: 9 },
                 text: "🦀\r\n".into(),
@@ -269,10 +281,18 @@ mod tests {
             TextRange { start: 9, end: 8 },
             TextRange { start: 0, end: 11 },
         ] {
-            assert!(read_range("a\r\n🦀\r\nb", range, READ, &mut AlgorithmWork::ordinary()).is_err());
+            assert!(
+                read_range("a\r\n🦀\r\nb", range, READ, &mut AlgorithmWork::ordinary()).is_err()
+            );
         }
         assert_eq!(
-            read_range("abc", TextRange { start: 3, end: 3 }, READ, &mut AlgorithmWork::ordinary())?.text,
+            read_range(
+                "abc",
+                TextRange { start: 3, end: 3 },
+                READ,
+                &mut AlgorithmWork::ordinary()
+            )?
+            .text,
             ""
         );
         assert!(
@@ -301,7 +321,10 @@ mod tests {
                 work: 4
             }
         );
-        assert_eq!(literal_search("🦀🦀", "🦀", SEARCH, &mut AlgorithmWork::ordinary())?.total_matches, 2);
+        assert_eq!(
+            literal_search("🦀🦀", "🦀", SEARCH, &mut AlgorithmWork::ordinary())?.total_matches,
+            2
+        );
         assert!(
             literal_search(
                 "aaa",
@@ -314,8 +337,14 @@ mod tests {
             )
             .is_err()
         );
-        assert_eq!(literal_search("a", "long", SEARCH, &mut AlgorithmWork::ordinary())?.work, 0);
-        assert_eq!(literal_search("ABC", "abc", SEARCH, &mut AlgorithmWork::ordinary())?.total_matches, 0);
+        assert_eq!(
+            literal_search("a", "long", SEARCH, &mut AlgorithmWork::ordinary())?.work,
+            0
+        );
+        assert_eq!(
+            literal_search("ABC", "abc", SEARCH, &mut AlgorithmWork::ordinary())?.total_matches,
+            0
+        );
         for options in [
             SearchOptions {
                 maximum_input_bytes: 0,
@@ -364,7 +393,8 @@ mod tests {
                                 })
                         })
                         .collect();
-                    let actual = literal_search(&source, query, SEARCH, &mut AlgorithmWork::ordinary())?;
+                    let actual =
+                        literal_search(&source, query, SEARCH, &mut AlgorithmWork::ordinary())?;
                     assert_eq!(actual.total_matches, expected.len() as u64);
                     assert_eq!(
                         actual.matches,

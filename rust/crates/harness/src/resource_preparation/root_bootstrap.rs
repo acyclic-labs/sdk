@@ -52,8 +52,9 @@ impl RootBootstrapContentRequest {
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         inspect_snapshot(self, work)?;
-        let mut observer = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let mut observed = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
         let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, std::mem::size_of::<Self>() as u64)?;
         let native_snapshot = self.native_snapshot.as_ref()
@@ -70,7 +71,7 @@ impl RootBootstrapContentRequest {
         };
         quota.transfer();
         drop(quota);
-        Ok((copied, observer.into_custody()))
+        Ok((copied, observer.into_custody()?))
     }
 }
 
@@ -157,8 +158,9 @@ impl<'a> RootBootstrapContentContext<'a> {
         binding: &'a crate::store::VerifiedRootBinding,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        let mut observer = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
         created_access_step(&mut io)?;
         if original_root.parent.is_some()
@@ -210,8 +212,7 @@ pub(crate) fn preflight_root_bootstrap_with_native_work(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     inspect_snapshot(request, work)?;
-    let mut observer = crate::store::history::native_work_io(work)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let mut observer = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
     let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
     created_access_step(&mut io)?;
     request.volume.validate(&mut io)?;
@@ -299,8 +300,9 @@ impl CreatedResourceAccess {
             return Err(root_denial("ROOT bootstrap receipt lacks actual payload custody"));
         }
         // Declare the observer before the payloads so guards outlive them.
-        let mut observer = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
         let read = request.volume.capability(VolumeOperation::Read, &mut io)?;
         let write = if received.0.binding.writer.is_some() {
@@ -362,8 +364,9 @@ impl CreatedResourceAccess {
         {
             return Err(root_denial("ROOT bootstrap seals cannot be combined"));
         }
-        let mut observer = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
         let (data, custody) = crate::Capabilities::new_with_native_work(
             self.grants.iter().chain(next.grants.iter()), work,
@@ -432,7 +435,7 @@ mod tests {
             role, volume,
             evidence: ResourceRef::new(crate::resources::ResourceKind::Workspace, provider.clone(),
                 b"protected-original-allocation".to_vec().into(), None, &mut None)?,
-            generation: GenerationRef::new(provider, b"actual-selected-generation".to_vec(), None)?,
+            generation: GenerationRef::new(&(provider), b"actual-selected-generation", None, None)?.0,
             native_snapshot: Some(serde_json::json!({"actual":"descriptor","selected":121})),
         })
     }
@@ -538,7 +541,7 @@ mod tests {
             let mut changed = original.clone();
             match kind {
                 0 => changed.native_snapshot = Some(serde_json::json!({"actual":"different"})),
-                1 => changed.generation = GenerationRef::new(original.volume.provider().clone(), b"other".to_vec(), None)?,
+                1 => changed.generation = GenerationRef::new(&(original.volume.provider()), b"other", None, None)?.0,
                 _ => changed.evidence = ResourceRef::new(crate::resources::ResourceKind::Workspace,
                     original.volume.provider().clone(), b"other-evidence".to_vec().into(), None, &mut None)?,
             }

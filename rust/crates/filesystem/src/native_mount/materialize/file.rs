@@ -89,7 +89,7 @@ where
     Fut: Future<Output = Result<(), E>>,
 {
     let resolved = read_source!(reader, receipt, remaining, value,
-        reader.resolve_file_ranges_with_native_work(std::slice::from_ref(path), receipt.custody.work(), cancellation)
+        reader.resolve_files(std::slice::from_ref(path), receipt.custody.work(), cancellation)
             => receipt.accept_source(value.0, value.1)?,
         reader.resolve_files(std::slice::from_ref(path), remaining, cancellation) => {
             receipt.adopt(vec_bytes(&value))?;
@@ -111,10 +111,11 @@ where
     while offset < logical_bytes {
         let length = options.transfer_bytes.min(logical_bytes - offset);
         let plan = read_source!(reader, receipt, remaining, value,
-            resolved.plan_extents_with_native_work(
+            resolved.plan_extents(
                 ByteRange { offset, length }, options.maximum_extent_spans, receipt.custody.work(), cancellation,
             ) => {
-                let (plan, custody) = value.ok_or(MaterializeError::InvalidPath)?;
+                let (plan, custody) = value;
+                let plan = plan.ok_or(MaterializeError::InvalidPath)?;
                 receipt.accept_source(plan, custody)?
             },
             resolved.plan_extents(ByteRange { offset, length }, options.maximum_extent_spans, remaining, cancellation) => {
@@ -222,7 +223,7 @@ pub(super) async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectSto
 ) -> Result<(), MaterializeError> {
     let request_bytes = vec_bytes(&reads);
     let read = read_source!(reader, receipt, remaining, value,
-        reader.read_resolved_ranges_with_native_work(
+        reader.read_resolved_ranges(
             &reads, usize::try_from(maximum_extent_spans).unwrap_or(usize::MAX), receipt.custody.work(), cancellation,
         ) => receipt.accept_source(value.0, value.1)?,
         reader.read_resolved_ranges(

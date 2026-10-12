@@ -81,11 +81,6 @@ impl<T> NativeCompletion<T> {
         }
     }
 
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    pub(crate) fn failed(error: io::Error) -> Self {
-        Self::ready(Err(error))
-    }
-
     /// Waits through the same measured task engine.
     pub fn wait(
         mut self,
@@ -121,7 +116,7 @@ impl<T> Future for NativeCompletion<T> {
         }
         if let Some(predecessor) = &this.predecessor {
             if !predecessor.ready_or_register(context.waker()) {
-                if let Some(NativeJob::Read { span, .. } | NativeJob::Unit { span, .. }) =
+                if let Some(NativeJob::Read { span, .. } | NativeJob::Write { span, .. }) =
                     this.pending.as_ref()
                 {
                     span.in_scope(|| {
@@ -143,7 +138,7 @@ impl<T> Future for NativeCompletion<T> {
             let result: io::Result<T> = Err(io::Error::other(
                 "prior native I/O completion on this file is uncertain",
             ));
-            if let Some(NativeJob::Read { span, .. } | NativeJob::Unit { span, .. }) =
+            if let Some(NativeJob::Read { span, .. } | NativeJob::Write { span, .. }) =
                 this.pending.as_ref()
             {
                 span.record_error(result.as_ref().err());
@@ -165,7 +160,7 @@ impl<T> Future for NativeCompletion<T> {
             && inline_blocking_allowed()
             && let Some(job) = this.pending.take_if(|job| job.runs_in_place())
         {
-            let _ = job.run_in_place();
+            let _ = job.run();
         }
         match poll_submission(this.pool, &mut this.pending, &mut this.waiter, context) {
             Poll::Ready(Err(error)) => {

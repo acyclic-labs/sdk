@@ -4,7 +4,7 @@ pub(super) async fn apply_metadata<A, O, E, F, Fut>(
     reader: &PinnedReader<A, O>,
     host_root: &Arc<(HostRoot, crate::NativeAllocation)>,
     path: &NamespacePath,
-    host_path: &Arc<(GenerationHostPath, crate::NativeAllocation)>,
+    host_path: &Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
     metadata: Option<FileMetadata>,
     cancellation: &CancellationToken,
     receipt: &mut GenerationReceipt,
@@ -27,7 +27,7 @@ where
     let (metadata, named_attributes) = host_metadata(metadata);
     if let Some(root) = named_attributes {
         let read = read_source!(reader, receipt, remaining, value,
-            reader.read_named_attributes_with_native_work(root, receipt.custody.work(), cancellation)
+            reader.read_named_attributes(root, receipt.custody.work(), cancellation)
                 => receipt.accept_source(value.0, value.1)?,
             reader.read_named_attributes(root, remaining, cancellation) => {
                 receipt.adopt(vec_bytes(&value))?;
@@ -96,7 +96,7 @@ pub(super) async fn generation_blocking<T: Send + 'static>(
 
 pub(super) async fn apply_host_attributes_offloaded(
     host_root: &Arc<(HostRoot, crate::NativeAllocation)>,
-    host_path: &Arc<(GenerationHostPath, crate::NativeAllocation)>,
+    host_path: &Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
     attributes: Vec<(Vec<u8>, acyclic_stream::OwnedBytes)>,
     retained: usize,
     receipt: &mut GenerationReceipt,
@@ -116,9 +116,13 @@ pub(super) async fn apply_host_attributes_offloaded(
         generation_blocking(receipt, move |work| {
             let attributes = attributes;
             #[cfg(target_os = "linux")]
-            let target = root.0.open_linux_metadata_target(path.0.path(), work)?;
+            let target = root
+                .0
+                .open_linux_metadata_target(super::work::host_path(&path.0), work)?;
             #[cfg(target_os = "macos")]
-            let target = root.0.open_macos_metadata_target(path.0.path(), work)?;
+            let target = root
+                .0
+                .open_macos_metadata_target(super::work::host_path(&path.0), work)?;
             #[cfg(target_os = "linux")]
             let result = crate::native_host::set_extended_attributes(&target, &attributes.0, work);
             #[cfg(target_os = "macos")]
@@ -153,7 +157,7 @@ pub(super) async fn apply_host_attributes_offloaded(
 
 pub(super) async fn apply_host_metadata_offloaded(
     host_root: &Arc<(HostRoot, crate::NativeAllocation)>,
-    host_path: &Arc<(GenerationHostPath, crate::NativeAllocation)>,
+    host_path: &Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
     metadata: FileMetadata,
     receipt: &mut GenerationReceipt,
 ) -> Result<(), MaterializeError> {
@@ -163,16 +167,22 @@ pub(super) async fn apply_host_metadata_offloaded(
     let path = host_path.clone();
     generation_blocking(receipt, move |work| {
         if metadata == FileMetadata::default() {
-            return path.0.stat(&root.0, work);
+            #[cfg(unix)]
+            root.0.stat(super::work::host_path(&path.0), work)?;
+            #[cfg(windows)]
+            root.0.stat_wide(&path.0, work)?;
+            return Ok(());
         }
         #[cfg(target_os = "linux")]
-        let target = root.0.open_linux_metadata_target(path.0.path(), work)?;
-        #[cfg(target_os = "macos")]
-        let target = root.0.open_macos_metadata_target(path.0.path(), work)?;
-        #[cfg(windows)]
         let target = root
             .0
-            .open_windows_metadata_target_wide(&path.0.units, work)?;
+            .open_linux_metadata_target(super::work::host_path(&path.0), work)?;
+        #[cfg(target_os = "macos")]
+        let target = root
+            .0
+            .open_macos_metadata_target(super::work::host_path(&path.0), work)?;
+        #[cfg(windows)]
+        let target = root.0.open_windows_metadata_target_wide(&path.0, work)?;
         #[cfg(target_os = "linux")]
         {
             crate::native_host::apply_linux_metadata(&target, metadata, work)
@@ -256,14 +266,13 @@ pub(super) fn validate_bounds(options: &MaterializeOptions) -> Result<(), Materi
 
 pub(super) fn create_file(
     host_root: &HostRoot,
-    path: &GenerationHostPath,
+    path: &Vec<HostPathUnit>,
     receipt: &mut GenerationReceipt,
 ) -> Result<acyclic_native_runtime::NativeFile, MaterializeError> {
     #[cfg(windows)]
-    let file =
-        receipt.run(|work| host_root.create_overlapped_file_wide(&path.units, work))?;
+    let file = receipt.run(|work| host_root.create_overlapped_file_wide(&path, work))?;
     #[cfg(unix)]
-    let file = receipt.run(|work| host_root.create_file(path.path(), work))?;
+    let file = receipt.run(|work| host_root.create_file(super::work::host_path(path), work))?;
     let meter = Some(acyclic_native_runtime::NativeFileMeter::Owned(
         receipt.custody.work().runtime_meter(),
     ));
@@ -333,13 +342,19 @@ pub(super) fn account_file(
 pub(super) fn create_symlink_measured(
     host_root: &HostRoot,
     target: &acyclic_stream::OwnedBytes,
-    destination: &GenerationHostPath,
+    destination: &Vec<HostPathUnit>,
     receipt: &mut GenerationReceipt,
 ) -> Result<(), MaterializeError> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt as _;
-        receipt.run(|work| host_root.symlink(OsStr::from_bytes(target), destination.path(), work))
+        receipt.run(|work| {
+            host_root.symlink(
+                OsStr::from_bytes(target),
+                super::work::host_path(destination),
+                work,
+            )
+        })
     }
     #[cfg(windows)]
     {
@@ -354,8 +369,7 @@ pub(super) fn create_symlink_measured(
             })
         })?;
         units.extend(decoded);
-        let result = receipt
-            .run(|work| host_root.symlink_file_wide(&units, &destination.units, work));
+        let result = receipt.run(|work| host_root.symlink_file_wide(&units, &destination, work));
         let retained = units.capacity() * std::mem::size_of::<u16>();
         drop(units);
         receipt
@@ -372,7 +386,7 @@ pub(super) fn create_symlink_measured(
 )]
 pub(super) fn create_special_measured(
     host_root: &HostRoot,
-    destination: &GenerationHostPath,
+    destination: &Vec<HostPathUnit>,
     kind: FileKind,
     device: Option<(u32, u32)>,
     receipt: &mut GenerationReceipt,
@@ -380,9 +394,9 @@ pub(super) fn create_special_measured(
     #[cfg(unix)]
     {
         match kind {
-            FileKind::Fifo => {
-                receipt.run(|work| host_root.create_fifo_held(destination.path(), 0o600, work))
-            }
+            FileKind::Fifo => receipt.run(|work| {
+                host_root.create_fifo_held(super::work::host_path(destination), 0o600, work)
+            }),
             FileKind::CharacterDevice | FileKind::BlockDevice => {
                 let (major, minor) =
                     device.ok_or_else(|| MaterializeError::UnsupportedKind(kind))?;
@@ -396,16 +410,15 @@ pub(super) fn create_special_measured(
                 })?;
                 receipt.run(|work| {
                     host_root.create_device_held(
-                        destination.path(),
+                        super::work::host_path(destination),
                         file_type | 0o600,
                         device_number,
                         work,
                     )
                 })
             }
-            FileKind::Socket => {
-                receipt.run(|work| host_root.bind_unix_socket(destination.path(), work))
-            }
+            FileKind::Socket => receipt
+                .run(|work| host_root.bind_unix_socket(super::work::host_path(destination), work)),
             _ => Err(MaterializeError::UnsupportedKind(kind)),
         }
     }

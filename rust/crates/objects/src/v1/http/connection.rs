@@ -47,7 +47,7 @@ impl HttpObjects {
         }
         Ok(Self {
             transport: transport.build().map_err(|_| invalid())?,
-            endpoint,
+            endpoint: endpoint.join("v1/objects/").map_err(|_| invalid())?,
             authorization,
             maximum: maximum_response_bytes,
         })

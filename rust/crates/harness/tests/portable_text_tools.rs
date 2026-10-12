@@ -85,7 +85,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     };
     use serde_json::json;
     let provider = ProviderRef::new("tool-context".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent = AgentId::new();
     let volume = VolumeRef::new(
         provider,
@@ -134,7 +134,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         read_tool
             .executor
             .execute_with_context(
-                ToolContext::new(task.clone(), read_operation, "read")?,
+                ToolContext::new(std::sync::Arc::new(task.clone()), read_operation, "read", None)?,
                 read_invocation.clone(),
             )
             .await?
@@ -142,8 +142,8 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         json!("one two")
     );
     for wrong_context in [
-        ToolContext::new(task.clone(), OperationId::new(), "read")?,
-        ToolContext::new(task.clone(), read_operation, "another-call")?,
+        ToolContext::new(std::sync::Arc::new(task.clone()), OperationId::new(), "read", None)?,
+        ToolContext::new(std::sync::Arc::new(task.clone()), read_operation, "another-call", None)?,
     ] {
         assert!(matches!(
             read_tool
@@ -165,7 +165,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         name: tool.definition.name.clone(),
         arguments: json!({"file":source,"old_text":"two","new_text":"three"}),
     };
-    let context = ToolContext::new(task.clone(), operation, "edit")?;
+    let context = ToolContext::new(std::sync::Arc::new(task.clone()), operation, "edit", None)?;
     let first = tool
         .executor
         .execute_with_context(context.clone(), invocation.clone())
@@ -205,7 +205,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         arguments: json!({"path":"second.txt","text":"exact \u{e9}\r\n",
             "media_type":"text/plain","display_name":"second.txt"}),
     };
-    let write_context = ToolContext::new(task.clone(), write_operation, "write")?;
+    let write_context = ToolContext::new(std::sync::Arc::new(task.clone()), write_operation, "write", None)?;
     let written = write_tool
         .executor
         .execute_with_context(write_context.clone(), write_invocation.clone())
@@ -241,7 +241,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         name: patch_tool.definition.name.clone(),
         arguments: json!({"file":written_ref,"diff":"@@\n-exact \u{e9}\n+patched\n"}),
     };
-    let patch_context = ToolContext::new(task.clone(), patch_operation, "patch")?;
+    let patch_context = ToolContext::new(std::sync::Arc::new(task.clone()), patch_operation, "patch", None)?;
     let patched = patch_tool
         .executor
         .execute_with_context(patch_context.clone(), patch_invocation.clone())
@@ -286,7 +286,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         patch_tool
             .executor
             .execute_with_context(
-                ToolContext::new(task.clone(), stale_patch_operation, "patch")?,
+                ToolContext::new(std::sync::Arc::new(task.clone()), stale_patch_operation, "patch", None)?,
                 ToolInvocation {
                     operation_id: stale_patch_operation,
                     ..patch_invocation
@@ -301,7 +301,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         read_tool
             .executor
             .reconcile_with_context(
-                ToolContext::new(task.clone(), read_operation, "read")?,
+                ToolContext::new(std::sync::Arc::new(task.clone()), read_operation, "read", None)?,
                 read_invocation,
             )
             .await?
@@ -316,7 +316,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     };
     assert!(matches!(
         tool.executor
-            .execute_with_context(ToolContext::new(task.clone(), fresh, "edit")?, stale)
+            .execute_with_context(ToolContext::new(std::sync::Arc::new(task.clone()), fresh, "edit", None)?, stale)
             .await,
         Err(Error::Conflict(_))
     ));
@@ -337,7 +337,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         assert!(matches!(
             tool.executor
                 .execute_with_context(
-                    ToolContext::new(restricted, operation, "edit")?,
+                    ToolContext::new(std::sync::Arc::new(restricted), operation, "edit", None)?,
                     invocation.clone()
                 )
                 .await,
@@ -368,7 +368,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             write_tool
                 .executor
                 .execute_with_context(
-                    ToolContext::new(write_context.clone(), op, "invalid-path")?,
+                    ToolContext::new(std::sync::Arc::new(write_context.clone()), op, "invalid-path", None)?,
                     invalid
                 )
                 .await,
@@ -395,7 +395,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     assert!(matches!(
         tool.executor
             .execute_with_context(
-                ToolContext::new(foreign_context, operation, "edit")?,
+                ToolContext::new(std::sync::Arc::new(foreign_context), operation, "edit", None)?,
                 invocation.clone()
             )
             .await,
@@ -414,7 +414,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         json!("different");
     assert!(matches!(
         tool.executor
-            .reconcile_with_context(ToolContext::new(task, operation, "edit")?, changed)
+            .reconcile_with_context(ToolContext::new(std::sync::Arc::new(task), operation, "edit", None)?, changed)
             .await,
         Err(Error::Conflict(_))
     ));
@@ -483,7 +483,7 @@ impl ContentPublisher for OrdinaryPublisher {
 async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() -> Result<()> {
     let provider = ProviderRef::new("portable".into(), "filesystem".into(), "2".into(), &mut None)?;
     let filesystem = Fs::memory();
-    let host = FilesystemHost::new(filesystem.clone(), provider.clone())?;
+    let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
     let owner = AgentId::from_bytes([3; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
@@ -580,7 +580,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
             &IdempotencyKey::new("user")?,
          None, None)
         .await?;
-    let host = FilesystemHost::new(filesystem, provider)?;
+    let host = FilesystemHost::new(filesystem, &provider, None)?;
     assert_eq!(
         host.edit_text(&source, &read, &write, &replacement, 64, &key)
             .await?,
@@ -663,7 +663,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
         let filesystem = Fs::local(options.clone())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let host = FilesystemHost::new(filesystem, provider.clone())?;
+        let host = FilesystemHost::new(filesystem, &provider, None)?;
         host.create_volume(&volume).await?;
         let source = host
             .put_content(
@@ -697,7 +697,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
     let filesystem = Fs::local(options)
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let host = FilesystemHost::new(filesystem, provider.clone())?;
+    let host = FilesystemHost::new(filesystem, &provider, None)?;
     let workspace = workspace_ref(provider, &volume.storage_name(&mut None)?)?;
     let head = host.resolve(&workspace).await?.generation;
     for maximum_bytes in [0, u64::MAX] {
@@ -765,7 +765,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
     let cancellation = acyclic_fs::CancellationToken::new();
     {
         let fs = Fs::local(options.clone()).await.map_err(|error| Error::Storage(error.to_string()))?;
-        let host = FilesystemHost::new(fs, provider.clone())?;
+        let host = FilesystemHost::new(fs, &provider, None)?;
         host.create_volume(&volume).await?;
         let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
         let delivered = host.put_content(&volume, &write, "result.json", b"original",
@@ -778,7 +778,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             "later.txt", 64, &IdempotencyKey::new("later-content")?, None, Some(&io)).await?;
     }
     let fs = Fs::local(options).await.map_err(|error| Error::Storage(error.to_string()))?;
-    let host = FilesystemHost::new(fs, provider.clone())?;
+    let host = FilesystemHost::new(fs, &provider, None)?;
     let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
     let recovered = host.content_for_operation(&volume, &write, &key, "result.json", 64, Some(&io)).await?;
     io.receipt().verify(CONTENT_WORK_BUDGET).map_err(|error| Error::Invalid(error.to_string()))?;

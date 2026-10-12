@@ -1,9 +1,4 @@
-use super::create_windows_symbolic_link;
 use super::*;
-use super::{
-    HostRoot, NativeMetadataError, UNIX_EPOCH_FILETIME, allocated_data_ranges,
-    filetime_to_unix_nanoseconds, unix_nanoseconds_to_filetime,
-};
 use crate::WorkCounters;
 use acyclic_native_runtime::{Durability, NativeFile, OwnedWrite};
 use proptest::prelude::*;
@@ -39,7 +34,7 @@ fn filetime_conversions_cover_their_extremes() {
     assert_eq!(filetime_to_unix_nanoseconds(i64::MIN), None);
     assert_eq!(filetime_to_unix_nanoseconds(0), None);
     assert!(
-        super::metadata_time(crate::kernel::MetadataField::Value(150), 7).is_err(),
+        metadata_time(crate::kernel::MetadataField::Value(150), 7).is_err(),
         "exact writers refuse instants between ticks"
     );
 }
@@ -62,10 +57,9 @@ async fn held_async_copy_preserves_source_hardlinks_and_rejects_escape() -> std:
     std::fs::write(source_path.join("file"), b"source contents")?;
     std::fs::hard_link(source_path.join("file"), source_path.join("alias"))?;
     std::fs::write(outside_path.join("untouched"), b"outside")?;
-    let source = HostRoot::open(&source_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    let destination = HostRoot::open(&destination_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let source = HostRoot::open(&source_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let destination =
+        HostRoot::open(&destination_path, &mut ordinary_work()).map_err(ordinary_error)?;
     destination
         .copy_file_from(&source, Path::new("alias"), Path::new("copy"))
         .await?;
@@ -114,10 +108,9 @@ async fn cancelled_async_copy_leaves_no_partial_output() -> std::io::Result<()> 
     let source_file = std::fs::File::create(source_path.join("large"))?;
     let length = 128 * 1024 * 1024;
     source_file.set_len(length)?;
-    let source = HostRoot::open(&source_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    let destination = HostRoot::open(&destination_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let source = HostRoot::open(&source_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    let destination =
+        HostRoot::open(&destination_path, &mut ordinary_work()).map_err(ordinary_error)?;
     let task = tokio::spawn(async move {
         destination
             .copy_file_from(&source, Path::new("large"), Path::new("copy"))
@@ -129,7 +122,7 @@ async fn cancelled_async_copy_leaves_no_partial_output() -> std::io::Result<()> 
             if entry?
                 .file_name()
                 .to_string_lossy()
-                .starts_with(super::STAGING_PREFIX)
+                .starts_with(STAGING_PREFIX)
             {
                 return Ok(true);
             }
@@ -167,17 +160,17 @@ fn staged_copy_crash_child() -> std::io::Result<()> {
     let Some(directory) = std::env::var_os(CRASH_DIRECTORY) else {
         return Ok(());
     };
-    let staged = super::StagedWindowsFile::create(cap_std::fs::Dir::open_ambient_dir(
+    let staged = StagedWindowsFile::create(cap_std::fs::Dir::open_ambient_dir(
         directory,
         cap_std::ambient_authority(),
     )?)?;
-    super::reopen_windows_file(
+    reopen_windows_file(
         &staged.guard,
         windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE,
         Default::default(),
-        &mut super::ordinary_work(),
+        &mut ordinary_work(),
     )
-    .map_err(super::ordinary_error)?
+    .map_err(ordinary_error)?
     .write_all(b"partial copy")?;
     std::process::abort();
 }
@@ -209,14 +202,14 @@ fn a_published_copy_keeps_only_its_final_name() -> std::io::Result<()> {
     let temporary = tempfile::tempdir()?;
     let parent =
         cap_std::fs::Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
-    let staged = super::StagedWindowsFile::create(parent)?;
-    super::reopen_windows_file(
+    let staged = StagedWindowsFile::create(parent)?;
+    reopen_windows_file(
         &staged.guard,
         windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE,
         Default::default(),
-        &mut super::ordinary_work(),
+        &mut ordinary_work(),
     )
-    .map_err(super::ordinary_error)?
+    .map_err(ordinary_error)?
     .write_all(b"complete copy")?;
     staged.publish(std::ffi::OsStr::new("copy"))?;
     assert_eq!(
@@ -246,7 +239,7 @@ fn a_staged_name_goes_while_another_process_holds_the_file() -> std::io::Result<
     let temporary = tempfile::tempdir()?;
     let parent =
         cap_std::fs::Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
-    let staged = super::StagedWindowsFile::create(parent)?;
+    let staged = StagedWindowsFile::create(parent)?;
     let name = std::fs::read_dir(temporary.path())?
         .next()
         .expect("created staged file")?
@@ -263,7 +256,7 @@ fn a_staged_name_goes_while_another_process_holds_the_file() -> std::io::Result<
 }
 #[test]
 fn hydrating_a_placeholder_leaves_its_attributes_the_same() {
-    use super::same_windows_attributes;
+    use same_windows_attributes;
     assert!(same_windows_attributes(0x0040_0000, 0x0000_0020));
     assert!(same_windows_attributes(0x0040_0001, 0x0000_0021));
     assert!(!same_windows_attributes(0x0040_0000, 0x0000_0021));
@@ -306,14 +299,10 @@ fn a_name_deleted_while_held_open_is_not_found() -> std::io::Result<()> {
     }?;
     drop(deleting);
     assert_eq!(std::fs::read_dir(temporary.path())?.count(), 1);
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let stat = root
-        .stat(
-            Path::new("pending"),
-            &mut crate::native_host::ordinary_work(),
-        )
-        .map_err(crate::native_host::ordinary_error);
+        .stat(Path::new("pending"), &mut ordinary_work())
+        .map_err(ordinary_error);
     drop(held);
     assert_eq!(
         stat.map(|_| ()).map_err(|error| error.kind()),
@@ -326,8 +315,7 @@ async fn copy_never_replaces_an_existing_destination() -> std::io::Result<()> {
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join("source"), b"new")?;
     std::fs::write(temporary.path().join("existing"), b"old")?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let copied = root
         .copy_file_from(&root, Path::new("source"), Path::new("existing"))
         .await;
@@ -351,7 +339,7 @@ async fn copy_never_replaces_an_existing_destination() -> std::io::Result<()> {
 #[test]
 fn held_windows_metadata_applies_and_verifies_file_and_directory_fields()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut work = super::ordinary_work();
+    let mut work = ordinary_work();
     use crate::kernel::{FileMetadata, MetadataField};
     use std::os::windows::fs::MetadataExt as _;
     const FIXED_NS: i64 = 1_700_000_000_000_000_000;
@@ -361,13 +349,12 @@ fn held_windows_metadata_applies_and_verifies_file_and_directory_fields()
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join("file"), b"payload")?;
     std::fs::create_dir(temporary.path().join("directory"))?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     for (path, attributes) in [
         (Path::new("file"), ARCHIVE | HIDDEN),
         (Path::new("directory"), DIRECTORY | HIDDEN),
     ] {
-        super::apply_windows_metadata(
+        apply_windows_metadata(
             root.open_windows_metadata_target(path, &mut work)?,
             FileMetadata {
                 windows_attributes: MetadataField::Value(attributes),
@@ -388,12 +375,12 @@ fn held_windows_metadata_applies_and_verifies_file_and_directory_fields()
     let mut permissions = std::fs::metadata(&file)?.permissions();
     permissions.set_readonly(true);
     std::fs::set_permissions(&file, permissions.clone())?;
-    super::apply_windows_metadata(
+    apply_windows_metadata(
         root.open_windows_metadata_target(Path::new("file"), &mut work)?,
         FileMetadata::default(),
         &mut work,
     )?;
-    super::apply_windows_metadata(
+    apply_windows_metadata(
         root.open_windows_metadata_target(Path::new("file"), &mut work)?,
         FileMetadata {
             windows_attributes: MetadataField::Value(ARCHIVE),
@@ -405,7 +392,7 @@ fn held_windows_metadata_applies_and_verifies_file_and_directory_fields()
 }
 #[test]
 fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std::io::Result<()> {
-    let mut work = super::ordinary_work();
+    let mut work = ordinary_work();
     use crate::kernel::{FileMetadata, MetadataField};
     const REPARSE_POINT: u32 = 0x400;
     let temporary = tempfile::tempdir()?;
@@ -413,10 +400,9 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
     std::fs::create_dir(&root_path)?;
     std::fs::write(root_path.join("file"), b"inside")?;
     std::fs::write(temporary.path().join("outside"), b"outside")?;
-    let root = HostRoot::open(&root_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
     assert!(matches!(
-        super::apply_windows_metadata(
+        apply_windows_metadata(
             root.open_windows_metadata_target(Path::new("file"), &mut work)
                 .map_err(std::io::Error::other)?,
             FileMetadata {
@@ -428,7 +414,7 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
         Err(crate::DemandError::WindowsMetadata(NativeMetadataError(_)))
     ));
     assert!(matches!(
-        super::apply_windows_metadata(
+        apply_windows_metadata(
             root.open_windows_metadata_target(Path::new("file"), &mut work)
                 .map_err(std::io::Error::other)?,
             FileMetadata {
@@ -451,7 +437,7 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
 }
 #[test]
 fn held_windows_metadata_rejects_intermediate_reparse_escape() -> std::io::Result<()> {
-    let mut work = super::ordinary_work();
+    let mut work = ordinary_work();
     use std::os::windows::fs::MetadataExt as _;
     let temporary = tempfile::tempdir()?;
     let root_path = temporary.path().join("root");
@@ -465,8 +451,7 @@ fn held_windows_metadata_rejects_intermediate_reparse_escape() -> std::io::Resul
         Err(error) => return Err(error),
     }
     let before = std::fs::metadata(outside.join("target"))?.file_attributes();
-    let root = HostRoot::open(&root_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
     assert!(
         root.open_windows_metadata_target(Path::new("pivot/target"), &mut work)
             .is_err()
@@ -483,13 +468,12 @@ fn held_windows_metadata_rejects_intermediate_reparse_escape() -> std::io::Resul
 fn raw_link_set_denial_retains_real_created_prefix_and_prepaid_close()
 -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let cancellation = crate::CancellationToken::new();
-    let work = crate::NativeMaterializationWork::new(
-        crate::WorkBudget {
+    let work = NativeMaterializationWork::new(
+        WorkBudget {
             backend_write_operations: 2,
-            ..crate::WorkBudget::UNBOUNDED
+            ..WorkBudget::UNBOUNDED
         },
         &cancellation,
     )
@@ -521,10 +505,9 @@ fn raw_link_set_denial_retains_real_created_prefix_and_prepaid_close()
 fn raw_link_original_cancellation_after_create_does_not_erase_capability()
 -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let cancellation = crate::CancellationToken::new();
-    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let mut close = work.reserve_work(WRITE)?;
     let mut created = None;
@@ -541,7 +524,7 @@ fn raw_link_original_cancellation_after_create_does_not_erase_capability()
     );
     assert!(matches!(
         result,
-        Err(crate::NativeTreeMaterializationError::Cancelled)
+        Err(NativeTreeMaterializationError::Cancelled)
     ));
     assert!(created.is_some() && !set.get());
     assert!(cancellation.is_cancelled());
@@ -554,7 +537,7 @@ fn raw_link_original_cancellation_after_create_does_not_erase_capability()
 #[test]
 fn held_windows_metadata_updates_final_reparse_point_without_touching_target()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut work = super::ordinary_work();
+    let mut work = ordinary_work();
     use crate::kernel::{FileMetadata, MetadataField};
     use std::os::windows::fs::MetadataExt as _;
     const FIXED_NS: i64 = 1_700_000_000_000_000_000;
@@ -572,9 +555,8 @@ fn held_windows_metadata_updates_final_reparse_point_without_touching_target()
     }
     let target_attributes = std::fs::symlink_metadata(&target)?.file_attributes();
     let link_attributes = std::fs::symlink_metadata(&link)?.file_attributes();
-    let root = HostRoot::open(&root_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    super::apply_windows_metadata(
+    let root = HostRoot::open(&root_path, &mut ordinary_work()).map_err(ordinary_error)?;
+    apply_windows_metadata(
         root.open_windows_metadata_target(Path::new("link"), &mut work)?,
         FileMetadata {
             windows_attributes: MetadataField::Value(link_attributes | HIDDEN),
@@ -600,7 +582,7 @@ fn held_windows_metadata_updates_final_reparse_point_without_touching_target()
 #[test]
 fn held_windows_metadata_targets_leaf_across_rename_and_replacement()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut work = super::ordinary_work();
+    let mut work = ordinary_work();
     use crate::kernel::{FileMetadata, MetadataField};
     use std::os::windows::fs::MetadataExt as _;
     const HIDDEN: u32 = 0x2;
@@ -609,8 +591,7 @@ fn held_windows_metadata_targets_leaf_across_rename_and_replacement()
     let original = temporary.path().join("original");
     let moved = temporary.path().join("moved");
     std::fs::write(&original, b"old")?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let target = root.open_windows_metadata_target(Path::new("original"), &mut work)?;
     std::fs::rename(&original, &moved)?;
     std::fs::write(&original, b"new")?;
@@ -618,7 +599,7 @@ fn held_windows_metadata_targets_leaf_across_rename_and_replacement()
     let replacement_attributes = replacement_metadata.file_attributes();
     let replacement_modified = replacement_metadata.last_write_time();
     let moved_attributes = std::fs::metadata(&moved)?.file_attributes();
-    super::apply_windows_metadata(
+    apply_windows_metadata(
         target,
         FileMetadata {
             windows_attributes: MetadataField::Value(moved_attributes | HIDDEN),
@@ -650,13 +631,12 @@ fn held_windows_metadata_targets_leaf_across_rename_and_replacement()
 #[tokio::test]
 async fn capability_opened_overlapped_file_runs_native_io_without_reopen() -> std::io::Result<()> {
     let directory = tempfile::tempdir()?;
-    let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(directory.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let path = Path::new("overlapped.bin");
-    let file = super::with_wide_path(path, &mut super::ordinary_work(), |path, work| {
+    let file = with_wide_path(path, &mut ordinary_work(), |path, work| {
         root.create_overlapped_file_wide(path, work)
     })
-    .map_err(super::ordinary_error)?;
+    .map_err(ordinary_error)?;
     // SAFETY: HostRoot used FILE_FLAG_OVERLAPPED and this new handle is transferred directly, with no other I/O or completion-port owner.
     let native = unsafe {
         NativeFile::from_overlapped_file_unchecked(file, None).map_err(|(error, _)| error)?
@@ -681,218 +661,11 @@ async fn capability_opened_overlapped_file_runs_native_io_without_reopen() -> st
     );
     Ok(())
 }
-#[cfg(feature = "native-mount")]
-#[test]
-fn block_clone_preserves_cow_or_leaves_no_destination() -> std::io::Result<()> {
-    let parent = std::env::var_os("ACYCLIC_TEST_BLOCK_CLONE_ROOT");
-    let require_clone = parent.is_some();
-    let directory = if let Some(parent) = parent {
-        tempfile::Builder::new()
-            .prefix("acyclic-clone-")
-            .tempdir_in(parent)?
-    } else {
-        tempfile::tempdir()?
-    };
-    let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    let source_path = Path::new("source.bin");
-    let target_path = Path::new("target.bin");
-    let mut source = root
-        .create_file(source_path, &mut super::ordinary_work())
-        .map_err(super::ordinary_error)?;
-    // SAFETY: this synchronous control takes no buffers and the source handle remains live for the entire call.
-    unsafe {
-        DeviceIoControl(
-            HANDLE(source.as_raw_handle()),
-            FSCTL_SET_SPARSE,
-            None,
-            0,
-            None,
-            0,
-            None,
-            None,
-        )
-        .map_err(std::io::Error::other)?;
-    }
-    source.set_len(1024 * 1024)?;
-    source.write_all(&[0xA5; 4096])?;
-    source.seek(SeekFrom::Start(1024 * 1024 - 4096))?;
-    source.write_all(&[0xA5; 4096])?;
-    source.sync_all()?;
-    let cloned = root
-        .clone_file_from(&root, source_path, target_path, &mut super::ordinary_work())
-        .map_err(super::ordinary_error)?;
-    let capabilities = crate::probe_native_storage_capabilities(directory.path())
-        .map_err(std::io::Error::other)?;
-    if capabilities.block_cloning || require_clone {
-        assert!(cloned, "advertised block cloning rejected an aligned file");
-    }
-    if cloned {
-        let mut target = root
-            .open_file(target_path, &mut crate::native_host::ordinary_work())
-            .map_err(crate::native_host::ordinary_error)?;
-        let mut byte = [0];
-        target.read_exact(&mut byte)?;
-        assert_eq!(byte, [0xA5]);
-        target.seek(SeekFrom::Start(512 * 1024))?;
-        target.read_exact(&mut byte)?;
-        assert_eq!(byte, [0]);
-        target.seek(SeekFrom::Start(1024 * 1024 - 1))?;
-        target.read_exact(&mut byte)?;
-        assert_eq!(byte, [0xA5]);
-        source.seek(SeekFrom::Start(0))?;
-        source.write_all(&[0x5A])?;
-        source.sync_all()?;
-        target.seek(SeekFrom::Start(0))?;
-        target.read_exact(&mut byte)?;
-        assert_eq!(byte, [0xA5]);
-    } else {
-        assert!(
-            root.stat(target_path, &mut crate::native_host::ordinary_work())
-                .map_err(crate::native_host::ordinary_error)
-                .is_err()
-        );
-    }
-    Ok(())
-}
-#[test]
-fn block_clone_accepts_unaligned_file_lengths() -> std::io::Result<()> {
-    let Some(parent) = std::env::var_os("ACYCLIC_TEST_BLOCK_CLONE_ROOT") else {
-        return Ok(());
-    };
-    let directory = tempfile::Builder::new()
-        .prefix("acyclic-unaligned-clone-")
-        .tempdir_in(parent)?;
-    let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    let source_path = Path::new("source.bin");
-    let target_path = Path::new("target.bin");
-    let mut source = root
-        .create_file(source_path, &mut super::ordinary_work())
-        .map_err(super::ordinary_error)?;
-    // SAFETY: no buffers are passed and the source handle stays live.
-    unsafe {
-        DeviceIoControl(
-            HANDLE(source.as_raw_handle()),
-            FSCTL_SET_SPARSE,
-            None,
-            0,
-            None,
-            0,
-            None,
-            None,
-        )
-        .map_err(std::io::Error::other)?;
-    }
-    source.set_len(1024 * 1024 + 17)?;
-    source.write_all(&[0xA5; 4096])?;
-    source.seek(SeekFrom::Start(1024 * 1024))?;
-    source.write_all(&[0x5A; 17])?;
-    source.sync_all()?;
-    let cloned = root
-        .clone_file_from(&root, source_path, target_path, &mut super::ordinary_work())
-        .map_err(super::ordinary_error)?;
-    assert!(
-        cloned,
-        "advertised block cloning rejected an unaligned file"
-    );
-    let mut target = root
-        .open_file(target_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    let ranges = allocated_data_ranges(
-        &target.try_clone()?.into_std(),
-        0,
-        1024 * 1024 + 17,
-        3,
-        &mut super::ordinary_work(),
-    )
-    .map_err(super::ordinary_error)?;
-    assert_eq!(ranges.len(), 2, "clone must preserve the sparse middle");
-    target.seek(SeekFrom::Start(1024 * 1024))?;
-    let mut tail = [0; 17];
-    target.read_exact(&mut tail)?;
-    assert_eq!(tail, [0x5A; 17]);
-    source.seek(SeekFrom::Start(1024 * 1024))?;
-    source.write_all(&[0x11; 17])?;
-    source.sync_all()?;
-    target.seek(SeekFrom::Start(1024 * 1024))?;
-    target.read_exact(&mut tail)?;
-    assert_eq!(tail, [0x5A; 17]);
-    Ok(())
-}
-#[test]
-fn block_clone_spans_multiple_native_requests() -> std::io::Result<()> {
-    let Some(parent) = std::env::var_os("ACYCLIC_TEST_BLOCK_CLONE_ROOT") else {
-        return Ok(());
-    };
-    let directory = tempfile::Builder::new()
-        .prefix("acyclic-large-clone-")
-        .tempdir_in(parent)?;
-    let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    let source_path = Path::new("source.bin");
-    let target_path = Path::new("target.bin");
-    let mut source = root
-        .create_file(source_path, &mut super::ordinary_work())
-        .map_err(super::ordinary_error)?;
-    // SAFETY: no buffers are passed and the source handle stays live.
-    unsafe {
-        DeviceIoControl(
-            HANDLE(source.as_raw_handle()),
-            FSCTL_SET_SPARSE,
-            None,
-            0,
-            None,
-            0,
-            None,
-            None,
-        )
-        .map_err(std::io::Error::other)?;
-    }
-    let second_chunk = 1024_u64 * 1024 * 1024;
-    let length = second_chunk + 64 * 1024 + 17;
-    source.set_len(length)?;
-    source.write_all(&[0xA5; 4096])?;
-    source.seek(SeekFrom::Start(second_chunk))?;
-    source.write_all(&[0x5A; 4096])?;
-    source.seek(SeekFrom::Start(length - 17))?;
-    source.write_all(&[0x11; 17])?;
-    source.sync_all()?;
-    assert!(
-        root.clone_file_from(&root, source_path, target_path, &mut super::ordinary_work())
-            .map_err(super::ordinary_error)?
-    );
-    let mut target = root
-        .open_file(target_path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    target.seek(SeekFrom::Start(second_chunk))?;
-    let mut byte = [0];
-    target.read_exact(&mut byte)?;
-    assert_eq!(byte, [0x5A]);
-    target.seek(SeekFrom::Start(length - 1))?;
-    target.read_exact(&mut byte)?;
-    assert_eq!(byte, [0x11]);
-    let ranges = allocated_data_ranges(
-        &target.try_clone()?.into_std(),
-        0,
-        length,
-        4,
-        &mut super::ordinary_work(),
-    )
-    .map_err(super::ordinary_error)?;
-    assert_eq!(ranges.len(), 3, "multi-request clone must preserve holes");
-    Ok(())
-}
-#[test]
-fn sparse_range_query_grows_only_when_ranges_require_it() -> std::io::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
-    let path = Path::new("ranges.bin");
-    let mut file = root
-        .create_file(path, &mut super::ordinary_work())
-        .map_err(super::ordinary_error)?;
-    // SAFETY: the control has no buffers and the file handle remains live.
+fn sparse_file(root: &HostRoot, path: &Path, length: u64) -> std::io::Result<cap_std::fs::File> {
+    let file = root
+        .create_file(path, &mut ordinary_work())
+        .map_err(ordinary_error)?;
+    // SAFETY: no buffers are passed and the file handle stays live.
     unsafe {
         DeviceIoControl(
             HANDLE(file.as_raw_handle()),
@@ -906,22 +679,127 @@ fn sparse_range_query_grows_only_when_ranges_require_it() -> std::io::Result<()>
         )
         .map_err(std::io::Error::other)?;
     }
-    file.set_len(20 * 1024 * 1024)?;
+    file.set_len(length)?;
+    Ok(file)
+}
+#[test]
+fn block_clone_preserves_sparse_data_and_cow_across_aligned_unaligned_and_large_files()
+-> std::io::Result<()> {
+    let parent = std::env::var_os("ACYCLIC_TEST_BLOCK_CLONE_ROOT");
+    let megabyte = 1024_u64 * 1024;
+    let second_chunk = 1024_u64 * megabyte;
+    for (length, patches) in [
+        #[cfg(feature = "native-mount")]
+        (
+            megabyte,
+            &[(0, 0xA5, 4096), (megabyte - 4096, 0xA5, 4096)][..],
+        ),
+        (megabyte + 17, &[(0, 0xA5, 4096), (megabyte, 0x5A, 17)][..]),
+        (
+            second_chunk + 64 * 1024 + 17,
+            &[
+                (0, 0xA5, 4096),
+                (second_chunk, 0x5A, 4096),
+                (second_chunk + 64 * 1024, 0x11, 17),
+            ][..],
+        ),
+    ] {
+        if parent.is_none() && length != megabyte {
+            continue;
+        }
+        let directory = match &parent {
+            Some(parent) => tempfile::Builder::new()
+                .prefix("acyclic-clone-")
+                .tempdir_in(parent)?,
+            None => tempfile::tempdir()?,
+        };
+        let root =
+            HostRoot::open(directory.path(), &mut ordinary_work()).map_err(ordinary_error)?;
+        let source_path = Path::new("source.bin");
+        let target_path = Path::new("target.bin");
+        let mut source = sparse_file(&root, source_path, length)?;
+        for &(offset, byte, count) in patches {
+            source.seek(SeekFrom::Start(offset))?;
+            source.write_all(&[byte; 4096][..count])?;
+        }
+        source.sync_all()?;
+        let cloned = root
+            .clone_file_from(&root, source_path, target_path, &mut ordinary_work())
+            .map_err(ordinary_error)?;
+        let mut required = parent.is_some();
+        #[cfg(feature = "native-mount")]
+        {
+            required |= crate::probe_native_storage_capabilities(directory.path())
+                .map_err(std::io::Error::other)?
+                .block_cloning;
+        }
+        if required {
+            assert!(cloned, "advertised block cloning rejected a sparse file");
+        }
+        if !cloned {
+            assert!(
+                root.stat(target_path, &mut ordinary_work())
+                    .map_err(ordinary_error)
+                    .is_err()
+            );
+            continue;
+        }
+        let mut target = root
+            .open_file(target_path, &mut ordinary_work())
+            .map_err(ordinary_error)?;
+        let mut actual = [0; 4096];
+        for &(offset, byte, count) in patches {
+            target.seek(SeekFrom::Start(offset))?;
+            target.read_exact(&mut actual[..count])?;
+            assert_eq!(&actual[..count], &[byte; 4096][..count]);
+        }
+        target.seek(SeekFrom::Start(512 * 1024))?;
+        target.read_exact(&mut actual[..1])?;
+        assert_eq!(actual[0], 0);
+        let ranges = allocated_data_ranges(
+            &target.try_clone()?.into_std(),
+            0,
+            length,
+            if length > second_chunk { 4 } else { 3 },
+            &mut ordinary_work(),
+        )
+        .map_err(ordinary_error)?;
+        assert_eq!(
+            ranges.len(),
+            if length > second_chunk { 3 } else { 2 },
+            "clone must preserve holes"
+        );
+        let (offset, byte, count) = patches[if length == megabyte { 0 } else { 1 }];
+        source.seek(SeekFrom::Start(offset))?;
+        source.write_all(&[if byte == 0x5A { 0x11 } else { 0x5A }; 4096][..count])?;
+        source.sync_all()?;
+        target.seek(SeekFrom::Start(offset))?;
+        target.read_exact(&mut actual[..count])?;
+        assert_eq!(&actual[..count], &[byte; 4096][..count]);
+    }
+    Ok(())
+}
+#[test]
+fn sparse_range_query_grows_only_when_ranges_require_it() -> std::io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let root = HostRoot::open(directory.path(), &mut ordinary_work()).map_err(ordinary_error)?;
+    let path = Path::new("ranges.bin");
+    let mut file = sparse_file(&root, path, 20 * 1024 * 1024)?;
     for index in 0..10_u64 {
         file.seek(SeekFrom::Start(index * 2 * 1024 * 1024))?;
         file.write_all(&[0xA5; 4096])?;
     }
     file.sync_all()?;
     let source = root
-        .open_file(path, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+        .open_file(path, &mut ordinary_work())
+        .map_err(ordinary_error)?;
     assert!(
         allocated_data_ranges(
             &source.try_clone()?.into_std(),
             0,
             20 * 1024 * 1024,
             9,
-            &mut super::ordinary_work()
+            &mut ordinary_work()
         )
         .is_err()
     );
@@ -930,9 +808,9 @@ fn sparse_range_query_grows_only_when_ranges_require_it() -> std::io::Result<()>
         0,
         20 * 1024 * 1024,
         10,
-        &mut super::ordinary_work(),
+        &mut ordinary_work(),
     )
-    .map_err(super::ordinary_error)?;
+    .map_err(ordinary_error)?;
     assert_eq!(ranges.len(), 10);
     assert_eq!(ranges[0].offset, 0);
     assert_eq!(ranges[9].offset, 18 * 1024 * 1024);

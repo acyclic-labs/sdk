@@ -20,8 +20,6 @@ pub(super) const STATE_VERSION: u32 = 1;
 
 pub(super) const COMMIT_DOMAIN: &[u8] = b"acyclic-fs-git-compat-commit-v1\0";
 
-pub(super) const ACTION_DOMAIN: &[u8] = b"acyclic-fs-git-compat-action-v1\0";
-
 pub(super) const GREP_READ_CONCURRENCY: usize = 32;
 
 pub(super) const MAXIMUM_PATCH_FILE_BYTES: u64 = 64 * 1024 * 1024;

@@ -16,7 +16,6 @@ pub(super) struct InodeEntry {
     pub(super) cached_content: Option<ContentVersion>,
     pub(super) negative_children: HashMap<FuseOwned<Vec<u8>>, ViewStamp>,
     pub(super) empty_since: Option<ViewStamp>,
-    pub(super) identity_storage: Option<crate::NativeAllocation>,
     pub(super) _storage: crate::NativeAllocation,
 }
 
@@ -39,11 +38,6 @@ impl InodeEntry {
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
-        let identity_storage = Some(work.claim(
-            std::mem::size_of::<(crate::FileId, u64)>() as u64,
-            1,
-            crate::WorkCounters::UNCHARGED,
-        )?);
         Ok(Self {
             bindings,
             lookup,
@@ -54,7 +48,6 @@ impl InodeEntry {
             cached_content: None,
             negative_children: HashMap::new(),
             empty_since: None,
-            identity_storage,
             _storage: storage,
         })
     }
@@ -165,14 +158,7 @@ impl ProjectionState {
     ) -> Result<(), NativeMountError> {
         fuse_item(work)?;
         if let Some(inode) = self.inode_by_path.get(path).copied() {
-            unbind(
-                &mut self.by_inode,
-                &mut self.inode_by_file,
-                inode,
-                path,
-                work,
-            )?;
-            self.inode_by_path.remove(path);
+            self.remove_binding(inode, path, work)?;
         }
         Ok(())
     }
@@ -244,7 +230,7 @@ impl ProjectionState {
                 }
             }
         }
-        // All fallible path buffers are ready before any inode alias changes.
+        // Prepare every path before changing aliases.
         self.streams.rename_prefix(source, destination, work)?;
         for (inode, index, path) in replacements.drain(..) {
             self.by_inode
@@ -253,7 +239,7 @@ impl ProjectionState {
                 .bindings[index]
                 .path = path;
         }
-        drop(std::mem::replace(&mut self.inode_by_path, paths));
+        self.inode_by_path = paths;
         Ok(())
     }
 }
@@ -289,7 +275,7 @@ pub(super) fn cached_projected_lookup(
 
 pub(super) fn replace_root_lookup(
     by_inode: &mut HashMap<u64, InodeEntry>,
-    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    inode_by_file: &mut HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
     lookup: MountLookup,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
@@ -302,23 +288,20 @@ pub(super) fn replace_root_lookup(
     if previous != lookup.node.file_id {
         if inode_by_file
             .get(&lookup.node.file_id)
-            .is_some_and(|inode| *inode != ROOT_INODE)
+            .is_some_and(|(inode, _)| *inode != ROOT_INODE)
         {
             return Err(libc::EIO.into());
         }
         let storage = work.claim(
-            std::mem::size_of::<(crate::FileId, u64)>() as u64,
+            std::mem::size_of::<(crate::FileId, (u64, crate::NativeAllocation))>() as u64,
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
         inode_by_file
             .try_reserve(1)
             .map_err(NativeMountError::Allocation)?;
-        if inode_by_file.get(&previous) == Some(&ROOT_INODE) {
-            inode_by_file.remove(&previous);
-        }
-        inode_by_file.insert(lookup.node.file_id, ROOT_INODE);
-        root.identity_storage = Some(storage);
+        forget_file(inode_by_file, previous, ROOT_INODE);
+        inode_by_file.insert(lookup.node.file_id, (ROOT_INODE, storage));
         root.lookup = lookup;
     }
     Ok(())
@@ -343,18 +326,17 @@ pub(super) fn forget_unbound_names(
         if *binding.path == *path || still_bound(&binding.path, binding.verified)? {
             continue;
         }
-        if binding.kernel.is_some() {
-            if let Some(parent) = fuse_parent(&binding.path, work)? {
-                if let Some(parent_inode) = inode_by_path.get(&*parent).copied() {
-                    let component = binding.path.components().last().ok_or(libc::ESTALE)?;
-                    let name = fuse_copy_bytes(component, work)?;
-                    fuse_reserve(&mut items, 1, work)?;
-                    items.push(KernelCacheItem::Entry {
-                        parent: parent_inode,
-                        name,
-                    });
-                }
-            }
+        if binding.kernel.is_some()
+            && let Some(parent) = fuse_parent(&binding.path, work)?
+            && let Some(parent_inode) = inode_by_path.get(&*parent).copied()
+        {
+            let component = binding.path.components().last().ok_or(libc::ESTALE)?;
+            let name = fuse_copy_bytes(component, work)?;
+            fuse_reserve(&mut items, 1, work)?;
+            items.push(KernelCacheItem::Entry {
+                parent: parent_inode,
+                name,
+            });
         }
         fuse_reserve(&mut removed, 1, work)?;
         removed.push(index);
@@ -390,16 +372,14 @@ pub(super) fn forget_unbound_names(
         if inode_by_path.get(&*binding.path) == Some(&inode) {
             inode_by_path.remove(&*binding.path);
         }
-        drop(binding);
     }
-    fuse_copy_record(copied, work)?;
-    Ok(())
+    fuse_copy_record(copied, work)
 }
 
 pub(super) fn bind_path(
     by_inode: &mut HashMap<u64, InodeEntry>,
     inode_by_path: &mut HashMap<FuseOwned<MountPath>, u64>,
-    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    inode_by_file: &mut HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
     path: &MountPath,
     inode: u64,
     work: &crate::NativeMaterializationWork,
@@ -428,7 +408,7 @@ pub(super) fn bind_path(
 
 pub(super) fn unbind(
     by_inode: &mut HashMap<u64, InodeEntry>,
-    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    inode_by_file: &mut HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
     inode: u64,
     path: &MountPath,
     work: &crate::NativeMaterializationWork,
@@ -449,53 +429,41 @@ pub(super) fn unbind(
             .checked_mul(std::mem::size_of::<Binding>())
             .ok_or(crate::WorkError::Overflow)? as u64;
         fuse_copy_admit(copied, work)?;
-        drop(entry.bindings.remove(index));
+        entry.bindings.remove(index);
         fuse_copy_record(copied, work)?;
     }
-    let remove =
-        entry.bindings.is_empty() && entry.lookup_references == 0 && entry.open_handles == 0;
-    if remove {
-        let mut entry = by_inode
+    if entry.bindings.is_empty() && entry.lookup_references == 0 && entry.open_handles == 0 {
+        let entry = by_inode
             .remove(&inode)
             .expect("matched inode remains locked");
-        forget_file(
-            inode_by_file,
-            entry.lookup.node.file_id,
-            inode,
-            &mut entry.identity_storage,
-        );
-        drop(entry);
+        forget_file(inode_by_file, entry.lookup.node.file_id, inode);
     }
     Ok(())
 }
 
 pub(super) fn forget_file(
-    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    inode_by_file: &mut HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
     file_id: crate::FileId,
     inode: u64,
-    identity_storage: &mut Option<crate::NativeAllocation>,
 ) {
-    if inode_by_file.get(&file_id) == Some(&inode) {
+    if inode_by_file
+        .get(&file_id)
+        .is_some_and(|(held, _)| *held == inode)
+    {
         inode_by_file.remove(&file_id);
-        drop(identity_storage.take());
     }
 }
 
 pub(super) fn retire_reused_identity(
     by_inode: &mut HashMap<u64, InodeEntry>,
-    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    inode_by_file: &mut HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
     inode: u64,
 ) {
     if inode != ROOT_INODE
-        && let Some(entry) = by_inode.get_mut(&inode)
+        && let Some(entry) = by_inode.get(&inode)
         && entry.bindings.is_empty()
     {
-        forget_file(
-            inode_by_file,
-            entry.lookup.node.file_id,
-            inode,
-            &mut entry.identity_storage,
-        );
+        forget_file(inode_by_file, entry.lookup.node.file_id, inode);
     }
 }
 
@@ -507,7 +475,7 @@ pub(super) fn intern_projected(
     next_inode: &mut u64,
     by_inode: &mut HashMap<u64, InodeEntry>,
     inode_by_path: &mut HashMap<FuseOwned<MountPath>, u64>,
-    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    inode_by_file: &mut HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
     path: FuseOwned<MountPath>,
     lookup: &MountLookup,
     stamp: Option<ViewStamp>,
@@ -515,7 +483,10 @@ pub(super) fn intern_projected(
     work: &crate::NativeMaterializationWork,
 ) -> Result<u64, NativeMountError> {
     fuse_item(work)?;
-    if let Some(inode) = inode_by_file.get(&lookup.node.file_id).copied() {
+    if let Some(inode) = inode_by_file
+        .get(&lookup.node.file_id)
+        .map(|(inode, _)| *inode)
+    {
         let needs_binding = by_inode
             .get(&inode)
             .ok_or(libc::ESTALE)?
@@ -557,6 +528,11 @@ pub(super) fn intern_projected(
         work,
     )?;
     let entry = InodeEntry::new(path, *lookup, stamp, u64::from(lookup_reference), work)?;
+    let storage = work.claim(
+        std::mem::size_of::<(crate::FileId, (u64, crate::NativeAllocation))>() as u64,
+        1,
+        crate::WorkCounters::UNCHARGED,
+    )?;
     by_inode
         .try_reserve(1)
         .map_err(NativeMountError::Allocation)?;
@@ -570,7 +546,7 @@ pub(super) fn intern_projected(
         unbind(by_inode, inode_by_file, previous, &key, work)?;
     }
     inode_by_path.insert(key, inode);
-    inode_by_file.insert(lookup.node.file_id, inode);
+    inode_by_file.insert(lookup.node.file_id, (inode, storage));
     by_inode.insert(inode, entry);
     *next_inode = following;
     Ok(inode)

@@ -185,7 +185,7 @@ impl ExecutionJournal for JournalSpy {
 )]
 async fn portable_read_replay_checks_original_source_authority_before_journal_io() -> Result<()> {
     let provider = ProviderRef::new("file-replay".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let filesystem = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent = AgentId::from_bytes([81; 16]);
     let volume = VolumeRef::new(
         provider,
@@ -237,7 +237,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     tool.executor = executor.clone();
     let definition = tool.definition.clone();
     let mut tools = ToolRegistry::default();
-    tools.register(tool)?;
+    tools.register((tool, None), &mut None, None)?;
     let mutations = [
         (
             files::write_file()?,
@@ -262,7 +262,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         if index == 0 {
             tool.executor = write_executor.clone();
         }
-        tools.register(tool)?;
+        tools.register((tool, None), &mut None, None)?;
     }
     let mut bounded_text = [
         (
@@ -298,7 +298,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             reconciliations: AtomicUsize::new(0),
         });
         tool.executor = executor.clone();
-        tools.register(tool.clone())?;
+        tools.register((tool.clone(), None), &mut None, None)?;
         bounded_executors.push(executor);
     }
     let mut retained_text_results = Vec::new();

@@ -78,7 +78,7 @@ fn agent_owned_read_delegation_is_independent_of_volume_role() -> Result<()> {
 )]
 async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> Result<()> {
     let provider = ProviderRef::new("skills".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
     let foreign_agent = AgentId::from_bytes([2; 16]);
     let root = VolumeRef::new(

@@ -46,7 +46,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         Fs::local(options.clone())
             .await
             .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?,
-        provider.clone(),
+        &provider, None,
     )?;
     host.create_volume(&volume).await?;
     let admitted = host
@@ -170,7 +170,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
     fs.collect_local_garbage(None, &CancellationToken::new())
         .await
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
-    let reopened = FilesystemHost::new(fs, provider)?;
+    let reopened = FilesystemHost::new(fs, &provider, None)?;
     assert_eq!(
         reopened.read_content(&admitted, &read, 64, None).await?.as_ref(),
         b"first"

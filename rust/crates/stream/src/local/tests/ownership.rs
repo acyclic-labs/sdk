@@ -5,7 +5,7 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
 -> Result<(), Box<dyn std::error::Error>> {
     use tracing::instrument::WithSubscriber as _;
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::test_support::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -82,7 +82,7 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     use tracing::instrument::WithSubscriber as _;
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::test_support::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
     let runtime = tokio::runtime::Builder::new_multi_thread()

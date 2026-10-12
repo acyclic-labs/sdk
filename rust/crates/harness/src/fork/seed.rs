@@ -1,5 +1,11 @@
 //! seed fork protocol.
 use super::*;
+pub(crate) fn copy_seed(source: &ForkSeed, quota: &mut CodecQuota<'_, '_>) -> Result<ForkSeed> {
+    crate::core::copy_owned(source, quota, |source, work| {
+        source.validate(work)?;
+        crate::core::owned_seed(source)
+    })
+}
 /// Immutable, validated child environment published by the parent aggregate.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,17 +59,23 @@ pub struct ForkSeed {
 }
 
 impl ForkSeed {
-
-    pub(in crate::fork) fn allows_manifest(&self, manifest: &FileRef, reader: AgentId,
-        work: &mut CodecQuota<'_, '_>) -> Result<bool> {
+    pub(in crate::fork) fn allows_manifest(
+        &self,
+        manifest: &FileRef,
+        reader: AgentId,
+        work: &mut CodecQuota<'_, '_>,
+    ) -> Result<bool> {
         let volume = manifest.volume();
-        if volume.class() == VolumeClass::AgentPrivate && volume.owner() == &VolumeOwner::Agent(reader) {
+        if volume.class() == VolumeClass::AgentPrivate
+            && volume.owner() == &VolumeOwner::Agent(reader)
+        {
             return Ok(true);
         }
         if volume.class() == VolumeClass::Project {
             for resource in &self.resources {
                 work.checkpoint()?;
-                if matches!(&resource.revision, ResourceRevision::Project { volume: selected, .. } if selected == volume) {
+                if matches!(&resource.revision, ResourceRevision::Project { volume: selected, .. } if selected == volume)
+                {
                     return Ok(true);
                 }
             }
@@ -71,15 +83,23 @@ impl ForkSeed {
         if volume.class() == VolumeClass::SessionShared {
             for grant in &self.shared_grants {
                 work.checkpoint()?;
-                if grant.volume == *volume && grant.child_agent == reader && grant.operations.contains(&VolumeOperation::Read) {
+                if grant.volume == *volume
+                    && grant.child_agent == reader
+                    && grant.operations.contains(&VolumeOperation::Read)
+                {
                     return Ok(true);
                 }
             }
         }
         for grant in &self.reference_grants {
             work.checkpoint()?;
-            if grant.reader == reader && grant.file == *manifest
-                && grant.attachment_manifest.as_ref().is_none_or(|from| from == manifest) {
+            if grant.reader == reader
+                && grant.file == *manifest
+                && grant
+                    .attachment_manifest
+                    .as_ref()
+                    .is_none_or(|from| from == manifest)
+            {
                 return Ok(true);
             }
         }
@@ -87,7 +107,10 @@ impl ForkSeed {
     }
 
     /// Validates pinned scratch lineage, singleton selections, and resource references.
-    #[allow(clippy::too_many_lines, reason = "validates the complete fork seed contract")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "validates the complete fork seed contract"
+    )]
     pub fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -119,7 +142,9 @@ impl ForkSeed {
             return Err(work.invalid("fork attached agents are not unique"));
         }
         self.child_private_volume.validate(work.work())?;
-        self.child_private_generation.as_resource().validate(work.work())?;
+        self.child_private_generation
+            .as_resource()
+            .validate(work.work())?;
         if self.child_private_volume.class() != VolumeClass::AgentPrivate
             || self.child_private_volume.provider().family() != "filesystem"
             || self.child_private_volume.owner() != &VolumeOwner::Agent(self.child_agent)
@@ -129,20 +154,29 @@ impl ForkSeed {
             return Err(work.invalid("fork private volume is not child owned"));
         }
         validate_child_result_generation(
-            self.child_result_volume.as_ref(), self.child_result_generation.as_ref(),
-            &self.child_private_volume, self.child_agent, work.work())?;
+            self.child_result_volume.as_ref(),
+            self.child_result_generation.as_ref(),
+            &self.child_private_volume,
+            self.child_agent,
+            work.work(),
+        )?;
         if let Some(source) = &self.authorized_source {
             source.validate(work.work())?;
             if source.operation_id != self.operation_id
-                || !self.resources.iter().any(|capture| matches!(
+                || !self.resources.iter().any(|capture| {
+                    matches!(
                     &capture.source,
                     ResourceRevision::Project { volume, generation }
-                        if volume == &source.project && generation == &source.generation))
+                        if volume == &source.project && generation == &source.generation)
+                })
                 || (source.source_task != source.caller_task
                     && (self.inherited_through_sequence != 0 || self.summary.is_some()))
             {
-                return Err(boundary_error(work.work(), crate::wire::ErrorCode::Unauthorized,
-                    "authorized source must select its exact project and history-free cross-task fork"));
+                return Err(boundary_error(
+                    work.work(),
+                    crate::wire::ErrorCode::Unauthorized,
+                    "authorized source must select its exact project and history-free cross-task fork",
+                ));
             }
         }
         let mut history = 0;
@@ -154,8 +188,7 @@ impl ForkSeed {
             work.checkpoint()?;
             resource.validate(work.work())?;
             for revision in [&resource.source, &resource.revision] {
-                crate::contract::validate_trusted_json_byte_bound(revision,
-                    crate::store::default_projection_read_limits().maximum_bytes, work.work())?;
+                crate::contract::json_byte_length(revision, crate::store::default_projection_read_limits().maximum_bytes, work.work()).map(|_| ())?;
             }
             for previous in &self.resources[..index] {
                 work.checkpoint()?;
@@ -194,10 +227,12 @@ impl ForkSeed {
         for (index, omission) in self.omissions.iter().enumerate() {
             work.checkpoint()?;
             omission.validate(work.work())?;
-            crate::contract::validate_trusted_json_byte_bound(&omission.selection.revision,
-                crate::store::default_projection_read_limits().maximum_bytes, work.work())?;
-            for previous in self.resources.iter().map(|capture| &capture.source)
-                .chain(self.omissions[..index].iter().map(|omission| &omission.selection.revision)) {
+            crate::contract::json_byte_length(&omission.selection.revision, crate::store::default_projection_read_limits().maximum_bytes, work.work()).map(|_| ())?;
+            for previous in self.resources.iter().map(|capture| &capture.source).chain(
+                self.omissions[..index]
+                    .iter()
+                    .map(|omission| &omission.selection.revision),
+            ) {
                 work.checkpoint()?;
                 if *previous == omission.selection.revision {
                     return Err(work.invalid("fork selection appears twice"));
@@ -210,17 +245,20 @@ impl ForkSeed {
         for (index, manifest) in self.attachment_manifests.iter().enumerate() {
             work.checkpoint()?;
             manifest.validate(work.work())?;
-            crate::contract::validate_trusted_json_byte_bound(manifest,
-                crate::store::default_projection_read_limits().maximum_bytes, work.work())?;
+            crate::contract::json_byte_length(manifest, crate::store::default_projection_read_limits().maximum_bytes, work.work()).map(|_| ())?;
             manifest_bytes = manifest_bytes
                 .checked_add(manifest.descriptor().byte_length())
                 .ok_or_else(|| work.invalid("fork attachment manifest bytes overflow"))?;
-            if manifest.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json" {
+            if manifest.descriptor().media_type()
+                != "application/vnd.acyclic.harness.attachments+json"
+            {
                 return Err(work.invalid("fork attachment manifest is invalid or duplicated"));
             }
             for previous in &self.attachment_manifests[..index] {
                 work.checkpoint()?;
-                if previous == manifest { return Err(work.invalid("fork attachment manifest is invalid or duplicated")); }
+                if previous == manifest {
+                    return Err(work.invalid("fork attachment manifest is invalid or duplicated"));
+                }
             }
         }
         for grant in &self.reference_grants {
@@ -231,8 +269,14 @@ impl ForkSeed {
                     work.checkpoint()?;
                     selected |= candidate == manifest;
                 }
-                if !selected { return Err(work.invalid("reference grant names an unselected attachment manifest")); }
-                if grant.file != *manifest && !self.allows_manifest(manifest, grant.reader, &mut work)? {
+                if !selected {
+                    return Err(
+                        work.invalid("reference grant names an unselected attachment manifest")
+                    );
+                }
+                if grant.file != *manifest
+                    && !self.allows_manifest(manifest, grant.reader, &mut work)?
+                {
                     return Err(work.invalid("fork omits a manifest file read grant"));
                 }
             }
@@ -263,7 +307,9 @@ impl ForkSeed {
                 work.checkpoint()?;
                 selected |= matches!(&resource.revision, ResourceRevision::SharedVolume(volume) if volume == &grant.volume);
             }
-            if !selected { return Err(work.invalid("shared grant was not selected")); }
+            if !selected {
+                return Err(work.invalid("shared grant was not selected"));
+            }
             for previous in &self.shared_grants[..index] {
                 work.checkpoint()?;
                 if previous.volume == grant.volume && previous.child_agent == grant.child_agent {
@@ -279,7 +325,9 @@ impl ForkSeed {
                     work.checkpoint()?;
                     granted |= grant.volume == *volume && grant.child_agent == self.child_agent;
                 }
-                if !granted { return Err(work.invalid("shared-volume selections need exact child grants")); }
+                if !granted {
+                    return Err(work.invalid("shared-volume selections need exact child grants"));
+                }
             }
         }
         Ok(())
@@ -294,8 +342,7 @@ impl ForkSeed {
             work.checkpoint()?;
             grant.validate(work.work())?;
             for file in std::iter::once(&grant.file).chain(grant.attachment_manifest.iter()) {
-                crate::contract::validate_trusted_json_byte_bound(file,
-                    crate::store::default_projection_read_limits().maximum_bytes, work.work())?;
+                crate::contract::json_byte_length(file, crate::store::default_projection_read_limits().maximum_bytes, work.work()).map(|_| ())?;
             }
             if grant.reader != self.child_agent && !attached.contains(&grant.reader) {
                 return Err(work.invalid("reference reader is not attached to fork"));
@@ -307,13 +354,18 @@ impl ForkSeed {
             }
             for previous in &self.reference_grants[..index] {
                 work.checkpoint()?;
-                if previous == grant { return Err(work.invalid("reference grant appears twice")); }
+                if previous == grant {
+                    return Err(work.invalid("reference grant appears twice"));
+                }
             }
         }
         Ok(())
     }
 
-    pub(in crate::fork) fn validate_inherited_context(&self, work: &mut CodecQuota<'_, '_>) -> Result<()> {
+    pub(in crate::fork) fn validate_inherited_context(
+        &self,
+        work: &mut CodecQuota<'_, '_>,
+    ) -> Result<()> {
         if let Some(summary) = &self.summary {
             summary.validate_with_work(&self.child_private_volume, work.work())?;
             if self.inherited_through_sequence == 0 {
@@ -321,22 +373,24 @@ impl ForkSeed {
             }
         }
         let prefix = if self.inherited_through_sequence > 0 {
-            Some(self
-                .inherited_context
-                .first()
-                .filter(|file| {
-                    file.path() == ".system/inherited-conversation/prefix.json"
-                        && file.descriptor().media_type()
-                            == "application/vnd.acyclic.harness.inherited-conversation+json"
-                })
-                .ok_or_else(|| {
-                    work.invalid("inherited context omitted its selected prefix")
-                })?)
+            Some(
+                self.inherited_context
+                    .first()
+                    .filter(|file| {
+                        file.path() == ".system/inherited-conversation/prefix.json"
+                            && file.descriptor().media_type()
+                                == "application/vnd.acyclic.harness.inherited-conversation+json"
+                    })
+                    .ok_or_else(|| work.invalid("inherited context omitted its selected prefix"))?,
+            )
         } else {
             None
         };
-        let expected = prefix.into_iter()
-            .chain(self.summary.iter().flat_map(SummaryForkCapture::inherited_files));
+        let expected = prefix.into_iter().chain(
+            self.summary
+                .iter()
+                .flat_map(SummaryForkCapture::inherited_files),
+        );
         if !expected.eq(self.inherited_context.iter()) {
             return Err(work.invalid("inherited context does not match its selected capture"));
         }
@@ -413,5 +467,4 @@ impl ForkSeed {
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
         crate::wire_codec::CodecQuota::produce(work, |quota| copy_seed(self, quota))
     }
-
 }

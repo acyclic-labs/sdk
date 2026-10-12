@@ -79,8 +79,7 @@ fn owned_child_refuses_symlinks_and_nonleaf_names() -> Result<(), Box<dyn std::e
     }
     Ok(())
 }
-const ACCOUNTING_STATE_BYTES: u64 =
-    crate::materializer::NativeMaterializationWork::accounting_state_bytes();
+const ACCOUNTING_STATE_BYTES: u64 = NativeMaterializationWork::accounting_state_bytes();
 #[cfg(unix)]
 #[test]
 fn held_ancestry_survives_aliases_and_lexical_parent_replacement()
@@ -115,18 +114,18 @@ fn held_ancestry_survives_aliases_and_lexical_parent_replacement()
     Ok(())
 }
 struct CancelAfterName<'a> {
-    work: &'a crate::materializer::NativeMaterializationWork,
+    work: &'a NativeMaterializationWork,
     cancellation: &'a crate::CancellationToken,
 }
 impl NativeHostWork for CancelAfterName<'_> {
-    type Error = crate::materializer::NativeTreeMaterializationError;
-    type Allocation = crate::materializer::NativeAllocation;
-    type CleanupWrite = crate::materializer::NativeCleanupWrite;
+    type Error = NativeTreeMaterializationError;
+    type Allocation = NativeAllocation;
+    type CleanupWrite = NativeCleanupWrite;
     fn io_error_kind(error: &Self::Error) -> Option<io::ErrorKind> {
-        <&crate::materializer::NativeMaterializationWork as NativeHostWork>::io_error_kind(error)
+        <&NativeMaterializationWork as NativeHostWork>::io_error_kind(error)
     }
     fn allocation_failed(error: std::collections::TryReserveError) -> Self::Error {
-        crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)
+        NativeTreeMaterializationError::AllocationFailed(error)
     }
     fn check(&self) -> Result<(), Self::Error> {
         self.work.admit(WorkCounters::UNCHARGED)
@@ -145,15 +144,11 @@ impl NativeHostWork for CancelAfterName<'_> {
         self.work.charge(delta)
     }
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> {
-        self.work.claim(
-            bytes,
-            u64::from((bytes) != 0),
-            crate::WorkCounters::UNCHARGED,
-        )
+        self.work
+            .claim(bytes, u64::from((bytes) != 0), WorkCounters::UNCHARGED)
     }
     fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
-        self.work
-            .claim(logical_max, 0, crate::WorkCounters::UNCHARGED)
+        self.work.claim(logical_max, 0, WorkCounters::UNCHARGED)
     }
     fn reconcile_allocation(
         &mut self,
@@ -190,8 +185,7 @@ fn cancellation_after_native_name_copy_releases_it_without_consuming_the_record(
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes =
         ACCOUNTING_STATE_BYTES + HostStatReader::BUFFER_BYTES as u64 + 32;
-    let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation)
-        .map_err(|(cause, _)| cause)?;
+    let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
     let mut boundary = CancelAfterName {
         work: &work,
         cancellation: &cancellation,
@@ -203,7 +197,7 @@ fn cancellation_after_native_name_copy_releases_it_without_consuming_the_record(
     let failure = reader.next_wide(&mut boundary);
     assert!(matches!(
         failure,
-        Err(crate::materializer::NativeTreeMaterializationError::Cancelled)
+        Err(NativeTreeMaterializationError::Cancelled)
     ));
     assert_eq!(
         materialization_live_bytes(&work)?,
@@ -215,17 +209,17 @@ fn cancellation_after_native_name_copy_releases_it_without_consuming_the_record(
     let repeated = reader.next_wide(&mut boundary);
     assert!(matches!(
         repeated,
-        Err(crate::materializer::NativeTreeMaterializationError::Cancelled)
+        Err(NativeTreeMaterializationError::Cancelled)
     ));
     drop((reader, allocation));
     assert_eq!(materialization_live_bytes(&work)?, ACCOUNTING_STATE_BYTES);
     Ok(())
 }
 fn materialization_live_bytes(
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<u64, crate::materializer::NativeTreeMaterializationError> {
+    work: &NativeMaterializationWork,
+) -> Result<u64, NativeTreeMaterializationError> {
     let (bytes, _empty_allocation) = work.allocations(|ledger, _, _, _| {
-        Ok::<_, crate::materializer::NativeTreeMaterializationError>(ledger.live_bytes())
+        Ok::<_, NativeTreeMaterializationError>(ledger.live_bytes())
     })?;
     Ok(bytes)
 }
@@ -238,11 +232,8 @@ fn held_scanners_keep_independent_cursors_and_scoped_native_allocations()
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes =
         ACCOUNTING_STATE_BYTES + 2 * HostStatReader::BUFFER_BYTES as u64 + 64;
-    let work = crate::materializer::NativeMaterializationWork::new(
-        budget,
-        &crate::CancellationToken::new(),
-    )
-    .map_err(|(cause, _)| cause)?;
+    let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new())
+        .map_err(|(cause, _)| cause)?;
     let (mut first, first_allocation) = read_dir_held(&directory, &mut &work)?;
     let (mut second, second_allocation) = read_dir_held(&directory, &mut &work)?;
     assert_eq!(
@@ -295,8 +286,7 @@ fn a_record_survives_metadata_admission_failure_without_another_refill()
 -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join("kept"), b"data")?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let mut first = ordinary_work();
     let (mut reader, _) = root.read_dir_stats(Path::new(""), &mut first)?;
     first.budget.backend_read_operations = first.work.backend_read_operations + 1;
