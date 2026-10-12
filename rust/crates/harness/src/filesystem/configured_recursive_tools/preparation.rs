@@ -90,7 +90,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             return Err(failure(io, ErrorCode::Unauthorized, "checkpoint head differs from immutable canonical Stream event"));
         }
         drop(head);
-        Reducer::restore_with_work(snapshot, verifier, SchemaRegistry::new(), &mut observer)
+        Reducer::restore(snapshot, verifier, SchemaRegistry::new(), &mut observer)
     }
 }
 use super::*;
