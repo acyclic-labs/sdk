@@ -105,15 +105,11 @@ impl Fixture {
             VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
         )?;
         self.host.create_volume(&private).await?;
-        let scope = self.issuer.root_for_agent(
-            AgentId::from_bytes([1; 16]),
-            "journal",
-            Capabilities::new([
+        let scope = self.issuer.issue("journal", &Capabilities::new([
                 private.capability(VolumeOperation::Read)?,
                 private.capability(VolumeOperation::Write)?,
                 self.volume.capability(VolumeOperation::Read)?,
-            ]),
-        );
+            ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
         Ok((private, scope))
     }
 
@@ -152,15 +148,11 @@ impl Fixture {
                 id: "test".into(),
             },
         );
-        let scope = issuer.root_for_agent(
-            agent,
-            "owner",
-            Capabilities::new([
+        let scope = issuer.issue("owner", &Capabilities::new([
                 volume.capability(VolumeOperation::Write)?,
                 volume.capability(VolumeOperation::Read)?,
                 volume.directory_read_capability("")?,
-            ]),
-        );
+            ]), Some(agent), None, &mut None).expect("scope proof");
         host.create_volume(&volume).await?;
         let writer =
             ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
@@ -349,11 +341,7 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
         Err(Error::Invalid(_))
     ));
     declaration.limits.entries = 64;
-    let scope = fixture.issuer.root_for_agent(
-        AgentId::from_bytes([1; 16]),
-        "denied",
-        Capabilities::default(),
-    );
+    let scope = fixture.issuer.issue("denied", &Capabilities::default(), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
     let denied = FilesystemContentVerifier::new(
         fixture.host.clone(),
         &fixture.issuer.verifier(&mut None).expect("verifier copy"),

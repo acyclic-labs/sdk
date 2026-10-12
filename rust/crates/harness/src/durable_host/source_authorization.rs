@@ -94,7 +94,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             policy_scope: Scope::from_wire(String::new(), Capabilities::default(), String::new(), None, None, [0;32]),
         };
         let label = authorization.scope_label(&mut None)?;
-        authorization.policy_scope = issuer.root(label.clone(), Capabilities::new([label]));
+        authorization.policy_scope = issuer.issue(&label, &Capabilities::new([label]), None, None, &mut None).expect("scope proof");
         ProjectSourceReadHandle::seal(authorization, &self.host.verifier)
     }
 
@@ -235,7 +235,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let capabilities = Capabilities::new([capability]);
             observer.as_deref_mut().expect("original source observer")
                 .retain_owned(std::mem::size_of::<String>() as u64)?;
-            authorization.policy_scope = issuer.root_with_work(&label, &capabilities, &mut observer)?;
+            authorization.policy_scope = issuer.issue(&label, &capabilities, None, None, &mut observer)?;
             let capabilities_bytes = capabilities.logical_owned_bytes()?;
             drop(capabilities);
             observer.as_deref_mut().expect("original source observer").release_owned(capabilities_bytes)?;

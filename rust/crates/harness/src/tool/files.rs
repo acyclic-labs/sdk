@@ -721,7 +721,7 @@ pub(super) mod native {
     pub(in crate::tool) fn bound<T: Serialize>(value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let diagnostic_bytes = crate::contract::sdk_json_diagnostic_bytes();
-        io.claim(diagnostic_bytes)?;
+        io.retain_owned(diagnostic_bytes)?;
         let custody = io.into_native_custody(diagnostic_bytes)?;
         struct Counter<'a> {
             remaining: u64,

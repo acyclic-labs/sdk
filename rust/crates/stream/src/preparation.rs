@@ -7,7 +7,7 @@ use crate::{
     CommitMutation, CommitRequest, CommittedAppend, CommittedEnvelope,
     CommittedFork, CommittedMutation, ForkRequest, Record, StreamError, StreamPath,
 };
-use crate::memory::{MemoryObserver, MemoryOutput, MemoryResult};
+use crate::memory::{MemoryObserver, MemoryOutput, MemoryResult, absorb};
 
 pub(crate) fn fork_cut(
     request: &ForkRequest,
@@ -153,7 +153,7 @@ pub(crate) fn mutations(
         let committed = match mutation {
             CommitMutation::Append { path, records: bodies } => {
                 let append = append_fact(path, tail(path).unwrap_or(0), bodies, commit_id, committed_at_micros, observer)?;
-                output.allocation.absorb(append.allocation)?;
+                absorb(&mut output.allocation, append.allocation)?;
                 CommittedMutation::Append(append.value)
             }
             CommitMutation::Fork { source, destination, at_tail, records: bodies } => {
@@ -163,7 +163,7 @@ pub(crate) fn mutations(
                     *at_tail, bodies, commit_id, committed_at_micros, observer,
                 )?;
                 let tail = at_tail + records.value.len() as u64;
-                output.allocation.absorb(records.allocation)?;
+                absorb(&mut output.allocation, records.allocation)?;
                 CommittedMutation::Fork(CommittedFork {
                     source: observer.retain_path(source)?, destination: observer.retain_path(destination)?,
                     forked_at: *at_tail, tail, records: records.value,

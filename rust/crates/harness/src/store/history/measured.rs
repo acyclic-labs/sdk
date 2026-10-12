@@ -16,7 +16,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<(HistoryCursor, acyclic_fs::NativeAllocation)> {
         let mut native_io = super::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let cursor = self.pin_with_work(after_revision, Some(&mut native_io)).await?;
+        let cursor = self.pin(after_revision, Some(&mut native_io)).await?;
         Ok((cursor, native_io.into_custody()))
     }
 
@@ -64,7 +64,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<(Option<crate::core::EffectState>, acyclic_fs::NativeAllocation)> {
         let mut native_io = super::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let state = self.effect_with_retained_quota(
+        let state = self.effect(
             cursor, effect, limits, Some(&mut native_io),
         ).await?.map(|(state, _)| state);
         native_io.return_staged_output()?;
@@ -81,7 +81,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         let mut work = HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            self.pin_with_work(after_revision, Some(&mut work)).await
+            self.pin(after_revision, Some(&mut work)).await
         }.await;
         work.finish(result)
     }

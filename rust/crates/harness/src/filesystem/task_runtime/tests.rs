@@ -147,7 +147,7 @@ impl ResumableMachine for Machine {
             let encoded_hold;
             let encoded = io.encode(&state["command"], io.remaining()?.bytes_encoded, false)?;
             encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-            let command = io.decode_preparation::<WorkflowCommand>(&encoded, crate::wire::ErrorCode::Storage)?.into_retained();
+            let command = crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowCommand>(&encoded, crate::wire::ErrorCode::Storage)?);
             drop(encoded);
             drop(encoded_hold);
             command
@@ -195,14 +195,14 @@ impl Fixture {
             kind: AggregateKind::Task,
             id: "deadline-owner".into(),
         });
-        let signed = issuer.root_for_agent(agent, "owner", Capabilities::new([
+        let signed = issuer.issue("owner", &Capabilities::new([
             "operation:declare".to_owned(), "operation:observe".to_owned(),
             "operation:cancel".to_owned(), "task:spawn:test.deadline@1".to_owned(),
             "tool:call:test.deadline".to_owned(), "model:generate".to_owned(),
             "mail:send".to_owned(), "mail:read".to_owned(),
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
-        ]));
+        ]), Some(agent), None, &mut None).expect("scope proof");
         let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?
             .with_run_limits(TaskRunLimits { deadline_epoch_ms: Some(20), ..TaskRunLimits::default() })?;
         let machine = Arc::new(Machine {
@@ -267,7 +267,7 @@ impl Fixture {
         let operation = OperationId::from_bytes([104; 16]);
         let payloads = FilesystemSchedulerPayloadStore::new(self.filesystem.clone(), &(self.volume), &self.issuer.verifier(&mut None).expect("verifier copy"), &self.signed, 65_536, None)?;
         let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(&command)?).await?;
-        let definition = self.tasks.get_version::<Value, Value>("test.deadline", "1")?;
+        let definition = self.tasks.get_version::<Value, Value>("test.deadline", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         let input = json!({"command":WorkflowCommand {
             operation_id: OperationId::from_bytes([105; 16]),
             kind: kind.into(),
@@ -498,7 +498,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         let runtime = fixture.runtime().await?;
         let lease = fixture.admit(&runtime).await?;
         let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-        runtime.task_host().start_task(&lease).await?;
+        runtime.task_host().start_task(&lease, None).await?;
         let fence = LeaseFence::from(&lease.reservation);
         let turn = OperationId::from_bytes([106; 16]);
         let model = Model::new("synthetic", "deadline", "1", Value::Null)?;
@@ -592,7 +592,7 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
     let lease = fixture.admit(&runtime).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     let mut session = runtime.open_task(task, fence).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
@@ -999,7 +999,7 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;
-    runtime.task_host().start_task_with_native_work(&lease, &work).await?;
+    runtime.task_host().start_task(&lease, Some(&work)).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
     let shared = runtime.task_context_with_native_work(task, &fence, &work).await?;

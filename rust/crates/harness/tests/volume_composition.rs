@@ -34,7 +34,7 @@ fn agent_owned_read_delegation_is_independent_of_volume_role() -> Result<()> {
             VolumeOwner::Agent(owner),
         )?;
         let capability = volume.capability(VolumeOperation::Read)?;
-        let scope = issuer.root_for_agent(owner, "owner", Capabilities::new([capability.clone()]));
+        let scope = issuer.issue("owner", &Capabilities::new([capability.clone()]), Some(owner), None, &mut None).expect("scope proof");
         let delegated = issuer
             .delegate_private_directory_read(&scope, reader, "reader", &volume, "selected")?;
         assert!(
@@ -50,12 +50,8 @@ fn agent_owned_read_delegation_is_independent_of_volume_role() -> Result<()> {
             &issuer.verifier(&mut None).expect("verifier copy"), &delegated, &volume, "outside",
         ).is_err());
         for unauthorized in [
-            issuer.root_for_agent(reader, "foreign", Capabilities::new([capability])),
-            issuer.root_for_agent(
-                owner,
-                "no-read",
-                Capabilities::new(std::iter::empty::<String>()),
-            ),
+            issuer.issue("foreign", &Capabilities::new([capability]), Some(reader), None, &mut None).expect("scope proof"),
+            issuer.issue("no-read", &Capabilities::new(std::iter::empty::<String>()), Some(owner), None, &mut None).expect("scope proof"),
         ] {
             assert!(
                 issuer
@@ -109,24 +105,16 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
             id: "session".into(),
         },
     );
-    let setup = issuer.root_for_agent(
-        agent,
-        "setup",
-        Capabilities::new([
+    let setup = issuer.issue("setup", &Capabilities::new([
             root.capability(VolumeOperation::Write)?,
             builtins.capability(VolumeOperation::Write)?,
-        ]),
-    );
-    let scope = issuer.root_for_agent(
-        agent,
-        "session",
-        Capabilities::new([
+        ]), Some(agent), None, &mut None).expect("scope proof");
+    let scope = issuer.issue("session", &Capabilities::new([
             root.capability(VolumeOperation::Read)?,
             skills.capability(VolumeOperation::Read)?,
             skills.capability(VolumeOperation::Write)?,
             builtins.capability(VolumeOperation::Read)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     host.create_volume(&root).await?;
     host.create_volume(&builtins).await?;
     let root_writer =
@@ -188,11 +176,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
     assert!(
         ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &root, VolumeOperation::Write).is_err()
     );
-    let foreign = issuer.root_for_agent(
-        foreign_agent,
-        "foreign",
-        Capabilities::new([skills.capability(VolumeOperation::Write)?]),
-    );
+    let foreign = issuer.issue("foreign", &Capabilities::new([skills.capability(VolumeOperation::Write)?]), Some(foreign_agent), None, &mut None).expect("scope proof");
     assert!(
         ContentGrant::verify(
             &issuer.verifier(&mut None).expect("verifier copy"),
@@ -231,11 +215,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
     let selected = host.resolve(&skills_workspace).await?;
     let skills_reader =
         ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &skills, VolumeOperation::Read)?;
-    let approved = issuer.root_for_agent(
-        agent,
-        "approved-writeback",
-        Capabilities::new([root.capability(VolumeOperation::Write)?]),
-    );
+    let approved = issuer.issue("approved-writeback", &Capabilities::new([root.capability(VolumeOperation::Write)?]), Some(agent), None, &mut None).expect("scope proof");
     let destination_writer =
         ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &approved, &root, VolumeOperation::Write)?;
     let plan = host

@@ -71,10 +71,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         VolumeOwner::Agent(child_agent),
     )?;
     let issuer = AuthorityIssuer::new("local-fork-e2e", [7; 32], parent.clone());
-    let scope = issuer.root_for_agent(
-        parent_agent,
-        "parent",
-        Capabilities::new([
+    let scope = issuer.issue("parent", &Capabilities::new([
             "conversation:bind".to_owned(),
             "conversation:append".to_owned(),
             "fork:publish".to_owned(),
@@ -84,8 +81,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             child_project.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(parent_agent), None, &mut None).expect("scope proof");
     let (message_file, attachment_file, inherited_file, merged_generation, attachment_capability) = {
         let host = Arc::new(FilesystemHost::new(
             Fs::local(fs_options.clone())
@@ -259,7 +255,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             .find(|grant| grant.reader == child_agent && grant.file == attachment_file)
             .ok_or_else(|| Error::Invalid("child attachment grant is missing".into()))?
             .capability()?;
-        aggregate.publish_fork_report(report, scope.clone()).await?;
+        aggregate.publish_fork_report(report, scope.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
         let child_head = host
             .resolve(&workspace_ref(
                 provider.clone(),
@@ -400,7 +396,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 maximum_events: 2,
                 maximum_bytes: 131_072,
             },
-        )
+         &mut None)
         .await?;
     assert_eq!(messages.as_slice(), conversation.messages());
     let before_merge = HistoryCursor {
@@ -423,7 +419,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                     maximum_events: 1,
                     maximum_bytes: 65_536,
                 },
-            )
+             &mut None)
             .await
             .is_err()
     );
@@ -442,11 +438,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         &[137, 80, 78, 71]
     );
     let child_issuer = AuthorityIssuer::new("local-fork-e2e", [7; 32], child);
-    let child_scope = child_issuer.root_for_agent(
-        child_agent,
-        "child",
-        Capabilities::new([child_private.capability(VolumeOperation::Read)?]),
-    );
+    let child_scope = child_issuer.issue("child", &Capabilities::new([child_private.capability(VolumeOperation::Read)?]), Some(child_agent), None, &mut None).expect("scope proof");
     let child_read = ContentGrant::verify(
         &child_issuer.verifier(&mut None).expect("verifier copy"),
         &child_scope,
@@ -471,14 +463,10 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
     assert!(
         ContentGrant::verify_read(&child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, &message_file).is_err()
     );
-    let child_scope_with_reference = child_issuer.root_for_agent(
-        child_agent,
-        "child-reference-reader",
-        Capabilities::new([
+    let child_scope_with_reference = child_issuer.issue("child-reference-reader", &Capabilities::new([
             child_private.capability(VolumeOperation::Read)?,
             attachment_capability.clone(),
-        ]),
-    );
+        ]), Some(child_agent), None, &mut None).expect("scope proof");
     let inherited_reference_read = ContentGrant::verify_read(
         &child_issuer.verifier(&mut None).expect("verifier copy"),
         &child_scope_with_reference,

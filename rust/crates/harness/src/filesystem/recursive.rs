@@ -227,7 +227,7 @@ where
     }
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
     let history = crate::store::HistoryReader::new(stream, parent.reducer().authority(), verifier.clone())?
-        .fork_history(parent.reducer(), request.preparation.inherited_through_sequence, config.history_limits).await?;
+        .fork_history(parent.reducer(), request.preparation.inherited_through_sequence, config.history_limits, &mut None).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
     let mut preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().clone_with_work(&mut None)?, verifier, signed,
         source.project, stream_provider, resolver)?.with_history_context(history)?;
@@ -271,7 +271,7 @@ where
     }
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
     let history = crate::store::HistoryReader::new(stream, parent.authority(), verifier.clone())?
-        .fork_history(parent, request.preparation.inherited_through_sequence, history_limits).await?;
+        .fork_history(parent, request.preparation.inherited_through_sequence, history_limits, &mut None).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
     let mut preparer = FilesystemForkPreparer::new(filesystem, parent.clone_with_work(&mut None)?, verifier, signed,
         caller_project, stream_provider, resolver)?.with_history_context(history)?;
@@ -324,7 +324,7 @@ where
     let retained_history = {
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        reader.0.fork_history_with_work(
+        reader.0.fork_history(
             &parent, request.0.preparation.inherited_through_sequence, history_limits, &mut observer,
         ).await?
     };
@@ -420,8 +420,8 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         child.grants = Capabilities::new(grants);
     }
-    let resources = preparer.creation_resources(fork, io)?;
-    child.resource_proofs = preparer.creation_proofs(fork, preparation_task, io)?;
+    let (resources, proofs) = preparer.creation_allocations(fork, preparation_task, io)?;
+    child.resource_proofs = proofs;
     recursive_observe(io, |work| child.validate_with_work(work))?;
     let provider = match io {
         Some(io) => fork.preparation.child_project_volume.provider().clone_with_io(io)?,

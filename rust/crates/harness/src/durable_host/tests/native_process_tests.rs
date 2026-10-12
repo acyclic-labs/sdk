@@ -61,11 +61,7 @@ async fn result_storage_cannot_mutate_a_pinned_native_view() -> Result<()> {
 #[tokio::test]
 async fn readonly_schema_storage_does_not_require_result_write_authority() -> Result<()> {
     let mut fixture = process_fixture("write", true).await?;
-    let setup = fixture.issuer.root_for_agent(
-        AgentId::from_bytes([61; 16]),
-        "schema-setup",
-        Capabilities::new([fixture.source.capability(VolumeOperation::Write)?]),
-    );
+    let setup = fixture.issuer.issue("schema-setup", &Capabilities::new([fixture.source.capability(VolumeOperation::Write)?]), Some(AgentId::from_bytes([61; 16])), None, &mut None).expect("scope proof");
     let grant = ContentGrant::verify(
         &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &setup,
@@ -1034,7 +1030,7 @@ where
                 .collect::<Result<Vec<_>>>()?,
         ),
     );
-    let scope = issuer.root_for_agent(agent, "owner", grants.clone());
+    let scope = issuer.issue("owner", &grants, Some(agent), None, &mut None).expect("scope proof");
     let root_births = if mode == "mixed-issued-view" {
         let original = original_work.ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
@@ -1091,7 +1087,7 @@ where
     else {
         return Err(Error::NotFound("native lease".into()));
     };
-    task.task_host().start_task(&lease).await?;
+    task.task_host().start_task(&lease, None).await?;
     let owner_fence = crate::scheduler::LeaseFence::from(&lease.reservation);
     let owner = match original_work {
         Some(work) => task.task_host().journal_owner_with_native_work(
@@ -1128,12 +1124,9 @@ where
             scope: scope.clone(),
             causal_parent: None,
             action: crate::core::Action::BindConversation { agent },
-        }).await?;
+        }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     }
-    let setup_scope = issuer.root_for_agent(
-        agent,
-        "setup",
-        Capabilities::new(
+    let setup_scope = issuer.issue("setup", &Capabilities::new(
             [
                 source.capability(VolumeOperation::Write)?,
                 auxiliary.capability(VolumeOperation::Write)?,
@@ -1145,8 +1138,7 @@ where
                     .map(|volume| volume.capability(VolumeOperation::Write))
                     .collect::<Result<Vec<_>>>()?,
             ),
-        ),
-    );
+        ), Some(agent), None, &mut None).expect("scope proof");
     let setup_grant = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &setup_scope,
@@ -1366,9 +1358,7 @@ where
                 let native_source = crate::filesystem::FsRootNativeSource::from_lazy(
                     Arc::clone(&lazy), work,
                 )?;
-                let creator = crate::filesystem::FilesystemResourceCreationProvider::new_with_native_work(
-                    Arc::clone(&files), &issuer, work,
-                )?;
+                let creator = crate::filesystem::FilesystemResourceCreationProvider::new(Arc::clone(&files), &issuer, Some(work))?;
                 let (config, operation, initial_generation, _, _) =
                     root_births.expect("mixed Project was physically created through its original operation");
                 let protected = creator.protect_root_bootstrap_with_native_work(
@@ -1824,7 +1814,7 @@ async fn preparation_fixture_on<P: StreamProvider + 'static>(
     let crate::distributed::WorkPull::Claimed(lease) = task.task_host().pull_work(&crate::distributed::Worker {
         id: "preparation-worker".into(), available: Default::default(), labels: BTreeMap::new(),
     }).await? else { return Err(Error::NotFound("native preparation lease".into())); };
-    task.task_host().start_task(&lease).await?;
+    task.task_host().start_task(&lease, None).await?;
     let owner = Arc::new(task.task_host().journal_owner(
         TaskId::from_bytes([53; 16]), crate::scheduler::LeaseFence::from(&lease.reservation),
     ).await?);

@@ -274,7 +274,7 @@ where
                 scope: self.scope.clone(),
                 causal_parent: None,
                 action,
-            }, None, &mut None)
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         Ok(())
     }
