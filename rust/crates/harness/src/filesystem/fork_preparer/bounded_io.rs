@@ -1781,8 +1781,8 @@ where
                 }
             }
         }
-        return match transaction.commit_with_permit_guarded_with_native_work(
-            acyclic_fs::PublicationPermit::Unrestricted, original, &io.cancellation,
+        return match transaction.commit_with_native_work(
+            None, acyclic_fs::PublicationPermit::Unrestricted, original, &io.cancellation,
             before_publication,
         ).await? {
             acyclic_fs::TransactionCommit::Committed(generation)

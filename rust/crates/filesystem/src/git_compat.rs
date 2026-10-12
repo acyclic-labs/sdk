@@ -4397,7 +4397,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
         if child.id() != expected_child {
             return Err(GitCaptureError::Conflict);
         }
-        let initial = child.generation(initial_generation).await?;
+        let initial = child.generation(initial_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         if initial.parents().await?.as_slice() != [parent.id()] {
             return Err(GitCaptureError::Conflict);
         }
@@ -4559,11 +4559,9 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let cancellation = CancellationToken::new();
     let checkout = generation
         .workspace
-        .engine_checkout(
+        .checkout(
             GenerationSelector::Exact(generation.id()),
-            CheckoutMode::read_only_pinned(),
-        )
-        .await?;
+            CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let reader = checkout.pinned_reader().map_err(WorkspaceError::engine)?;
     let limits = checkout.volume_config().limits;
     let root = root.unwrap_or("/");
@@ -7146,12 +7144,12 @@ mod tests {
         )
         .await
         .expect("capture");
-        assert!(captured.generation.stat("/target/drop.bin").await.is_err());
+        assert!(captured.generation.stat("/target/drop.bin", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
         assert!(
             captured
                 .generation
-                .stat("/target/nested/keep.txt")
-                .await
+                .stat("/target/nested/keep.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .is_ok()
         );
         assert_eq!(
@@ -7204,8 +7202,8 @@ mod tests {
         )
         .await
         .expect("pinned capture");
-        assert!(captured.generation.stat("/published.txt").await.is_ok());
-        assert!(captured.generation.stat("/later.txt").await.is_err());
+        assert!(captured.generation.stat("/published.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok());
+        assert!(captured.generation.stat("/later.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     }
 
     #[tokio::test]
@@ -7262,7 +7260,7 @@ mod tests {
         assert_eq!(source.file_id, linked.file_id);
         assert_eq!(source.link_count, 2);
         assert_eq!(source.metadata.posix_mode, Some(0o100_640));
-        assert!(captured.generation.stat("/ignored").await.is_err());
+        assert!(captured.generation.stat("/ignored", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     }
 
     #[tokio::test]
@@ -7301,9 +7299,9 @@ mod tests {
         )
         .await
         .expect("capture");
-        assert!(captured.generation.stat("/src/drop.tmp").await.is_err());
-        assert!(captured.generation.stat("/src/keep.tmp").await.is_ok());
-        assert!(captured.generation.stat("/outside.tmp").await.is_ok());
+        assert!(captured.generation.stat("/src/drop.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+        assert!(captured.generation.stat("/src/keep.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok());
+        assert!(captured.generation.stat("/outside.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok());
     }
 
     #[tokio::test]
@@ -7344,7 +7342,7 @@ mod tests {
         assert_eq!(counts.binding_changes, 2);
         assert_eq!(counts.file_changes, 2);
         assert_eq!(
-            workspace.head().await.expect("unchanged head").id(),
+            workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unchanged head").id(),
             after.id()
         );
 
@@ -7448,7 +7446,7 @@ mod tests {
         )
         .await
         .expect("capture");
-        assert!(captured.generation.stat("/build/keep.txt").await.is_err());
+        assert!(captured.generation.stat("/build/keep.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     }
 
     #[tokio::test]
@@ -7502,12 +7500,12 @@ mod tests {
         )
         .await
         .expect("incremental capture");
-        assert!(captured.generation.stat("/src/new.tmp").await.is_err());
+        assert!(captured.generation.stat("/src/new.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
         assert_eq!(
             captured
                 .generation
-                .read("/src/kept.txt", 64)
-                .await
+                .read("/src/kept.txt", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("kept")
                 .as_ref(),
             b"after"
@@ -7838,14 +7836,14 @@ mod tests {
             .await
             .expect("reopen filtered capture from durable lineage");
         reopened
-            .generation(captured.generation.id())
-            .await
+            .generation(captured.generation.id(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("reopen captured generation");
         assert_eq!(
             captured
                 .generation
-                .read("/kept.txt", 64)
-                .await
+                .read("/kept.txt", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("edited file")
                 .as_ref(),
             b"after"
@@ -7853,14 +7851,14 @@ mod tests {
         assert_eq!(
             captured
                 .generation
-                .read("/unchanged.txt", 64)
-                .await
+                .read("/unchanged.txt", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("unchanged file")
                 .as_ref(),
             b"same"
         );
-        assert!(captured.generation.stat("/new.tmp").await.is_err());
-        assert!(captured.generation.stat("/previous.tmp").await.is_err());
+        assert!(captured.generation.stat("/new.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+        assert!(captured.generation.stat("/previous.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
         assert_eq!(
             captured.tracked_paths,
             BTreeSet::from(["kept.txt".to_owned(), "unchanged.txt".to_owned()])
@@ -7913,8 +7911,8 @@ mod tests {
         )
         .await
         .expect("capture");
-        assert!(captured.generation.stat("/src/ignored.txt").await.is_err());
-        assert!(captured.generation.stat("/src/.gitignore").await.is_ok());
+        assert!(captured.generation.stat("/src/ignored.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+        assert!(captured.generation.stat("/src/.gitignore", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok());
     }
 
     #[tokio::test]
@@ -8003,8 +8001,8 @@ mod tests {
         };
         assert_eq!(
             generation
-                .read("/a.txt", 1_024)
-                .await
+                .read("/a.txt", 1_024, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("patched file")
                 .as_ref(),
             b"one\nnew\n"
@@ -8039,13 +8037,13 @@ mod tests {
         };
         assert_eq!(
             generation
-                .read("/nested/new.txt", 1_024)
-                .await
+                .read("/nested/new.txt", 1_024, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("created file")
                 .as_ref(),
             b"made\n"
         );
-        assert!(generation.stat("/gone.txt").await.is_err());
+        assert!(generation.stat("/gone.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
         assert!(matches!(
             parse_unified_patch(b"--- C:/outside\n+++ C:/outside\n@@ -0,0 +1 @@\n+x\n"),
             Err(GitPatchError::Invalid(_))

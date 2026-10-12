@@ -530,7 +530,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
     );
     let source = fs.create_workspace("source").await?;
     source.write_text("/shared", "base").await?;
-    let selected = source.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let selected = source.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let child = source
         .fork(
             "child",
@@ -571,7 +571,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
     }
     assert!(child_records.next().await.is_none());
     assert_eq!(
-        child.read("/shared", 16).await?,
+        child.read("/shared", 16, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         OwnedBytes::from_static(b"base")
     );
 
@@ -584,8 +584,8 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
         .await?;
     assert_eq!(retry.id(), child.id());
     child.write_text("/child-only", "child").await?;
-    assert!(child.read("/source-only", 16).await.is_err());
-    assert!(source.read("/child-only", 16).await.is_err());
+    assert!(child.read("/source-only", 16, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+    assert!(source.read("/child-only", 16, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     Ok(())
 }
 
@@ -608,24 +608,24 @@ async fn distributed_facade_leases_authorize_workspace_publication()
         EmbeddedCapabilities::MEMORY,
     );
     let workspace = fs.create_workspace("leased").await?;
-    let parent = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let parent = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let distributed = DistributedFs::new(fs, ());
     let operations = distributed.operations();
     let lease = operations
         .begin(workspace.id(), parent.id(), "tool", 1, u64::MAX)
         .await?;
-    let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x81; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x81; 16]), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .write_text("/published", "through lease")
         .await?;
     assert!(matches!(
         transaction
-            .commit_with_permit(lease.publication_permit())
-            .await?,
+            .commit(None, lease.publication_permit(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) })
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         acyclic_fs::TransactionCommit::Committed(_)
     ));
     assert_eq!(
-        workspace.read("/published", 32).await?,
+        workspace.read("/published", 32, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         OwnedBytes::from_static(b"through lease")
     );
     Ok(())
@@ -692,7 +692,7 @@ async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
     );
     let source = fs.create_workspace("atomic-source").await?;
     source.write_text("/shared", "base").await?;
-    let selected = source.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let selected = source.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let destination_id = fs.workspace_id("blocked-destination")?;
     let destination_authority = AuthorityId::from_bytes(destination_id.into_bytes());
     let prefix = format!(

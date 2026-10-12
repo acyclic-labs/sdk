@@ -8288,9 +8288,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         let paths = NativePinnedOwned { value, allocation };
         let Some(path) = paths.value.first() else { return Ok(None); };
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
-        let (value, allocation) = crate::workspace::namespace_path_text_with_accounting(
-            path, &mut accounting, cancellation,
-        )?;
+        let (value, allocation) = path.unicode_text_with_accounting(&mut accounting, cancellation)?;
         let text = NativePinnedOwned {
             value,
             allocation: native_pinned_allocation(allocation)

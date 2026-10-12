@@ -934,7 +934,7 @@ mod tests {
         assert_eq!(recovered.parent_workspace_id, Some(parent.id()));
         assert_eq!(
             recovered.initial_generation,
-            child.head().await.expect("head").id()
+            child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("head").id()
         );
     }
 }

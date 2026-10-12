@@ -224,14 +224,12 @@ mod heterogeneous_mount {
         let mut view = crate::MountedView::builder()
             .mount(
                 "/",
-                root.engine_checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned())
-                    .await?,
+                root.checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             )?
             .mount(
                 "/.scratch",
                 scratch
-                    .engine_checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned())
-                    .await?,
+                    .checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             )?
             .build()?;
         let cancellation = CancellationToken::new();
@@ -255,8 +253,8 @@ mod heterogeneous_mount {
             view.validate_rename(&root_path, &scratch_path),
             Err(crate::MountError::CrossVolume)
         );
-        assert_eq!(root.read("/file", 32).await?.as_ref(), b"memory");
-        assert_eq!(scratch.read("/file", 32).await?.as_ref(), b"disk");
+        assert_eq!(root.read("/file", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"memory");
+        assert_eq!(scratch.read("/file", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"disk");
         Ok(())
     }
 }
@@ -11116,9 +11114,9 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             .inherit_paths(paths.clone()),
     ).await?;
     let initial = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    assert_eq!((child.read("/tree/nested/alias", 32).await?).as_ref(), b"linked body");
-    assert!(child.read("/outside-alias", 32).await.is_err());
-    assert!(child.read("/omitted", 32).await.is_err());
+    assert_eq!((child.read("/tree/nested/alias", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?).as_ref(), b"linked body");
+    assert!(child.read("/outside-alias", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+    assert!(child.read("/omitted", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     let file = initial.stat("/tree/nested/file", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let alias = initial.stat("/tree/nested/alias", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(file.file_id, alias.file_id);

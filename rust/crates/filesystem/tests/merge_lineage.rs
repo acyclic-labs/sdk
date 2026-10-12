@@ -479,8 +479,8 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
             .await?,
         JoinOutcome::Applied(_)
     ));
-    assert_eq!(target.read("/source-before-plan", 16).await?.as_ref(), &b"one"[..]);
-    assert!(target.read("/source-after-plan", 16).await.is_err());
+    assert_eq!(target.read("/source-before-plan", 16, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), &b"one"[..]);
+    assert!(target.read("/source-after-plan", 16, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
 
     let stale_plan = source.join_into(&target).plan().await?;
     target.write_text("/target-race", "winner").await?;
@@ -493,7 +493,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
             .await?,
         JoinOutcome::StaleTarget(_)
     ));
-    assert!(target.read("/source-after-plan", 16).await.is_err());
+    assert!(target.read("/source-after-plan", 16, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
 
     let current_plan = source.join_into(&target).plan().await?;
     let options = ApplyOptions {
@@ -508,7 +508,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
         current_plan.apply(options).await?,
         JoinOutcome::AlreadyApplied(_)
     ));
-    assert_eq!(target.read("/source-after-plan", 16).await?.as_ref(), &b"two"[..]);
+    assert_eq!(target.read("/source-after-plan", 16, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), &b"two"[..]);
     Ok(())
 }
 
@@ -569,7 +569,7 @@ async fn forged_merge_candidate_is_rejected_before_publication()
         .await,
         Err(DrivenJoinError::StaleCandidate)
     ));
-    assert_eq!(target.read("/shared", 16).await?.as_ref(), &b"target"[..]);
+    assert_eq!(target.read("/shared", 16, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), &b"target"[..]);
     Ok(())
 }
 

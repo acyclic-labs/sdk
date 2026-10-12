@@ -51,7 +51,7 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
         .await;
     assert!(exhausted.is_err());
     assert!(fs.open_workspace("measured-child").await.is_err());
-    assert_eq!(parent.head().await?.id(), pinned.id());
+    assert_eq!(parent.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned.id());
     let budget = finite_budget()?;
     let created = parent
         .fork_measured(
@@ -74,12 +74,12 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
         .await?;
     retried.work.verify(budget)?;
     assert_eq!(retried.value.id(), created.value.id());
-    assert_eq!(retried.value.head().await?.id(), generation);
+    assert_eq!(retried.value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), generation);
     assert_eq!(
-        retried.value.read("/kept.txt", 32).await?,
+        retried.value.read("/kept.txt", 32, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         OwnedBytes::from_static(b"original")
     );
-    assert_eq!(parent.head().await?.id(), pinned.id());
+    assert_eq!(parent.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned.id());
     assert!(
         parent
             .fork_measured(
@@ -116,7 +116,7 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
     assert!(matches!(cancelled.error, WorkspaceError::Cancelled(_)));
     assert_eq!(*cancelled.work, WorkCounters::default());
     assert!(fs.open_workspace("cancel-child").await.is_err());
-    assert_eq!(parent.head().await?.id(), pinned.id());
+    assert_eq!(parent.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned.id());
     let other = fs.create_workspace("foreign-source").await?;
     let foreign = match parent
         .fork_measured(
@@ -238,7 +238,7 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
     assert!(observed.load(Ordering::SeqCst));
     assert!(cancellation.is_cancelled());
     assert!(fs.open_workspace("inflight-child").await.is_err());
-    assert_eq!(parent.head().await?.id(), pinned.id());
+    assert_eq!(parent.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned.id());
     let created = parent
         .fork_measured(
             "inflight-child",
@@ -256,9 +256,9 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
             &CancellationToken::new(),
         )
         .await?;
-    assert_eq!(retried.value.head().await?.id(), initial);
+    assert_eq!(retried.value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), initial);
     assert_eq!(
-        retried.value.read("/kept.txt", 32).await?,
+        retried.value.read("/kept.txt", 32, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         OwnedBytes::from_static(b"pinned")
     );
     Ok(())
