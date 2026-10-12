@@ -23,7 +23,7 @@ default = ["grpc"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "dep:http-body", "dep:http-body-util", "tokio/time"]
 json = ["dep:prost-reflect", "dep:serde_json"]
 http = ["json", "dep:reqwest"]
-local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
+local = ["dep:fs2", "dep:libc", "tokio/rt"]
 
 [dependencies]
 pin-project-lite = "0.2.16"

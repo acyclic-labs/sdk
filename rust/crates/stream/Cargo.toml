@@ -24,7 +24,7 @@ required-features = ["http"]
 default = ["grpc"]
 grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt"]
 http = ["dep:reqwest"]
-local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
+local = ["dep:fs2", "dep:libc", "tokio/rt"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]
 wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures"]
@@ -84,7 +84,7 @@ tower.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
-tokio = { version = "1.48.0", features = ["net", "io-util"] }
+tokio = { version = "1.48.0", features = ["net", "io-util", "rt-multi-thread"] }
 tracing-subscriber.workspace = true
 
 [lints]
