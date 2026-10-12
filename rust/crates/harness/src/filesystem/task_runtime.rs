@@ -1517,11 +1517,8 @@ where
             let work = io.original_native_work().ok_or_else(|| observed::boundary(
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wait context requires original observer",
             ))?;
-            let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?
-                .into_native_shared(work)?;
-            let mailbox = self.task_mailbox_with_native_work(owner, work)?;
-            let (context, custody) = self.harness.durable_context_for_read_with_native_work(
-                task, admission.operation_id, mailbox, work,
+            let (context, custody) = self.harness.durable_context_with_native_work(
+                task, admission.operation_id, work,
             ).await?;
             WorkerContext::Native(context.into_native_shared(custody, work)?)
         } else {
