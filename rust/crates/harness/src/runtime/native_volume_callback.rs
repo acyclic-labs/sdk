@@ -2,7 +2,7 @@ use super::{NativeTaskContext, RuntimeScope};
 use crate::{Error, Result, conversation::{VolumeOperation, VolumeRef}, durable_host::TaskJournalOwner};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use acyclic_fs::native_mount::{NativeMountCallbackFuture, NativeMountCallbackGuard,
-    NativeMountError, NativeMountMeterWork};
+    NativeMountError};
 use acyclic_stream::StreamProvider;
 use std::sync::Arc;
 
@@ -151,11 +151,10 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
     }
 
     fn sdk_check<'a>(
-        &'a self, work: &'a NativeMountMeterWork, require_write: bool,
+        &'a self, work: &'a NativeMaterializationWork, require_write: bool,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
         NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, || async move {
-            let work = work.native_materialization_work();
-            self.verify_with_native_work(&work, require_write).await
+            self.verify_with_native_work(work, require_write).await
         })
     }
 }
@@ -170,13 +169,13 @@ impl<P: StreamProvider + 'static> NativeVolumePublicationGuard for VolumeCallbac
 
 impl<P: StreamProvider + 'static> NativeMountCallbackGuard for VolumeCallback<P> {
     fn check<'a>(
-        &'a self, work: &'a NativeMountMeterWork,
+        &'a self, work: &'a NativeMaterializationWork,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
         self.sdk_check(work, false)
     }
 
     fn check_write<'a>(
-        &'a self, work: &'a NativeMountMeterWork,
+        &'a self, work: &'a NativeMaterializationWork,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
         self.sdk_check(work, true)
     }

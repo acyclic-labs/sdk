@@ -16,25 +16,10 @@ impl Inventory {
     fn slots<T>(&mut self, count: usize) -> Result<()> {
         self.add(count.checked_mul(size_of::<T>()).ok_or_else(overflow)? as u64)
     }
-    fn value(&mut self, value: &Value) -> Result<()> {
-        match value {
-            Value::String(text) => self.text(text)?,
-            Value::Array(values) => {
-                self.slots::<Value>(values.capacity())?;
-                for value in values { self.value(value)?; }
-            }
-            Value::Object(values) => {
-                self.slots::<(String, Value)>(values.len())?;
-                for (key, value) in values { self.text(key)?; self.value(value)?; }
-            }
-            Value::Null | Value::Bool(_) | Value::Number(_) => {}
-        }
-        Ok(())
-    }
     fn entrypoint(&mut self, entrypoint: &EntrypointRef) -> Result<()> {
         self.text(&entrypoint.name)?;
         self.text(&entrypoint.version)?;
-        self.value(&entrypoint.result_schema)
+        self.add(crate::contract::json_value_logical_owned_bytes(&entrypoint.result_schema)?)
     }
     fn resources(&mut self, resources: &BTreeMap<String, u64>) -> Result<()> {
         self.slots::<(String, u64)>(resources.len())?;
@@ -145,13 +130,12 @@ fn inventory<T>(value: &T, visit: impl FnOnce(&mut Inventory, &T) -> Result<()>)
 fn clone_dto<T: Clone>(
     value: &T, work: &mut Option<&mut dyn HistoryIo>,
     copy: impl FnOnce(&T, &mut CodecQuota<'_, '_>) -> Result<T>,
-) -> Result<(T, u64)> {
-    if work.is_none() { return Ok((value.clone(), 0)); }
+) -> Result<T> {
+    if work.is_none() { return Ok(value.clone()); }
     let mut quota = CodecQuota::new(work, 0)?;
     let output = copy(value, &mut quota)?;
-    let owned = quota.retained();
     quota.transfer();
-    Ok((output, owned))
+    Ok(output)
 }
 
 fn copy_text(source: &str, quota: &mut CodecQuota<'_, '_>) -> Result<String> {
@@ -329,7 +313,7 @@ macro_rules! closed_clone {
     ($kind:ty, $visit:ident, $copy:expr) => {
         impl $kind {
             pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-                clone_dto(self, work, $copy).map(|(value, _)| value)
+                clone_dto(self, work, $copy)
             }
             pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
                 inventory(self, |inventory, value| inventory.$visit(value))
@@ -351,7 +335,6 @@ macro_rules! resource_clone {
         impl $kind {
             pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
                 clone_dto(self, work, |source, quota| copy_resources(&source.0, quota).map(Self))
-                    .map(|(value, _)| value)
             }
             pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
                 inventory(self, |inventory, value| inventory.resources(&value.0))
@@ -368,12 +351,8 @@ impl OrchestrationDecision {
     }
 }
 
-pub(crate) fn json_value_owned_bytes(value: &Value) -> Result<u64> {
-    inventory(value, Inventory::value)
-}
-
 pub(super) fn clone_file_with_work(file: &FileRef, work: &mut Option<&mut dyn HistoryIo>) -> Result<FileRef> {
-    clone_dto(file, work, crate::core::copy_file).map(|(value, _)| value)
+    clone_dto(file, work, crate::core::copy_file)
 }
 
 impl LeaseFence {
@@ -410,7 +389,7 @@ impl SchedulerEvent {
 impl OperationState {
 
     pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
-        clone_dto(self, work, copy_state).map(|(state, _)| state)
+        clone_dto(self, work, copy_state)
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {

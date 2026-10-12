@@ -37,12 +37,6 @@ pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<
     }
 }
 
-pub(crate) fn journal_command<'a>(
-    command: impl Into<CommandRef<'a>>,
-) -> wire_codec::CanonicalWire<'a> {
-    wire_codec::CanonicalWire::Journal(command.into())
-}
-
 pub(crate) fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
     let journal = JournalCommand::decode(encoded).map_err(|_| StreamError::InvalidArgument)?;
     let command = match journal.operation.ok_or(StreamError::InvalidArgument)? {
@@ -57,7 +51,7 @@ pub(crate) fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
         }
     }?;
     // Persist only canonical bytes emitted by the current first-party writer.
-    if journal_command(&command).encode_to_vec().map_err(|_| StreamError::InvalidArgument)? != encoded {
+    if crate::wire_codec::CanonicalWire::Journal((&command).into()).encode_to_vec().map_err(|_| StreamError::InvalidArgument)? != encoded {
         return Err(StreamError::InvalidArgument);
     }
     Ok(command)
@@ -116,9 +110,7 @@ mod tests {
             idempotency_key: crate::IdempotencyKey::new(OwnedBytes::from_static(b"commit"))?,
         });
         for command in [append, fork, commit] {
-            let encoded = journal_command(&command).encode_to_vec().map_err(|_| StreamError::Capacity)?;
-            // Compare the ONE borrowed writer against the unchanged generated
-            // schema, not merely against itself on canonical decode.
+            let encoded = crate::wire_codec::CanonicalWire::Journal((&command).into()).encode_to_vec().map_err(|_| StreamError::Capacity)?;
             let operation = match &command {
                 Command::Append(request) => journal_command::Operation::Append(crate::wire::AppendRequest {
                     path: request.path.to_string(),
@@ -137,7 +129,7 @@ mod tests {
             };
             assert_eq!(encoded, JournalCommand { operation: Some(operation) }.encode_to_vec());
             assert_eq!(
-                journal_command(&decode_command(&encoded)?).encode_to_vec().map_err(|_| StreamError::Capacity)?,
+                crate::wire_codec::CanonicalWire::Journal((&decode_command(&encoded)?).into()).encode_to_vec().map_err(|_| StreamError::Capacity)?,
                 encoded
             );
             for end in 0..encoded.len() {
@@ -163,15 +155,13 @@ mod tests {
             if_tail: None,
             idempotency_key: Some(crate::IdempotencyKey::new(OwnedBytes::from_static(b"first"))?),
         };
-        let encoded = journal_command(&Command::Append(request.clone())).encode_to_vec().map_err(|_| StreamError::Capacity)?;
+        let encoded = crate::wire_codec::CanonicalWire::Journal((&Command::Append(request.clone())).into()).encode_to_vec().map_err(|_| StreamError::Capacity)?;
         replay(&provider, decode_command(&encoded)?).await?;
         let crate::AppendOutcome::Committed(receipt) = provider.append(request).await? else {
             return Err(StreamError::Unavailable);
         };
         assert_eq!(receipt.start, 0);
         assert_eq!(receipt.end, 1);
-        // The actual Chromium test asserts this same complete content-bound ID,
-        // rather than merely comparing two WASM projections of memory state.
         assert_eq!(
             *receipt.commit_id.as_bytes(),
             [

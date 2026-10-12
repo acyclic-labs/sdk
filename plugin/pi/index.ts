@@ -63,9 +63,7 @@ export function captureParentCut(
   maximumBytes: number,
 ) {
   if (!toolCallId || !Number.isSafeInteger(maximumEntries) || maximumEntries <= 0 ||
-      !Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
-    throw new Error("Pi context capture requires an identity and finite positive bounds");
-  }
+      !Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) throw new Error("Pi context capture requires an identity and finite positive bounds");
   const entries: string[] = [];
   const seen = new Set<string>();
   let next = session.getLeafId();
@@ -73,9 +71,7 @@ export function captureParentCut(
   let owner: { id: string; timestamp: string; parentId: string | null } | undefined;
   let bytes = 2; // JSON array delimiters.
   while (next !== null) {
-    if (seen.size >= maximumEntries || seen.has(next)) {
-      throw new Error("Pi context parent chain is cyclic or exceeds its entry bound");
-    }
+    if (seen.size >= maximumEntries || seen.has(next)) throw new Error("Pi context parent chain is cyclic or exceeds its entry bound");
     seen.add(next);
     const entry = session.getEntry(next);
     if (!entry || entry.id !== next) throw new Error("Pi context parent entry is missing");
@@ -120,62 +116,7 @@ export function assertParentCutCurrent(
   maximumBytes: number,
 ) {
   const current = captureParentCut(session, toolCallId, maximumEntries, maximumBytes);
-  if (current.mode !== cut.mode || current.parentSessionId !== cut.parentSessionId ||
-      current.parentSessionFile !== cut.parentSessionFile ||
-      current.parentCwd !== cut.parentCwd ||
-      current.sourceLeafId !== cut.sourceLeafId ||
-      current.ownerEntryId !== cut.ownerEntryId ||
-      current.parentLeafId !== cut.parentLeafId ||
-      current.capturedAt !== cut.capturedAt ||
-      current.entriesJson !== cut.entriesJson || current.sha256 !== cut.sha256) {
-    throw new Error("Pi parent context changed before spawn admission");
-  }
-}
-
-/** Construct a separate native manager; the live parent is never passed here. */
-export function childSessionBytes(
-  cut: NativeSourceCut,
-  childSessionId: string,
-  childCwd: string,
-) {
-  if (createHash("sha256").update(cut.entriesJson).digest("hex") !== cut.sha256) {
-    throw new Error("Pinned Pi context digest differs");
-  }
-  if (childSessionId === cut.parentSessionId) throw new Error("Child Pi session must have its own identity");
-  const entries: SessionEntry[] = JSON.parse(cut.entriesJson);
-  if (!Array.isArray(entries)) throw new Error("Pinned Pi context is not an entry list");
-  let previous: string | null = null;
-  const ids = new Set<string>();
-  for (const entry of entries) {
-    if (!entry || typeof entry.id !== "string" || ids.has(entry.id) || entry.parentId !== previous ||
-        (entry as { type: string }).type === "session") {
-      throw new Error("Pinned Pi context is not the selected parent chain");
-    }
-    ids.add(entry.id);
-    previous = entry.id;
-  }
-  if (previous !== cut.parentLeafId) throw new Error("Pinned Pi context leaf differs");
-  const child = SessionManager.inMemory(childCwd, { id: childSessionId }, entries);
-  // Validate the native projection, including compaction, without rewriting it.
-  const pending = new Set<string>();
-  for (const message of child.buildSessionContext().messages) {
-    if (message.role === "assistant") {
-      if (pending.size) throw new Error("Pinned Pi context has an incomplete tool exchange");
-      for (const part of message.content) {
-        if (part.type === "toolCall") {
-          if (pending.has(part.id)) throw new Error("Pinned Pi context repeats a tool identity");
-          pending.add(part.id);
-        }
-      }
-    } else if (message.role === "toolResult") {
-      if (!pending.delete(message.toolCallId)) throw new Error("Pinned Pi context has an orphan tool result");
-    } else if (pending.size) {
-      throw new Error("Pinned Pi context interrupts a tool exchange");
-    }
-  }
-  if (pending.size) throw new Error("Pinned Pi context has an incomplete tool exchange");
-  const header = { ...child.getHeader(), timestamp: cut.capturedAt };
-  return [header, ...child.getEntries()].map(entry => JSON.stringify(entry)).join("\n") + "\n";
+  if (Object.entries(current).some(([key, value]) => value !== cut[key as keyof NativeSourceCut])) throw new Error("Pi parent context changed before spawn admission");
 }
 
 const maximumContextEntries = 4096;
@@ -195,9 +136,7 @@ function readNativeSessionManager(source: NativeSessionFile, maximumBytes: numbe
   let used = 0;
   try {
     const metadata = fstatSync(file);
-    if (!metadata.isFile() || metadata.size === 0 || metadata.size > maximumBytes) {
-      throw new Error("Pi native inbox session file is empty, nonregular or exceeds its byte bound");
-    }
+    if (!metadata.isFile() || metadata.size === 0 || metadata.size > maximumBytes) throw new Error("Pi native inbox session file is empty, nonregular or exceeds its byte bound");
     bytes = Buffer.alloc(maximumBytes + 1);
     while (used < bytes.length) {
       const count = readSync(file, bytes, used, bytes.length - used, null);
@@ -211,19 +150,29 @@ function readNativeSessionManager(source: NativeSessionFile, maximumBytes: numbe
   const entries = parseSessionEntries(bytes.subarray(0, used).toString("utf8"));
   const header = entries[0];
   if (!header || header.type !== "session" || header.version !== 3 ||
-      header.id !== source.native_session_id || header.cwd !== source.cwd) {
-    throw new Error("Pi persisted inbox session differs from the actual native session");
-  }
+      header.id !== source.native_session_id || header.cwd !== source.cwd) throw new Error("Pi persisted inbox session differs from the actual native session");
   return SessionManager.inMemory(source.cwd, undefined, entries);
 }
 
-/** Generate one independent native identity; scratch retains only its real header. */
+/** Create one independent native session from a fresh or pinned caller context. */
 export function nativeChildSession(session: ExtensionContext["sessionManager"], childCwd: string, callerCut?: NativeSourceCut) {
   if (callerCut && (callerCut.mode !== "caller_tool" || callerCut.parentSessionId !== session.getSessionId() ||
-      callerCut.parentSessionFile !== (session.getSessionFile() ?? null) || callerCut.parentCwd !== session.getCwd())) {
-    throw new Error("Pi inherited context must originate from the actual caller native session");
+      callerCut.parentSessionFile !== (session.getSessionFile() ?? null) || callerCut.parentCwd !== session.getCwd())) throw new Error("Pi inherited context must originate from the actual caller native session");
+  if (callerCut && createHash("sha256").update(callerCut.entriesJson).digest("hex") !== callerCut.sha256) throw new Error("Pinned Pi context digest differs");
+  const entries: SessionEntry[] = callerCut ? JSON.parse(callerCut.entriesJson) : [];
+  if (!Array.isArray(entries)) throw new Error("Pinned Pi context is not an entry list");
+  let previous: string | null = null;
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    if (!entry || typeof entry.id !== "string" || ids.has(entry.id) || entry.parentId !== previous ||
+        (entry as { type: string }).type === "session") {
+      throw new Error("Pinned Pi context is not the selected parent chain");
+    }
+    ids.add(entry.id);
+    previous = entry.id;
   }
-  const manager = SessionManager.inMemory(childCwd);
+  if (previous !== (callerCut ? callerCut.parentLeafId : null)) throw new Error("Pinned Pi context leaf differs");
+  const manager = SessionManager.inMemory(childCwd, undefined, entries);
   const header = manager.getHeader();
   if (!header) throw new Error("Pi SDK omitted the independent child header");
   const cut: NativeSourceCut = callerCut ?? {
@@ -233,9 +182,27 @@ export function nativeChildSession(session: ExtensionContext["sessionManager"], 
     capturedAt: header.timestamp, entriesJson: "[]",
     sha256: createHash("sha256").update("[]").digest("hex"),
   };
+  if (manager.getSessionId() === cut.parentSessionId) throw new Error("Child Pi session must have its own identity");
+  // Validate the native projection, including compaction, without rewriting it.
+  const pending = new Set<string>();
+  for (const message of manager.buildSessionContext().messages) {
+    if (message.role === "assistant") {
+      if (pending.size) throw new Error("Pinned Pi context has an incomplete tool exchange");
+      for (const part of message.content) {
+        if (part.type === "toolCall") {
+          if (pending.has(part.id)) throw new Error("Pinned Pi context repeats a tool identity");
+          pending.add(part.id);
+        }
+      }
+    } else if (message.role === "toolResult") {
+      if (!pending.delete(message.toolCallId)) throw new Error("Pinned Pi context has an orphan tool result");
+    } else if (pending.size) throw new Error("Pinned Pi context interrupts a tool exchange");
+  }
+  if (pending.size) throw new Error("Pinned Pi context has an incomplete tool exchange");
   return {
     cut, native_session_id: manager.getSessionId(),
-    session_bytes: callerCut ? childSessionBytes(cut, manager.getSessionId(), childCwd) : JSON.stringify(header) + "\n",
+    session_bytes: [{ ...header, timestamp: cut.capturedAt }, ...manager.getEntries()]
+      .map(entry => JSON.stringify(entry)).join("\n") + "\n",
   };
 }
 
@@ -246,17 +213,14 @@ const privateControlKeys: Record<string, true> = {
 };
 
 /** Strip private protocol fields at every level, without rewriting text payloads. */
-function visibleControlValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(visibleControlValue);
+export function visibleControlResult(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(visibleControlResult);
   if (value === null || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value).filter(([key]) =>
     !Object.hasOwn(privateControlKeys, key.replaceAll("_", "").toLowerCase()),
-  ).map(([key, entry]) => [key, visibleControlValue(entry)]));
+  ).map(([key, entry]) => [key, visibleControlResult(entry)]));
 }
 
-export function visibleControlResult(result: Readonly<Record<string, unknown>>) {
-  return visibleControlValue(result) as Record<string, unknown>;
-}
 
 /** Missing transport acknowledgement does not authorize another invocation. */
 export class PiControlAcknowledgementError extends Error {
@@ -269,46 +233,53 @@ export class PiControlAcknowledgementError extends Error {
 }
 
 /** Retain one SDK invocation, including rejection, without a second effect attempt. */
-export class PiToolOperations {
-  private readonly invocations = new Map<string, { request: string; result: Promise<Record<string, unknown>> }>();
+export function piToolOperations() {
+  const invocations = new Map<string, { request: string; result: Promise<Record<string, unknown>> }>();
 
-  run(session: string, operation: string, fields: Readonly<Record<string, unknown>>,
-    invoke: () => Promise<Record<string, unknown>>) {
+  return (session: string, operation: string, fields: Readonly<Record<string, unknown>>,
+    invoke: () => Promise<Record<string, unknown>>) => {
     if (!operation) throw new Error("Pi controls require the original SDK tool call identity");
     const key = JSON.stringify([session, operation]);
     const request = JSON.stringify(fields);
-    const retained = this.invocations.get(key);
+    const retained = invocations.get(key);
     if (retained) {
       if (retained.request !== request) throw new Error("Pi operation identity was reused with changed arguments");
       return retained.result;
     }
-    if (this.invocations.size >= 4096) throw new Error("Pi retained control invocation bound exceeded");
+    if (invocations.size >= 4096) throw new Error("Pi retained control invocation bound exceeded");
     const result = Promise.resolve().then(invoke).catch(error => {
       if (error instanceof PiControlAcknowledgementError) throw new PiControlAcknowledgementError(operation);
       throw error;
     });
-    this.invocations.set(key, { request, result });
+    invocations.set(key, { request, result });
     return result;
-  }
+  };
 }
 
 /** Only passive observations repeat; the original task/operation never changes. */
-export async function observePiTaskUntilTerminal(
+export async function observePiOperation(
   operation: string,
   observe: (signal: AbortSignal) => Promise<Record<string, unknown>>,
   signal?: AbortSignal,
   bounds = { maximumObservations: 120, timeoutMs: 30_000, intervalMs: 250 },
+  terminal = (result: Record<string, unknown>) => {
+    if (result.state === "completed") {
+      if (result.outcome === null || result.outcome === undefined) throw new Error("Pi completed task observation omitted its actual terminal outcome");
+      return true;
+    }
+    if (result.state !== "pending") throw new Error("Pi task wait returned an invalid observation state");
+    return false;
+  },
+  initial?: Record<string, unknown>,
 ) {
   if (!operation || !Number.isSafeInteger(bounds.maximumObservations) || bounds.maximumObservations <= 0 ||
       !Number.isSafeInteger(bounds.timeoutMs) || bounds.timeoutMs <= 0 ||
-      !Number.isSafeInteger(bounds.intervalMs) || bounds.intervalMs < 0) {
-    throw new Error("Pi native wait requires an original operation and finite observation bounds");
-  }
+      !Number.isSafeInteger(bounds.intervalMs) || bounds.intervalMs < 0) throw new Error("Pi native wait requires an original operation and finite observation bounds");
   signal?.throwIfAborted();
   const deadline = new AbortController();
   const timeout = setTimeout(() => deadline.abort(new DOMException("Pi polling deadline exceeded", "TimeoutError")), bounds.timeoutMs);
   const waiting = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
-  let last: Record<string, unknown> | undefined;
+  let last = initial;
   let observations = 0;
   try {
     while (observations < bounds.maximumObservations) {
@@ -317,13 +288,7 @@ export async function observePiTaskUntilTerminal(
       waiting.throwIfAborted();
       observations++;
       if (result.uncertain) return result;
-      if (result.state === "completed") {
-        if (!Object.hasOwn(result, "outcome") || result.outcome === null || result.outcome === undefined) {
-          throw new Error("Pi completed task observation omitted its actual terminal outcome");
-        }
-        return result;
-      }
-      if (result.state !== "pending") throw new Error("Pi task wait returned an invalid observation state");
+      if (terminal(result)) return result;
       last = result;
       if (observations < bounds.maximumObservations) await delay(bounds.intervalMs, undefined, { signal: waiting });
     }
@@ -359,8 +324,8 @@ export async function approvePiWriteback(
     ui: Pick<ExtensionContext["ui"], "confirm">; model?: ExtensionContext["model"];
   },
   control: (fields: Readonly<Record<string, unknown>>) => Promise<Record<string, unknown>>,
-  signal?: AbortSignal,
-  observation?: PiWritebackObservation,
+  signal: AbortSignal | undefined,
+  observation: PiWritebackObservation,
 ) {
   signal?.throwIfAborted();
   const session = ctx.sessionManager;
@@ -372,9 +337,7 @@ export async function approvePiWriteback(
     signal?.throwIfAborted();
     if (ctx.sessionManager !== session || session.getSessionId() !== nativeSession || session.getSessionFile() !== nativeFile ||
         session.getLeafId() !== nativeLeaf ||
-        ctx.model?.provider !== model?.provider || ctx.model?.id !== model?.id) {
-      throw new Error("Pi writeback native session, branch or model changed during approval");
-    }
+        ctx.model?.provider !== model?.provider || ctx.model?.id !== model?.id) throw new Error("Pi writeback native session, branch or model changed during approval");
   };
   const prepared = await control({ operation, source: fields.source, paths: fields.paths, confirm: fields.confirm,
     ...(fields.root === undefined ? {} : { root: fields.root }) });
@@ -386,9 +349,7 @@ export async function approvePiWriteback(
       typeof prepared.source !== "string" || !prepared.source ||
       typeof prepared.root !== "string" || !prepared.root ||
       (fields.root !== undefined && prepared.root !== fields.root) ||
-      JSON.stringify(prepared.paths) !== JSON.stringify(fields.paths)) {
-    throw new Error("Pi writeback omitted its exact original prepared approval digest or selection");
-  }
+      JSON.stringify(prepared.paths) !== JSON.stringify(fields.paths)) throw new Error("Pi writeback omitted its exact original prepared approval digest or selection");
   const digest = prepared.approval_digest;
   if (ctx.hasUI) {
     const approved = await ctx.ui.confirm(
@@ -397,7 +358,7 @@ export async function approvePiWriteback(
       { signal },
     );
     current();
-    if (!observation?.decide) throw new Error("Pi native UI approval requires the trusted host operator transport");
+    if (!observation.decide) throw new Error("Pi native UI approval requires the trusted host operator transport");
     await observation.decide(operation, digest, approved ? "approve" : "decline");
     current();
   }
@@ -405,52 +366,28 @@ export async function approvePiWriteback(
   const descriptor = {
     operation, source: prepared.source, root: prepared.root, paths: [...fields.paths], approval_digest: digest,
   };
-  if (!ctx.hasUI) observation?.prepared(descriptor);
+  if (!ctx.hasUI) observation.prepared(descriptor);
   current();
-  if (!observation) return { ...descriptor, status: "pending", approval: "required" };
   const bounds = observation.bounds ?? { maximumObservations: 240, timeoutMs: 60_000, intervalMs: 250 };
-  if (!Number.isSafeInteger(bounds.maximumObservations) || bounds.maximumObservations <= 0 ||
-      !Number.isSafeInteger(bounds.timeoutMs) || bounds.timeoutMs <= 0 ||
-      !Number.isSafeInteger(bounds.intervalMs) || bounds.intervalMs < 0) {
-    throw new Error("Pi writeback requires finite passive observation bounds");
-  }
-  const deadline = new AbortController();
-  const timeout = setTimeout(() => deadline.abort(new DOMException("Pi polling deadline exceeded", "TimeoutError")), bounds.timeoutMs);
-  const waiting = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
-  let observations = 0;
   let last: Record<string, unknown> = { ...descriptor, status: "pending", approval: "required" };
   try {
-    while (observations < bounds.maximumObservations) {
-      waiting.throwIfAborted();
+    return await observePiOperation(operation, async waiting => {
       current();
       const result = await observation.observe({ operation, source: fields.source, root: prepared.root, paths: fields.paths }, waiting);
-      current();
-      waiting.throwIfAborted();
-      observations++;
+      current(); waiting.throwIfAborted();
       if (result.uncertain) return { ...last, uncertain: result.uncertain };
       if (result.operation !== operation || result.source !== prepared.source || result.root !== prepared.root ||
-          result.approval_digest !== digest || JSON.stringify(result.paths) !== JSON.stringify(fields.paths)) {
-        throw new Error("Pi writeback observation changed its original prepared selection");
-      }
+          result.approval_digest !== digest || JSON.stringify(result.paths) !== JSON.stringify(fields.paths)) throw new Error("Pi writeback observation changed its original prepared selection");
       if (result.status === "published") {
         if (!result.receipt || typeof result.receipt !== "object" ||
-            (result.receipt as Record<string, unknown>).phase !== "Applied") {
-          throw new Error("Pi writeback publication omitted its actual Applied receipt");
-        }
+            (result.receipt as Record<string, unknown>).phase !== "Applied") throw new Error("Pi writeback publication omitted its actual Applied receipt");
         return result;
       }
       if (result.status === "declined") return result;
-      if (result.status !== "pending" && result.status !== "prepared") {
-        throw new Error("Pi writeback returned an invalid passive observation");
-      }
-      last = { ...result, status: "pending", approval: "required" };
-      if (observations < bounds.maximumObservations) await delay(bounds.intervalMs, undefined, { signal: waiting });
-    }
-  } catch (error) {
-    current();
-    if (!deadline.signal.aborted) throw error;
-  } finally { clearTimeout(timeout); }
-  return { ...last, wait: { bounded: true, observations } };
+      if (result.status !== "pending" && result.status !== "prepared") throw new Error("Pi writeback returned an invalid passive observation");
+      return last = { ...result, status: "pending", approval: "required" };
+    }, signal, bounds, result => result.status === "published" || result.status === "declined", last);
+  } finally { current(); }
 }
 
 /** One request through the owning service; never retry an uncertain effect. */
@@ -464,9 +401,7 @@ async function taskControl(
   signal?.throwIfAborted();
   const sessionId = ctx.sessionManager.getSessionId();
   const environmentCaller = process.env.ACYCLIC_PI_CALLER;
-  if (environmentCaller && Buffer.byteLength(environmentCaller) > 1024 * 1024) {
-    throw new Error("Pi caller proof exceeds its byte bound");
-  }
+  if (environmentCaller && Buffer.byteLength(environmentCaller) > 1024 * 1024) throw new Error("Pi caller proof exceeds its byte bound");
   let proof: unknown = caller;
   if (environmentCaller) {
     try {
@@ -484,27 +419,15 @@ async function taskControl(
     windowsHide: true, encoding: "utf8", ...(signal ? { signal } : {}),
   });
   invocation.child.stdin?.end(input);
-  let stdout: string;
-  try {
-    ({ stdout } = await invocation);
-  } catch {
-    // Never surface stderr carrying protected service request/runtime metadata.
-    throw new PiControlAcknowledgementError();
-  }
   let result: unknown;
-  try {
-    result = JSON.parse(stdout);
-  } catch {
-    throw new PiControlAcknowledgementError();
-  }
+  try { result = JSON.parse((await invocation).stdout); }
+  catch { throw new PiControlAcknowledgementError(); }
   const scoped = Object.hasOwn(scopedPiControls, operation);
   if (typeof result !== "object" || result === null || !("session" in result)
     || !("native_session" in result) || result.native_session !== sessionId
     || typeof result.session !== "string" || ctx.sessionManager.getSessionId() !== sessionId
-    || (!scoped && (!("tasks" in result) || !Array.isArray(result.tasks)))) {
-    throw new Error("Pi control returned another or changed native session");
-  }
-  return result;
+    || (!scoped && (!("tasks" in result) || !Array.isArray(result.tasks)))) throw new Error("Pi control returned another or changed native session");
+  return result as typeof result & Record<string, unknown>;
 }
 
 export interface PiInboxMessage {
@@ -532,9 +455,7 @@ export function persistedPiInboxCursor(session: ExtensionContext["sessionManager
       if (details.task_id === task) {
         if (typeof details.sequence !== "number" || !Number.isSafeInteger(details.sequence) || details.sequence <= 0 ||
             typeof details.message_id !== "string" || !details.message_id ||
-            (details.kind !== "message" && details.kind !== "steer")) {
-          throw new Error("Pi inbox native receipt is malformed");
-        }
+            (details.kind !== "message" && details.kind !== "steer")) throw new Error("Pi inbox native receipt is malformed");
         candidates.push(entry);
       }
     }
@@ -558,9 +479,7 @@ export function persistedPiInboxCursor(session: ExtensionContext["sessionManager
     const actual = persisted.getEntry(entry.id);
     if (actual && JSON.stringify(actual) === JSON.stringify(entry)) {
       if (entry.type !== "custom_message" || !entry.details || typeof entry.details !== "object" ||
-          !("sequence" in entry.details) || typeof entry.details.sequence !== "number") {
-        throw new Error("Pi inbox receipt lost its validated native sequence");
-      }
+          !("sequence" in entry.details) || typeof entry.details.sequence !== "number") throw new Error("Pi inbox receipt lost its validated native sequence");
       cursor = Math.max(cursor, entry.details.sequence);
     }
   }
@@ -577,8 +496,9 @@ export async function consumePiInbox(
   pending: { item?: PiInboxMessage },
 ) {
   const nativeSession = ctx.sessionManager.getSessionId();
-  const deadline = AbortSignal.timeout(30_000);
-  const polling = AbortSignal.any([signal, deadline]);
+  const deadline = new AbortController();
+  const timeout = setTimeout(() => deadline.abort(new DOMException("Pi inbox deadline exceeded", "TimeoutError")), 30_000);
+  const polling = AbortSignal.any([signal, deadline.signal]);
   try {
     for (let observation = 0; observation < 120; observation++) {
       polling.throwIfAborted();
@@ -591,17 +511,13 @@ export async function consumePiInbox(
         if (ctx.sessionManager.getSessionId() !== nativeSession) throw new Error("Pi inbox native session changed");
         if (result.uncertain) throw new PiControlAcknowledgementError();
         if (result.item !== undefined && result.item !== null) {
-          if (typeof result.item !== "object" || !result.envelope || typeof result.envelope !== "object") {
-            throw new Error("Pi inbox omitted its original item or envelope");
-          }
+          if (typeof result.item !== "object" || !result.envelope || typeof result.envelope !== "object") throw new Error("Pi inbox omitted its original item or envelope");
           const item = result.item as Record<string, unknown>;
           const envelope = result.envelope as Record<string, unknown>;
           if (item.task_id !== task || !Number.isSafeInteger(item.sequence) || (item.sequence as number) <= after ||
               typeof item.message_id !== "string" || !item.message_id ||
               (envelope.kind !== "message" && envelope.kind !== "steer") ||
-              typeof envelope.message !== "string" || Buffer.byteLength(envelope.message) > maximumContextBytes) {
-            throw new Error("Pi inbox returned another task or invalid original envelope");
-          }
+              typeof envelope.message !== "string" || Buffer.byteLength(envelope.message) > maximumContextBytes) throw new Error("Pi inbox returned another task or invalid original envelope");
           pending.item = {
             task_id: task, sequence: item.sequence as number, message_id: item.message_id, kind: envelope.kind,
           };
@@ -614,17 +530,15 @@ export async function consumePiInbox(
       if (observation < 119) await delay(250, undefined, { signal: polling });
     }
   } catch (error) {
-    if (!signal.aborted && !deadline.aborted) throw error;
-  }
+    if (!signal.aborted && !deadline.signal.aborted) throw error;
+  } finally { clearTimeout(timeout); }
 }
 
 const maximumBuiltinBytes = 262144;
 
 /** Pinned Pi 1.1.0 lexical expansion only; the service proves the held namespace. */
 function builtinPath(input: string, cwd: string) {
-  if (typeof input !== "string" || !input || Buffer.byteLength(input) > 4096 || input.includes("\0")) {
-    throw new Error("Pi builtin requires a bounded file path");
-  }
+  if (typeof input !== "string" || !input || Buffer.byteLength(input) > 4096 || input.includes("\0")) throw new Error("Pi builtin requires a bounded file path");
   let path = input.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ");
   if (path.startsWith("@")) path = path.slice(1);
   if (process.platform === "win32" && path.startsWith("/") && !path.startsWith("//") && !path.includes("\\")) {
@@ -638,9 +552,7 @@ function builtinPath(input: string, cwd: string) {
   if (/^file:\/\//.test(path)) path = fileURLToPath(path);
   if (/^[a-z]:(?![\\/])/i.test(path)) throw new Error("Pi builtin rejects a drive-relative namespace");
   // Foreign Windows namespaces must not become apparently relative Unix names.
-  if (process.platform !== "win32" && (/^[a-z]:/i.test(path) || path.includes("\\") || path.startsWith("//"))) {
-    throw new Error("Pi builtin rejects a foreign drive or UNC namespace");
-  }
+  if (process.platform !== "win32" && (/^[a-z]:/i.test(path) || path.includes("\\") || path.startsWith("//"))) throw new Error("Pi builtin rejects a foreign drive or UNC namespace");
   if (path.split(/[\\/]/).includes("..")) throw new Error("Pi builtin rejects parent namespace traversal");
   const absolute = resolve(cwd, path);
   if (Buffer.byteLength(absolute) > 4096) throw new Error("Pi builtin expanded path exceeds its bound");
@@ -662,9 +574,7 @@ function builtinBytes(result: Record<string, unknown>, operation: string) {
     throw new Error("Pi builtin read omitted its bounded original byte response");
   }
   const bytes = Buffer.from(encoded, "base64");
-  if (bytes.length > maximumBuiltinBytes || createHash("sha256").update(bytes).digest("hex") !== digest) {
-    throw new Error("Pi builtin read byte response differs from its original digest");
-  }
+  if (bytes.length > maximumBuiltinBytes || createHash("sha256").update(bytes).digest("hex") !== digest) throw new Error("Pi builtin read byte response differs from its original digest");
   return { bytes, digest };
 }
 
@@ -727,9 +637,7 @@ function builtinReadText(bytes: Buffer, input: ReadToolInput) {
 
 
 export default function acyclic(pi: ExtensionAPI) {
-  if (VERSION !== "1.1.0") {
-    throw new Error(`Acyclic requires Pi 1.1.0 APIs; found ${VERSION}`);
-  }
+  if (VERSION !== "1.1.0") throw new Error(`Acyclic requires Pi 1.1.0 APIs; found ${VERSION}`);
   let caller: unknown;
   let callerSession: string | undefined;
   let ownTask: string | undefined;
@@ -745,17 +653,11 @@ export default function acyclic(pi: ExtensionAPI) {
     fields: Readonly<Record<string, unknown>> = {}, signal?: AbortSignal,
   ) => {
     const current = ctx.sessionManager.getSessionId();
-    if (operation !== "SessionStart" && callerSession !== current && !process.env.ACYCLIC_PI_CALLER) {
-      throw new Error("Pi native session changed before its caller was registered");
-    }
+    if (operation !== "SessionStart" && callerSession !== current && !process.env.ACYCLIC_PI_CALLER) throw new Error("Pi native session changed before its caller was registered");
     const result = await taskControl(operation, ctx, fields, signal, callerSession === current ? caller : undefined);
     if (operation === "SessionStart") {
-      if (!("caller_task" in result) || typeof result.caller_task !== "string" || !result.caller_task) {
-        throw new Error("Pi startup omitted its authenticated original caller task");
-      }
-      if (ownNativeSession === current && (ownTask !== result.caller_task || ownRootSession !== result.session)) {
-        throw new Error("Pi original caller task or root session changed");
-      }
+      if (!("caller_task" in result) || typeof result.caller_task !== "string" || !result.caller_task) throw new Error("Pi startup omitted its authenticated original caller task");
+      if (ownNativeSession === current && (ownTask !== result.caller_task || ownRootSession !== result.session)) throw new Error("Pi original caller task or root session changed");
       if (ownNativeSession !== current) {
         inboxController?.abort();
         pendingInbox.item = undefined;
@@ -773,23 +675,19 @@ export default function acyclic(pi: ExtensionAPI) {
           !("operation" in result) || result.operation !== fields.operation ||
           !("source" in result) || result.source !== fields.source ||
           !("root" in result) || result.root !== fields.root ||
-          !("paths" in result) || JSON.stringify(result.paths) !== JSON.stringify(fields.paths)) {
-        throw new Error("Pi writeback status differs from its original Root task and prepared selection");
-      }
+          !("paths" in result) || JSON.stringify(result.paths) !== JSON.stringify(fields.paths)) throw new Error("Pi writeback status differs from its original Root task and prepared selection");
     }
     if (Object.hasOwn(scopedPiControls, operation) && operation !== "TaskWritebackStatus") {
       signal?.throwIfAborted();
       if (!ownTask || !ownRootSession || ownNativeSession !== current ||
           result.session !== ownRootSession || result.native_session !== current ||
-          !("caller_task" in result) || result.caller_task !== ownTask) {
-        throw new Error("Pi finite control response differs from its authenticated original task and native session");
-      }
+          !("caller_task" in result) || result.caller_task !== ownTask) throw new Error("Pi finite control response differs from its authenticated original task and native session");
     }
     if ("caller" in result) {
       caller = result.caller;
       callerSession = current;
     }
-    return visibleControlResult(result as Record<string, unknown>);
+    return visibleControlResult(result) as Record<string, unknown>;
   };
   const builtinControl = async (
     event: "NativeBuiltinRead" | "NativeBuiltinWrite" | "NativeBuiltinEdit",
@@ -802,36 +700,29 @@ export default function acyclic(pi: ExtensionAPI) {
     const task = ownTask;
     const root = ownRootSession;
     if (!task || !root || ownNativeSession !== native ||
-        (callerSession !== native && !process.env.ACYCLIC_PI_CALLER) ||
         typeof fields.operation !== "string" || !fields.operation || Buffer.byteLength(fields.operation) > 4096 ||
-        typeof fields.path !== "string") {
-      throw new Error("Pi builtin has no authenticated original task and SDK invocation");
-    }
-    const result = await taskControl(event, ctx, fields, signal, callerSession === native ? caller : undefined);
+        typeof fields.path !== "string") throw new Error("Pi builtin has no authenticated original task and SDK invocation");
+    const result = await control(event, ctx, fields, signal);
     signal?.throwIfAborted();
     if (ctx.sessionManager !== manager || manager.getSessionId() !== native ||
         ownNativeSession !== native || ownTask !== task || ownRootSession !== root ||
-        result.session !== root || result.native_session !== native ||
-        !("caller_task" in result) || result.caller_task !== task ||
         !("operation" in result) || result.operation !== fields.operation ||
         !("event" in result) || result.event !== event ||
         !("path" in result) || typeof result.path !== "string" ||
         (result.path !== fields.path && !(event === "NativeBuiltinRead" && Array.isArray(fields.variants) && fields.variants.includes(result.path))) ||
         !("volume_role" in result) || (result.volume_role !== "SOURCE" && result.volume_role !== "PROJECT" && result.volume_role !== "SCRATCH") ||
         (result.volume_role === "SOURCE" && event !== "NativeBuiltinRead") ||
-        (event === "NativeBuiltinEdit" && (!("phase" in result) || result.phase !== fields.phase))) {
-      throw new Error("Pi builtin response differs from its original task, invocation or proven native namespace");
-    }
-    return result as Record<string, unknown>;
+        (event === "NativeBuiltinEdit" && (!("phase" in result) || result.phase !== fields.phase))) throw new Error("Pi builtin response differs from its original task, invocation or proven native namespace");
+    return result;
   };
-  const operations = new PiToolOperations();
+  const operations = piToolOperations();
   const toolResult = (result: Record<string, unknown>) => ({
     content: [{ type: "text" as const, text: JSON.stringify(result) }], details: result,
   });
   const effect = (operation: PiControlOperation, id: string, fields: Readonly<Record<string, unknown>>,
     ctx: ExtensionContext, signal?: AbortSignal,
     invoke = () => control(operation, ctx, { operation: id, ...fields }, signal),
-  ) => operations.run(ctx.sessionManager.getSessionId(), id, { control: operation, ...fields }, invoke);
+  ) => operations(ctx.sessionManager.getSessionId(), id, { control: operation, ...fields }, invoke);
   pi.on("session_start", async (_event, ctx) => {
     const entrypoint = process.argv[1];
     if (!entrypoint || !isAbsolute(entrypoint)) throw new Error("Pi CLI entrypoint is not absolute");
@@ -850,9 +741,7 @@ export default function acyclic(pi: ExtensionAPI) {
     inboxController?.abort();
     if (inboxFailed) return;
     const task = ownTask;
-    if (!task || ownNativeSession !== ctx.sessionManager.getSessionId()) {
-      throw new Error("Pi inbox has no authenticated original caller task");
-    }
+    if (!task || ownNativeSession !== ctx.sessionManager.getSessionId()) throw new Error("Pi inbox has no authenticated original caller task");
     const controller = new AbortController();
     inboxController = controller;
     const previous = inboxWork;
@@ -943,9 +832,7 @@ export default function acyclic(pi: ExtensionAPI) {
     async execute(operation, input, signal, _update, ctx) {
       signal?.throwIfAborted();
       const path = builtinPath(input.path, ctx.cwd);
-      if (typeof input.content !== "string" || Buffer.byteLength(input.content) > maximumBuiltinBytes) {
-        throw new Error("Pi builtin write content exceeds its original bounded file IO");
-      }
+      if (typeof input.content !== "string" || Buffer.byteLength(input.content) > maximumBuiltinBytes) throw new Error("Pi builtin write content exceeds its original bounded file IO");
       builtinWritten(await builtinControl("NativeBuiltinWrite", ctx, { operation, path, content: input.content }, signal), operation);
       signal?.throwIfAborted();
       return { content: [{ type: "text" as const, text: `Successfully wrote to ${input.path}` }], details: undefined };
@@ -984,7 +871,7 @@ export default function acyclic(pi: ExtensionAPI) {
   pi.registerTool({
     name: "acyclic_spawn",
     label: "Spawn native Pi task",
-    description: "Prepare and admit a child through the owning service with fresh native context by default. Explicit native_cut inherits only this caller's pre-tool branch. Source selects workspace resources only, never another task's transcript. Missing acknowledgement remains uncertain; never spawn a replacement.",
+    description: "Spawn a fresh native child; native_cut inherits this caller's pre-tool branch. Source selects workspace only. Retain uncertain operations.",
     parameters: Type.Object({
       id: Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9_.-]+$" }),
       prompt: Type.String({ minLength: 1, maxLength: 262144 }),
@@ -996,7 +883,7 @@ export default function acyclic(pi: ExtensionAPI) {
       const model = ctx.model;
       if (!model) throw new Error("Pi has no selected native provider/model");
       const fields = { ...params, context: params.context ?? "scratch", provider: model.provider, model: model.id };
-      const result = await operations.run(ctx.sessionManager.getSessionId(), operation, { control: "Spawn", ...fields }, async () => {
+      const result = await operations(ctx.sessionManager.getSessionId(), operation, { control: "Spawn", ...fields }, async () => {
         const parentCut = fields.context === "native_cut"
           ? captureParentCut(ctx.sessionManager, operation, maximumContextEntries, maximumContextBytes)
           : undefined;
@@ -1008,17 +895,13 @@ export default function acyclic(pi: ExtensionAPI) {
         if (!prepared.child || typeof prepared.child !== "object") throw new Error("Pi service omitted the prepared child binding");
         const child = prepared.child as Record<string, unknown>;
         if (child.id !== params.id || typeof child.task !== "string" || typeof child.cwd !== "string" ||
-            !isAbsolute(child.cwd) || typeof child.session_file !== "string" || !isAbsolute(child.session_file)) {
-          throw new Error("Pi service returned an invalid child binding");
-        }
+            !isAbsolute(child.cwd) || typeof child.session_file !== "string" || !isAbsolute(child.session_file)) throw new Error("Pi service returned an invalid child binding");
         const childSession = nativeChildSession(ctx.sessionManager, child.cwd, parentCut);
         // No await separates revalidation from submission of the immutable commit.
         if (parentCut) {
           assertParentCutCurrent(ctx.sessionManager, operation, parentCut, maximumContextEntries, maximumContextBytes);
         }
-        if (ctx.model?.provider !== model.provider || ctx.model?.id !== model.id) {
-          throw new Error("Pi selected native provider/model changed before spawn admission");
-        }
+        if (ctx.model?.provider !== model.provider || ctx.model?.id !== model.id) throw new Error("Pi selected native provider/model changed before spawn admission");
         return await control("SpawnCommit", ctx, {
           operation, ...fields, cut: childSession.cut,
           native_session_id: childSession.native_session_id, session_bytes: childSession.session_bytes,
@@ -1045,11 +928,11 @@ export default function acyclic(pi: ExtensionAPI) {
   }
   pi.registerTool({
     name: "acyclic_wait", label: "Observe native task completion",
-    description: "Await the original task's actual terminal outcome through at most 120 passive nonblocking service observations over 30 seconds. Every observation retains the same operation and task; pending or uncertainty at the bound stays explicit.",
+    description: "Observe the original task for up to 120 polls/30 seconds; pending and uncertainty stay explicit.",
     parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 256 }) }, { additionalProperties: false }),
     async execute(operation, params, signal, _update, ctx) {
       const session = ctx.sessionManager.getSessionId();
-      return toolResult(await observePiTaskUntilTerminal(operation, async waiting => {
+      return toolResult(await observePiOperation(operation, async waiting => {
         if (ctx.sessionManager.getSessionId() !== session) throw new Error("Pi native session changed during task wait");
         return await control("TaskWait", ctx, { operation, ...params }, waiting);
       }, signal));
@@ -1061,7 +944,7 @@ export default function acyclic(pi: ExtensionAPI) {
   ]) {
     pi.registerTool({
       name: entry.name, label: entry.label,
-      description: "Read a bounded native-order page from an explicit directory of the authenticated selected source; omitted directory selects its root. Cursors stay bound to the original source generation and directory.",
+      description: "Page a selected source directory; omitted directory selects its root. Cursors retain their source generation and directory.",
       parameters: Type.Object({
         id: Type.String({ minLength: 1, maxLength: 256 }),
         directory: Type.Optional(Type.String({ maxLength: 4096 })),
@@ -1077,7 +960,7 @@ export default function acyclic(pi: ExtensionAPI) {
   const paths = Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 256, uniqueItems: true });
   pi.registerTool({
     name: "acyclic_import", label: "Import approved selected files",
-    description: "Import selected paths from an authenticated source into an already-authorized private task destination, leaving the source unchanged. Confirmation requests the merge; it grants no source-read or destination-write authority and never publishes to the physical root.",
+    description: "Import selected files into an authorized private destination; confirmation grants no authority and never publishes to the physical root.",
     parameters: Type.Object({
       source: Type.String({ minLength: 1, maxLength: 256 }),
       root: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
@@ -1090,7 +973,7 @@ export default function acyclic(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: "acyclic_writeback", label: "Write back approved root files",
-    description: "Prepare guarded writeback of explicitly selected paths to the original native root, preserving concurrent changes. Only actual native user approval of the exact prepared digest permits publication; model confirmation alone is insufficient.",
+    description: "Prepare selected root files for guarded writeback. Publication requires native user approval of the exact digest; model confirmation is insufficient.",
     parameters: Type.Object({
       source: Type.String({ minLength: 1, maxLength: 256 }), paths, confirm: Type.Boolean(),
       root: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
@@ -1100,14 +983,10 @@ export default function acyclic(pi: ExtensionAPI) {
       return toolResult(await effect("TaskWriteback", operation, params, ctx, signal,
         () => approvePiWriteback(operation, params, ctx, fields => control("TaskWriteback", ctx, fields, signal), signal, {
           prepared: descriptor => {
-            // An immediate native SDK progress event does not append history
-            // or mutate the branch retained by this still-running callback.
             _update?.(toolResult({ customType: writebackPreparedMessageType, ...descriptor }));
           },
           observe: (fields, waiting) => control("TaskWritebackStatus", ctx, fields, waiting),
           decide: async (id, digest, decision) => {
-            // Only the real native UI reaches this host callback. The protected
-            // operator claim is created inside the pinned CLI, never in Pi.
             try {
               const { stdout } = await execute(executable, [
                 "pi", "approve", "--session", ctx.sessionManager.getSessionId(),
@@ -1125,7 +1004,7 @@ export default function acyclic(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: "acyclic_model", label: "Select native Pi model",
-    description: "Observe or switch Pi's actual selected model through its native model registry. Does not change service authority or configured defaults.",
+    description: "Observe or switch the native model; service authority and defaults stay unchanged.",
     parameters: Type.Object({
       provider: Type.Optional(Type.String({ minLength: 1 })),
       model: Type.Optional(Type.String({ minLength: 1 })),
@@ -1143,7 +1022,7 @@ export default function acyclic(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: "acyclic_context", label: "Observe native Pi context",
-    description: "Observe actual Pi context usage and selected native branch identity, not Harness context/accounting parity.",
+    description: "Observe native context usage and selected branch identity.",
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute(_operation, _params, signal, _update, ctx) {
       signal?.throwIfAborted();
@@ -1159,8 +1038,7 @@ export default function acyclic(pi: ExtensionAPI) {
     description: "Observe retained task identities and durable outcomes without dispatching or repeating effects.",
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute(_id, _params, signal, _update, ctx) {
-      const result = await control("TaskStatus", ctx, {}, signal);
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+      return toolResult(await control("TaskStatus", ctx, {}, signal));
     },
   });
   pi.registerTool({
@@ -1169,8 +1047,7 @@ export default function acyclic(pi: ExtensionAPI) {
     description: "Order cancellation of an original retained task and its subtree; uncertain native cleanup remains explicit.",
     parameters: Type.Object({ task: Type.String({ format: "uuid" }) }, { additionalProperties: false }),
     async execute(_id, params, signal, _update, ctx) {
-      const result = await control("TaskCancel", ctx, { task: params.task }, signal);
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+      return toolResult(await control("TaskCancel", ctx, params, signal));
     },
   });
   pi.registerCommand("acyclic-doctor", {
@@ -1191,9 +1068,7 @@ export default function acyclic(pi: ExtensionAPI) {
         stdout = failure.stdout;
       }
       const report = JSON.parse(stdout);
-      if (report.schemaVersion !== 2 || typeof report.ok !== "boolean") {
-        throw new Error("Acyclic doctor returned an invalid report");
-      }
+      if (report.schemaVersion !== 2 || typeof report.ok !== "boolean") throw new Error("Acyclic doctor returned an invalid report");
       ctx.ui.notify(JSON.stringify(report), report.ok === true ? "info" : "warning");
     },
   });

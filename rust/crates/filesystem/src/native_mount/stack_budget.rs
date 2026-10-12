@@ -236,11 +236,9 @@ async fn lazy_workspace(
     );
     let checkout = lazy
         .workspace()
-        .engine_checkout(
+        .checkout(
             GenerationSelector::Head,
-            CheckoutMode::tracking_transaction(),
-        )
-        .await?;
+            CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let config = checkout.volume_config();
     let authored = Arc::new(CheckoutMountSource::new(
         Arc::new(SharedCheckout::with_publication(

@@ -333,7 +333,7 @@ fn json_schema_scope<'a>(
     }
     let before = io.receipt().items_examined;
     let _bytes;
-    let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, false)?;
+    let bytes = io.encode(value, io.remaining()?.bytes_encoded, false)?;
     _bytes = io.guard_owned(bytes.len() as u64)?;
     let items = io.receipt().items_examined.checked_sub(before)
         .ok_or_else(|| Error::Invalid("schema data witness counter underflow".into()))?;
@@ -485,7 +485,7 @@ fn compile_json_schema_engine<'a>(
     let _encoded;
     let encoded: acyclic_stream::OwnedBytes = match io {
         #[cfg(feature = "filesystem")]
-        Some(io) => io.encode_json(schema, io.remaining()?.bytes_encoded, false)?,
+        Some(io) => io.encode(schema, io.remaining()?.bytes_encoded, false)?,
         _ => serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?.into(),
     };
     #[cfg(feature = "filesystem")]

@@ -1955,7 +1955,7 @@ impl CompositeContentVerifier {
     #[cfg(feature = "filesystem")]
     fn finite_bound_reader(&self, volume: &VolumeRef, io: &crate::filesystem::PreparationIo) -> Result<&dyn ContentResidencyVerifier> {
         let key_hold;
-        let key = io.encode_json(volume, io.remaining()?.bytes_encoded, false)?;
+        let key = io.encode(volume, io.remaining()?.bytes_encoded, false)?;
         key_hold = io.guard_owned(key.len() as u64)?;
         volume.validate()?;
         let text = std::str::from_utf8(&key).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -2376,7 +2376,7 @@ pub(crate) fn decode_manifest_bounded(
         }
     }
     let mut failure = None;
-    let result = io.decode_preparation_seed_with_code(
+    let result = io.decode_seed(
         ManifestSeed { maximum: maximum_members, io, failure: &mut failure },
         bytes, crate::wire::ErrorCode::Invalid,
     );
@@ -2395,7 +2395,7 @@ pub(crate) fn decode_manifest_bounded(
         .ok_or_else(|| io.invalid("manifest ownership overflow"))?;
     decoded.substitute_owned(actual)?;
     let encoded_hold;
-    let encoded = io.encode_json(&decoded.value, io.remaining()?.bytes_encoded, false)?;
+    let encoded = io.encode(&decoded.value, io.remaining()?.bytes_encoded, false)?;
     encoded_hold = io.guard_bytes(&encoded)?;
     if encoded.as_ref() != bytes {
         return Err(io.invalid("attachment manifest is not canonical or complete"));
@@ -3761,7 +3761,7 @@ impl ConversationState {
         if through_sequence == self.messages.len() as u64 { return Ok(self.history_digest); }
         let mut previous = [0; 32];
         for message in self.messages.iter().take(through_sequence as usize) {
-            let encoded = io.encode_json(message, io.remaining()?.bytes_encoded, true)?;
+            let encoded = io.encode(message, io.remaining()?.bytes_encoded, true)?;
             let hash = acyclic_fs::WorkCounters {
                 bytes_hashed: encoded.len() as u64 + b"harness:conversation-prefix:v3\0".len() as u64 + 64,
                 items_examined: 1, ..Default::default()
@@ -5188,7 +5188,7 @@ mod tests {
         assert_eq!(sparse.page(0, 3, 1)?.len(), 1);
         candidate.id = Uuid::new_v4();
         candidate.sequence = 2;
-        let before = sparse.clone_with_work(&mut None)?;
+        let before = sparse.copy(&mut None, None)?.0;
         assert!(sparse.append(candidate).is_err());
         assert_eq!(sparse, before);
         Ok(())
