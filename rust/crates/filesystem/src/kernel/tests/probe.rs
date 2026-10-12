@@ -3,7 +3,7 @@ use super::*;
 use crate::foundation::VolumeId;
 use crate::kernel::{
     BlobChunkRef, BlobNode, BlobPage, CheckoutDependencies, Dependency, Extent, ExtentPage,
-    FileKind, FileMetadata, FileTablePage, InlineFileData, LogicalName, MetadataField,
+    FileKind, FileMetadata, FileTablePage, GenerationRoot, InlineFileData, LogicalName, MetadataField,
     NameEncoding, RebaseDecision, TreeEntry, TreePage, classify_rebase_async, encode_blob_page,
     encode_extent_page, encode_file_metadata, encode_file_table_page, encode_generation_root, encode_tree_page,
 };
