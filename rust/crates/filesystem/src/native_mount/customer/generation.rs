@@ -5,20 +5,6 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    /// Materializes this exact generation on the original native allowance.
-    pub async fn materialize_with_native_work(
-        &self,
-        options: &crate::MaterializeOptions,
-        work: &NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, MountLifecycleError> {
-        let workspace = self.workspace();
-        let reader = workspace.reader(self.id(), work, cancellation).await?;
-        super::super::materialize_checkout_with_work(&reader, options, work)
-            .await
-            .map_err(Into::into)
-    }
-
     /// Materializes this exact generation and binds its native capture owner.
     pub async fn prepare_native_working_set(
         &self,
@@ -52,14 +38,8 @@ where
         cancellation: &crate::CancellationToken,
         expected_root_identity: Option<NativeRootIdentity>,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
-        let standalone;
-        let work = if let Some(work) = mount.work.as_ref() {
-            work
-        } else {
-            standalone = NativeMaterializationWork::new(capture_budget, cancellation)
-                .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?;
-            &standalone
-        };
+        let original = mount.work(capture_budget, cancellation)?;
+        let work = &original;
         super::super::adapter::validate_native_source_io_binding(
             work,
             mount.native_original.as_ref(),
@@ -209,7 +189,6 @@ where
                     source_identity,
                     selected_root,
                     expected_generation,
-                    baseline,
                     writable: mount.writable,
                     _custody: custody,
                 })

@@ -449,6 +449,9 @@ async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
 async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let directory = tempfile::tempdir().expect("temporary directory");
     let workspaces = [
         WorkspaceId::from_bytes([0x61; 16]),
@@ -461,10 +464,7 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
                 workspace_id,
                 0,
                 lazy_state(workspace_id, 1),
-                &mut crate::kernel::KernelAccounting::standalone(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
+                &mut accounting
             )
             .await
             .expect("seed binding")
@@ -481,6 +481,11 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
             let owner = owner.clone();
             let committed = Arc::clone(&committed);
             tokio::spawn(async move {
+                let cancellation = crate::CancellationToken::new();
+                let mut accounting = crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                );
                 let mut wins = 0_u64;
                 for round in 0..64_usize {
                     let (workspace_id, floor) = committed
@@ -488,13 +493,7 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
                         .expect("binding slot");
                     let floor_before_load = floor.load(Ordering::SeqCst);
                     let current = owner
-                        .load_lazy_workspace(
-                            *workspace_id,
-                            &mut crate::kernel::KernelAccounting::standalone(
-                                crate::WorkBudget::UNBOUNDED,
-                                &crate::CancellationToken::new(),
-                            ),
-                        )
+                        .load_lazy_workspace(*workspace_id, &mut accounting)
                         .await
                         .expect("load binding")
                         .expect("binding is present");
@@ -514,10 +513,7 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
                             *workspace_id,
                             expected_revision,
                             replacement,
-                            &mut crate::kernel::KernelAccounting::standalone(
-                                crate::WorkBudget::UNBOUNDED,
-                                &crate::CancellationToken::new(),
-                            ),
+                            &mut accounting,
                         )
                         .await
                         .expect("swap binding")
@@ -539,13 +535,7 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
     let mut cached = Vec::new();
     for (workspace_id, floor) in committed.iter() {
         let state = owner
-            .load_lazy_workspace(
-                *workspace_id,
-                &mut crate::kernel::KernelAccounting::standalone(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                ),
-            )
+            .load_lazy_workspace(*workspace_id, &mut accounting)
             .await
             .expect("load final binding")
             .expect("final binding is present");
@@ -563,13 +553,7 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
     for state in cached {
         assert_eq!(
             durable
-                .load_lazy_workspace(
-                    state.workspace_id,
-                    &mut crate::kernel::KernelAccounting::standalone(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new()
-                    )
-                )
+                .load_lazy_workspace(state.workspace_id, &mut accounting)
                 .await
                 .expect("load durable binding"),
             Some(state)

@@ -30,7 +30,7 @@ impl ReducerRegistry {
         entrypoint: EntrypointRef,
         reducer: fn(&[(String, serde_json::Value)]) -> Result<crate::Outcome<serde_json::Value>>,
     ) -> Result<()> {
-        crate::contract::compile_json_schema(&entrypoint.result_schema, "reducer result", None)?;
+        crate::contract::compile_json_schema(&entrypoint.result_schema, "reducer result", &mut None)?;
         if self.get(&entrypoint).is_some() {
             return Err(Error::Conflict("reducer is already registered".into()));
         }

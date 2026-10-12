@@ -64,7 +64,7 @@ impl PiSession {
         use acyclic_harness::filesystem::{TaskCommandHost as _, TaskCommandProgress, TOOL_TASK_COMMAND_KIND};
         let live = native.live_source(request.caller, work).await?
             .ok_or_else(|| invalid("builtin caller has no current original native invocation"))?;
-        crate::pi_builtin::authorize_owner(live.context.context(), &live.owner, request.caller, work).await?;
+        crate::pi_builtin::authorize_owner(live.context.as_ref(), &live.owner, request.caller, work).await?;
         if live.binding.task_id != request.caller {
             return Err(invalid("builtin command substituted the original native task binding"));
         }

@@ -205,7 +205,7 @@ pub(super) fn measured_record_path(
     allocation: &mut crate::materializer::NativeAllocation,
 ) -> Result<PathBuf, LocalCoreStateStoreError> {
     let mut owned = work.path(root, Some(Path::new(leaf)))?;
-    owned.1.resize_retained(owned.0.capacity() as u64)?;
+    owned.1.resize(owned.0.capacity() as u64)?;
     allocation.absorb(&mut owned.1)?;
     Ok(owned.0)
 }

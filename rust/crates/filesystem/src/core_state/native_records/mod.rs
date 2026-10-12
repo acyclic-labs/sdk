@@ -200,7 +200,7 @@ pub(super) fn clone_native_record_value(
         RecordValue::ChildIndex(value) => RecordValue::ChildIndex(*value),
         RecordValue::LazyWorkspace(value) => RecordValue::LazyWorkspace(value.clone()),
     };
-    held.substitute(native_record_owned_bytes(&value, work)?)?;
+    held.resize(native_record_owned_bytes(&value, work)?)?;
     Ok((value, held))
 }
 
@@ -254,7 +254,7 @@ fn read<T: DeserializeOwned>(
     };
     let mut value = map(value);
     value.normalize(Some(work))?;
-    held.substitute(native_record_owned_bytes(&value, work)?)?;
+    held.resize(native_record_owned_bytes(&value, work)?)?;
     Ok(Some((value, held)))
 }
 
