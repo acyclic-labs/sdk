@@ -73,8 +73,7 @@ impl DarwinStopController {
         let state = StopState {
             control: DarwinRecoveryControl {
                 prepared_direct: Some(DirectDetach::new(
-                    Some(Arc::clone(resources)),
-                    destination,
+                    Arc::clone(&resources.startup.destination),
                     original,
                 )?),
                 prepared_diskutil: Some(Diskutil::prepare(original)?),

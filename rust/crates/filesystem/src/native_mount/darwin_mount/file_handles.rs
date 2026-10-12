@@ -14,24 +14,34 @@ impl DarwinMountContext {
             _ => return Err(driver_errno(libc::EINVAL)),
         }
         let handle = self.allocate_handle().map_err(driver_errno)?;
-        let written = shared(work, AtomicU64::new(written))?;
+        let entry = shared(
+            work,
+            DarwinOwned::empty(FileHandle {
+                file_id: lookup.node.file_id,
+                file: Mutex::new(None),
+                written: AtomicU64::new(written),
+            }),
+        )?;
         let mut files = self.files.write().map_err(|_| driver_errno(libc::EIO))?;
         grow_map(&mut files, work)?;
-        copying(
-            work,
-            copy_work(std::mem::size_of::<(u64, FileHandle)>() as u64),
-            || {
-                files.insert(
-                    handle,
-                    FileHandle {
-                        file_id: lookup.node.file_id,
-                        file: None,
-                        written,
-                    },
-                )
-            },
-        )?;
+        work.charge(copy_work(
+            std::mem::size_of::<(u64, Arc<DarwinOwned<FileHandle>>)>() as u64,
+        ))?;
+        files.insert(handle, entry);
         Ok(handle)
+    }
+
+    fn handle(
+        &self,
+        handle: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Arc<DarwinOwned<FileHandle>>, NativeMountError> {
+        let files = self.files.read().map_err(|_| driver_errno(libc::EIO))?;
+        work.charge(scan_work(files.capacity() as u64))?;
+        files
+            .get(&handle)
+            .cloned()
+            .ok_or_else(|| driver_errno(libc::ESTALE))
     }
 
     pub(super) fn file_target(
@@ -46,35 +56,38 @@ impl DarwinMountContext {
                 written: None,
             });
         }
-        let (file_id, written) = {
-            let files = self.files.read().map_err(|_| driver_errno(libc::EIO))?;
-            work.charge(scan_work(files.capacity() as u64))?;
-            let entry = files
-                .get(&handle)
-                .ok_or_else(|| driver_errno(libc::ESTALE))?;
-            let written = Some(Arc::clone(&entry.written));
-            if let Some((file, custody)) = &entry.file {
-                return Ok(FileTarget {
-                    file: (Arc::clone(file), custody.clone()),
-                    written,
-                });
+        let entry = self.handle(handle, work)?;
+        let bound = entry
+            .file
+            .lock()
+            .map_err(|_| driver_errno(libc::EIO))?
+            .clone();
+        let file = match bound {
+            Some(file) => file,
+            None => {
+                let (file, lookup) = self.source.open_file_with_lookup_with_meter(path, work)?;
+                let file = retained_file(work, file)?;
+                if lookup.node.file_id != entry.file_id {
+                    return Err(driver_errno(libc::ESTALE));
+                }
+                // Close may have removed the handle while the source was opening it.
+                let files = self.files.read().map_err(|_| driver_errno(libc::EIO))?;
+                work.charge(scan_work(files.capacity() as u64))?;
+                if !files.contains_key(&handle) {
+                    return Err(driver_errno(libc::ESTALE));
+                }
+                let file = entry
+                    .file
+                    .lock()
+                    .map_err(|_| driver_errno(libc::EIO))?
+                    .get_or_insert(file)
+                    .clone();
+                file
             }
-            (entry.file_id, written)
         };
-        let (file, lookup) = self.source.open_file_with_lookup_with_meter(path, work)?;
-        let file = retained_file(work, file)?;
-        if lookup.node.file_id != file_id {
-            return Err(driver_errno(libc::ESTALE));
-        }
-        let mut files = self.files.write().map_err(|_| driver_errno(libc::EIO))?;
-        work.charge(scan_work(files.capacity() as u64))?;
-        let entry = files
-            .get_mut(&handle)
-            .ok_or_else(|| driver_errno(libc::ESTALE))?;
-        let (file, custody) = entry.file.get_or_insert(file);
         Ok(FileTarget {
-            file: (Arc::clone(file), custody.clone()),
-            written,
+            file,
+            written: Some(entry),
         })
     }
 
@@ -109,13 +122,13 @@ impl DarwinMountContext {
         )?;
         if let Some(detached) = detached {
             let detached = retained_file(work, detached)?;
-            let mut files = self.files.write().map_err(|_| driver_errno(libc::EIO))?;
+            let files = self.files.read().map_err(|_| driver_errno(libc::EIO))?;
             work.charge(scan_work(files.capacity() as u64))?;
             for entry in files
-                .values_mut()
+                .values()
                 .filter(|entry| entry.file_id == lookup.node.file_id)
             {
-                entry.file = Some((Arc::clone(&detached.0), detached.1.clone()));
+                *entry.file.lock().map_err(|_| driver_errno(libc::EIO))? = Some(detached.clone());
             }
         }
         Ok(())
@@ -147,7 +160,7 @@ impl DarwinMountContext {
         let result = mutation(target.file.0.as_ref()).map_err(NativeMountError::from);
         let sequence = self.ledger.record();
         if let Some(written) = target.written {
-            written.fetch_max(sequence, Ordering::AcqRel);
+            written.written.fetch_max(sequence, Ordering::AcqRel);
         }
         result.and_then(|value| {
             self.admit_write(work)?;
@@ -164,25 +177,17 @@ impl DarwinMountContext {
         if handle == 0 {
             return self.lookup(path, work);
         }
-        let (file_id, file) = {
-            let files = self.files.read().map_err(|_| driver_errno(libc::EIO))?;
-            work.charge(scan_work(files.capacity() as u64))?;
-            let entry = files
-                .get(&handle)
-                .ok_or_else(|| driver_errno(libc::ESTALE))?;
-            (
-                entry.file_id,
-                entry
-                    .file
-                    .as_ref()
-                    .map(|(file, custody)| (Arc::clone(file), custody.clone())),
-            )
-        };
+        let entry = self.handle(handle, work)?;
+        let file = entry
+            .file
+            .lock()
+            .map_err(|_| driver_errno(libc::EIO))?
+            .clone();
         let lookup = match file {
             Some((file, _custody)) => file.lookup_with_meter(work)?,
             None => self.lookup(path, work)?,
         };
-        if lookup.node.file_id != file_id {
+        if lookup.node.file_id != entry.file_id {
             return Err(driver_errno(libc::ESTALE));
         }
         Ok(lookup)

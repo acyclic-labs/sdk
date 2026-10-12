@@ -10,10 +10,9 @@ pub(super) struct DarwinMountContext {
     pub(super) mount_uid: u32,
     pub(super) mount_gid: u32,
     pub(super) next_handle: AtomicU64,
-    pub(super) next_inode: AtomicU64,
     pub(super) inodes: Mutex<DarwinOwned<HashMap<FileId, u64>>>,
     pub(super) forgotten: AtomicU64,
-    pub(super) files: RwLock<DarwinOwned<HashMap<u64, FileHandle>>>,
+    pub(super) files: RwLock<DarwinOwned<HashMap<u64, Arc<DarwinOwned<FileHandle>>>>>,
     pub(super) directories:
         Mutex<DarwinOwned<HashMap<u64, Arc<DarwinOwned<Mutex<DirectoryHandle>>>>>>,
     pub(super) ledger: FlushLedger,

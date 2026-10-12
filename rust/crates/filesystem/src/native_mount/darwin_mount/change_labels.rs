@@ -40,11 +40,10 @@ impl ChangeLabels {
         let mut rows = vector(work, labels.len())?;
         for issued in labels.values() {
             let path = clone_path(&issued.path, work)?;
-            copying(
-                work,
-                copy_work(std::mem::size_of::<(DarwinOwned<MountPath>, MountLookup)>() as u64),
-                || rows.push((path, issued.lookup)),
-            )?;
+            work.charge(copy_work(
+                std::mem::size_of::<(DarwinOwned<MountPath>, MountLookup)>() as u64,
+            ))?;
+            rows.push((path, issued.lookup));
         }
         Ok(Some(rows))
     }
@@ -98,22 +97,17 @@ impl DarwinMountContext {
         }
         let path = clone_path(path, work)?;
         let label = self.changes.fresh();
-        copying(
-            work,
-            copy_work(std::mem::size_of::<IssuedLabel>() as u64),
-            || {
-                labels.insert(
-                    lookup.node.file_id,
-                    IssuedLabel {
-                        label,
-                        stamp,
-                        binding,
-                        path,
-                        lookup,
-                    },
-                )
+        work.charge(copy_work(std::mem::size_of::<IssuedLabel>() as u64))?;
+        labels.insert(
+            lookup.node.file_id,
+            IssuedLabel {
+                label,
+                stamp,
+                binding,
+                path,
+                lookup,
             },
-        )?;
+        );
         Ok(label)
     }
 }

@@ -104,8 +104,10 @@ pub(crate) fn test_oversized_transaction_array_rejected() -> Result<(), JsValue>
     operations.set_length(2_049);
     decode_authored_transactions(
         operations.into(),
-        FilesystemProfile::Posix,
-        VolumeLimits::default(),
+        VolumeConfig {
+            profile: FilesystemProfile::Posix,
+            ..VolumeConfig::portable(Lifecycle::Ephemeral)
+        },
     )
     .map(|_| ())
 }

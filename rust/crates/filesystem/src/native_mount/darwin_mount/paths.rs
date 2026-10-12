@@ -40,14 +40,11 @@ fn build_path<'a>(
         let mut name = Vec::new();
         name.try_reserve_exact(part.len())?;
         path.claim_more((name.capacity() - part.len()) as u64, work)?;
-        copying(
-            work,
-            copy_work(part.len() as u64 + std::mem::size_of::<Vec<u8>>() as u64),
-            || {
-                name.extend_from_slice(part);
-                path.components.push(name);
-            },
-        )?;
+        work.charge(copy_work(
+            part.len() as u64 + std::mem::size_of::<Vec<u8>>() as u64,
+        ))?;
+        name.extend_from_slice(part);
+        path.components.push(name);
     }
     Ok(path)
 }
@@ -86,10 +83,9 @@ pub(super) fn native_name(
         .checked_add(1)
         .ok_or(crate::WorkError::Overflow)? as u64;
     let mut value = vector(work, bytes as usize)?;
-    copying(work, copy_work(bytes), || {
-        value.extend_from_slice(name);
-        value.push(0);
-    })?;
+    work.charge(copy_work(bytes))?;
+    value.extend_from_slice(name);
+    value.push(0);
     Ok(value.map(|value| CString::from_vec_with_nul(value).expect("validated native name")))
 }
 
@@ -152,9 +148,8 @@ pub(super) fn copy_variable_result(
         return Err(driver_errno(libc::ERANGE));
     }
     // SAFETY: `output` is a non-null bridge buffer of `length` bytes and `bytes` fits in it (checked above).
-    copying(work, copy_work(bytes.len() as u64), || unsafe {
-        ptr::copy_nonoverlapping(bytes.as_ptr(), output.cast(), bytes.len())
-    })?;
+    work.charge(copy_work(bytes.len() as u64))?;
+    unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), output.cast(), bytes.len()) };
     c_int::try_from(bytes.len()).map_err(|_| driver_errno(libc::EOVERFLOW))
 }
 

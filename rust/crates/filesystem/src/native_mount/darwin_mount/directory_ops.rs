@@ -20,25 +20,19 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
         let mut directory = DirectoryHandle::new(path, binding, epochs);
         directory.keep_current(context, work)?;
         let allocated = context.allocate_handle().map_err(driver_errno)?;
-        let directory = shared(work, Mutex::new(directory))?;
+        let directory = shared(work, DarwinOwned::empty(Mutex::new(directory)))?;
         let mut directories = context
             .directories
             .lock()
             .map_err(|_| driver_errno(libc::EIO))?;
         grow_map(&mut directories, work)?;
-        copying(
-            work,
-            copy_work(
-                std::mem::size_of::<(u64, Arc<DarwinOwned<Mutex<DirectoryHandle>>>)>() as u64,
-            ),
-            || directories.insert(allocated, directory),
-        )?;
+        work.charge(copy_work(
+            std::mem::size_of::<(u64, Arc<DarwinOwned<Mutex<DirectoryHandle>>>)>() as u64,
+        ))?;
+        directories.insert(allocated, directory);
         // SAFETY: the bridge supplies a writable handle slot.
-        copying(
-            work,
-            copy_work(std::mem::size_of::<u64>() as u64),
-            || unsafe { handle.write(allocated) },
-        )?;
+        work.charge(copy_work(std::mem::size_of::<u64>() as u64))?;
+        unsafe { handle.write(allocated) };
         Ok(0)
     })
 }

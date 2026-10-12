@@ -78,17 +78,6 @@ pub(super) fn owned<T>(
     })
 }
 
-pub(super) fn copying<T>(
-    work: &crate::NativeMaterializationWork,
-    delta: crate::WorkCounters,
-    copy: impl FnOnce() -> T,
-) -> Result<T, NativeMountError> {
-    work.admit(delta)?;
-    let value = copy();
-    work.record_admitted(delta)?;
-    Ok(value)
-}
-
 pub(super) fn vector<T>(
     work: &crate::NativeMaterializationWork,
     count: usize,
@@ -115,12 +104,13 @@ pub(super) fn vector<T>(
 
 pub(super) fn shared<T>(
     work: &crate::NativeMaterializationWork,
-    value: T,
+    mut value: DarwinOwned<T>,
 ) -> Result<Arc<DarwinOwned<T>>, NativeMountError> {
     let bytes = std::mem::size_of::<DarwinOwned<T>>()
         .checked_add(2 * std::mem::size_of::<usize>())
         .ok_or(crate::WorkError::Overflow)? as u64;
-    Ok(Arc::new(owned(work, bytes, || Ok(value))?))
+    value.claim_more(bytes, work)?;
+    Ok(Arc::new(value))
 }
 
 pub(super) fn grow_map<K: std::hash::Hash + Eq, V>(
@@ -166,7 +156,8 @@ pub(super) fn grow_map<K: std::hash::Hash + Eq, V>(
         .as_mut()
         .expect("funded map")
         .reconcile_capacity(actual)?;
-    copying(work, copied, || replacement.extend(map.drain()))?;
+    work.charge(copied)?;
+    replacement.extend(map.drain());
     drop(std::mem::replace(map, replacement));
     Ok(())
 }
@@ -222,7 +213,8 @@ pub(super) fn grow_bytes(
     let copied = copy_work(value.len() as u64);
     work.admit(copied)?;
     let mut next = vector(work, capacity)?;
-    copying(work, copied, || next.extend_from_slice(value))?;
+    work.charge(copied)?;
+    next.extend_from_slice(value);
     drop(std::mem::replace(value, next));
     Ok(())
 }

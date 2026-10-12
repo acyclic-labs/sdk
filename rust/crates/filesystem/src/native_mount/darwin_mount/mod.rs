@@ -9,9 +9,9 @@ use super::view_ledger::{copy_work, same_work, scan_work};
 use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
     MountAttributeWriteMode, MountDirectoryEntry, MountFilesystem, MountLookup, MountNodeKind,
-    MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin, ViewStamp, create_metadata,
-    metadata_or, system_time_ns,
+    MountOpenFile, MountPath, MountRangeAllocation, MountSourceError, NativeMountError,
+    NativeMountRequest, ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or,
+    system_time_ns,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};

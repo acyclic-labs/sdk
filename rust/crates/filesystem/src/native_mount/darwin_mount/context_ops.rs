@@ -14,11 +14,8 @@ impl DarwinMountContext {
         verify_guard(callback_guard.as_ref(), source_original_work.as_ref())?;
         let mut inodes = DarwinOwned::empty(HashMap::new());
         grow_map(&mut inodes, work)?;
-        copying(
-            work,
-            copy_work(std::mem::size_of::<(FileId, u64)>() as u64),
-            || inodes.insert(root_file_id, ROOT_INODE),
-        )?;
+        work.charge(copy_work(std::mem::size_of::<(FileId, u64)>() as u64))?;
+        inodes.insert(root_file_id, ROOT_INODE);
         let (handler_budget, handler_cancellation) = {
             let meter = work.state.lock();
             (meter.budget, meter.cancellation().clone())
@@ -28,12 +25,14 @@ impl DarwinMountContext {
             writable,
             mount_uid: uid,
             mount_gid: gid,
-            handler_failure: shared(work, Mutex::new(DarwinCallbackState::default()))?,
+            handler_failure: shared(
+                work,
+                DarwinOwned::empty(Mutex::new(DarwinCallbackState::default())),
+            )?,
             handler_budget,
             handler_cancellation,
             startup_meter: Mutex::new(crate::native_mount::NativeMountMeterActivation::default()),
             next_handle: AtomicU64::new(1),
-            next_inode: AtomicU64::new(ROOT_INODE + 1),
             inodes: Mutex::new(inodes),
             forgotten: AtomicU64::new(0),
             files: RwLock::new(DarwinOwned::empty(HashMap::new())),
@@ -195,16 +194,15 @@ impl DarwinMountContext {
         if let Some(inode) = inodes.get(&file_id) {
             return Ok(*inode);
         }
-        let inode = self.next_inode.fetch_add(1, Ordering::Relaxed);
+        let inode = (inodes.len() as u64)
+            .checked_add(1)
+            .ok_or_else(|| driver_errno(libc::EOVERFLOW))?;
         if inode <= ROOT_INODE || inode == u64::MAX {
             return Err(driver_errno(libc::EOVERFLOW));
         }
         grow_map(&mut inodes, work)?;
-        copying(
-            work,
-            copy_work(std::mem::size_of::<(FileId, u64)>() as u64),
-            || inodes.insert(file_id, inode),
-        )?;
+        work.charge(copy_work(std::mem::size_of::<(FileId, u64)>() as u64))?;
+        inodes.insert(file_id, inode);
         Ok(inode)
     }
 

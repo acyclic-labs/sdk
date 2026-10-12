@@ -128,13 +128,13 @@ fn close_publishes_only_what_its_handle_wrote() -> TestResult {
     let created = context.open(&path, context.ledger.latest(), &work)?;
     let before = epoch()?;
     context.flush_on_close(created, &work)?;
-    assert_ne!(epoch()?, before, "closing the creating handle publishes");
+    assert_ne!(epoch()?, before);
 
     let reader = context.open(&path, 0, &work)?;
     let before = epoch()?;
     context.flush_on_close(reader, &work)?;
     context.sync(&work)?;
-    assert_eq!(epoch()?, before, "a clean close or sync publishes nothing");
+    assert_eq!(epoch()?, before);
 
     context.mutate_file(
         &path,
@@ -144,11 +144,11 @@ fn close_publishes_only_what_its_handle_wrote() -> TestResult {
     )?;
     let before = epoch()?;
     context.flush_on_close(reader, &work)?;
-    assert_ne!(epoch()?, before, "a written handle's close publishes");
+    assert_ne!(epoch()?, before);
     let before = epoch()?;
     context.flush_on_close(reader, &work)?;
     context.sync(&work)?;
-    assert_eq!(epoch()?, before, "published writes are not published again");
+    assert_eq!(epoch()?, before);
 
     context.mutate_file(
         &path,
@@ -159,11 +159,7 @@ fn close_publishes_only_what_its_handle_wrote() -> TestResult {
     context.flush_on_close(reader, &work)?;
     let before = epoch()?;
     context.sync(&work)?;
-    assert_ne!(
-        epoch()?,
-        before,
-        "a sync publishes every acknowledged write"
-    );
+    assert_ne!(epoch()?, before);
     Ok(())
 }
 
@@ -188,9 +184,9 @@ fn manual_close_and_fsync_publish_nothing_until_sync() -> TestResult {
     context.flush_on_close(reader, &work)?;
     context.flush_on_close(created, &work)?;
     context.sync(&work)?;
-    assert_eq!(epoch()?, before, "manual close and fsync publish nothing");
+    assert_eq!(epoch()?, before);
     source.sync()?;
-    assert_ne!(epoch()?, before, "an explicit mount sync publishes");
+    assert_ne!(epoch()?, before);
     Ok(())
 }
 
@@ -212,12 +208,8 @@ fn change_labels_advance_exactly_for_objects_that_changed() -> TestResult {
         )?;
     }
     let (root_label, first_label, second_label) = (label(&root)?, label(&first)?, label(&second)?);
-    assert_eq!(
-        label(&first)?,
-        first_label,
-        "an unchanged file keeps its label"
-    );
-    assert_ne!(first_label, second_label, "objects never share a label");
+    assert_eq!(label(&first)?, first_label);
+    assert_ne!(first_label, second_label);
 
     context.mutate_file(
         &first,
@@ -225,35 +217,21 @@ fn change_labels_advance_exactly_for_objects_that_changed() -> TestResult {
         |file| file.write_range(0, Bytes::from_static(b"written")),
         &work,
     )?;
-    assert!(
-        label(&first)? > first_label,
-        "a written file gets a new label"
-    );
-    assert_eq!(label(&second)?, second_label, "other files keep theirs");
-    assert_eq!(
-        label(&root)?,
-        root_label,
-        "a content write keeps the listing"
-    );
+    assert!(label(&first)? > first_label);
+    assert_eq!(label(&second)?, second_label);
+    assert_eq!(label(&root)?, root_label);
 
     source.remove(&second, None, &work)?;
-    assert!(
-        label(&root)? > root_label,
-        "a namespace change relabels its directory"
-    );
+    assert!(label(&root)? > root_label);
 
     let first_label = label(&first)?;
     context.forget_view();
-    assert!(
-        label(&first)? > first_label,
-        "an invalidation relabels everything"
-    );
+    assert!(label(&first)? > first_label);
 
     let lookup = source.lookup(&first)?.ok_or("file absent")?;
     assert_ne!(
         context.change_label(&first, lookup, None, &work)?,
-        context.change_label(&first, lookup, None, &work)?,
-        "a source without stamps never repeats a label"
+        context.change_label(&first, lookup, None, &work)?
     );
     Ok(())
 }
@@ -278,8 +256,7 @@ fn an_unconfirmed_fence_waits_only_for_what_changed() -> TestResult {
     assert!(
         !context
             .run(false, |work| context.revalidate(work))
-            .map_err(os)?,
-        "unchanged labels do not require waiting out the attribute timeout"
+            .map_err(os)?
     );
     assert_eq!(context.attributes(&path, 0, &work)?.change, label);
 
@@ -297,8 +274,7 @@ fn an_unconfirmed_fence_waits_only_for_what_changed() -> TestResult {
     assert!(
         context
             .run(false, |work| context.revalidate(work))
-            .map_err(os)?,
-        "a change the fence could not confirm requires waiting out the attribute timeout"
+            .map_err(os)?
     );
     Ok(())
 }
@@ -319,13 +295,9 @@ fn attributes_observed_before_a_change_never_take_a_later_label() -> TestResult 
     let current = context.change_label(&path, written, Some(after), &work)?;
     assert_eq!(
         context.change_label(&path, written, Some(after), &work)?,
-        current,
-        "attributes observed after the change share its label"
+        current
     );
-    assert!(
-        context.change_label(&path, created, Some(before), &work)? > current,
-        "attributes observed before it get a label of their own"
-    );
+    assert!(context.change_label(&path, created, Some(before), &work)? > current);
     Ok(())
 }
 
@@ -342,7 +314,7 @@ fn revalidation_waits_out_the_attribute_timeout_for_changes_around_the_mount() -
         Ok((began, uptime(&work)?))
     };
     let (began, ended) = barrier()?;
-    assert!(ended - began < REPLY_DELIVERY_SLACK, "an unchanged view");
+    assert!(ended - began < REPLY_DELIVERY_SLACK);
 
     // SAFETY: the name is NUL-terminated and `context` outlives the call.
     let status = unsafe {
@@ -356,19 +328,13 @@ fn revalidation_waits_out_the_attribute_timeout_for_changes_around_the_mount() -
     };
     assert_eq!(status, 0);
     let (began, ended) = barrier()?;
-    assert!(
-        ended - began < REPLY_DELIVERY_SLACK,
-        "the client learns of the mount's own changes from their replies"
-    );
+    assert!(ended - began < REPLY_DELIVERY_SLACK);
 
     let waits_out_the_timeout = || -> TestResult {
         let (began, ended) = barrier()?;
-        assert!(
-            ended.as_secs() >= (began + REPLY_DELIVERY_SLACK).as_secs() + timeout,
-            "every attribute cached before the barrier expired"
-        );
+        assert!(ended.as_secs() >= (began + REPLY_DELIVERY_SLACK).as_secs() + timeout);
         let (began, ended) = barrier()?;
-        assert!(ended - began < REPLY_DELIVERY_SLACK, "once per change");
+        assert!(ended - began < REPLY_DELIVERY_SLACK);
         Ok(())
     };
     source.create_file(
@@ -400,10 +366,7 @@ fn a_barrier_waits_only_for_callbacks_that_began_before_it() -> TestResult {
             Ok::<_, NativeMountError>(())
         }
     });
-    assert!(
-        finished.recv_timeout(Duration::from_millis(50)).is_err(),
-        "an earlier callback holds the barrier"
-    );
+    assert!(finished.recv_timeout(Duration::from_millis(50)).is_err());
     let later = gate.enter();
     drop(earlier);
     finished.recv_timeout(Duration::from_secs(5))?;
@@ -441,7 +404,7 @@ fn only_a_publishing_source_leaves_writes_unstable() -> TestResult {
         let answer = unsafe {
             acyclic_fs_darwin_mount_durable_writes(std::ptr::from_ref(&context) as usize)
         };
-        assert_eq!(answer, durable, "{publication:?}");
+        assert_eq!(answer, durable);
     }
     Ok(())
 }
@@ -458,8 +421,7 @@ fn handles_keep_the_node_they_opened() -> TestResult {
             .lookup_handle(&path, closed_unused, &work)?
             .node
             .file_id,
-        created.node.file_id,
-        "attributes need no source file"
+        created.node.file_id
     );
 
     let read = context.open(&path, 0, &work)?;
@@ -540,7 +502,7 @@ fn named_attribute_probes_need_no_source_call_without_attributes() -> TestResult
         &work,
     )?;
     assert!(context.may_have_named_attributes(&path, &work)?);
-    assert_eq!(probe(), 6, "a present attribute is read from the source");
+    assert_eq!(probe(), 6);
     Ok(())
 }
 
@@ -591,12 +553,12 @@ fn content_changes_stamp_modification_and_status_times() -> TestResult {
     let (MetadataField::Value(modified), MetadataField::Value(changed)) = times()? else {
         return Err("write dropped a time".into());
     };
-    assert!(modified > 1 && changed > 1, "a write stamps both times");
+    assert!(modified > 1 && changed > 1);
     context.mutate_file(&path, 0, |file| file.resize(1), &work)?;
     let (MetadataField::Value(resized), _) = times()? else {
         return Err("resize dropped a time".into());
     };
-    assert!(resized >= modified, "a truncation stamps the time again");
+    assert!(resized >= modified);
     Ok(())
 }
 
@@ -677,10 +639,7 @@ fn macos_revalidation_shows_changes_made_around_the_mount() -> TestResult {
     );
     let began = Instant::now();
     mount.revalidate(&work)?;
-    assert!(
-        began.elapsed() < REPLY_DELIVERY_SLACK,
-        "the mount's own changes need no wait"
-    );
+    assert!(began.elapsed() < REPLY_DELIVERY_SLACK);
 
     source.write_range(
         &MountPath::root().child(b"changed".to_vec()),
@@ -695,7 +654,7 @@ fn macos_revalidation_shows_changes_made_around_the_mount() -> TestResult {
     )?;
     mount.revalidate(&work)?;
     assert_eq!(std::fs::metadata(&changed)?.len(), 5);
-    assert!(created.is_file(), "the absent name is looked up again");
+    assert!(created.is_file());
     let mut listed = names()?;
     listed.sort();
     assert_eq!(listed, ["changed", "created"]);
@@ -727,11 +686,7 @@ fn macos_server_answers_only_the_kernel() -> TestResult {
         .collect::<Vec<_>>();
     let _ = stream.write_all(&bytes);
     let mut reply = [0_u8; 4];
-    assert_eq!(
-        stream.read(&mut reply).unwrap_or(0),
-        0,
-        "the server closes a user process's connection unanswered"
-    );
+    assert_eq!(stream.read(&mut reply).unwrap_or(0), 0);
     std::fs::write(temporary.path().join("still-served"), b"kernel")?;
     assert_eq!(
         std::fs::read(temporary.path().join("still-served"))?,
@@ -767,10 +722,10 @@ fn macos_locks_exclude_other_processes() -> TestResult {
         .open(&path)?;
     // SAFETY: `file` owns a live descriptor for each call.
     assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) }, 0);
-    assert!(!contender(flock)?, "a held flock excludes another process");
+    assert!(!contender(flock)?);
     // SAFETY: as above.
     assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) }, 0);
-    assert!(contender(flock)?, "a released flock admits another process");
+    assert!(contender(flock)?);
     let region = libc::flock {
         l_start: 0,
         l_len: 0,
@@ -783,12 +738,9 @@ fn macos_locks_exclude_other_processes() -> TestResult {
         unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &raw const region) },
         0
     );
-    assert!(
-        !contender(fcntl)?,
-        "a held record lock excludes another process"
-    );
+    assert!(!contender(fcntl)?);
     drop(file);
-    assert!(contender(fcntl)?, "closing releases the record lock");
+    assert!(contender(fcntl)?);
     assert!(mount.stop()?);
     Ok(())
 }
@@ -808,8 +760,7 @@ fn macos_mode_bits_deny_access() -> TestResult {
             .open(&path)
             .err()
             .map(|error| error.kind()),
-        Some(std::io::ErrorKind::PermissionDenied),
-        "a read-only file refuses a writer"
+        Some(std::io::ErrorKind::PermissionDenied)
     );
     let script = temporary.path().join("script");
     std::fs::write(&script, b"#!/bin/sh\nexit 0\n")?;
@@ -821,8 +772,7 @@ fn macos_mode_bits_deny_access() -> TestResult {
         )
         .err()
         .map(|error| error.kind()),
-        Some(std::io::ErrorKind::PermissionDenied),
-        "a file without an execute bit does not run"
+        Some(std::io::ErrorKind::PermissionDenied)
     );
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
     assert!(
@@ -953,10 +903,7 @@ fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestRe
     );
     assert!(unrecorded.is_current(&context, &work)?);
     context.forget_view();
-    assert!(
-        !unrecorded.is_current(&context, &work)?,
-        "a forgotten view invalidates every page"
-    );
+    assert!(!unrecorded.is_current(&context, &work)?);
 
     let epochless = DirectoryHandle::new(DarwinOwned::empty(MountPath::root()), None, None);
     assert!(!epochless.is_current(&context, &work)?);

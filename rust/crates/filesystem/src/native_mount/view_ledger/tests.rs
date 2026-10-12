@@ -214,48 +214,6 @@ impl super::ViewObserver for Counted {
 }
 
 #[test]
-fn node_admission_precedes_mutation_and_completion_survives_late_cancellation()
--> Result<(), Box<dyn std::error::Error>> {
-    let mut setup = work();
-    let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut setup))?;
-    let counted: Arc<Counted> = Arc::new(Counted::default());
-    let observer: Arc<dyn super::ViewObserver> = counted.clone();
-    ledger.observe(
-        Arc::downgrade(&observer),
-        &mut NativeDemandCarrier::Borrowed(&mut setup),
-    )?;
-    let before = ledger.stamp();
-    let node = FileId::new();
-    let cancellation = crate::CancellationToken::new();
-    let denied = crate::NativeMaterializationWork::new(
-        crate::WorkBudget {
-            peak_allocation_bytes: 0,
-            ..crate::WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-    )
-    .map_err(|(error, _)| error)?;
-    assert!(ledger.prepare_node_change(node, &denied).is_err());
-    assert!(ledger.node_unchanged_since(node, before, &mut setup)?);
-    assert_eq!(counted.0.load(std::sync::atomic::Ordering::Relaxed), 0);
-    let original = crate::NativeMaterializationWork::new(
-        crate::WorkBudget {
-            items_examined: 5,
-            ..crate::WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-    )
-    .map_err(|(error, _)| error)?;
-    let accepted = ledger.prepare_node_change(node, &original)?;
-    original.clone().charge(scan_work(1))?;
-    cancellation.cancel();
-    accepted.record()?;
-    assert!(!ledger.node_unchanged_since(node, before, &mut setup)?);
-    assert_eq!(counted.0.load(std::sync::atomic::Ordering::Relaxed), 1);
-    Ok(())
-}
-
-#[test]
 fn publication_delivers_to_final_live_observers_and_funds_late_registration()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut setup = work();

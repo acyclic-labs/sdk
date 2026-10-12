@@ -20,41 +20,26 @@ pub(super) struct DirectDetach {
 
 impl DirectDetach {
     pub(super) fn new(
-        resources: Option<Arc<DriverSessionResources>>,
-        destination: &Path,
+        path: Arc<DarwinOwned<CString>>,
         original: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        let path = if resources.is_none() {
-            Some(native_name(destination.as_os_str().as_bytes(), original)?)
-        } else {
-            None
-        };
-        let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = if resources.is_some() {
-            original
-                .reserve_work(WRITE_WORK)?
-                .into_runtime_credit()?
-                .runtime_meter()
-        } else {
-            original.runtime_meter()
-        };
+        let meter = original
+            .reserve_work(WRITE_WORK)?
+            .into_runtime_credit()?
+            .runtime_meter();
         let operation = acyclic_native_runtime::NativeOperationReservation::new(
             Arc::clone(&meter),
             acyclic_native_runtime::NativeOperationKind::Write,
             1,
         )
         .map_err(|error| NativeMountError::from(original.runtime_error(error)))?;
-        let prepared = resources.is_some();
         let retained = original.allocation_work();
         let task = acyclic_native_runtime::run_blocking_io(
             move || {
-                let path = resources.as_ref().map_or_else(
-                    || path.as_ref().expect("recovery path").as_ptr(),
-                    |resources| resources.startup.destination.as_ptr(),
-                );
                 let mut operation = operation;
                 let (status, recorded) = operation.attempt(|| {
                     // SAFETY: the closure owns the terminated path through the syscall.
-                    if unsafe { libc::unmount(path, libc::MNT_FORCE) } == 0 {
+                    if unsafe { libc::unmount(path.as_ptr(), libc::MNT_FORCE) } == 0 {
                         Ok(0)
                     } else {
                         Err(std::io::Error::last_os_error())
@@ -62,7 +47,7 @@ impl DirectDetach {
                 });
                 status.and_then(|status| recorded.map(|()| status))
             },
-            Some((meter, prepared)),
+            Some((meter, true)),
         )
         .map_err(|error| NativeMountError::from(original.runtime_error(error)))?;
         Ok(Self {
@@ -241,7 +226,13 @@ impl DarwinRecoveryControl {
                 self.direct = match self.prepared_direct.take() {
                     Some(task) => Some(task),
                     None if resources.is_some() => None,
-                    None => Some(DirectDetach::new(None, destination, work.original)?),
+                    None => Some(DirectDetach::new(
+                        shared(
+                            work.original,
+                            native_name(destination.as_os_str().as_bytes(), work.original)?,
+                        )?,
+                        work.original,
+                    )?),
                 };
                 let deadline = Instant::now() + DIRECT_UNMOUNT_TIMEOUT;
                 while self.direct.is_some() {

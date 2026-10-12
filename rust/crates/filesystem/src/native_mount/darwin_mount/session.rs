@@ -5,7 +5,7 @@ pub(in crate::native_mount) struct DarwinMountSession {
     pub(super) destination: Arc<DarwinOwned<CString>>,
     pub(super) thread: Option<JoinHandle<c_int>>,
     pub(super) loop_finished_before_teardown: Option<bool>,
-    pub(super) loop_result: Option<Result<c_int, Mutex<Option<Box<dyn std::any::Any + Send>>>>>,
+    pub(super) loop_result: Option<Result<c_int, NativeMountError>>,
     pub(super) teardown_complete: bool,
     pub(super) unmount: Arc<DarwinStopController>,
     pub(super) handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
@@ -29,13 +29,12 @@ impl DarwinMountSession {
                     .checked_add(2)
                     .ok_or(crate::WorkError::Overflow)?;
                 let mut terminated = vector(work, capacity)?;
-                copying(work, copy_work(path.len() as u64 + 1), || {
-                    if path.first() != Some(&b'/') {
-                        terminated.push(b'/');
-                    }
-                    terminated.extend_from_slice(path);
-                    terminated.push(0);
-                })?;
+                work.charge(copy_work(path.len() as u64 + 1))?;
+                if path.first() != Some(&b'/') {
+                    terminated.push(b'/');
+                }
+                terminated.extend_from_slice(path);
+                terminated.push(0);
                 let terminated = terminated.map(CString::from_vec_with_nul);
                 let path = terminated
                     .value
@@ -225,17 +224,10 @@ impl DarwinMountSession {
                 Ok(status) => Err(NativeMountError::DarwinTeardown(
                     DarwinTeardownFailure::LoopExited(*status),
                 )),
-                Err(panic) => Err(panic
-                    .get_mut()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take()
-                    .map_or(
-                        NativeMountError::Lifecycle("Darwin mount loop panicked"),
-                        |panic| NativeMountError::DriverPanicked {
-                            operation: "Darwin mount loop shutdown",
-                            panic: Mutex::new(panic),
-                        },
-                    )),
+                Err(error) => Err(std::mem::replace(
+                    error,
+                    NativeMountError::Lifecycle("Darwin mount loop panicked"),
+                )),
             };
             if result.is_ok() {
                 self.teardown_complete = true;
@@ -290,13 +282,12 @@ impl DarwinMountSession {
             } else {
                 work.read()?;
             }
-            self.loop_result = Some(
-                self.thread
-                    .take()
-                    .expect("admitted loop")
-                    .join()
-                    .map_err(|panic| Mutex::new(Some(panic))),
-            );
+            self.loop_result = Some(self.thread.take().expect("admitted loop").join().map_err(
+                |panic| NativeMountError::DriverPanicked {
+                    operation: "Darwin mount loop shutdown",
+                    panic: Mutex::new(panic),
+                },
+            ));
         }
         if let Some(resources) = &mut self.resources {
             let resources = Arc::get_mut(resources).ok_or(NativeMountError::ControlPending)?;

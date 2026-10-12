@@ -106,7 +106,7 @@ impl DarwinMountSession {
         let owned = (
             Arc::clone(session.resources.as_ref().expect("new resources")),
             Arc::clone(&session.unmount),
-            Some(original.clone()),
+            original.clone(),
         );
         let allocation = original.claim(
             (std::mem::size_of_val(&owned)
@@ -116,7 +116,8 @@ impl DarwinMountSession {
             crate::WorkCounters::UNCHARGED,
         )?;
         let owned = (owned.0, owned.1, owned.2, allocation);
-        let name = copying(original, copy_work(name.len() as u64), || name.to_owned())?;
+        original.charge(copy_work(name.len() as u64))?;
+        let name = name.to_owned();
         original.charge(WRITE_WORK)?;
         session.thread = Some(
             std::thread::Builder::new()
@@ -268,17 +269,13 @@ fn start_stat(
 }
 
 fn run_loop(
-    mut owned: (
+    (resources, controller, original, _allocation): (
         Arc<DriverSessionResources>,
         Arc<DarwinStopController>,
-        Option<crate::NativeMaterializationWork>,
+        crate::NativeMaterializationWork,
         crate::NativeAllocation,
     ),
 ) -> c_int {
-    let (resources, controller, original, _) = &owned;
-    let original = original
-        .as_ref()
-        .expect("born loop retains original execution");
     let mut state = controller
         .state
         .lock()
@@ -323,7 +320,7 @@ fn run_loop(
                     buffers.destination.as_ptr(),
                     Arc::as_ptr(&resources.context) as usize,
                     report_mounted,
-                    Arc::as_ptr(controller).cast_mut().cast(),
+                    Arc::as_ptr(&controller).cast_mut().cast(),
                     &mut interrupted,
                 )
             };
@@ -338,9 +335,9 @@ fn run_loop(
             status
         }
     };
-    owned.1.provider_exited.store(true, Ordering::Release);
-    owned.1.changed.notify_all();
-    drop(owned.2.take());
-    owned.1.finish(&owned.0);
+    controller.provider_exited.store(true, Ordering::Release);
+    controller.changed.notify_all();
+    drop(original);
+    controller.finish(&resources);
     status
 }
