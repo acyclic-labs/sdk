@@ -16,20 +16,14 @@ use crate::memory::{Allocation, MemoryOutput};
 
 /// Custody of the actual SDK-owned generated DTO fields.
 pub(crate) struct WireFunding<'a> {
-    #[cfg(not(target_arch = "wasm32"))]
     meter: WireMeter<'a>,
-    #[cfg(target_arch = "wasm32")]
-    _meter: WireMeter<'a>,
     allocation: Allocation,
 }
 
 impl<'a> WireFunding<'a> {
     pub(crate) fn new(meter: WireMeter<'a>) -> Self {
         Self {
-            #[cfg(not(target_arch = "wasm32"))]
             meter,
-            #[cfg(target_arch = "wasm32")]
-            _meter: meter,
             #[cfg(not(target_arch = "wasm32"))]
             allocation: meter.map(ReadAllocation::empty),
             #[cfg(target_arch = "wasm32")]
@@ -96,10 +90,7 @@ impl<'a> WireFunding<'a> {
     }
 
     pub(crate) fn meter(&self) -> WireMeter<'a> {
-        #[cfg(not(target_arch = "wasm32"))]
-        { self.meter }
-        #[cfg(target_arch = "wasm32")]
-        { self._meter }
+        self.meter
     }
 
     pub(crate) fn examine(&self, items: u64) -> std::io::Result<()> {

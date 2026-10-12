@@ -314,91 +314,9 @@ impl<G> std::fmt::Debug for PreparedOwnedBytesFailure<G> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use acyclic_native_runtime::NativeOperationKind;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-    struct Meter {
-        cancelled: AtomicBool,
-        attempts: AtomicU64,
-        memory: AtomicU64,
-        limit: AtomicU64,
-    }
-
-    impl Meter {
-        fn new() -> Self {
-            Self {
-                cancelled: AtomicBool::new(false), attempts: AtomicU64::new(0),
-                memory: AtomicU64::new(0),
-                limit: AtomicU64::new(u64::MAX),
-            }
-        }
-
-        fn admit_allocation(&self, operation: bool) -> io::Result<()> {
-            let operations = self.attempts.load(AtomicOrdering::Relaxed)
-                .checked_add(u64::from(operation));
-            if operations.is_none_or(|value| value > self.limit.load(AtomicOrdering::Relaxed))
-            {
-                return Err(io::ErrorKind::OutOfMemory.into());
-            }
-            Ok(())
-        }
-    }
-
-    impl NativeReadMeter for Meter {
-        fn check(&self) -> io::Result<()> {
-            if self.cancelled.load(AtomicOrdering::Relaxed) {
-                Err(io::ErrorKind::Interrupted.into())
-            } else { Ok(()) }
-        }
-        fn allocate(&self, bytes: u64) -> io::Result<()> {
-            self.check()?;
-            self.admit_allocation(true)?;
-            self.attempts.fetch_add(1, AtomicOrdering::Relaxed);
-            self.memory.fetch_add(bytes, AtomicOrdering::Relaxed);
-            Ok(())
-        }
-        fn reserve_allocation(&self, _: u64) -> io::Result<()> { Err(io::ErrorKind::Unsupported.into()) }
-        fn cancel_reserved_allocation(&self, _: u64) {}
-        fn record_reserved_allocation(&self, _: u64) -> io::Result<()> { Err(io::ErrorKind::Unsupported.into()) }
-        fn allocation_failed(&self, _: std::collections::TryReserveError) -> io::Error {
-            io::ErrorKind::OutOfMemory.into()
-        }
-        fn allocate_refcount_header(&self) -> io::Result<()> { self.allocate(0) }
-        fn adopt(&self, bytes: u64) -> io::Result<()> {
-            self.check()?;
-            self.admit_allocation(false)?;
-            self.memory.fetch_add(bytes, AtomicOrdering::Relaxed);
-            Ok(())
-        }
-        fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>) {
-            self.memory.fetch_add(bytes, AtomicOrdering::Relaxed);
-            let recorded = self.admit_allocation(false).and_then(|()| self.check());
-            (bytes, recorded)
-        }
-        fn release(&self, bytes: u64) {
-            assert!(self.memory.fetch_sub(bytes, AtomicOrdering::Relaxed) >= bytes);
-        }
-        fn reserve_operations(&self, _: NativeOperationKind, _: u64) -> io::Result<()> { self.check() }
-        fn cancel_reserved_operations(&self, _: NativeOperationKind, _: u64) {}
-        fn record_reserved_operation(&self, _: NativeOperationKind) -> io::Result<()> { Ok(()) }
-        fn admit_write_bytes(&self, _: usize) -> io::Result<()> { self.check() }
-        fn reserve_bytes(&self, _: NativeOperationKind, _: u64) -> io::Result<()> { self.check() }
-        fn cancel_reserved_bytes(&self, _: NativeOperationKind, _: u64) {}
-        fn record_reserved_bytes(&self, _: NativeOperationKind, _: u64, _: u64) -> io::Result<()> { Ok(()) }
-        fn examine(&self, _: u64, _: u64) -> io::Result<()> { self.check() }
-        fn admit_examination(&self, _: u64, _: u64) -> io::Result<()> { self.check() }
-        fn record_examination(&self, _: u64, _: u64) -> io::Result<()> { Ok(()) }
-        fn admit_bytes(&self, _: usize) -> io::Result<()> { self.check() }
-        fn admit_read(&self, _: usize) -> io::Result<()> { self.check() }
-        fn admit_operations(&self, _: u64) -> io::Result<()> { self.check() }
-        fn record_operations(&self, _: u64) -> io::Result<()> { Ok(()) }
-        fn record_read(&self, _: usize) -> io::Result<()> { Ok(()) }
-        fn admit_write(&self, _: usize) -> io::Result<()> { self.check() }
-        fn record_write(&self, _: usize) -> io::Result<()> { Ok(()) }
-        fn admit_write_operations(&self, _: u64) -> io::Result<()> { self.check() }
-        fn record_write_operations(&self, _: u64) -> io::Result<()> { Ok(()) }
-        fn admit_durability(&self) -> io::Result<()> { self.check() }
-    }
+    use crate::test_meter::Meter;
 
     fn funded_data(meter: &Arc<dyn NativeReadMeter>, maximum: usize) -> (Vec<u8>, ReadAllocation) {
         let mut guard = ReadAllocation::new(meter, maximum).unwrap();
@@ -411,7 +329,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn serde_keeps_byte_array_wire_without_deserialized_native_custody() {
-        let observer = Arc::new(Meter::new());
+        let observer = Arc::new(Meter::default());
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
         let (mut data, guard) = funded_data(&meter, 3);
         data[..3].copy_from_slice(b"abc");
@@ -425,11 +343,11 @@ mod tests {
 
     #[test]
     fn final_write_freeze_and_aliasing_need_no_late_admission() {
-        let observer = Arc::new(Meter::new());
+        let observer = Arc::new(Meter::default());
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
         let (data, guard) = funded_data(&meter, 23);
         let mut builder = PreparedOwnedBytes::new(data, guard, meter).unwrap();
-        let retained = observer.memory.load(AtomicOrdering::Relaxed);
+        let retained = observer.held.load(AtomicOrdering::Relaxed);
         observer.limit.store(3, AtomicOrdering::Relaxed);
         observer.cancelled.store(true, AtomicOrdering::Relaxed);
         builder.writable()[..4].copy_from_slice(b"done");
@@ -440,32 +358,32 @@ mod tests {
         let empty_alias = bytes.slice(0..0);
         drop(bytes);
         drop(last_alias);
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), retained);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), retained);
         assert!(empty_alias.is_empty());
         drop(empty_alias);
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), 0);
     }
 
     #[test]
     fn wrong_length_preserves_the_same_writable_owner() {
-        let observer = Arc::new(Meter::new());
+        let observer = Arc::new(Meter::default());
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
         let (data, guard) = funded_data(&meter, 11);
         let mut builder = PreparedOwnedBytes::new(data, guard, meter).unwrap();
         let maximum = builder.maximum_len();
-        let retained = observer.memory.load(AtomicOrdering::Relaxed);
+        let retained = observer.held.load(AtomicOrdering::Relaxed);
         builder = builder.freeze(maximum + 1).unwrap_err();
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), retained);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), retained);
         builder.writable()[0] = 7;
         let bytes = builder.freeze(1).unwrap();
         assert_eq!(bytes.as_slice(), &[7]);
         drop(bytes);
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), 0);
     }
 
     #[test]
     fn invalid_initialization_keeps_original_data_claim_until_drop() {
-        let observer = Arc::new(Meter::new());
+        let observer = Arc::new(Meter::default());
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
         let (mut data, guard) = funded_data(&meter, 13);
         let capacity = data.capacity();
@@ -473,15 +391,15 @@ mod tests {
         let failure = PreparedOwnedBytes::new(data, guard, meter).unwrap_err();
         assert!(matches!(failure.error(), PreparedOwnedBytesError::NotFullyInitialized));
         assert_eq!(failure.retained_capacity(), capacity);
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), capacity as u64);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), capacity as u64);
         drop(failure);
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), 0);
     }
 
 
     #[test]
     fn cancellation_before_construction_preserves_original_cause_and_data() {
-        let observer = Arc::new(Meter::new());
+        let observer = Arc::new(Meter::default());
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
         let (data, guard) = funded_data(&meter, 9);
         let capacity = data.capacity();
@@ -491,9 +409,9 @@ mod tests {
             PreparedOwnedBytesError::Admission(error) => assert_eq!(error.kind(), io::ErrorKind::Interrupted),
             _ => panic!("original cancellation cause is retained"),
         }
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), capacity as u64);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), capacity as u64);
         drop(failure);
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), 0);
     }
 
     struct OriginalGuard {
@@ -503,13 +421,13 @@ mod tests {
     }
     impl Drop for OriginalGuard {
         fn drop(&mut self) {
-            self.memory_at_drop.store(self.meter.memory.load(AtomicOrdering::Relaxed), AtomicOrdering::Relaxed);
+            self.memory_at_drop.store(self.meter.held.load(AtomicOrdering::Relaxed), AtomicOrdering::Relaxed);
         }
     }
 
     #[test]
     fn original_data_claim_retires_after_owner_metadata() {
-        let observer = Arc::new(Meter::new());
+        let observer = Arc::new(Meter::default());
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
         let memory_at_drop = Arc::new(AtomicU64::new(u64::MAX));
         let (data, allocation) = funded_data(&meter, 17);
@@ -521,7 +439,7 @@ mod tests {
         assert_eq!(memory_at_drop.load(AtomicOrdering::Relaxed), u64::MAX);
         drop(last);
         assert_eq!(memory_at_drop.load(AtomicOrdering::Relaxed), capacity as u64);
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), 0);
     }
 
 
@@ -598,14 +516,14 @@ mod tests {
 
     #[test]
     fn guarded_take_rejects_before_touching_original_custody() {
-        let observer = Arc::new(Meter::new());
+        let observer = Arc::new(Meter::default());
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
         let (data, guard) = funded_data(&meter, 17);
         let pointer = data.as_ptr();
         let capacity = data.capacity();
         let bytes = OwnedBytes::from_vec_with_guard(data, guard, meter.clone()).unwrap();
-        let attempts = observer.attempts.load(AtomicOrdering::Relaxed);
-        let retained = observer.memory.load(AtomicOrdering::Relaxed);
+        let attempts = observer.allocations.load(AtomicOrdering::Relaxed);
+        let retained = observer.held.load(AtomicOrdering::Relaxed);
         observer.cancelled.store(true, AtomicOrdering::Relaxed);
         observer.limit.store(attempts, AtomicOrdering::Relaxed);
         let recovered = bytes.try_into_ordinary_vec().unwrap_err();
@@ -613,14 +531,14 @@ mod tests {
         assert_eq!(recovered.as_slice(), vec![0; capacity]);
         assert_eq!(recovered.retained_capacity(), Some(capacity));
         assert!(recovered.matches_meter(&meter));
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), retained);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), retained);
         drop(recovered);
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), 0);
     }
 
     #[test]
     fn denied_in_place_transfer_keeps_original_vector_and_guard() {
-        let observer = Arc::new(Meter::new());
+        let observer = Arc::new(Meter::default());
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
         let memory_at_drop = Arc::new(AtomicU64::new(u64::MAX));
         let (mut data, allocation) = funded_data(&meter, 23);
@@ -631,8 +549,8 @@ mod tests {
         let mut guard = Some(OriginalGuard {
             _allocation: allocation, meter: observer.clone(), memory_at_drop: memory_at_drop.clone(),
         });
-        let attempts = observer.attempts.load(AtomicOrdering::Relaxed);
-        let retained = observer.memory.load(AtomicOrdering::Relaxed);
+        let attempts = observer.allocations.load(AtomicOrdering::Relaxed);
+        let retained = observer.held.load(AtomicOrdering::Relaxed);
         observer.limit.store(attempts, AtomicOrdering::Relaxed);
         let error = OwnedBytes::from_vec_with_guard_in_place(&mut data, &mut guard, meter.clone())
             .unwrap_err();
@@ -646,7 +564,7 @@ mod tests {
         assert!(Arc::ptr_eq(original._allocation.meter(), &meter));
         assert_eq!(original._allocation.bytes(), capacity as u64);
         assert_eq!(memory_at_drop.load(AtomicOrdering::Relaxed), u64::MAX);
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), retained);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), retained);
 
         observer.limit.store(u64::MAX, AtomicOrdering::Relaxed);
         let bytes = OwnedBytes::from_vec_with_guard_in_place(&mut data, &mut guard, meter.clone())
@@ -658,12 +576,12 @@ mod tests {
         assert_eq!(bytes.retained_capacity(), Some(capacity));
         drop(bytes);
         assert_eq!(memory_at_drop.load(AtomicOrdering::Relaxed), retained);
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), 0);
     }
 
     #[test]
     fn immutable_transfer_promotes_controls_before_late_cancellation() {
-        let observer = Arc::new(Meter::new());
+        let observer = Arc::new(Meter::default());
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
         let (mut data, guard) = funded_data(&meter, 21);
         let capacity = data.capacity();
@@ -671,28 +589,28 @@ mod tests {
         let bytes = OwnedBytes::from_vec_with_guard(data, guard, meter.clone()).unwrap();
         assert_eq!(bytes.retained_capacity(), Some(capacity));
         assert!(bytes.matches_meter(&meter));
-        let retained = observer.memory.load(AtomicOrdering::Relaxed);
+        let retained = observer.held.load(AtomicOrdering::Relaxed);
         observer.cancelled.store(true, AtomicOrdering::Relaxed);
         observer.limit.store(3, AtomicOrdering::Relaxed);
         let alias = bytes.slice(0..0);
         drop(bytes);
         assert!(alias.is_empty());
         assert_eq!(alias.retained_capacity(), Some(capacity));
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), retained);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), retained);
         drop(alias);
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), 0);
     }
 
     #[test]
     fn consuming_failure_returns_original_cause_after_payload_retirement() {
-        let observer = Arc::new(Meter::new());
+        let observer = Arc::new(Meter::default());
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
         let (data, guard) = funded_data(&meter, 7);
-        observer.limit.store(observer.attempts.load(AtomicOrdering::Relaxed), AtomicOrdering::Relaxed);
+        observer.limit.store(observer.allocations.load(AtomicOrdering::Relaxed), AtomicOrdering::Relaxed);
         let failure = OwnedBytes::from_vec_with_guard(data, guard, meter).unwrap_err();
-        assert!(observer.memory.load(AtomicOrdering::Relaxed) > 0);
+        assert!(observer.held.load(AtomicOrdering::Relaxed) > 0);
         let cause = failure.into_error();
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
+        assert_eq!(observer.held.load(AtomicOrdering::Relaxed), 0);
         match cause {
             PreparedOwnedBytesError::Admission(error) => assert_eq!(error.kind(), io::ErrorKind::OutOfMemory),
             _ => panic!("original IO cause moves without boxing"),
