@@ -670,7 +670,7 @@ impl NativeExistingLazyVolume {
                 .ok_or_else(|| Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout))?;
             let workspace = binding.host.open_volume_with_native_work(binding.volume, work).await?;
             let generation = binding.host.generation_with_native_work(&workspace, binding.generation, work).await?;
-            let actual = mount.snapshot_with_work(&work, work.cancellation()).await?;
+            let actual = mount.snapshot(&work, work.cancellation()).await?;
             if &actual != snapshot || snapshot.workspace_id != workspace.id()
                 || snapshot.authored_generation != generation.id()
             {
@@ -739,7 +739,7 @@ where P: StreamProvider,
         self.require_work(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             self.check(work).await?;
-            let snapshot = self.mount.snapshot_with_work(&work, work.cancellation())
+            let snapshot = self.mount.snapshot(&work, work.cancellation())
                 .await?;
             self.check(work).await?;
             Ok(snapshot)
@@ -750,7 +750,7 @@ where P: StreamProvider,
         self.require_work(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             self.check(work).await?;
-            let snapshot = match self.mount.publication_snapshot_with_work(
+            let snapshot = match self.mount.publication_snapshot(
                 &work, work.cancellation(),
             ).await {
                 Ok(snapshot) => snapshot,
@@ -814,8 +814,8 @@ where P: StreamProvider,
         crate::NativeFutureBundle::new(work, || async move {
             self.check(work).await?;
             let callback = Arc::clone(&self.callback);
-            let result = self.mount.sync_with_permit_work_guarded(
-                permit, &work, work.cancellation(),
+            let result = self.mount.sync_with_permit(
+                permit, &work,
                 move |actual: &NativeMaterializationWork| {
                     let callback = Arc::clone(&callback);
                     let actual = actual.clone();
@@ -1556,10 +1556,9 @@ where
                 let (attachment_path, path_custody) = work.path(&mapping.path, None)?;
                 let attachment = (acyclic_fs::MaterializeOptions::native(attachment_path), path_custody);
                 let native_original = Some(&volume_work);
-                let view = generation.attach_native_working_set_with_work(
-                    &mount, &attachment.0, identity, manifest.options.work_per_volume,
-                    &volume_work, cancellation, Some(sdk),
-                    native_original,
+                let view = generation.attach_native_working_set(
+                    &mount.native_context(&volume_work, Some(sdk), native_original),
+                    &attachment.0, identity, manifest.options.work_per_volume, cancellation,
                 ).await?;
                 owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
                 verify_binding(owner, binding, &volume_work)?;
@@ -1889,8 +1888,8 @@ where
                 ..acyclic_fs::WorkCounters::default() })?;
             match &volume.view {
                 NativePreparedVolumeBackend::Materialized { view, .. } => {
-                    view.validate_for_presentation_with_work(&volume._work, volume._work.cancellation()).await?;
-                    view.verify_unchanged_with_work(&volume._work, volume._work.cancellation()).await?;
+                    view.validate_for_presentation(&volume._work).await?;
+                    view.verify_unchanged(&volume._work).await?;
                 },
                 NativePreparedVolumeBackend::HeldLazy(lazy) => {
                     let NativeVolumeNamespace::LazyMount { snapshot } = &mapping.namespace else {
@@ -1946,7 +1945,7 @@ where
                 if !mapping.writable {
                     let snapshot = match &volume.view {
                         NativePreparedVolumeBackend::Materialized { view, .. } =>
-                            view.verify_unchanged_with_work(&volume._work, volume._work.cancellation()).await?,
+                            view.verify_unchanged(&volume._work).await?,
                         NativePreparedVolumeBackend::HeldLazy(lazy) => {
                             let NativeVolumeNamespace::LazyMount { snapshot } = &mapping.namespace else {
                                 return Err(Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout));
@@ -1988,8 +1987,8 @@ where
                 let result = match &volume.view {
                     NativePreparedVolumeBackend::Materialized { view, callback } => {
                         let callback = Arc::clone(callback);
-                        view.sync_with_permit_with_work(
-                            volume.publication, &volume._work, volume._work.cancellation(),
+                        view.sync_with_permit(
+                            volume.publication, &volume._work,
                             move |actual: &NativeMaterializationWork| {
                                 let callback = Arc::clone(&callback);
                                 let actual = actual.clone();

@@ -616,7 +616,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     assert_eq!(foreign.receipt().source_bytes_read, 0);
     fixture.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
     fixture.lazy_mount.as_ref().expect("actual fixture lazy mount")
-        .abandon_with_work(&fixture.lazy_work.as_ref().expect("original seeded volume work").clone())?;
+        .abandon(&fixture.lazy_work.as_ref().expect("original seeded volume work").clone())?;
     Ok(())
 }
 
@@ -1163,13 +1163,13 @@ where
                     std::path::Path::new("src"), true)?;
                 let mut allocation = volume_work.claim(std::mem::size_of::<acyclic_fs::LazyMount<
                     A, O, acyclic_fs::NativeDemandSource, acyclic_fs::MemoryLazyWorkspaceStore>>() as u64, 1, Default::default())?;
-                let mut mount = lazy.mount_with_work(&path, acyclic_fs::MountOptions::read_only()
-                    .publication(acyclic_fs::MountPublication::Manual), Some(callback),
-                    &volume_work, volume_work.cancellation(), Some(&volume_work))
+                let mut mount = lazy.mount(&path, acyclic_fs::MountOptions::read_only()
+                    .publication(acyclic_fs::MountPublication::Manual)
+                    .native_context(&volume_work, Some(callback), Some(&volume_work)))
                     .await?;
                 mount.retain_payload_allocation(&mut allocation)?;
                 let mount = Arc::new(mount);
-                let snapshot = mount.snapshot_with_work(&volume_work, volume_work.cancellation())
+                let snapshot = mount.snapshot(&volume_work, volume_work.cancellation())
                     .await?;
                 let native_source = crate::filesystem::FsRootNativeSource::from_lazy(
                     Arc::clone(&lazy), work,
