@@ -32,11 +32,11 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
         VolumeOwner::Project("selected-project".into()))?;
     fixture.filesystem.create_volume(&project).await?;
     let agent = fixture.signed.agent().ok_or_else(|| Error::Invalid("fixture agent".into()))?;
-    fixture.signed = fixture.issuer.root_for_agent(agent, "owner", Capabilities::new(
+    fixture.signed = fixture.issuer.issue("owner", &Capabilities::new(
         fixture.signed.capabilities().iter().chain([
             project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
         ].iter().map(String::as_str)),
-    ));
+    ), Some(agent), None, &mut None).expect("scope proof");
     fixture.scope = RuntimeScope::new(fixture.signed.capabilities().clone(), Limits::default())?;
     let old = put(&fixture, &project, "src/a.txt", b"old", "old").await?;
     let next = put(&fixture, &project, "src/b.txt", b"other", "other").await?;
@@ -116,7 +116,7 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
         kind: AggregateKind::Task, id: "foreign-task-owner".into(),
     });
     let agent = fixture.signed.agent().ok_or_else(|| Error::Invalid("fixture agent".into()))?;
-    let signed = foreign_issuer.root_for_agent(agent, "owner", fixture.signed.capabilities().clone());
+    let signed = foreign_issuer.issue("owner", fixture.signed.capabilities(), Some(agent), None, &mut None).expect("scope proof");
     let foreign = FilesystemTaskRuntime::open(
         fixture.stream.clone(), fixture.filesystem.clone(), &fixture.volume, &foreign_issuer.verifier(&mut None).expect("verifier copy"),
         &signed, &fixture.scope, &fixture.tasks, &fixture.machines, &fixture.tools,
@@ -160,11 +160,11 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         VolumeOwner::Project("restore".into()))?;
     fixture.filesystem.create_volume(&project).await?;
     let agent = fixture.signed.agent().ok_or_else(|| Error::Invalid("fixture agent".into()))?;
-    fixture.signed = fixture.issuer.root_for_agent(agent, "owner", Capabilities::new(
+    fixture.signed = fixture.issuer.issue("owner", &Capabilities::new(
         fixture.signed.capabilities().iter().chain([
             project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
         ].iter().map(String::as_str)),
-    ));
+    ), Some(agent), None, &mut None).expect("scope proof");
     fixture.scope = RuntimeScope::new(fixture.signed.capabilities().clone(), Limits::default())?;
     let runtime = runtime(&fixture).await?;
     let lease = fixture.admit(&runtime).await?;
@@ -199,10 +199,10 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
 
     let authority = Authority { kind: AggregateKind::Conversation, id: "restore-history".into() };
     let issuer = AuthorityIssuer::new("restore", [132; 32], authority.clone());
-    let signed = issuer.root_for_agent(agent, "owner", Capabilities::new(
+    let signed = issuer.issue("owner", &Capabilities::new(
         fixture.signed.capabilities().iter().chain(["conversation:bind", "conversation:append", "fork:publish"]),
-    ));
-    let reader = Arc::new(FilesystemContentVerifier::new(fixture.filesystem.clone(), &issuer.verifier(), &signed, 65_536, None)?);
+    ), Some(agent), None, &mut None).expect("scope proof");
+    let reader = Arc::new(FilesystemContentVerifier::new(fixture.filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?);
     let stream_provider = ProviderRef::new("restore", "stream", "2")?;
     let forks = Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536)?),
@@ -222,7 +222,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let original_revision = history.reducer().revision();
     let workspace = fs.open_workspace(project.storage_name()?).await.map_err(|e| Error::Storage(e.to_string()))?;
     ContentGrant::verify(&fixture.issuer.verifier(), &fixture.signed, &project, VolumeOperation::Write)?;
-    let restricted = fixture.issuer.root_for_agent(agent, "read-only", Capabilities::new([project.capability(VolumeOperation::Read)?]));
+    let restricted = fixture.issuer.issue("read-only", &Capabilities::new([project.capability(VolumeOperation::Read)?]), Some(agent), None, &mut None).expect("scope proof");
     assert!(ContentGrant::verify(&fixture.issuer.verifier(), &restricted, &project, VolumeOperation::Write).is_err());
     put(&fixture, &project, "src/a.txt", b"old", "restore-old").await?;
     let selected = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
@@ -274,10 +274,10 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         ] };
     let report = history.prepare_fork(&preparer, request).await?;
     let child_issuer = AuthorityIssuer::new("restore", [132; 32], child_authority.clone());
-    let child_scope = child_issuer.root_for_agent(child_agent, "child", Capabilities::new([
+    let child_scope = child_issuer.issue("child", &Capabilities::new([
         "conversation:bind".into(), child_private.capability(VolumeOperation::Read)?, child_private.capability(VolumeOperation::Write)?,
         child_project.capability(VolumeOperation::Read)?, child_project.capability(VolumeOperation::Write)?,
-    ]));
+    ]), Some(child_agent), None, &mut None).expect("scope proof");
     let mut child = StreamAggregate::open(&fixture.stream, child_authority, child_issuer.verifier(), SchemaRegistry::new()).await?
         .with_fork_verifier(forks);
     let seed = child.spawn_from_report(&mut history, report, signed, child_scope).await?;

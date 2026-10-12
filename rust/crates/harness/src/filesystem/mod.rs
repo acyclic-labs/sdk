@@ -4743,8 +4743,7 @@ mod tests {
         let host = Arc::new(FilesystemHost::new(Fs::memory(), provider)?);
         let issuer = AuthorityIssuer::new("native-verifier-test", [4; 32],
             Authority { kind: AggregateKind::Conversation, id: "parent".into() });
-        let scope = issuer.root_for_agent(AgentId::from_bytes([8; 16]), "parent-scope",
-            Capabilities::new([capability::FORK_PUBLISH, capability::PROJECT_MERGE]));
+        let scope = issuer.issue("parent-scope", &Capabilities::new([capability::FORK_PUBLISH, capability::PROJECT_MERGE]), Some(AgentId::from_bytes([8; 16])), None, &mut None).expect("scope proof");
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
@@ -4845,14 +4844,10 @@ mod tests {
                 id: "test".into(),
             },
         );
-        let scope = issuer.root_for_agent(
-            owner,
-            "owner",
-            Capabilities::new([
+        let scope = issuer.issue("owner", &Capabilities::new([
                 volume.capability(VolumeOperation::Read)?,
                 volume.capability(VolumeOperation::Write)?,
-            ]),
-        );
+            ]), Some(owner), None, &mut None).expect("scope proof");
         let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let read = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read)?;
         let write = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Write)?;
@@ -4948,7 +4943,7 @@ mod tests {
             let tampered = FileRef::new(first.volume().clone(), first.path(), first.version(),
                 second.descriptor().clone(), first.display_name())?;
             assert!(host.read_pinned_io(&tampered, 16, Some(&io)).await.is_err());
-            let denied_scope = issuer.root_for_agent(owner, "no-files", Capabilities::default());
+            let denied_scope = issuer.issue("no-files", &Capabilities::default(), Some(owner), None, &mut None).expect("scope proof");
             let denied = FilesystemForkVerifier::new_with_native_work(
                 Arc::clone(&host), 16, &verifier, &denied_scope, &work)?;
             let before = work.receipt().backend_read_operations;
@@ -5159,16 +5154,12 @@ mod tests {
             id: "integration".into(),
         };
         let issuer = AuthorityIssuer::new("integration", [11; 32], authority.clone());
-        let scope = issuer.root_for_agent(
-            agent,
-            "agent",
-            Capabilities::new([
+        let scope = issuer.issue("agent", &Capabilities::new([
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
                 volume.capability(VolumeOperation::Read)?,
                 volume.capability(VolumeOperation::Write)?,
-            ]),
-        );
+            ]), Some(agent), None, &mut None).expect("scope proof");
         let read =
             ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
         let write =

@@ -78,8 +78,7 @@ async fn real_root_operator_rejects_pi_caller_forgery_foreign_operation_and_fore
     verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).unwrap();
     let foreign = Fixture::new(None).await;
     assert!(verify_request(&foreign.owner, &state.root_session_id, &request, &original_work).is_err());
-    let scope: Scope = fixture.owner.authority().unwrap().issuer.root_for_agent(fixture.commit.child.agent_id,
-        request.operator.id(), request.operator.capabilities().clone());
+    let scope: Scope = fixture.owner.authority().unwrap().issuer.issue(&request.operator.id(), request.operator.capabilities(), Some(fixture.commit.child.agent_id), None, &mut None).expect("scope proof");
     request.operator = scope;
     assert!(verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).is_err());
     drop(request);
@@ -103,8 +102,7 @@ async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_de
     let journal = make_journal();
     journal.open_interaction(approval, Interaction::approval("Exact Root writeback", operation, digest).unwrap()).await.unwrap();
     let response_grants = Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{approval}")]);
-    let foreign = acyclic_harness::core::AuthorityIssuer::new(issuer.id(), [213; 32], issuer.verifier().audience().clone())
-        .root_for_agent(fixture.owner.policy().agent, "foreign-root", response_grants.clone());
+    let foreign = acyclic_harness::core::AuthorityIssuer::new(issuer.id(), [213; 32], issuer.verifier().audience().clone()).issue("foreign-root", &response_grants, Some(fixture.owner.policy().agent), None, &mut None).expect("scope proof");
     assert!(journal.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &foreign).await.is_err());
     let (_, _, other) = fixture.owner.conversation_authority(TaskId::from_bytes([213; 16]),
         fixture.owner.policy().agent, response_grants.clone()).unwrap();

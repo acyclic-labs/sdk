@@ -30,7 +30,7 @@ async fn publish_lifecycle(
         operation_id: OperationId::from_bytes([number; 16]),
         idempotency_key: IdempotencyKey::new(format!("root-{number}"))?,
         expected_revision: reducer.revision(),
-        scope: issuer().root("owner", Capabilities::new(["lifecycle:manage"])),
+        scope: issuer().issue("owner", &Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof"),
         causal_parent: None,
         action: Action::TransitionLifecycle {
             to: if number.is_multiple_of(2) {

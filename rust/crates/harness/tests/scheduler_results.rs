@@ -69,8 +69,7 @@ fn spec(
         owner: DurableOwner::Attached {
             authority: owner.clone(),
         },
-        owner_scope: AuthorityIssuer::new("qualification", [5; 32], owner.clone())
-            .root("original-declare", Capabilities::new(["operation:declare"])),
+        owner_scope: AuthorityIssuer::new("qualification", [5; 32], owner.clone()).issue("original-declare", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof"),
         entrypoint: EntrypointRef {
             name: "test.scheduler".into(),
             version: "1".into(),
@@ -147,15 +146,11 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         id: "scheduler-owner".into(),
     };
     let issuer = AuthorityIssuer::new("qualification", [5; 32], owner.clone());
-    let scope = issuer.root_for_agent(
-        AgentId::from_bytes([6; 16]),
-        "scheduler",
-        Capabilities::new([
+    let scope = issuer.issue("scheduler", &Capabilities::new([
             "operation:declare".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(AgentId::from_bytes([6; 16])), None, &mut None).expect("scope proof");
     let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
     let state = host

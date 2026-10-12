@@ -203,10 +203,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         },
     );
     let read_grant = volume.capability(VolumeOperation::Read)?;
-    let signed = issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([
+    let signed = issuer.issue("owner", &Capabilities::new([
             "operation:declare".to_owned(),
             "operation:observe".to_owned(),
             "operation:cancel".to_owned(),
@@ -219,8 +216,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             "tool:call:acyclic.patch_file".to_owned(),
             read_grant.clone(),
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
     let writer = Arc::new(FilesystemContentPublisher::new(
         filesystem.clone(),

@@ -114,18 +114,14 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     )?;
     host.create_volume(&parent_private).await?;
     let issuer = AuthorityIssuer::new("fork-e2e", [7; 32], parent.clone());
-    let scope = issuer.root_for_agent(
-        parent_agent,
-        "parent",
-        Capabilities::new([
+    let scope = issuer.issue("parent", &Capabilities::new([
             "conversation:bind".to_owned(),
             "conversation:append".to_owned(),
             "fork:publish".to_owned(),
             project.capability(VolumeOperation::Read)?,
             parent_private.capability(VolumeOperation::Read)?,
             parent_private.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(parent_agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     let resolver = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
@@ -490,7 +486,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert!(readable.contains(&manifest.read_capability()?));
     assert!(!readable.contains(&parent_private.capability(VolumeOperation::Write)?));
     let child_issuer = AuthorityIssuer::new("fork-e2e", [7; 32], uncertain.child.clone());
-    let reader_scope = child_issuer.root_for_agent(attached_reader, "attached-reader", readable);
+    let reader_scope = child_issuer.issue("attached-reader", &readable, Some(attached_reader), None, &mut None).expect("scope proof");
     let attached_resolver =
         FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
     attached_resolver

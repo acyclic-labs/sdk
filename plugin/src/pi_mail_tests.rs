@@ -30,10 +30,10 @@ impl Fixture {
         let grants = Capabilities::new([
             "operation:declare", "operation:observe", "operation:cancel",
             "task:spawn:pi.mail.test@1", "mail:send", "mail:read",
-        ].into_iter().map(str::to_owned).chain([volume.directory_read_capability("pi-inputs")?]));
-        let signed = issuer.root_for_agent(agent, "owner", Capabilities::new(grants.iter().map(str::to_owned).chain([
-            volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
-        ])));
+        ].into_iter().map(str::to_owned).chain([volume.directory_read_capability("pi-inputs", &mut None)?]));
+        let signed = issuer.issue("owner", &Capabilities::new(grants.iter().map(str::to_owned).chain([
+            volume.capability(VolumeOperation::Read, &mut None)?, volume.capability(VolumeOperation::Write, &mut None)?,
+        ])), Some(agent), None, &mut None).expect("scope proof");
         let scope = RuntimeScope::new(grants, Limits::default())?;
         let machine = Arc::new(Passive { identity: MachineIdentity { name: "pi.mail.test".into(), version: "1".into(), digest: [73; 32] }, schema: json!({"type":"object"}) });
         let mut tasks = TaskRegistry::default();

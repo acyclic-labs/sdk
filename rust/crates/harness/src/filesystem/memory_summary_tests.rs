@@ -127,7 +127,7 @@ async fn sealed_summary_preparation(
         }
     }
     let grants = Capabilities::new(grants);
-    let signed = issuer.root_for_agent(agent, "summary-preparation", grants.clone());
+    let signed = issuer.issue("summary-preparation", &grants, Some(agent), None, &mut None).expect("scope proof");
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?
         .with_run_limits(crate::runtime::TaskRunLimits {
             concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
@@ -363,8 +363,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             ]),
     );
     let scope = storage
-        .issuer
-        .root_for_agent(agent, "summary-parent", grants);
+        .issuer.issue("summary-parent", &grants, Some(agent), None, &mut None).expect("scope proof");
     let stream_provider = ProviderRef::new("local", "stream", "2")?;
     let archived = history.fork_history(
         aggregate.reducer(), 4,
@@ -623,7 +622,7 @@ async fn assert_summary_child_import(
                 .capability(VolumeOperation::Read)?,
         ]),
     );
-    let scope = issuer.root_for_agent(seed.child_agent, "child", grants);
+    let scope = issuer.issue("child", &grants, Some(seed.child_agent), None, &mut None).expect("scope proof");
     let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 262_144, None)?);
     let mut child = StreamAggregate::open(
         &storage.stream,
@@ -658,15 +657,11 @@ async fn assert_summary_child_import(
         .summary
         .as_ref()
         .ok_or_else(|| Error::Invalid("no Summary capture".into()))?;
-    let denied = issuer.root_for_agent(
-        seed.child_agent,
-        "denied",
-        scope.capabilities().without(&Capabilities::new([
+    let denied = issuer.issue("denied", &scope.capabilities().without(&Capabilities::new([
             capture.context.read_capability()?,
             seed.child_private_volume
                 .capability(VolumeOperation::Read)?,
-        ])),
-    );
+        ])), Some(seed.child_agent), None, &mut None).expect("scope proof");
     assert!(matches!(
         child_history
             .summary_fork_stage(
@@ -1221,9 +1216,8 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     let project = VolumeRef::new(provider.clone(), "full-parent-project",
         VolumeClass::Project, VolumeOwner::Project("full-project".into()))?;
     let project_head = storage.host.create_volume(&project).await?;
-    let scope = storage.issuer.root_for_agent(agent, "full-parent",
-        Capabilities::new(storage.scope.capabilities().iter().map(str::to_owned)
-            .chain(["fork:publish".to_owned(), project.capability(VolumeOperation::Read)?])));
+    let scope = storage.issuer.issue("full-parent", &Capabilities::new(storage.scope.capabilities().iter().map(str::to_owned)
+            .chain(["fork:publish".to_owned(), project.capability(VolumeOperation::Read)?])), Some(agent), None, &mut None).expect("scope proof");
     let stream_provider = ProviderRef::new("local", "stream", "2")?;
     let preparer = FilesystemForkPreparer::new(storage.host.clone(), parent.reducer().clone(),
         storage.verifier(&mut None).expect("verifier copy"), scope.clone(), project.clone(), stream_provider.clone(),

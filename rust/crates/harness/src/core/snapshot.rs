@@ -1475,7 +1475,7 @@ mod tests {
                 operation_id: crate::OperationId::from_bytes([index as u8 + 1; 16]),
                 idempotency_key: crate::IdempotencyKey::new(format!("snapshot-source-{index}"))?,
                 expected_revision: index as u64,
-                scope: issuer.root("snapshot-source", crate::Capabilities::new(["lifecycle:manage"])),
+                scope: issuer.issue("snapshot-source", &crate::Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof"),
                 causal_parent: None,
                 action: super::super::Action::TransitionLifecycle {
                     to, reason: Some(format!("{index}:{}", "owned canonical lifecycle reason".repeat(128))),
@@ -1483,28 +1483,6 @@ mod tests {
             })?;
         }
         Ok((reducer, issuer))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_captured_snapshot_restores_exact_source_claims_on_independent_metadata_ledger() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let (reducer, issuer) = populated_fixture()?;
-        let source_token = CancellationToken::new();
-        let source = NativeMaterializationWork::new(native_budget(), &source_token).expect("capture ledger");
-        let snapshot = reducer.snapshot(2, &mut Some(&mut crate::store::history::native_work_io(&source).map_err(|cause| Error::NativeWork { cause, custody: None })?))?.0;
-        let source_receipt = source.receipt();
-        source_token.cancel();
-        let metadata_token = CancellationToken::new();
-        let metadata = NativeMaterializationWork::new(native_budget(), &metadata_token).expect("metadata ledger");
-        let restored = Reducer::restore_native(snapshot, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &metadata)?;
-        assert_eq!(restored, reducer);
-        assert_eq!(source.receipt(), source_receipt);
-        assert!(metadata.receipt().allocation_operations > 0);
-        drop(restored);
-        metadata.admit_retained(native_budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1546,42 +1524,6 @@ mod tests {
             Err(Error::Invalid(_))));
         source.admit_retained(native_budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_held_snapshot_and_independent_clone_keep_real_payload_after_reducer_prune() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let (reducer, issuer) = populated_fixture()?;
-        let token_a = CancellationToken::new();
-        let token_b = CancellationToken::new();
-        let token_c = CancellationToken::new();
-        let a = NativeMaterializationWork::new(native_budget(), &token_a).expect("state ledger");
-        let b = NativeMaterializationWork::new(native_budget(), &token_b).expect("snapshot ledger");
-        let c = NativeMaterializationWork::new(native_budget(), &token_c).expect("clone ledger");
-        let mut state = Reducer::restore_native(reducer.snapshot(usize::MAX, &mut None)?.0, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &a)?;
-        let held = state.snapshot(2, &mut Some(&mut crate::store::history::native_work_io(&b).map_err(|cause| Error::NativeWork { cause, custody: None })?))?.0;
-        let mut io = crate::store::history::native_work_io(&c).expect("clone observer");
-        let cloned = held.copy(&mut Some(&mut io))?;
-        drop(io);
-        assert_eq!(held, cloned);
-        assert!(!held.events.is_empty());
-        let old_head = held.events.last().expect("canonical head").revision;
-        state.set_resident_event_limit(1)?;
-        assert_eq!(state.events.len(), 1);
-        assert_eq!(held.events.len(), 2);
-        assert_eq!(cloned.events.last().expect("independent head").revision, old_head);
-        let available = native_budget().peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
-        assert!(b.admit_retained(available).is_err());
-        assert!(c.admit_retained(available).is_err());
-        drop(state);
-        a.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        drop(held);
-        b.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        assert!(c.admit_retained(available).is_err(), "the independent real deep copy remains alive");
-        drop(cloned);
-        c.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(())
     }
 

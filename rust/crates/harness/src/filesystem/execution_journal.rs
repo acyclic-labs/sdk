@@ -2505,14 +2505,10 @@ mod tests {
                 id: crate::ConversationId::new().to_string(),
             },
         );
-        let scope = issuer.root_for_agent(
-            agent,
-            "owner",
-            crate::Capabilities::new([
+        let scope = issuer.issue("owner", &crate::Capabilities::new([
                 volume.capability(VolumeOperation::Read)?,
                 volume.capability(VolumeOperation::Write)?,
-            ]),
-        );
+            ]), Some(agent), None, &mut None).expect("scope proof");
         let stream = Arc::new(acyclic_stream::MemoryStream::default());
         let open = |operation, turn| {
             FilesystemExecutionJournal::new(
@@ -2648,17 +2644,13 @@ mod tests {
             id: crate::ConversationId::new().to_string(),
         };
         let issuer = AuthorityIssuer::new("cold-canonical-owner", [72; 32], authority.clone());
-        let scope = issuer.root_for_agent(
-            agent,
-            "owner",
-            crate::Capabilities::new([
+        let scope = issuer.issue("owner", &crate::Capabilities::new([
                 "conversation:bind".into(),
                 "conversation:append".into(),
                 "conversation:select_context".into(),
                 volume.capability(VolumeOperation::Read)?,
                 volume.capability(VolumeOperation::Write)?,
-            ]),
-        );
+            ]), Some(agent), None, &mut None).expect("scope proof");
         let content = Arc::new(super::super::FilesystemContentVerifier::new(
             host.clone(),
             &issuer.verifier(&mut None).expect("verifier copy"),

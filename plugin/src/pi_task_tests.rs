@@ -813,7 +813,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                     );
                     authority.verifier = issuer.verifier();
                     authority.signed =
-                        issuer.root("pi-owner", authority.signed.capabilities().clone());
+                        issuer.issue("pi-owner", authority.signed.capabilities(), None, None, &mut None).expect("scope proof");
                 }
                 "audience" => {
                     let issuer = AuthorityIssuer::new(
@@ -825,11 +825,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                         },
                     );
                     authority.verifier = issuer.verifier();
-                    authority.signed = issuer.root_for_agent(
-                        binding.agent_id,
-                        "pi-owner",
-                        authority.signed.capabilities().clone(),
-                    );
+                    authority.signed = issuer.issue("pi-owner", authority.signed.capabilities(), Some(binding.agent_id), None, &mut None).expect("scope proof");
                 }
                 _ => unreachable!(),
             })

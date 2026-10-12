@@ -39,7 +39,7 @@ async fn fixture() -> Result<Fixture> {
         grants.push(volume.capability(VolumeOperation::Read)?);
         grants.push(volume.capability(VolumeOperation::Write)?);
     }
-    let scope = issuer.root_for_agent(agent, "parent-owner", Capabilities::new(grants));
+    let scope = issuer.issue("parent-owner", &Capabilities::new(grants), Some(agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     let mut parent = StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new()).await?;
     parent.execute(Command { operation_id: OperationId::from_bytes([2; 16]), idempotency_key: IdempotencyKey::new("bind-parent")?,
@@ -93,9 +93,9 @@ async fn restored_applied_plan_observes_original_receipt_without_second_write() 
 #[tokio::test]
 async fn restored_plan_requires_original_signed_source_read_grant() -> Result<()> {
     let fixture = fixture().await?;
-    let caller_only = fixture.issuer.root_for_agent(AgentId::from_bytes([1; 16]), "destination-only", Capabilities::new([
+    let caller_only = fixture.issuer.issue("destination-only", &Capabilities::new([
         "project:merge".to_owned(), fixture.project.capability(VolumeOperation::Write)?,
-    ]));
+    ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
     let controller = ParentProjectController::new(fixture.host.as_ref(), fixture.parent.reducer(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &caller_only, &fixture.project, None)?;
     let project = workspace_ref(fixture.project.provider().clone(), &fixture.project.storage_name()?)?;
     let target = fixture.host.resolve(&project).await?.generation;

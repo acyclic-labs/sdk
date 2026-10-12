@@ -124,7 +124,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         project.capability(VolumeOperation::Read, &mut None)?, project.capability(VolumeOperation::Write, &mut None)?,
         project.directory_read_capability("")?,
     ]);
-    let scope = issuer.root_for_agent(seed_agent, "explicit-trusted-local-bootstrap", grants);
+    let scope = issuer.issue("explicit-trusted-local-bootstrap", &grants, Some(seed_agent), None, &mut None).expect("scope proof");
     let mut owner = AuthorityBinding { authority, issuer: ISSUER.into(), key: TEST_KEY, scope };
     let limits = Limits { file_bytes: PAYLOAD_BYTES, path_bytes: 1024, attachments: 16,
         render_bytes: 16 * 1024, model_steps: 1, model_events_per_step: 64,
@@ -181,7 +181,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         planned_commands.insert(label.to_owned(), command);
         planned_inputs.insert(label.to_owned(), file);
     }
-    owner.scope = issuer.root_for_agent(seed_agent, "explicit-trusted-local-bootstrap", Capabilities::new(artifact_grants));
+    owner.scope = issuer.issue("explicit-trusted-local-bootstrap", &Capabilities::new(artifact_grants), Some(seed_agent), None, &mut None).expect("scope proof");
     config.owner = owner.clone();
     let stream = Arc::new(LocalStream::open(&config.stream_root, Default::default())
         .await.map_err(|error| Error::Storage(error.to_string()))?);
@@ -614,7 +614,7 @@ impl Producer {
             child_grants.extend(["conversation:bind".into(), "conversation:append".into()]);
             let child_owner = AuthorityBinding {
                 authority: child_authority, issuer: ISSUER.into(), key: TEST_KEY,
-                scope: child_issuer.root_for_agent(agent, "explicit-trusted-pending-child", Capabilities::new(child_grants)),
+                scope: child_issuer.issue("explicit-trusted-pending-child", &Capabilities::new(child_grants), Some(agent), None, &mut None).expect("scope proof"),
             };
             self.config.observed_authorities.push(child_owner.clone());
             self.config.tools.forks.push(NativeToolFork { caller: parent.task, child: child_owner,
@@ -650,7 +650,7 @@ impl Producer {
             }
         }
         let owner = AuthorityBinding { authority: child_authority, issuer: ISSUER.into(), key: TEST_KEY,
-            scope: child_issuer.root_for_agent(agent, "explicit-trusted-created-child", Capabilities::new(signed_grants)) };
+            scope: child_issuer.issue("explicit-trusted-created-child", &Capabilities::new(signed_grants), Some(agent), None, &mut None).expect("scope proof") };
         let mut child_aggregate = aggregate(&self.stream, self.files.clone(), &owner, &self.config).await?;
         let seed = child_aggregate.spawn_from_report(&mut parent.aggregate, report.clone(),
             parent.binding.scope.clone(), owner.scope.clone()).await?;
