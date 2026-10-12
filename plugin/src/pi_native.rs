@@ -1111,7 +1111,7 @@ impl PiNativeRootSeed {
                     .map_err(native_error)?;
                 let mut slot = Arc::<LazyMount<A, O, D, S>>::new_uninit();
                 let mut mount = match workspace.mount_with_work(path.0.as_path(), options,
-                    Some(source_guard), &original_volume_work.native_mount_work(), cancellation).await {
+                    Some(source_guard), &original_volume_work, cancellation).await {
                     Ok(mount) => mount,
                     Err(acyclic_fs::native_mount::MountLifecycleError::Native(
                         acyclic_fs::native_mount::NativeMountError::StartupFailed(failure),
@@ -1129,7 +1129,7 @@ impl PiNativeRootSeed {
                 if let Some(cause) = custody_failure {
                     *retained_allocation = Some(allocation);
                     if retained.as_ref().expect("actual mount retained above")
-                        .abandon_with_work(&original_volume_work.native_mount_work()).is_ok()
+                        .abandon_with_work(&original_volume_work).is_ok()
                     {
                         *retained = None;
                         *retained_allocation = None;
@@ -1141,7 +1141,7 @@ impl PiNativeRootSeed {
             if mount.path() != path.0.as_path() {
                 return Err(Error::Conflict("Pi retained project mount belongs to another native namespace".into()));
             }
-            let snapshot = mount.snapshot_with_work(&original_volume_work.native_mount_work(), cancellation).await.map_err(native_view_error)?;
+            let snapshot = mount.snapshot_with_work(&original_volume_work, cancellation).await.map_err(native_view_error)?;
             if snapshot.workspace_id != actual.id()
                 || snapshot.authored_generation.digest().as_bytes().as_slice() != original_generation.as_resource().key()
             {
@@ -1351,7 +1351,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
                 reason: "Pi source owner belongs to another original allocation" });
         }
         proof.authorize_settlement_with_native_work(owner, metadata_work).await?;
-        mount.abandon_with_work(&volume_work.native_mount_work()).map_err(native_view_error)?;
+        mount.abandon_with_work(&volume_work).map_err(native_view_error)?;
     }
     if let Some(session) = startup.as_mut() {
         let state = session.cleanup_state();
@@ -1360,7 +1360,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
                 reason: "Pi startup owner belongs to another original allocation" });
         }
         proof.authorize_settlement_with_native_work(owner, metadata_work).await?;
-        session.stop_with_meter(&volume_work.native_mount_work())
+        session.stop_with_meter(&volume_work)
             .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
         if !session.cleanup_state().cleanup_complete {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Indeterminate,

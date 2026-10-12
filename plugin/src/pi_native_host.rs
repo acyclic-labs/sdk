@@ -189,7 +189,7 @@ impl LiveHandles {
     ) -> Result<()> {
         if let Some(session) = self.project_startup_owner.as_mut() {
             let volume_work = self.project_work.as_ref().ok_or(Error::Indeterminate(command))?;
-            let stopped = session.stop_with_meter(&volume_work.native_mount_work())
+            let stopped = session.stop_with_meter(&volume_work)
                 .map_err(|cause| pi_native::native_view_error(
                     acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
             if !stopped || !session.cleanup_state().cleanup_complete {
@@ -911,7 +911,7 @@ impl PiNativeCommandHost {
         if let Some(project) = handles.project.as_ref() {
             creator.authorize_settlement_with_native_work(&owner, meter).await?;
             let volume_work = handles.project_work.as_ref().ok_or(Error::Indeterminate(command))?;
-            project.abandon_with_work(&volume_work.native_mount_work()).map_err(pi_native::native_view_error)?;
+            project.abandon_with_work(&volume_work).map_err(pi_native::native_view_error)?;
             handles.project = None;
         }
         if let Some(seed) = handles.root_seed.as_ref() {
