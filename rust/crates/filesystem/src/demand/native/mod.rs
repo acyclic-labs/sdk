@@ -9,7 +9,7 @@ use crate::source_watch::CallbackWork;
 use cap_std::fs::FileTypeExt as _;
 #[cfg(unix)]
 use cap_std::fs::MetadataExt;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,8 @@ use tokio::sync::Semaphore;
 const MAXIMUM_NATIVE_REQUESTS: usize = 64;
 
 include!("root.rs");
+include!("directory.rs");
+include!("excluded.rs");
 include!("file.rs");
 include!("provider.rs");
 include!("watch.rs");
@@ -33,19 +35,18 @@ type DemandPath = PathBuf;
 type DemandPath = Vec<u16>;
 
 fn account_source<T>(
-    context: &mut CallbackWork,
+    context: &mut impl SourceDemandReadWork,
     operation: impl FnOnce(
         &mut crate::kernel::KernelAccounting<'_>,
         &CancellationToken,
-    ) -> Result<T, crate::FsError>,
+    ) -> Result<T, DemandError>,
 ) -> Result<T, DemandError> {
     if let Some(native) = context.native_source_work() {
         let stop = native.cancellation();
         return operation(
             &mut crate::kernel::KernelAccounting::native(&native, stop),
             stop,
-        )
-        .map_err(DemandError::from);
+        );
     }
     context.with_original_leaf(|work| {
         let (ledger, counters, budget, stop) = work.allocation_parts();
@@ -55,6 +56,5 @@ fn account_source<T>(
             ),
             stop,
         )
-        .map_err(DemandError::from)
     })
 }

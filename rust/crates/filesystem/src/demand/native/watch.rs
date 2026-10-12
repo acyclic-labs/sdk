@@ -42,6 +42,7 @@ impl SourceWatch for NativeWatch {
 struct NativeChanges {
     inner: std::sync::Weak<NativeDemandInner>,
     sink: Arc<dyn SourceChangeSink>,
+    excluded: Arc<ExcludedPaths>,
 }
 impl NativeDemandSource {
     fn subscribe(
@@ -66,6 +67,7 @@ impl NativeDemandSource {
             &self.inner.root,
             Arc::new(NativeChanges {
                 inner: Arc::downgrade(&self.inner),
+                excluded: self.excluded.clone(),
                 sink,
             }),
             context,
@@ -77,6 +79,7 @@ impl NativeDemandSource {
                 .watches
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            watches.retain(|watch| watch.strong_count() != 0);
             if watches.len() == watches.capacity() {
                 let before = watches.capacity() as u64
                     * std::mem::size_of::<std::sync::Weak<crate::source_watch::NativeSourceWatch>>()
@@ -264,21 +267,15 @@ impl NativeChanges {
                     }
                 }
             }
-            if let Some(original) = work.native_source_work() {
-                self.sink
-                    .source_changed_with_native_work(&reported, original)
-            } else {
-                let stop = work.with_original_leaf(|work| work.cancellation().clone());
-                let answer = self
-                    .sink
-                    .source_changed(&reported, work.remaining()?, &stop);
-                let (result, counters) = match answer {
-                    Ok(receipt) => (Ok(()), receipt.work),
-                    Err(failure) => (Err(failure.error), *failure.work),
-                };
-                work.merge(counters)?;
-                result
+            for batch in reported
+                .chunk_by(|a, b| self.excluded.visible(a) == self.excluded.visible(b))
+                .filter(|batch| self.excluded.visible(&batch[0]))
+            {
+                account_source(work, |accounting, _| {
+                    self.sink.source_changed(batch, accounting)
+                })?;
             }
+            Ok(())
         })();
         drop(reported);
         drop(native);

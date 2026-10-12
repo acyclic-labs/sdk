@@ -370,14 +370,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         None if directory_authored => Some(LazyDirectoryPhase::Authored(None)),
                         None => None,
                     };
-                    let transferred = next.as_ref().map_or(0, |phase| match phase {
-                        LazyDirectoryPhase::Source(Some(cursor)) => cursor.retained_bytes(),
-                        _ => 0,
-                    });
                     drop(page);
                     crate::kernel::retire_allocation(
                         source_allocation,
-                        retained - transferred,
+                        retained,
                         accounting,
                     )?;
                     let cursor = if let Some(phase) = next {
@@ -535,7 +531,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 };
                 if include {
                     let (name, mut claim) = entry
-                        .name()
+                        .name
                         .clone_with_accounting(accounting, cancellation(accounting))?;
                     entries.bytes += name.retained_bytes() as u64;
                     entries.allocation.absorb(&mut claim)?;

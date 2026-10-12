@@ -97,25 +97,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     }
 
     /// Builds the exact created identities and their allocation journal proofs.
-    pub(crate) fn creation_allocations(
-        &self,
-        request: &ForkRequest,
-        preparation: crate::TaskId,
-        io: Option<&PreparationIo>,
-    ) -> Result<(
-        Vec<ResourceRef>,
-        Vec<crate::resource_preparation::ResourceCreationProofRef>,
-    )> {
+    pub(crate) fn creation_allocations(&self, request: &ForkRequest, preparation: crate::TaskId,
+        io: Option<&PreparationIo>) -> Result<Vec<crate::resource_preparation::ResourceCreationProofRef>> {
         if io.is_some_and(|io| io.original_native_work().is_some()) {
             self.check_request(request, io, self.task_preparation.as_deref())?;
         } else {
-            let mut history = io;
-            request.validate(
-                &mut history
-                    .as_mut()
-                    .map(|history| history as &mut dyn crate::store::history::HistoryIo),
-            )?;
-            for volume in creation_volumes(request) {
+            let mut history = io.map(PreparationIo::history_io);
+            request.validate(&mut history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo))?;
+            for (volume, _) in creation_volumes(request) {
                 if volume.provider() != &self.host.provider {
                     return Err(stock_boundary(
                         io,
@@ -126,29 +115,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
         }
         let count = creation_volumes(request).count();
-        let mut resources = crate::model::vec_with_capacity(count, io)?;
         let mut proofs = crate::model::vec_with_capacity(count, io)?;
-        for volume in creation_volumes(request) {
-            let resource =
-                bounded_io::content_workspace(&self.host.provider, volume, io)?.into_resource();
-            let copied = crate::executor::with_history_io(io, |work| {
-                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-                let copied = crate::core::copy_resource(&resource, &mut quota)?;
-                quota.transfer();
-                Ok::<_, Error>(copied)
-            })?;
-            resources.push(copied);
+        for (volume, _) in creation_volumes(request) {
+            let resource = bounded_io::content_workspace(&self.host.provider, volume, io)?.into_resource();
             proofs.push(crate::resource_preparation::ResourceCreationProofRef {
-                provider: match io {
-                    Some(io) => self.host.provider.clone_with_io(io)?,
-                    None => self.host.provider.clone(),
-                },
-                preparation,
-                resource,
-                evidence: allocation_ref(&self.host.provider, volume, io)?.into_resource(),
+                provider: match io { Some(io) => self.host.provider.clone_with_io(io)?, None => self.host.provider.clone() },
+                preparation, resource, evidence: allocation_ref(&self.host.provider, volume, io)?.into_resource(),
             });
         }
-        Ok((resources, proofs))
+        Ok(proofs)
     }
 }
 
@@ -183,7 +158,7 @@ pub(in crate::filesystem) fn require_reference_donor(
 pub(super) fn add_summary_readers(
     request: &ForkRequest,
     grants: &mut Vec<ReferenceGrant>,
-    files: &std::collections::BTreeMap<[u8; 32], crate::conversation::FileRef>,
+    files: &std::collections::BTreeMap<[u8; 32], &crate::conversation::FileRef>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     let reject = |reason| stock_boundary(io, crate::wire::ErrorCode::Invalid, reason);
@@ -207,7 +182,7 @@ pub(super) fn add_summary_readers(
             let mut present = false;
             for grant in &*grants {
                 crate::model::charge_items(io, 1)?;
-                if grant.reader == reader && grant.file == *file {
+                if grant.reader == reader && grant.file == **file {
                     present = true;
                     break;
                 }

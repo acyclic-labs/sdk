@@ -63,7 +63,7 @@ pub(super) fn prepare_restore(
     let lock = acquire_restore_lock(&destination_parent, &relative.0, true, work)?;
     cleanup_removed_restore(&destination_parent, &relative.0, work)?;
     match replacement {
-        HostPathReplacement::Atomic => crate::native_exchange::recover_native_entry_exchange_held(
+        HostPathReplacement::Atomic => crate::native_exchange::recover_native_entry_exchange(
             &destination_parent.directory,
             Path::new(destination_name),
             work,
@@ -147,7 +147,7 @@ pub(super) fn publish_restore(
     let name = Path::new(destination_name);
     match destination_parent.stat(name, work) {
         Ok(_) => match replacement {
-            HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries_held(
+            HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries(
                 &destination_parent.directory,
                 name,
                 &stage_parent.directory,
@@ -186,7 +186,7 @@ pub(super) fn validate_host_relative_measured(
 ) -> Result<(), MaterializeError> {
     let mut any = false;
     for component in relative.components() {
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             source_path_components: 1,
             items_examined: 1,
             ..WorkCounters::UNCHARGED
@@ -294,7 +294,7 @@ pub(super) fn restore_artifact_name(
     {
         use std::os::unix::ffi::OsStrExt as _;
         let bytes = relative.as_os_str().as_bytes();
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             bytes_hashed: bytes.len() as u64,
             ..WorkCounters::UNCHARGED
         })
@@ -305,7 +305,7 @@ pub(super) fn restore_artifact_name(
     {
         use std::os::windows::ffi::OsStrExt as _;
         for unit in relative.as_os_str().encode_wide() {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 bytes_hashed: 2,
                 bytes_encoded: 2,
                 ..WorkCounters::UNCHARGED
@@ -320,7 +320,7 @@ pub(super) fn restore_artifact_name(
         ..WorkCounters::UNCHARGED
     };
     work.admit(delta).map_err(restore_demand_error)?;
-    work.allocate(bytes as u64).map_err(restore_demand_error)?;
+    work.claim_allocation(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(restore_demand_error)?;
     let mut name = String::with_capacity(bytes);
     write!(name, "{prefix}{}", hasher.finalize().to_hex()).expect("String formatting cannot fail");
     if let Err(error) = work.record(delta) {
@@ -360,7 +360,7 @@ pub(super) fn acquire_restore_lock(
         )
         .map_err(restore_demand_error)?;
         loop {
-            work.charge(WorkCounters {
+            work.started_io(WorkCounters {
                 backend_write_operations: 1,
                 ..WorkCounters::UNCHARGED
             })
@@ -401,7 +401,7 @@ pub(super) fn create_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(restore_demand_error)?;
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             backend_write_operations: 1,
             ..WorkCounters::UNCHARGED
         })
@@ -426,7 +426,7 @@ pub(super) fn create_restore_witness(
             Err(error) => return Err(error.into()),
         }
     }
-    work.charge(WorkCounters {
+    work.started_io(WorkCounters {
         durability_operations: 1,
         ..WorkCounters::UNCHARGED
     })
@@ -470,7 +470,7 @@ pub(super) fn validate_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(restore_demand_error)?;
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             backend_read_operations: 1,
             ..WorkCounters::UNCHARGED
         })

@@ -1,85 +1,8 @@
-struct DirectoryState {
-    directory: NamespacePath,
-    version: SourceVersion,
-    entries: HostStatReader,
-    ownership: SourcePayloadOwnership,
-    pending: Option<HostListedEntry>,
-    replay: VecDeque<SourceDirectoryEntry>,
-}
-
-pub(super) struct CursorLease {
-    source: NativeDemandSource,
-    reference: SourceReference,
-    token: u64,
-    state: Option<DirectoryState>,
-    restore: bool,
-}
-
-impl CursorLease {
-    fn take(&mut self) -> Result<DirectoryState, DemandError> {
-        self.state.take().ok_or(DemandError::StaleCursor)
-    }
-
-    fn discard(&mut self) {
-        self.state.take();
-        if self.restore {
-            if let Ok(mut active) = self.source.inner.cursors.lock() {
-                active.remove(&self.token);
-            }
-            self.restore = false;
-        }
-    }
-
-    fn commit(&mut self) -> Result<(), DemandError> {
-        let mut active = self
-            .source
-            .inner
-            .cursors
-            .lock()
-            .map_err(|_| DemandError::StaleCursor)?;
-        if self.source.reference() != self.reference {
-            return Err(DemandError::StaleSource);
-        }
-        if self.restore {
-            let Some(slot) = active.get_mut(&self.token) else {
-                return Err(DemandError::StaleCursor);
-            };
-            *slot = Some(self.take()?);
-            self.restore = false;
-        } else {
-            if active.len() >= 1024
-                && let Some(oldest) = active.keys().next().copied()
-            {
-                active.remove(&oldest);
-            }
-            active.insert(self.token, Some(self.take()?));
-        }
-        Ok(())
-    }
-}
-
-impl Drop for CursorLease {
-    fn drop(&mut self) {
-        if !self.restore {
-            return;
-        }
-        if let Ok(mut active) = self.source.inner.cursors.lock()
-            && self.source.reference() == self.reference
-            && let Some(slot) = active.get_mut(&self.token)
-        {
-            if let Some(state) = self.state.take() {
-                *slot = Some(state);
-            } else {
-                active.remove(&self.token);
-            }
-        }
-    }
-}
-
 /// One native root. Opening it does not enumerate any descendants.
 #[derive(Clone)]
 pub struct NativeDemandSource {
     inner: Arc<NativeDemandInner>,
+    excluded: Arc<ExcludedPaths>,
     /// Whether a test let this source be watched, so tests cover the path
     #[cfg(test)]
     watchable: bool,
@@ -168,20 +91,31 @@ impl NativeDemandSource {
                 std::borrow::Cow::Owned(path) => path.capacity() as u64,
                 _ => 0,
             };
+            let mut claimed_input = 0;
             let result = (|| {
                 context.claim_allocation(input, 0, WorkCounters::UNCHARGED)?;
+                claimed_input = input;
                 let controls = crate::source_watch::arc_control_bytes::<NativeDemandInner>()
-                    + crate::source_watch::arc_control_bytes::<Semaphore>();
+                    + crate::source_watch::arc_control_bytes::<Semaphore>()
+                    + crate::source_watch::arc_control_bytes::<ExcludedPaths>();
                 let ownership = SourcePayloadOwnership::new(&mut context)?;
                 let allocation = context.claim(controls)?;
                 ownership.retain(allocation, &mut context)?;
+                #[cfg(unix)]
+                let (path, allocation) = {
+                    let path =
+                        crate::native_host::normalize_root_path(path.as_ref(), &mut context)?;
+                    let allocation = path.capacity() as u64;
+                    (path, allocation)
+                };
+                #[cfg(windows)]
                 let (path, allocation) =
                     crate::native_host::clone_path(path.as_ref(), &mut context)?;
                 ownership.retain(allocation, &mut context)?;
                 Ok((path, ownership))
             })();
             drop(path);
-            let released = context.release(input);
+            let released = context.release(claimed_input);
             let result = result.and_then(|value| released.map(|()| value));
             let result = match result {
                 Ok((path, ownership)) => tokio::task::spawn_blocking(crate::obs::in_context(
@@ -199,6 +133,10 @@ impl NativeDemandSource {
                             });
                             context.check()?;
                             Ok(Self {
+                                excluded: Arc::new(ExcludedPaths {
+                                    paths: Vec::new(),
+                                    ownership: SourcePayloadOwnership::default(),
+                                }),
                                 inner: Arc::new(NativeDemandInner {
                                     path,
                                     root,
@@ -256,17 +194,9 @@ impl NativeDemandSource {
     ) -> Result<(), DemandError> {
         self.admit_to_watches(directory, context)?;
         self.inner.observer.as_ref().map_or(Ok(()), |observer| {
-            if let Some(original) = context.native_source_work() {
-                return observer.observe_directory_with_native_work(directory, original);
-            }
-            let cancellation = context.with_original_leaf(|work| work.cancellation().clone());
-            let answer = observer.observe_directory(directory, context.remaining()?, &cancellation);
-            let (result, completed) = match answer {
-                Ok(receipt) => (Ok(()), receipt.work),
-                Err(failure) => (Err(failure.error), *failure.work),
-            };
-            context.merge(completed)?;
-            result
+            account_source(context, |accounting, _| {
+                observer.observe_directory(directory, accounting)
+            })
         })
     }
 
@@ -279,20 +209,17 @@ impl NativeDemandSource {
         context.check()?;
         #[cfg(target_os = "linux")]
         {
-            let live = self
+            let watches = self
                 .inner
                 .watches
                 .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .iter()
-                .filter_map(std::sync::Weak::upgrade)
-                .collect::<Vec<_>>();
-            if live.is_empty() {
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !watches.iter().any(|watch| watch.strong_count() != 0) {
                 return Ok(false);
             }
             let (relative, allocation) = self.relative(directory, context)?;
             let mut added = false;
-            for watch in &live {
+            for watch in watches.iter().filter_map(std::sync::Weak::upgrade) {
                 added |= watch.admit_with_work(&relative, context)?;
             }
             drop(relative);
@@ -318,12 +245,14 @@ impl NativeDemandSource {
                 accounting,
                 cancellation,
             )
+            .map_err(DemandError::from)
         })?;
         let result = self.observe_directory(&parent, context);
         let bytes = parent.retained_bytes();
         drop(parent);
         account_source(context, |accounting, _| {
             crate::kernel::retire_allocation(allocation, bytes, accounting)
+                .map_err(DemandError::from)
         })?;
         result
     }
@@ -352,14 +281,11 @@ impl NativeDemandSource {
         if self.root_named_while_watched() {
             return Ok(());
         }
-        context.started_io(WorkCounters {
-            backend_read_operations: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
-        if crate::NativeRootIdentity::of_root_path(&self.inner.path).ok()
-            != Some(self.inner.root.identity())
-        {
-            return Err(DemandError::SourceUnavailable);
+        match crate::native_host::root_path_identity(&self.inner.path, context) {
+            Ok(identity) if identity == self.inner.root.identity() => {}
+            Err(DemandError::Work(error)) => return Err(DemandError::Work(error)),
+            Err(DemandError::Cancelled) => return Err(DemandError::Cancelled),
+            _ => return Err(DemandError::SourceUnavailable),
         }
         Ok(())
     }
@@ -435,197 +361,6 @@ impl NativeDemandSource {
                 .then_some(metadata.len()),
             version: version(metadata),
             metadata: source_metadata(metadata),
-        }
-    }
-
-    pub(super) fn cursor_lease(
-        &self,
-        source: SourceReference,
-        directory: &NamespacePath,
-        observed: SourceVersion,
-        cursor: Option<SourceCursor>,
-        context: &mut CallbackWork,
-    ) -> Result<CursorLease, DemandError> {
-        let restore = cursor.is_some();
-        let (token, state) = if let Some(cursor) = cursor {
-            if cursor.source != source
-                || cursor.directory != *directory
-                || cursor.directory_version != observed
-            {
-                return Err(DemandError::StaleCursor);
-            }
-            let mut active = self
-                .inner
-                .cursors
-                .lock()
-                .map_err(|_| DemandError::StaleCursor)?;
-            let slot = active
-                .get_mut(&cursor.token)
-                .ok_or(DemandError::StaleCursor)?;
-            let state = slot.take().ok_or(DemandError::CursorBusy)?;
-            (cursor.token, state)
-        } else {
-            let token = self
-                .inner
-                .next_cursor
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                    current.checked_add(1)
-                })
-                .map_err(|_| DemandError::StaleCursor)?
-                + 1;
-            (
-                token,
-                self.open_directory_state(directory, observed, context)?,
-            )
-        };
-        Ok(CursorLease {
-            source: self.clone(),
-            reference: source,
-            token,
-            state: Some(state),
-            restore,
-        })
-    }
-
-    fn open_directory_state(
-        &self,
-        directory: &NamespacePath,
-        observed: SourceVersion,
-        context: &mut CallbackWork,
-    ) -> Result<DirectoryState, DemandError> {
-        let (relative, allocation) = self.relative(directory, context)?;
-        #[cfg(unix)]
-        let result = self.inner.root.read_dir_stats(&relative, context);
-        #[cfg(windows)]
-        let result = self.inner.root.read_dir_stats_wide(&relative, context);
-        drop(relative);
-        context.release(allocation)?;
-        let (entries, allocation) = result?;
-        let ownership = SourcePayloadOwnership::new(context)?;
-        ownership.retain(allocation, context)?;
-        Ok(DirectoryState {
-            directory: directory.clone(),
-            version: observed,
-            entries,
-            ownership,
-            pending: None,
-            replay: VecDeque::new(),
-        })
-    }
-    fn next_entry(
-        &self,
-        directory: &DemandPath,
-        entry: &HostListedEntry,
-        context: &mut CallbackWork,
-    ) -> Result<Option<SourceDirectoryEntry>, DemandError> {
-        #[cfg(unix)]
-        let ((encoding, bytes), allocation) = crate::native_name::host_name_bytes_with_source_work(
-            &entry.name,
-            self.inner.profile,
-            self.inner.limits.maximum_component_bytes,
-            context,
-        )?;
-        #[cfg(windows)]
-        let ((encoding, bytes), allocation) =
-            crate::native_name::host_wide_name_bytes_with_source_work(
-                &entry.name,
-                self.inner.profile,
-                self.inner.limits.maximum_component_bytes,
-                context,
-            )?;
-        let _ = allocation;
-        let name = crate::kernel::LogicalName::new(
-            encoding,
-            bytes,
-            self.inner.limits.maximum_component_bytes,
-        )
-        .map_err(|_| DemandError::InvalidRequest)?;
-        let node = match &entry.stat {
-            Some(stat) => Self::node(stat),
-            None => {
-                #[cfg(unix)]
-                let stat = self.inner.root.stat(&directory.join(&entry.name), context);
-                #[cfg(windows)]
-                let stat = self
-                    .inner
-                    .root
-                    .open_dir_held_wide(directory, context)
-                    .and_then(|parent| {
-                        crate::native_host::stat_windows_leaf(&parent, &entry.name, context)
-                    });
-                match stat {
-                    Ok(stat) => Self::node(&stat),
-                    Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                        return Ok(None);
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        };
-        Ok(Some(SourceDirectoryEntry { name, node }))
-    }
-    fn page_entries(
-        &self,
-        state: &mut DirectoryState,
-        maximum: u32,
-        context: &mut CallbackWork,
-    ) -> Result<Vec<SourceDirectoryEntry>, DemandError> {
-        let allocation =
-            context.claim(maximum as u64 * std::mem::size_of::<SourceDirectoryEntry>() as u64)?;
-        let mut entries = Vec::new();
-        entries
-            .try_reserve_exact(maximum as usize)
-            .map_err(DemandError::Allocation)?;
-        state.ownership.retain(allocation, context)?;
-        let (relative, allocation) = self.relative(&state.directory, context)?;
-        let result = (|| {
-            while entries.len() < maximum as usize {
-                context.check()?;
-                if let Some(entry) = state.replay.pop_front() {
-                    entries.push(entry);
-                    continue;
-                }
-                let next = match state.pending.take() {
-                    Some(entry) => Some(entry),
-                    None => self.read_entry(&mut state.entries, context)?,
-                };
-                let Some(entry) = next else { break };
-                match self.next_entry(&relative, &entry, context) {
-                    Ok(converted) => entries.extend(converted),
-                    Err(error) => {
-                        state.pending = Some(entry);
-                        return Err(error);
-                    }
-                }
-            }
-            if state.pending.is_none() {
-                state.pending = self.read_entry(&mut state.entries, context)?;
-            }
-            Ok(())
-        })();
-        drop(relative);
-        context.release(allocation)?;
-        if result.is_err() {
-            entries.extend(state.replay.drain(..));
-            state.replay = std::mem::take(&mut entries).into();
-        }
-        result.map(|()| entries)
-    }
-    fn read_entry(
-        &self,
-        reader: &mut HostStatReader,
-        context: &mut CallbackWork,
-    ) -> Result<Option<HostListedEntry>, DemandError> {
-        let next = reader.next(context)?;
-        match next {
-            None => Ok(None),
-            Some((entry, _allocation)) => {
-                context.record(WorkCounters {
-                    source_entries_visited: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                Ok(Some(entry))
-            }
         }
     }
 }

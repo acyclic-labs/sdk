@@ -144,24 +144,12 @@ pub trait SourceChangeSink: Send + Sync {
         0
     }
 
-    /// One batch of changes, in the order the host reported them. Called on
+    /// Delivers one ordered batch on the caller's accounting context.
     fn source_changed(
         &self,
         changes: &[SourceChange],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> DemandResult<()>;
-
-    /// Projects this batch against its original native grant and cancellation.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn source_changed_with_native_work(
-        &self,
-        _changes: &[SourceChange],
-        work: NativeMaterializationWork,
-    ) -> Result<(), DemandError> {
-        crate::native_host::NativeHostWork::check(&work)?;
-        Err(DemandError::NativeWorkUnavailable)
-    }
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), DemandError>;
 }
 
 /// Live observation of every change made to one source outside every view
@@ -317,23 +305,12 @@ pub trait DemandFile: Send + Sync {
 /// Synchronous admission hook for directories reached by a native lazy source.
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub trait DemandDirectoryObserver: Send + Sync {
-    /// Admits one exact directory for observation.
+    /// Admits one exact directory on the caller's accounting context.
     fn observe_directory(
         &self,
         directory: &NamespacePath,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> DemandResult<()>;
-
-    /// Observes one directory using the caller's exact original invocation.
-    fn observe_directory_with_native_work(
-        &self,
-        _directory: &NamespacePath,
-        work: NativeMaterializationWork,
-    ) -> Result<(), DemandError> {
-        crate::native_host::NativeHostWork::check(&work)?;
-        Err(DemandError::NativeWorkUnavailable)
-    }
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), DemandError>;
 }
 
 pub(crate) fn accept_source_result<T>(

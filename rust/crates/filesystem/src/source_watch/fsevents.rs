@@ -265,9 +265,9 @@ impl Shared {
         work.admit(WorkCounters {
             items_examined: cleanup, ..WorkCounters::default()
         })?;
-        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, cleanup))?;
+        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items.delta(cleanup)))?;
         if let Err(error) = work.claim_allocation(slots, u64::from((slots) != 0), crate::WorkCounters::UNCHARGED) {
-            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup).expect("original reservation is balanced"));
+            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items.delta(cleanup)).expect("original reservation is balanced"));
             return Err(error);
         }
         let mut changes = Vec::with_capacity(count);
@@ -296,9 +296,9 @@ impl Shared {
         while let Some(change) = changes.pop() {
             cleanup_remaining -= 1;
             drop(change);
-            cleaned = cleaned.and(work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items, 1, 1)));
+            cleaned = cleaned.and(work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items.delta(1), crate::materializer::NativeResourceCredit::Items.delta(1))));
         }
-        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_remaining).expect("original reservation is balanced"));
+        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items.delta(cleanup_remaining)).expect("original reservation is balanced"));
         drop(changes);
         work.release(payload + slots)?;
         result.and(cleaned)

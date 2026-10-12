@@ -130,17 +130,11 @@ impl NativeHostWork for DemandWork {
         DemandWork::release(self, bytes)
     }
     fn reserve_cleanup_write(&mut self) -> Result<u64, Self::Error> {
-        self.reserve(
-            crate::materializer::NativeResourceCredit::WriteOperations,
-            1,
-        )
+        self.reserve(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
         .map(|()| 1)
     }
     fn cancel_cleanup_write(&mut self, reservation: u64) {
-        self.refund(
-            crate::materializer::NativeResourceCredit::WriteOperations,
-            reservation,
-        )
+        self.refund(crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation))
         .expect("original reservation is balanced");
     }
     fn attempt_cleanup_write<T>(
@@ -148,11 +142,7 @@ impl NativeHostWork for DemandWork {
         reservation: u64,
         operation: impl FnOnce() -> T,
     ) -> (T, Result<(), Self::Error>) {
-        let recorded = self.complete(
-            crate::materializer::NativeResourceCredit::WriteOperations,
-            reservation,
-            1,
-        );
+        let recorded = self.complete(crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation), crate::materializer::NativeResourceCredit::WriteOperations.delta(1));
         (operation(), recorded)
     }
 }

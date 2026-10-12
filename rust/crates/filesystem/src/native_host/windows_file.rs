@@ -403,7 +403,7 @@ pub(crate) fn rename_windows_leaf<W: SourceDemandReadWork>(
         work,
     )?;
     for unit in to_name {
-        work.charge(ITEM)?;
+        work.started_io(ITEM)?;
         if *unit == 92 {
             return Err(DemandError::InvalidRequest);
         }

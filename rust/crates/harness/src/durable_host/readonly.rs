@@ -98,7 +98,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
             self.verify_query_with_native_work(query, work).await?;
             let mut io = crate::filesystem::PreparationIo::from_native_work(work)
                 .map(crate::store::HistoryWork::new)?;
-            let (request, held) = crate::resource_preparation::ResourcePreparationRequest::from_borrowed_value_with_work(
+            let (request, held) = crate::resource_preparation::ResourcePreparationRequest::decode(
                 &self.admission.input, &mut Some(&mut io))?;
             let pair = (request, io.take_native_custody(held)?);
             drop(io);
@@ -266,7 +266,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "child preparation has no original scratch creation proof",
                 })?;
-            if scratch.original_task() != task {
+            if crate::runtime::task_id_for_admission(scratch.origin().intended_child) != task {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "preparation scratch proof belongs to another task",

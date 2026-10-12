@@ -88,7 +88,7 @@ impl ReferenceGrant {
     /// Exact, per-file capability the owner may issue to this reader.
     pub fn capability(&self) -> Result<String> {
         self.validate(&mut None)?;
-        self.file.read_capability()
+        self.file.read_capability(&mut None)
     }
 }
 

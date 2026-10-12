@@ -179,17 +179,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .find_operation(volume_authority_id(workspace.id), operation_id, &mut work)
             .await;
         record_authority_work(accounting, &work)?;
-        let (record, allocation) = result.map_err(FsError::from)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let allocation = allocation.map_or(
-            KernelOwnedAllocation::Standalone,
-            KernelOwnedAllocation::NativeOriginal,
-        );
-        #[cfg(target_arch = "wasm32")]
-        let allocation = {
-            drop(allocation);
-            KernelOwnedAllocation::Standalone
-        };
+        let record = result.map_err(FsError::from)?;
+        let allocation = KernelOwnedAllocation::Standalone;
         let generation = record
             .as_ref()
             .map(|record| {
@@ -243,14 +234,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             &mut authority,
                         )
                         .await
-                        .map(|(value, allocation)| {
-                            (value, allocation.expect("native authority allocation"))
-                        })
+                        .map(|value| (value, KernelOwnedAllocation::Standalone))
                 })
                 .map_err(FsError::from)?;
                 native = Some((
                     observed.0,
-                    KernelOwnedAllocation::NativeOriginal(observed.1),
+                    observed.1,
                 ));
             }
             let observed = match native {

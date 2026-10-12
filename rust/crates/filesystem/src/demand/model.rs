@@ -84,14 +84,3 @@ pub struct SourceDirectoryEntry {
     /// The entry's node, exactly as a lookup of its path would report it.
     pub node: SourceNode,
 }
-
-/// One bounded directory page. Native pages retain native enumeration order.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SourceDirectoryPage {
-    /// At most the requested number of entries.
-    pub entries: Vec<SourceDirectoryEntry>,
-    /// Opaque continuation bound to this source and directory version.
-    pub next: Option<SourceCursor>,
-    /// Directory metadata evidence for this page.
-    pub version: SourceVersion,
-}

@@ -23,7 +23,12 @@ struct RecordingObserver {
 }
 
 impl DemandDirectoryObserver for RecordingObserver {
-    fn observe_directory(&self, directory: &NamespacePath) -> Result<(), DemandError> {
+    fn observe_directory(
+        &self,
+        directory: &NamespacePath,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), DemandError> {
+        accounting.check().map_err(DemandError::from)?;
         self.directories
             .lock()
             .map_err(|_| DemandError::SourceUnavailable)?
@@ -44,23 +49,33 @@ async fn native_source(
     path: impl AsRef<std::path::Path>,
 ) -> Result<NativeDemandSource, DemandError> {
     NativeDemandSource::open(
-        path,
+        std::borrow::Cow::Borrowed(path.as_ref()),
         FilesystemProfile::Portable,
         VolumeLimits::default(),
         None,
         None,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
     .await
+    .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)
 }
 
 #[derive(Default)]
 struct RecordedChanges(Mutex<Vec<SourceChange>>);
 
 impl SourceChangeSink for RecordedChanges {
-    fn source_changed(&self, changes: &[SourceChange]) {
+    fn source_changed(
+        &self,
+        changes: &[SourceChange],
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), DemandError> {
+        accounting.check().map_err(DemandError::from)?;
         if let Ok(mut recorded) = self.0.lock() {
             recorded.extend_from_slice(changes);
         }
+        Ok(())
     }
 }
 
@@ -76,7 +91,10 @@ impl RecordedChanges {
         watch: &dyn SourceWatch,
         reported: impl Fn(&[SourceChange]) -> bool,
     ) -> Result<Vec<SourceChange>, Box<dyn Error>> {
-        watch.fence()?;
+        watch.fence(&mut crate::kernel::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        ))?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut changes = self.take()?;
         while !reported(&changes) && std::time::Instant::now() < deadline {
@@ -95,14 +113,23 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
     let source = native_source(root.path()).await?;
     let recorded = Arc::new(RecordedChanges::default());
     let watch = source
-        .watch(recorded.clone())?
+        .watch(
+            recorded.clone(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )?
         .ok_or("a local root is watched")?;
     let cancellation = CancellationToken::new();
     let node = lookup_node(&source, source.reference(), &path("/f")?, &cancellation).await?;
     // Reading beneath a directory watches it where the host needs that.
     assert!(
         source
-            .lookup(source.reference(), &path("/d/x")?, &cancellation)
+            .lookup(
+                source.reference(),
+                &path("/d/x")?,
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            )
             .await?
             .value
             .is_none()
@@ -143,10 +170,21 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
 async fn a_filtered_source_reports_nothing_beneath_its_exclusions() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     std::fs::create_dir(root.path().join(".git"))?;
-    let source = FilteredDemandSource::new(native_source(root.path()).await?, vec![path("/.git")?]);
+    let source = native_source(root.path())
+        .await?
+        .exclude(
+            vec![path("/.git")?],
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )?
+        .value;
     let recorded = Arc::new(RecordedChanges::default());
     let watch = source
-        .watch(recorded.clone())?
+        .watch(
+            recorded.clone(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )?
         .ok_or("a local root is watched")?;
     std::fs::write(root.path().join(".git").join("index"), b"x")?;
     std::fs::write(root.path().join("visible"), b"x")?;
@@ -175,13 +213,17 @@ async fn native_source_reports_symbolic_link_target_bytes() -> Result<(), Box<dy
     let root = tempfile::tempdir()?;
     std::os::unix::fs::symlink("target", root.path().join("link"))?;
     let source = NativeDemandSource::open(
-        root.path(),
+        std::borrow::Cow::Borrowed(root.path()),
         FilesystemProfile::Posix,
         VolumeLimits::default(),
         None,
         None,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
-    .await?;
+    .await
+    .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)?;
     let reference = source.reference();
     let cancellation = CancellationToken::new();
     let node = lookup_node(&source, reference, &path("/link")?, &cancellation).await?;
@@ -207,16 +249,24 @@ async fn native_source_observes_only_the_demanded_directory_before_reading()
     std::fs::write(root.path().join("nested/file"), b"content")?;
     let observer = Arc::new(RecordingObserver::default());
     let source = NativeDemandSource::open(
-        root.path(),
+        std::borrow::Cow::Borrowed(root.path()),
         FilesystemProfile::Portable,
         VolumeLimits::default(),
         None,
         Some(observer.clone()),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
-    .await?;
+    .await?
+    .value;
     let reference = source.reference();
     source
-        .lookup(reference, &path("/nested/file")?, &CancellationToken::new())
+        .lookup(
+            reference,
+            &path("/nested/file")?,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
         .await?;
     assert_eq!(
         observer
@@ -246,22 +296,58 @@ async fn native_provider_reads_do_not_visit_unrelated_content() -> Result<(), Bo
     let reference = provider.reference();
     let cancellation = CancellationToken::new();
     let node = provider
-        .lookup(reference, &path("/seen")?, &cancellation)
+        .lookup(
+            reference,
+            &path("/seen")?,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     let version = node.value.ok_or("seen path was absent")?.version;
 
     let bytes = provider
-        .read_range(reference, &path("/seen")?, version, 3, 4, &cancellation)
+        .read_range(
+            reference,
+            &path("/seen")?,
+            version,
+            3,
+            4,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
-    assert_eq!(bytes.value.as_ref(), b"3456");
+    assert_eq!(bytes.value.bytes.as_ref(), b"3456");
 
-    let first = provider
-        .list_page(reference, &path("/")?, None, 1, &cancellation)
+    let mut first = provider
+        .list_page(
+            reference,
+            &path("/")?,
+            None,
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     assert_eq!(first.value.entries.len(), 1);
+    first
+        .value
+        .publication
+        .as_mut()
+        .ok_or("publication absent")?
+        .accept(&mut crate::kernel::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))?;
     let continuation = first.value.next.ok_or("second root entry missing")?;
     let second = provider
-        .list_page(reference, &path("/")?, Some(continuation), 1, &cancellation)
+        .list_page(
+            reference,
+            &path("/")?,
+            Some(continuation),
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     assert_eq!(second.value.entries.len(), 1);
     Ok(())
@@ -297,18 +383,30 @@ async fn listed_nodes_are_exactly_what_lookups_report() -> Result<(), Box<dyn Er
     let reference = provider.reference();
     let cancellation = CancellationToken::new();
     let page = provider
-        .list_page(reference, &path("/")?, None, 16, &cancellation)
+        .list_page(
+            reference,
+            &path("/")?,
+            None,
+            16,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     assert_eq!(page.value.entries.len(), if cfg!(unix) { 5 } else { 4 });
     let mut listed = Vec::new();
-    for entry in page.value.entries {
+    for entry in &page.value.entries {
         let name = entry
             .name
             .unicode_text()
             .ok_or("listed name is not Unicode")?
             .to_string();
         let looked_up = provider
-            .lookup(reference, &path(&format!("/{name}"))?, &cancellation)
+            .lookup(
+                reference,
+                &path(&format!("/{name}"))?,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await?;
         assert_eq!(looked_up.value, Some(entry.node), "{name}");
         listed.push((name, entry.node));
@@ -331,16 +429,16 @@ async fn listed_nodes_are_exactly_what_lookups_report() -> Result<(), Box<dyn Er
                 reference,
                 &path(&format!("/{name}"))?,
                 node.version,
+                WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
-            .map_err(|failure| format!("{name}: {:?}", failure.error))?
+            .map_err(|failure| format!("{name}: {failure:?}"))?
             .value;
         let length = node.logical_bytes.ok_or("regular file has no length")?;
-        let read = file
-            .read_range(0, length, &cancellation)
-            .map_err(|failure| format!("{name}: {:?}", failure.error))?;
-        assert_eq!(read.value.len() as u64, length, "{name}");
+        let read = read(file.as_ref(), 0, length, &cancellation)
+            .map_err(|failure| format!("{name}: {failure:?}"))?;
+        assert_eq!(read.len() as u64, length, "{name}");
     }
     drop(open);
     Ok(())
@@ -353,7 +451,12 @@ async fn native_requests_wait_for_capacity_and_cancel_before_work() -> Result<()
     let permits = source.occupy_all_requests().await?;
     let cancellation = CancellationToken::new();
     let root_path = path("/")?;
-    let query = source.lookup(source.reference(), &root_path, &cancellation);
+    let query = source.lookup(
+        source.reference(),
+        &root_path,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    );
     tokio::pin!(query);
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(50), &mut query)
@@ -366,7 +469,6 @@ async fn native_requests_wait_for_capacity_and_cancel_before_work() -> Result<()
         return Err("cancelled request entered the worker".into());
     };
     assert!(matches!(failure.error, DemandError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
     drop(permits);
     Ok(())
 }
@@ -383,7 +485,13 @@ async fn held_file(
     let cancellation = CancellationToken::new();
     let node = lookup_node(&source, reference, &path("/file")?, &cancellation).await?;
     let file = source
-        .open_file(reference, &path("/file")?, node.version, &cancellation)
+        .open_file(
+            reference,
+            &path("/file")?,
+            node.version,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?
         .value;
     Ok((temporary, source, file))
@@ -431,9 +539,7 @@ async fn a_held_file_gives_way_to_a_save_over_it() -> Result<(), Box<dyn Error>>
 async fn a_benign_oplock_break_preserves_the_held_read() -> Result<(), Box<dyn Error>> {
     let (temporary, _source, file) = held_file(b"before").await?;
     let path = temporary.path().join("source/file");
-    // A second opener with write access breaks a handle oplock even if
-    // it never changes the file. The held read must reopen at the same
-    // version instead of reporting a change that did not occur.
+    // An unchanged write opener must not invalidate the pinned version.
     drop(
         std::fs::OpenOptions::new()
             .read(true)
@@ -446,8 +552,8 @@ async fn a_benign_oplock_break_preserves_the_held_read() -> Result<(), Box<dyn E
             .map(|_| {
                 scope.spawn(|| {
                     barrier.wait();
-                    file.read_range(0, 6, &CancellationToken::new())
-                        .is_ok_and(|read| read.value == Bytes::from_static(b"before"))
+                    read(file.as_ref(), 0, 6, &CancellationToken::new())
+                        .is_ok_and(|read| read.as_ref() == b"before")
                 })
             })
             .collect::<Vec<_>>();
@@ -456,20 +562,28 @@ async fn a_benign_oplock_break_preserves_the_held_read() -> Result<(), Box<dyn E
         }
     });
     assert_eq!(
-        file.read_range(0, 6, &CancellationToken::new())?.value,
-        Bytes::from_static(b"before")
-    );
-    assert_eq!(
-        file.read_range(0, 6, &CancellationToken::new())?.value,
-        Bytes::from_static(b"before")
+        read(file.as_ref(), 0, 6, &CancellationToken::new())?.as_ref(),
+        b"before".as_slice()
     );
     Ok(())
 }
 
+fn read(
+    file: &dyn DemandFile,
+    offset: u64,
+    length: u64,
+    stop: &CancellationToken,
+) -> Result<acyclic_stream::OwnedBytes, DemandError> {
+    file.read_range(
+        offset,
+        length,
+        &mut crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, stop),
+    )
+    .map(|chunk| chunk.bytes)
+}
+
 fn read_failure(file: &dyn DemandFile) -> Option<DemandError> {
-    file.read_range(0, 6, &CancellationToken::new())
-        .err()
-        .map(|failure| failure.error)
+    read(file, 0, 6, &CancellationToken::new()).err()
 }
 
 #[tokio::test]
@@ -482,11 +596,17 @@ async fn held_files_under_remote_roots_read_off_the_callback_thread() -> Result<
     let cancellation = CancellationToken::new();
     let node = lookup_node(&source, reference, &path("/file")?, &cancellation).await?;
     let file = source
-        .open_file(reference, &path("/file")?, node.version, &cancellation)
+        .open_file(
+            reference,
+            &path("/file")?,
+            node.version,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?
         .value;
-    let read = file.read_range(0, 6, &CancellationToken::new())?;
-    assert_eq!(read.value.as_ref(), b"remote");
+    let read = read(file.as_ref(), 0, 6, &CancellationToken::new())?;
+    assert_eq!(read.as_ref(), b"remote");
     std::fs::write(temporary.path().join("file"), b"edited again")?;
     assert!(matches!(
         read_failure(file.as_ref()),
@@ -499,8 +619,8 @@ async fn held_files_under_remote_roots_read_off_the_callback_thread() -> Result<
 async fn held_file_reads_detect_in_place_modification() -> Result<(), Box<dyn Error>> {
     use std::io::Write as _;
     let (temporary, _source, file) = held_file(b"before").await?;
-    let read = file.read_range(0, 6, &CancellationToken::new())?;
-    assert_eq!(read.value.as_ref(), b"before");
+    let read = read(file.as_ref(), 0, 6, &CancellationToken::new())?;
+    assert_eq!(read.as_ref(), b"before");
     std::fs::OpenOptions::new()
         .append(true)
         .open(temporary.path().join("source/file"))?
@@ -563,13 +683,21 @@ async fn reads_never_reopen_the_root() -> Result<(), Box<dyn Error>> {
         .await?
         .version;
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o100))?;
-    let held = file.read_range(0, 6, &cancellation);
+    let held = read(file.as_ref(), 0, 6, &cancellation);
     let by_path = source
-        .read_range(reference, &path("/file")?, version, 0, 6, &cancellation)
+        .read_range(
+            reference,
+            &path("/file")?,
+            version,
+            0,
+            6,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await;
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))?;
-    assert_eq!(held?.value.as_ref(), b"before");
-    assert_eq!(by_path?.value.as_ref(), b"before");
+    assert_eq!(held?.as_ref(), b"before");
+    assert_eq!(by_path?.value.bytes.as_ref(), b"before");
     Ok(())
 }
 
@@ -608,6 +736,7 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
             node.version,
             0,
             3,
+            WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await
@@ -617,31 +746,41 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     assert!(matches!(stale.error, DemandError::StaleVersion));
     assert!(matches!(
         source
-            .read_metadata(reference, &path("/file")?, Some(node.version), &cancellation)
+            .read_metadata(reference, &path("/file")?, Some(node.version), WorkBudget::UNBOUNDED, &cancellation)
             .await,
         Err(failure) if matches!(failure.error, DemandError::StaleVersion)
     ));
 
-    let first = source
-        .list_page(reference, &path("/")?, None, 1, &cancellation)
+    let mut first = source
+        .list_page(
+            reference,
+            &path("/")?,
+            None,
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
+    first
+        .value
+        .publication
+        .as_mut()
+        .ok_or("publication absent")?
+        .accept(&mut crate::kernel::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))?;
     let cursor = first.value.next.ok_or("second root entry missing")?;
     assert!(matches!(
         source
-            .list_page(
-                reference,
-                &path("/directory")?,
-                Some(cursor),
-                1,
-                &cancellation
-            )
+            .list_page(reference, &path("/directory")?, Some(cursor), 1, WorkBudget::UNBOUNDED, &cancellation)
             .await,
         Err(failure) if matches!(failure.error, DemandError::StaleCursor)
     ));
     source.invalidate();
     assert!(matches!(
         source
-            .lookup(reference, &path("/file")?, &cancellation)
+            .lookup(reference, &path("/file")?, WorkBudget::UNBOUNDED, &cancellation)
             .await,
         Err(failure) if matches!(failure.error, DemandError::StaleSource)
     ));
@@ -715,7 +854,12 @@ async fn native_lookup_accepts_windows_names_longer_than_127_code_units()
     let exact = NamespacePath::new(vec![name], limits)?;
     assert!(
         source
-            .lookup(source.reference(), &exact, &CancellationToken::new())
+            .lookup(
+                source.reference(),
+                &exact,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
             .await?
             .value
             .is_some()
@@ -731,10 +875,19 @@ async fn assert_lossless_name(
 ) -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join(host_name), b"data")?;
-    let source =
-        NativeDemandSource::open(root.path(), profile, VolumeLimits::default(), None, None).await?;
+    let source = NativeDemandSource::open(
+        std::borrow::Cow::Borrowed(root.path()),
+        profile,
+        VolumeLimits::default(),
+        None,
+        None,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?
+    .value;
     let exact = NamespacePath::new(vec![name], VolumeLimits::default())?;
-    let node = node(
+    let node = lookup_node(
         &source,
         source.reference(),
         &exact,
@@ -748,9 +901,10 @@ async fn assert_lossless_name(
             node.version,
             0,
             4,
+            WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
         .await?;
-    assert_eq!(answer.value.as_ref(), b"data");
+    assert_eq!(answer.value.bytes.as_ref(), b"data");
     Ok(())
 }

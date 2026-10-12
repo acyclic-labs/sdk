@@ -19,22 +19,22 @@ macro_rules! demand_meter {
             $(fn allocation_owner(&self) -> Option<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>> { ($allocation_owner)(self) })?
             fn check(&self) -> std::io::Result<()> { self.io(|state| state.check()) }
             fn reserve_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) -> std::io::Result<()> {
-                self.io(|state| state.reserve(crate::demand::DemandWork::operation_credit(kind), count))
+                self.io(|state| state.reserve(crate::demand::DemandWork::operation_credit(kind).delta(count)))
             }
             fn cancel_reserved_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) {
-                self.cancel(|state| state.refund(crate::demand::DemandWork::operation_credit(kind), count));
+                self.cancel(|state| state.refund(crate::demand::DemandWork::operation_credit(kind).delta(count)));
             }
             fn record_reserved_operation(&self, kind: acyclic_native_runtime::NativeOperationKind) -> std::io::Result<()> {
-                self.io(|state| state.complete(crate::demand::DemandWork::operation_credit(kind), 1, 1))
+                self.io(|state| state.complete(crate::demand::DemandWork::operation_credit(kind).delta(1), crate::demand::DemandWork::operation_credit(kind).delta(1)))
             }
             fn reserve_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, bytes: u64) -> std::io::Result<()> {
-                self.io(|state| state.reserve(crate::demand::DemandWork::byte_credit(kind)?, bytes))
+                self.io(|state| state.reserve(crate::demand::DemandWork::byte_credit(kind)?.delta(bytes)))
             }
             fn cancel_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, bytes: u64) {
-                self.cancel(|state| state.refund(crate::demand::DemandWork::byte_credit(kind)?, bytes));
+                self.cancel(|state| state.refund(crate::demand::DemandWork::byte_credit(kind)?.delta(bytes)));
             }
             fn record_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64, actual: u64) -> std::io::Result<()> {
-                self.io(|state| state.complete(crate::demand::DemandWork::byte_credit(kind)?, maximum, actual))
+                self.io(|state| state.complete(crate::demand::DemandWork::byte_credit(kind)?.delta(maximum), crate::demand::DemandWork::byte_credit(kind)?.delta(actual)))
             }
             fn allocate(&self, bytes: u64) -> std::io::Result<()> {
                 self.io(|state| state.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED))

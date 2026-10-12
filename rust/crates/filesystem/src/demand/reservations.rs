@@ -3,7 +3,7 @@ use crate::materializer::NativeResourceCredit;
 use acyclic_native_runtime::NativeOperationKind;
 
 impl DemandWork {
-    pub(crate) fn reserve_native_work(&mut self, maximum: WorkCounters) -> Result<(), DemandError> {
+    pub(crate) fn reserve(&mut self, maximum: WorkCounters) -> Result<(), DemandError> {
         if maximum.peak_allocation_bytes != 0 || maximum.allocation_operations != 0 {
             return Err(DemandError::InvalidRequest);
         }
@@ -23,7 +23,7 @@ impl DemandWork {
             None => reserve(),
         }
     }
-    pub(crate) fn refund_native_work(&mut self, unused: WorkCounters) -> Result<(), DemandError> {
+    pub(crate) fn refund(&mut self, unused: WorkCounters) -> Result<(), DemandError> {
         let pending = unused.remaining(self.roots.pending)?;
         let budget = self.budget.checked_add(unused)?;
         self.roots.pending = pending;
@@ -31,14 +31,26 @@ impl DemandWork {
         self.resource()
             .map_or(Ok(()), |resource| resource.refund(unused, None))
     }
-    pub(crate) fn record_native_work(&mut self, actual: WorkCounters) -> Result<(), DemandError> {
-        let refund = self.refund_native_work(actual);
-        let record = self.record(actual);
-        refund.and(record).and(if self.roots.poisoned {
-            Err(DemandError::OriginalWorkPoisoned)
-        } else {
-            Ok(())
-        })
+    pub(crate) fn complete(
+        &mut self,
+        reserved: WorkCounters,
+        actual: WorkCounters,
+    ) -> Result<(), DemandError> {
+        let refunded = self.refund(reserved);
+        let recorded = self.record(actual);
+        refunded
+            .and(recorded)
+            .and(
+                actual
+                    .remaining(reserved)
+                    .map(|_| ())
+                    .map_err(DemandError::from),
+            )
+            .and(if self.roots.poisoned {
+                Err(DemandError::OriginalWorkPoisoned)
+            } else {
+                Ok(())
+            })
     }
     pub(crate) fn start_native_reserved_work(
         &mut self,
@@ -55,33 +67,6 @@ impl DemandWork {
         self.budget = budget;
         self.work = work;
         Ok(())
-    }
-    pub(crate) fn reserve(
-        &mut self,
-        kind: NativeResourceCredit,
-        count: u64,
-    ) -> Result<(), DemandError> {
-        self.reserve_native_work(kind.delta(count))
-    }
-    pub(crate) fn refund(
-        &mut self,
-        kind: NativeResourceCredit,
-        count: u64,
-    ) -> Result<(), DemandError> {
-        self.refund_native_work(kind.delta(count))
-    }
-    pub(crate) fn complete(
-        &mut self,
-        kind: NativeResourceCredit,
-        reserved: u64,
-        actual: u64,
-    ) -> Result<(), DemandError> {
-        let refund = self.refund(kind, reserved);
-        let record = self.record(kind.delta(actual));
-        if actual > reserved {
-            return Err(DemandError::InvalidRequest);
-        }
-        refund.and(record)
     }
     pub(crate) fn operation_credit(kind: NativeOperationKind) -> NativeResourceCredit {
         match kind {

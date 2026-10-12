@@ -990,10 +990,10 @@ impl Shared {
         let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(original) = &self.delivery.original {
             cleanup.records -= 1;
-            original.state.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
+            original.state.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items.delta(1)).expect("original reservation is balanced"));
         } else if self.delivery.birth_matches(work) {
             cleanup.records -= 1;
-            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
+            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items.delta(1)).expect("original reservation is balanced"));
         }
     }
 

@@ -392,7 +392,7 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
             if context.original.is_some() {
                 return Err(crate::ObjectStoreError::NativeUnavailable);
             }
-            let _budget = context.work.remaining(context.budget)?;
+            let _budget = context.read_budget()?;
             let _cancellation = context.cancellation;
             let result = async {
             self.reached.fetch_add(1, Ordering::SeqCst);

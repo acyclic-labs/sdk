@@ -75,11 +75,8 @@ impl DemandWork {
     pub(super) fn resource(&self) -> Option<Arc<NativeResourceAllowance>> {
         self.native_resource.as_ref().and_then(Weak::upgrade)
     }
-    pub(crate) fn native_queue_shell(&self) -> Self {
-        Self::new(WorkBudget::default(), &self.cancellation)
-    }
     pub(crate) fn take_for_native_queue(&mut self) -> Self {
-        let shell = self.native_queue_shell();
+        let shell = Self::new(WorkBudget::default(), &self.cancellation);
         std::mem::replace(self, shell)
     }
     pub(crate) fn from_current(

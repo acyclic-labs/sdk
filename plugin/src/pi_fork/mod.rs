@@ -29,7 +29,7 @@ use acyclic_harness::{
     fork::{ForkReport, ForkRequest},
     resource_preparation::ResourcePreparationRequest,
     runtime::{DurableTaskHost, TaskAdmissionRecord, task_id_for_admission},
-    scheduler::{LeaseFence, ResourceSnapshot},
+    scheduler::{LeaseFence, ResourceRequest},
     source_authorization::{
         ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
     },

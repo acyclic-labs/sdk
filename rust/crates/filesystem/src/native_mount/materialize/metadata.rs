@@ -344,7 +344,7 @@ pub(super) fn create_symlink_measured(
         let mut units = Vec::new();
         receipt.reserve(&mut units, target.len() / 2)?;
         receipt.run(|work| {
-            work.charge(WorkCounters {
+            crate::native_host::NativeHostWork::started_io(work, WorkCounters {
                 bytes_copied: target.len() as u64,
                 ..WorkCounters::UNCHARGED
             })

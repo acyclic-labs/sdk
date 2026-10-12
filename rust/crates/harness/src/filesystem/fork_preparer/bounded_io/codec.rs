@@ -287,7 +287,7 @@ impl PreparationIo {
             std::borrow::Cow::Borrowed(value),
             bounds,
             0,
-            code,
+            Some(code),
             schema,
             &mut |charge| {
                 if let Charge::Admission { value_shape, .. } = charge {

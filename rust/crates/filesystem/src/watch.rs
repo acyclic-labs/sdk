@@ -2461,32 +2461,13 @@ fn watch_claim_allocation<W: crate::demand::SourceDemandReadWork>(
 }
 
 impl crate::demand::DemandDirectoryObserver for Mutex<NativeWatch> {
-    fn observe_directory(
-        &self,
-        directory: &NamespacePath,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::demand::DemandResult<()> {
-        let mut work = crate::demand::DemandWork::new(budget, cancellation);
+    fn observe_directory(&self, directory: &NamespacePath, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), crate::demand::DemandError> {
+        let mut work = crate::demand::native::callback_work(accounting)?;
         let result = (|| {
-            work.check()?;
-            self.lock()
-                .map_err(|_| NativeWatchError::StatePoisoned)?
-                .watch_directory_with_work(directory, &mut work)
+            crate::native_host::NativeHostWork::check(&work)?;
+            self.lock().map_err(|_| NativeWatchError::StatePoisoned)?.watch_directory_with_work(directory, &mut work)
         })();
-        result
-            .map(|value| OperationReceipt { value, work: work.work })
-            .map_err(|error| OperationFailure::new(error, work.work))
-    }
-
-    #[cfg(feature = "native-mount")]
-    fn observe_directory_with_native_work(
-        &self, directory: &NamespacePath, mut work: crate::NativeMaterializationWork,
-    ) -> Result<(), crate::demand::DemandError> {
-        crate::native_host::NativeHostWork::check(&work)?;
-        self.lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?
-            .watch_directory_with_work(directory, &mut work)
+        crate::demand::native::finish_context(result, work, accounting)
     }
 }
 
@@ -2982,6 +2963,13 @@ mod demand_admission_tests {
         )?)
     }
 
+    fn observed(watch: &Mutex<NativeWatch>, directory: &NamespacePath, budget: WorkBudget, cancellation: &CancellationToken) -> crate::demand::DemandResult<()> {
+        use crate::facade::FsWork;
+        let mut accounting = budget.accounting(cancellation);
+        let result = watch.observe_directory(directory, &mut accounting);
+        budget.finish(result, &accounting)
+    }
+
     fn watcher(root: &Path) -> Result<Mutex<NativeWatch>, NativeWatchError> {
         let mut options = NativeWatchOptions::new(VolumeLimits::default());
         options.recursive = false;
@@ -2997,7 +2985,7 @@ mod demand_admission_tests {
         let root = tempfile::tempdir()?;
         std::fs::create_dir(root.path().join("a"))?;
         let watch = watcher(root.path())?;
-        let failure = watch.observe_directory(&namespace("/a")?, WorkBudget::UNBOUNDED,
+        let failure = observed(&watch, &namespace("/a")?, WorkBudget::UNBOUNDED,
             &CancellationToken::new()).expect_err("opaque nonrecursive admission is not bounded");
         assert!(matches!(failure.error,
             DemandError::Observation(NativeWatchError::BoundedObservationUnavailable)));
@@ -3026,14 +3014,14 @@ mod demand_admission_tests {
         let root = tempfile::tempdir()?;
         std::fs::create_dir_all(root.path().join("a/b"))?;
         let watch = watcher(root.path())?;
-        let failure = watch.observe_directory(&namespace("/a/b")?, WorkBudget {
+        let failure = observed(&watch, &namespace("/a/b")?, WorkBudget {
             backend_read_operations: 7,
             ..windows_budget()
         }, &CancellationToken::new()).expect_err("the later prefix must stop at the native limit");
         assert!(matches!(failure.error, DemandError::Work(WorkError::BudgetExceeded {
             counter: "backend_read_operations", ..
         })));
-        watch.observe_directory(&namespace("/a/b")?, windows_budget(), &CancellationToken::new())?;
+        observed(&watch, &namespace("/a/b")?, windows_budget(), &CancellationToken::new())?;
         Ok(())
     }
 
@@ -3046,11 +3034,11 @@ mod demand_admission_tests {
         std::fs::write(root.path().join("a/f"), b"before")?;
         let watch = watcher(root.path())?;
         watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?.accept_lazy_baseline()?;
-        watch.observe_directory(&namespace("/a")?, windows_budget(), &CancellationToken::new())?;
+        observed(&watch, &namespace("/a")?, windows_budget(), &CancellationToken::new())?;
         std::fs::rename(root.path().join("a"), root.path().join("old"))?;
         std::fs::create_dir(root.path().join("a"))?;
         std::fs::write(root.path().join("a/f"), b"before")?;
-        watch.observe_directory(&namespace("/a")?, windows_budget(), &CancellationToken::new())?;
+        observed(&watch, &namespace("/a")?, windows_budget(), &CancellationToken::new())?;
         std::fs::write(root.path().join("a/f"), b"after")?;
         let expected = namespace("/a/f")?;
         let deadline = Instant::now() + Duration::from_secs(5);

@@ -232,8 +232,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(lease) = publication_lease {
             match io {
-                Some(io) => io.verify_publication_lease(lease.as_ref()).await?,
-                None => lease.verify().await?,
+                Some(io) => io.finish_future(lease.verify(Some(io))?).await?,
+                None => lease.verify(None)?.await?,
             }
         }
         grant.require(volume, VolumeOperation::Write, io)?;
@@ -492,7 +492,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 move |original: &acyclic_fs::NativeMaterializationWork| {
                                     let lease = Arc::clone(&lease);
                                     let original = original.clone();
-                                    async move { lease.verify_with_native_work(&original)?.await }
+                                    async move {
+                                        let io = PreparationIo::from_native_work(&original)?;
+                                        io.finish_future(lease.verify(Some(&io))?).await
+                                    }
                                 };
                             fork_preparer_io::publish_native(
                                 self,
@@ -509,8 +512,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 let callback =
                                     PreparationIo::from_budget(budget, io.cancellation())
                                         .map_err(acyclic_fs::OperationFailure::before_work)?;
-                                let result =
-                                    callback.verify_publication_lease(lease.as_ref()).await;
+                                let result = match lease.verify(Some(&callback)) {
+                                    Ok(future) => callback.finish_future(future).await,
+                                    Err(error) => Err(error),
+                                };
                                 callback.finish(result)
                             };
                             fork_preparer_io::publish_generation(
@@ -549,7 +554,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None => {
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(lease) = publication_lease {
-                        let mut before_publication = || lease.verify();
+                        let mut before_publication = || async { lease.verify(None)?.await };
                         self.apply_generation_guarded(
                             &workspace,
                             expected_generation,

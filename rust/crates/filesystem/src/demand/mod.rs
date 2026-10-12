@@ -10,11 +10,11 @@ use thiserror::Error;
 
 mod cursor;
 mod model;
+mod page;
 pub use cursor::SourceCursor;
+pub use page::*;
 mod contracts;
-mod filtered;
 pub use contracts::*;
-pub use filtered::FilteredDemandSource;
 pub use model::*;
 /// Native provider backed by a held, no-follow directory capability.
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]

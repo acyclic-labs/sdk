@@ -260,7 +260,7 @@ where
                     Some(work) => work.clone_authority(source.owner.authority())?,
                     None => source.owner.authority().clone(),
                 };
-                Ok((
+                Ok::<_, Error>((
                     verifier,
                     caller.owner.scope.copy(work)?,
                     caller.project.copy(work)?,

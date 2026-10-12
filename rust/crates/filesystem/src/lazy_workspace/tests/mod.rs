@@ -285,13 +285,14 @@ impl DemandSource for CountingSource {
                     .allocation
                     .absorb(&mut allocation)
                     .map_err(DemandError::from)?;
-                entries.value.push(SourceDirectoryEntry::new(name, node));
+                entries.value.push(SourceDirectoryEntry { name, node });
             }
-            Ok(SourceDirectoryPage::stateless(
-                entries.value,
+            SourceDirectoryPage::stateless(
+                entries,
                 None,
                 SourceVersion([4; 32]),
-            ))
+                &mut accounting,
+            )
         })();
         work.finish(result, &accounting)
     }

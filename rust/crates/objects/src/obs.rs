@@ -261,7 +261,7 @@ pub(crate) fn download(
     future: impl Future<Output = Result<crate::v1::Download, crate::Error>>,
 ) -> impl Future<Output = Result<crate::v1::Download, crate::Error>> {
     let mut lifetime = Lifetime(Some(span.clone()));
-    let context = span.as_ref().clone();
+    let context = span.context().clone();
     span.scope(async move {
         let mut future = std::pin::pin!(future);
         let result =
@@ -299,7 +299,7 @@ pub(crate) fn scoped<R: Outcome>(span: &OperationSpan, body: impl FnOnce() -> R)
 
 /// Opens an owned operation span; WASM does not evaluate fields.
 macro_rules! span {
-    ($level:ident, $name:literal $(, $($field:tt)+)?) => {{
+    ($level:ident, $name:expr $(, $($field:tt)+)?) => {{
         #[cfg(not(target_arch = "wasm32"))]
         let span = crate::obs::OperationSpan::new(::tracing::span!(
             ::tracing::Level::$level,

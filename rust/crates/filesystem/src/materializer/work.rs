@@ -279,14 +279,14 @@ impl NativeMaterializationWork {
         &self,
         maximum: crate::WorkCounters,
     ) -> Result<NativeWorkReservation, NativeTreeMaterializationError> {
-        self.state(|state| state.reserve_native_work(maximum))
+        self.state(|state| state.reserve(maximum))
             .map_err(native_materialization_work_error)?;
         Ok(NativeWorkReservation::new(self.allocation_work(), maximum))
     }
     pub(crate) fn reserve_cleanup_write(
         &self,
     ) -> Result<NativeCleanupWrite, NativeTreeMaterializationError> {
-        self.state(|state| state.reserve(NativeResourceCredit::WriteOperations, 1))
+        self.state(|state| state.reserve(NativeResourceCredit::WriteOperations.delta(1)))
             .map_err(native_materialization_work_error)?;
         Ok(NativeCleanupWrite {
             meter: self.allocation_work(),

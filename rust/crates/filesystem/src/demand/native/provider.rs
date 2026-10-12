@@ -29,6 +29,9 @@ impl DemandSource for NativeDemandSource {
     ) -> W::Output<Option<SourceNode>, DemandError> {
         self.request(path, work, cancellation, move |provider, path, context| {
             provider.check(source, context)?;
+            if provider.excluded.excludes(path) {
+                return Ok(None);
+            }
             provider.observe_parent(path, context)?;
             let mut node = provider.metadata(path, context)?.as_ref().map(Self::node);
             if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)
@@ -71,6 +74,9 @@ impl DemandSource for NativeDemandSource {
         cancellation: &CancellationToken,
     ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
         self.request(path, work, cancellation, move |provider, path, context| {
+            if provider.excluded.excludes(path) {
+                return Err(DemandError::Absent);
+            }
             NativeDemandFile::open(provider, source, path, expected, context)?
                 .read(offset, length, context)
         })
@@ -85,6 +91,9 @@ impl DemandSource for NativeDemandSource {
         cancellation: &CancellationToken,
     ) -> W::Output<Box<dyn DemandFile>, DemandError> {
         self.request(path, work, cancellation, move |provider, path, context| {
+            if provider.excluded.excludes(path) {
+                return Err(DemandError::Absent);
+            }
             Ok(Box::new(NativeDemandFile::open(
                 provider, source, path, expected, context,
             )?) as Box<dyn DemandFile>)
@@ -102,6 +111,9 @@ impl DemandSource for NativeDemandSource {
     ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
         self.request(path, work, cancellation, move |provider, path, context| {
             provider.check(source, context)?;
+            if provider.excluded.excludes(path) {
+                return Err(DemandError::Absent);
+            }
             provider.observe_parent(path, context)?;
             let before = provider
                 .metadata(path, context)?
@@ -127,7 +139,7 @@ impl DemandSource for NativeDemandSource {
     }
 }
 
-fn finish_context<T>(
+pub(crate) fn finish_context<T>(
     result: Result<T, DemandError>,
     context: CallbackWork,
     accounting: &mut crate::kernel::KernelAccounting<'_>,
@@ -149,7 +161,7 @@ fn finish_context<T>(
     }
 }
 
-fn callback_work(
+pub(crate) fn callback_work(
     accounting: &mut crate::kernel::KernelAccounting<'_>,
 ) -> Result<CallbackWork, DemandError> {
     if let Some(original) = accounting.native_work() {
@@ -162,4 +174,66 @@ fn callback_work(
         | crate::kernel::KernelAccounting::NativeOriginal { cancellation, .. } => cancellation,
     };
     Ok(CallbackWork::Ordinary(DemandWork::new(budget, stop)))
+}
+
+impl NativeDemandSource {
+    fn link_bytes(
+        &self,
+        relative: &DemandPath,
+        maximum: u64,
+        context: &mut CallbackWork,
+    ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
+        if context.is_native_original() {
+            let bytes = self
+                .inner
+                .root
+                .read_source_link(relative, maximum, context)?;
+            let retained = bytes
+                .retained_capacity()
+                .ok_or(DemandError::InvalidRequest)? as u64;
+            context.record(WorkCounters {
+                output_bytes: bytes.len() as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            return Ok(crate::kernel::OwnedSourceChunk::intrinsic(bytes, retained));
+        }
+        #[cfg(unix)]
+        let (bytes, allocation) = self.inner.root.read_link(relative, maximum, context)?;
+        #[cfg(windows)]
+        let (bytes, allocation) = {
+            let (units, allocation) = self.inner.root.read_link_wide(relative, maximum, context)?;
+            let result = (|| {
+                let copying = WorkCounters {
+                    bytes_copied: units.len() as u64 * 2,
+                    ..WorkCounters::UNCHARGED
+                };
+                context.admit(copying)?;
+                let (mut bytes, allocation) =
+                    crate::native_host::buffer::<u8, _>(units.len() * 2, context)?;
+                bytes.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
+                if let Err(error) = context.record(copying) {
+                    drop(bytes);
+                    context.release(allocation)?;
+                    return Err(error);
+                }
+                Ok((bytes, allocation))
+            })();
+            drop(units);
+            context.release(allocation)?;
+            result?
+        };
+        let result = context.record(WorkCounters {
+            output_bytes: bytes.len() as u64,
+            ..WorkCounters::UNCHARGED
+        });
+        if let Err(error) = result {
+            drop(bytes);
+            context.release(allocation)?;
+            return Err(error);
+        }
+        Ok(crate::kernel::OwnedSourceChunk::claimed(
+            bytes.into(),
+            allocation,
+        ))
+    }
 }

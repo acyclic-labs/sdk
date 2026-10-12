@@ -38,9 +38,7 @@ impl LazyDirectoryCursor {
         self.directory
             .retained_bytes()
             .checked_add(match &self.phase {
-                LazyDirectoryPhase::Source(cursor) => {
-                    cursor.as_ref().map_or(0, SourceCursor::retained_bytes)
-                }
+                LazyDirectoryPhase::Source(_) => 0,
                 LazyDirectoryPhase::Authored(name) => {
                     name.as_ref().map_or(0, |name| name.retained_bytes() as u64)
                 }
@@ -56,20 +54,7 @@ impl LazyDirectoryCursor {
             .clone_with_accounting(accounting, cancellation)?;
         let phase = match &self.phase {
             LazyDirectoryPhase::Source(None) => LazyDirectoryPhase::Source(None),
-            LazyDirectoryPhase::Source(Some(cursor)) => {
-                let bytes = cursor.retained_bytes();
-                let copying = WorkCounters {
-                    bytes_copied: bytes,
-                    ..WorkCounters::UNCHARGED
-                };
-                accounting.admit(copying)?;
-                let mut claim = accounting.claim_owned(bytes, self.directory.depth() as u64 + 1)?;
-                let mut cursor = Clone::clone(cursor);
-                accounting.reconcile_owned(&mut claim, bytes, cursor.retained_bytes())?;
-                accounting.record_completed(copying)?;
-                allocation.absorb(&mut claim)?;
-                LazyDirectoryPhase::Source(Some(cursor))
-            }
+            LazyDirectoryPhase::Source(Some(cursor)) => LazyDirectoryPhase::Source(Some(Clone::clone(cursor))),
             LazyDirectoryPhase::Authored(None) => LazyDirectoryPhase::Authored(None),
             LazyDirectoryPhase::Authored(Some(name)) => {
                 let (name, mut claim) = name.clone_with_accounting(accounting, cancellation)?;

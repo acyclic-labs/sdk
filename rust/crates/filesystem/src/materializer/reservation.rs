@@ -86,7 +86,7 @@ impl NativeWorkReservation {
         let excess = credited.remaining(actual)?;
         state.remaining = credited.remaining(state.remaining)?;
         self.meter.state(|ledger| {
-            let credited = ledger.record_native_work(credited);
+            let credited = ledger.complete(credited, credited);
             let excess = ledger.record(excess);
             credited.and(excess)
         })
@@ -243,7 +243,7 @@ impl NativeWorkReservation {
 impl Drop for NativeWorkReservation {
     fn drop(&mut self) {
         let unused = self.state.get_mut().remaining;
-        if let Err(error) = self.meter.state(|state| state.refund_native_work(unused)) {
+        if let Err(error) = self.meter.state(|state| state.refund(unused)) {
             self.meter.poison(native_materialization_work_error(error));
         }
     }
