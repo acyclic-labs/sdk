@@ -36,7 +36,6 @@ futures.workspace = true
 pin-project-lite = "0.2.17"
 h2 = { version = "0.4.19", optional = true }
 hyper = { version = "1.11.0", default-features = false, optional = true }
-fs2 = { workspace = true, optional = true }
 prost.workspace = true
 ruzstd.workspace = true
 serde_json.workspace = true
@@ -60,6 +59,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fs2 = { workspace = true, optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"], optional = true }
 tracing.workspace = true
