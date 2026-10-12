@@ -98,7 +98,7 @@ pub(crate) use attribute_access::{
 pub use attribute_list::{
     AttributeListError, AttributeListFailure, AttributeListing, list_attributes, list_attributes_async};
 pub use attribute_mutation::{
-    AttributeMutation, AttributeMutationError, AttributeMutationFailure, AttributeMutationReceipt, AttributeSemanticError, apply_attribute_mutations};
+    AttributeMutation, AttributeMutationError, AttributeMutationFailure, AttributeMutationReceipt, apply_attribute_mutations};
 pub use blob::{
     AsyncBlobSource, OwnedSourceChunk, BlobBuild, BlobBuildError, BlobBuildFailure, BlobBuildOptions, BlobChild, BlobChunkRef, BlobNode, BlobPage, BlobRead, BlobReadError, BlobReadFailure, blob_page_id, build_blob, build_blob_async, decode_blob_page, encode_blob_page, read_blob_range, read_blob_range_async};
 pub use checkpoint::{
